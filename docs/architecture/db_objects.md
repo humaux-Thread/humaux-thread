@@ -638,9 +638,8 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::billing_repo`
 - (no process): `adapters::tests::billing_repo`
-- (no process): `gateway::tests::billing_webhook`
-- process(humaux-gateway): `adapters::billing_repo`
 
 executed by:
 
@@ -671,6 +670,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::cost_repo`
 
 executed by:
 
@@ -4903,6 +4903,7 @@ written by:
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::coord_rls`
 - (no process): `adapters::tests::coord_task_run`
+- (no process): `adapters::tests::cost_repo`
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::entitlement_projector`
@@ -9094,13 +9095,39 @@ foreign keys (outgoing):
 - fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
+- (no process): `adapters::tests::cost_repo`
 
 written by:
+- (no process): `adapters::cost_repo`
 - (no process): `adapters::tests::model_call_ledger`
 - process(humaux-consolidation-worker): `adapters::model_call_ledger`
 - process(humaux-maintenance): `adapters::model_call_ledger`
 - process(humaux-private-worker): `adapters::model_call_ledger`
 - process(humaux-retrieval-worker): `adapters::model_call_ledger`
+
+executed by:
+
+### `ops.tenant_margin_v`
+- kind: view
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0294_cost_margin_view
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+read by:
+- (no process): `adapters::tests::cost_repo`
+
+written by:
 
 executed by:
 

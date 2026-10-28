@@ -2001,10 +2001,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `private.memory_projects`
 - service `PostgreSQL(any)`
 
-#### `adapters::billing_repo`
-- writes `control.billing_inbox`
-- service `PostgreSQL(role_gateway)`
-
 #### `adapters::byok`
 - env `CARGO_MANIFEST_DIR`
 
@@ -2419,8 +2415,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::authority`
 
-#### `domain::billing`
-
 #### `domain::boundary`
 
 #### `domain::confirm`
@@ -2455,8 +2449,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::note`
 
-#### `domain::plan`
-
 #### `domain::policy`
 
 #### `domain::relation`
@@ -2476,10 +2468,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `gateway::auth_pages`
 
-#### `gateway::billing_webhook`
-
 #### `gateway::bootstrap`
-- env `HUMAUX_BILLING_WEBHOOK_PROVIDERS`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 - env `HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS`
 - env `HUMAUX_GATEWAY_ADMISSION_CONCURRENCY`
@@ -2596,7 +2585,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS`
 - env `HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS`
 - env `HUMAUX_GATEWAY_UNKNOWN`
-- env `HUMAUX_TEST_WEBHOOK_SECRET`
 - service `PostgreSQL(role_gateway)`
 
 #### `gateway::cached_embedding`
@@ -5400,9 +5388,8 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::billing_repo`
 - (no process): `adapters::tests::billing_repo`
-- (no process): `gateway::tests::billing_webhook`
-- process(humaux-gateway): `adapters::billing_repo`
 
 executed by:
 
@@ -5414,6 +5401,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::cost_repo`
 
 executed by:
 
@@ -7054,6 +7042,7 @@ written by:
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::coord_rls`
 - (no process): `adapters::tests::coord_task_run`
+- (no process): `adapters::tests::cost_repo`
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::entitlement_projector`
@@ -8913,13 +8902,23 @@ executed by:
 
 ### `ops.tenant_cost_events`
 read by:
+- (no process): `adapters::tests::cost_repo`
 
 written by:
+- (no process): `adapters::cost_repo`
 - (no process): `adapters::tests::model_call_ledger`
 - process(humaux-consolidation-worker): `adapters::model_call_ledger`
 - process(humaux-maintenance): `adapters::model_call_ledger`
 - process(humaux-private-worker): `adapters::model_call_ledger`
 - process(humaux-retrieval-worker): `adapters::model_call_ledger`
+
+executed by:
+
+### `ops.tenant_margin_v`
+read by:
+- (no process): `adapters::tests::cost_repo`
+
+written by:
 
 executed by:
 
@@ -12500,7 +12499,6 @@ executed by:
 - `gateway::main`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
-- `gateway::tests::billing_webhook`
 - `gateway::tests::exit_codes`
 - `gateway::tests::oauth_flow`
 - `gateway::tests::ops_listener`
@@ -12560,6 +12558,7 @@ executed by:
 - `adapters::contribution_reasoner`
 - `adapters::contribution_repo`
 - `adapters::coord_repo`
+- `adapters::cost_repo`
 - `adapters::credential_repo`
 - `adapters::disclosure`
 - `adapters::distill_repo`
@@ -12653,7 +12652,6 @@ executed by:
 - `domain::consolidate`
 - `domain::context`
 - `gateway::tests::auth_pages`
-- `gateway::tests::billing_webhook`
 - `gateway::tests::oauth_flow`
 - `maintenance::migrate`
 - `maintenance::projection_serve`
@@ -12696,6 +12694,7 @@ executed by:
 - `adapters::tests::continuity_publish`
 - `adapters::tests::coord_rls`
 - `adapters::tests::coord_task_project`
+- `adapters::tests::cost_repo`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
@@ -12905,7 +12904,6 @@ executed by:
 - `gateway::mcp_application`
 - `gateway::status`
 - `gateway::tests::auth_pages`
-- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -13004,6 +13002,7 @@ executed by:
 - `xtask::soak`
 
 ### `PostgreSQL(role_migration_owner)`
+- `adapters::tests::cost_repo`
 - `adapters::tests::forget_confirm`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::phase9_independence_attestation`
@@ -13022,6 +13021,7 @@ executed by:
 - `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_pipeline`
 - `adapters::tests::contribution_repo`
+- `adapters::tests::cost_repo`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -13356,6 +13356,7 @@ modules naming it:
 - `adapters::coord_repo`
 - `adapters::coord_task_repo`
 - `adapters::coord_tree_repo`
+- `adapters::cost_repo`
 - `adapters::credential_repo`
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
@@ -13417,6 +13418,7 @@ modules naming it:
 - `adapters::tests::contribution_repo`
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::cost_repo`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -13503,6 +13505,7 @@ modules naming it:
 - `adapters::coord_repo`
 - `adapters::coord_task_repo`
 - `adapters::coord_tree_repo`
+- `adapters::cost_repo`
 - `adapters::credential_repo`
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
@@ -13567,6 +13570,7 @@ modules naming it:
 - `adapters::tests::contribution_scan`
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::cost_repo`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
@@ -14216,6 +14220,7 @@ modules naming it:
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
+- `adapters::tests::cost_repo`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -14551,6 +14556,7 @@ modules naming it:
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
+- `adapters::tests::cost_repo`
 - `adapters::tests::credential_grants`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
@@ -14661,6 +14667,7 @@ modules naming it:
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
+- `adapters::tests::cost_repo`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -16136,7 +16143,6 @@ why: typed PG pools, repositories and wire adapters this package drives
 modules naming it:
 - `gateway::auth`
 - `gateway::auth_pages`
-- `gateway::billing_webhook`
 - `gateway::bootstrap`
 - `gateway::context`
 - `gateway::continuity`
@@ -16149,7 +16155,6 @@ modules naming it:
 - `gateway::retrieval_embedding_client`
 - `gateway::status`
 - `gateway::tests::auth_pages`
-- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16170,7 +16175,6 @@ why: use-case layer (ports + orchestration) this package wires
 
 modules naming it:
 - `gateway::auth_pages`
-- `gateway::billing_webhook`
 - `gateway::bootstrap`
 - `gateway::cached_embedding`
 - `gateway::continuity`
@@ -16217,7 +16221,6 @@ modules naming it:
 - `gateway::admission`
 - `gateway::auth`
 - `gateway::auth_pages`
-- `gateway::billing_webhook`
 - `gateway::bootstrap`
 - `gateway::cached_embedding`
 - `gateway::context`
@@ -16231,7 +16234,6 @@ modules naming it:
 - `gateway::remember`
 - `gateway::retrieval_embedding_client`
 - `gateway::tests::admission`
-- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16260,7 +16262,6 @@ modules naming it:
 - `gateway::recall`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
-- `gateway::tests::billing_webhook`
 - `gateway::tests::console_csrf`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
@@ -16369,13 +16370,11 @@ why: HTTP/UDS server framework
 modules naming it:
 - `gateway::admission`
 - `gateway::auth_pages`
-- `gateway::billing_webhook`
 - `gateway::main`
 - `gateway::mcp_application`
 - `gateway::oauth_http`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
-- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16394,7 +16393,6 @@ why: derive (de)serialization for wire/DTO types
 
 modules naming it:
 - `gateway::auth_pages`
-- `gateway::bootstrap`
 - `gateway::context`
 - `gateway::mcp_application`
 - `gateway::memory`
@@ -16406,7 +16404,6 @@ modules naming it:
 why: JSON payloads and envelopes
 
 modules naming it:
-- `gateway::billing_webhook`
 - `gateway::bootstrap`
 - `gateway::context`
 - `gateway::continuity`
@@ -16420,7 +16417,6 @@ modules naming it:
 - `gateway::retrieval_embedding_client`
 - `gateway::status`
 - `gateway::tests::as_metadata`
-- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16445,7 +16441,6 @@ modules naming it:
 - `gateway::guard`
 - `gateway::memory`
 - `gateway::retrieval_embedding_client`
-- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::query_embedding_rpc`
@@ -16495,7 +16490,6 @@ modules naming it:
 - `gateway::status`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
-- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16530,7 +16524,6 @@ modules naming it:
 - `gateway::retrieval_embedding_client`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
-- `gateway::tests::billing_webhook`
 - `gateway::tests::console_csrf`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
@@ -16570,7 +16563,6 @@ modules naming it:
 - `gateway::status`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
-- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16594,7 +16586,6 @@ why: shared DB-bound test harness (skip_or_fail, fixtures)
 modules naming it:
 - `gateway::mcp_application`
 - `gateway::tests::auth_pages`
-- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16624,7 +16615,6 @@ why: sync PG client for DB-bound test fixtures
 modules naming it:
 - `gateway::mcp_application`
 - `gateway::tests::auth_pages`
-- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_forget`
@@ -17714,15 +17704,6 @@ services (computed):
 default run:
 - PostgreSQL
 
-### `bins/gateway/tests/billing_webhook.rs`
-db-bound (default run): yes
-
-services (computed):
-- PostgreSQL
-
-default run:
-- PostgreSQL
-
 ### `bins/gateway/tests/console_csrf.rs`
 db-bound (default run): no
 
@@ -18505,6 +18486,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/core_never_auto.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/cost_repo.rs`
 db-bound (default run): yes
 
 services (computed):
@@ -19664,9 +19654,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3516` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3521` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3526` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3410` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3415` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3420` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:15` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
