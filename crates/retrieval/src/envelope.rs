@@ -9,8 +9,11 @@
 //!   (ADR-0061 D-C); sparse_lane_unavailable is the only producer of SPARSE_LANE_UNAVAILABLE and returns it with the
 //!   Failed lane status, so the two are never reported apart (ADR-0083 D-C); totals is the only constructor of Totals
 //!   and reads ExactOutcome's fields alone, never a rendered or body length, so Exact needs the enumeration report and
-//!   a semantic or facet class never yields a total (ADR-0110 D-C, G-M13-3)]
-//! Spec: §22.0; §22.1; §23; §23.1; §41.2; ADR-0057; ADR-0061 D-C; ADR-0083 D-C; ADR-0110 D-C
+//!   a semantic or facet class never yields a total (ADR-0110 D-C, G-M13-3); FrontierBlock::new is the only place
+//!   `behind` is computed and saturates at 0, and FrontierPipelineBlock::new is the only producer of the frontier
+//!   pipeline, so `projection: null` always carries `no_checkpoint` and a missing checkpoint row is never a zero
+//!   frontier (ADR-0110 D-A, §23.1④, G-M13-2)]
+//! Spec: §22.0; §22.1; §23; §23.1; §23.1④; §41.2; ADR-0057; ADR-0061 D-C; ADR-0083 D-C; ADR-0110 D-A; ADR-0110 D-C
 //!
 //! Assembles the five blocks
 //! (`pipeline` / `completeness` / `provenance` / `freshness` / `grounding`) and, most
@@ -289,6 +292,108 @@ fn projection_block_a2(ledger: &LedgerClosure, visible: Option<u64>) -> Outcome<
         abstain(DegradeCode::ProjectionInvisibleLoss, block)
     } else {
         Outcome::clean(block)
+    }
+}
+
+// ============================================================================
+// ADR-0110 D-A — `pipeline.projection` of `memory.get`: the frontier reading
+// ============================================================================
+
+/// The wire tag of a [`FrontierBlock`]. One variant, so no other tag can be serialized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FrontierMode {
+    Frontier,
+}
+
+/// ADR-0110 D-A, contract C6 of M09: how far one stream's projection has come, read from its `stream_checkpoints` row
+/// alone. No `visible`, no ratio and no per-state count, because a point read has no universe to close and takes no
+/// Qdrant count. `behind` is an upper bound on the tickets still in flight; it never feeds A2 or a LOST verdict
+/// (§23.1②), and nothing in this module reads it for a class.
+///
+/// Fields are private so `behind` cannot drift from the two numbers it is derived from: [`FrontierBlock::new`] is the
+/// only constructor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FrontierBlock {
+    mode: FrontierMode,
+    /// `issued_highwater`: the tickets ever issued on the stream.
+    issued: u64,
+    /// `projection_highwater`: the contiguous settled prefix (§15.4).
+    settled_prefix: u64,
+    /// `issued - settled_prefix`, saturating at 0.
+    behind: u64,
+    /// The §15.3 read-routing flag of the checkpoint row.
+    serving: bool,
+    /// RFC 3339 DB-clock time of the checkpoint row's last write.
+    observed_at: String,
+}
+
+impl FrontierBlock {
+    /// Builds the block from one frontier read. `behind = issued - settled_prefix` is computed here and nowhere else;
+    /// `saturating_sub` is the guarantee that it never goes negative or wraps, so a checkpoint whose prefix is ahead
+    /// of its issued mark (not producible by the writers, but a read must not panic on it) reads `behind = 0`.
+    pub fn new(issued: u64, settled_prefix: u64, serving: bool, observed_at: String) -> Self {
+        Self {
+            mode: FrontierMode::Frontier,
+            issued,
+            settled_prefix,
+            behind: issued.saturating_sub(settled_prefix),
+            serving,
+            observed_at,
+        }
+    }
+}
+
+/// ADR-0110 D-A: the reading a read reports under `pipeline.projection`. `Closure` is the A1/A2 block recall / context
+/// / enumerate keep; `Frontier` is what `memory.get` reports. Untagged, so a `Closure` serializes byte for byte as the
+/// bare [`ProjectionBlock`] it wraps and a `Frontier` carries its own `mode: "frontier"` tag.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ProjectionReading {
+    /// The recall closure (§23.1②).
+    Closure(ProjectionBlock),
+    /// The ledger frontier (ADR-0110 D-A).
+    Frontier(FrontierBlock),
+}
+
+/// Why `pipeline.projection` is `null` on a frontier pipeline. One variant: the checkpoint row is the only frontier
+/// source, so its absence is the only reason there is no reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionAbsence {
+    /// The stream has no `stream_checkpoints` row: nothing was ever issued for the key (§23.1④).
+    NoCheckpoint,
+}
+
+/// ADR-0110 D-A: `memory.get`'s `pipeline`. The evidence and knowledge halves are unknown by construction (an object
+/// read establishes no census, ADR-0041 D-D, §23.3④); `projection` is the frontier or `null`, and `projection_reason`
+/// is `no_checkpoint` exactly when it is `null` (the same nullable-`reason` convention as `completeness.reason`).
+#[derive(Debug, Clone, Serialize)]
+pub struct FrontierPipelineBlock {
+    evidence: EvidenceBlock,
+    knowledge: KnowledgeBlock,
+    projection: Option<ProjectionReading>,
+    projection_reason: Option<ProjectionAbsence>,
+}
+
+impl FrontierPipelineBlock {
+    /// The only producer. `None` (no checkpoint row) is `projection: null` with `no_checkpoint`, never a zero frontier
+    /// (§23.1④): a stream that never issued anything and a stream that issued and settled nothing are different facts.
+    pub fn new(frontier: Option<FrontierBlock>) -> Self {
+        Self {
+            evidence: EvidenceBlock::no_batch(None, CountScope::AuthorizedView),
+            knowledge: KnowledgeBlock {
+                eligible: None,
+                processed: None,
+                waiting_key: None,
+                failed: None,
+                count_scope: CountScope::AuthorizedView,
+            },
+            projection_reason: frontier
+                .is_none()
+                .then_some(ProjectionAbsence::NoCheckpoint),
+            projection: frontier.map(ProjectionReading::Frontier),
+        }
     }
 }
 
@@ -769,6 +874,33 @@ pub fn sparse_lane_unavailable() -> (LaneStatus, Vec<DegradeCode>) {
             .degradations
             .into_vec(),
     )
+}
+
+/// ADR-0110 D-A: the final path of `memory.get`, whose projection side is the frontier. A frontier carries no ledger
+/// closure and no `visible` count, so there is nothing for §22.4's A1 / A2 / lag arms to judge, and `behind` feeds none
+/// of them (§23.1②). The class is therefore fixed rather than judged, as in [`no_serving_projection_envelope`]:
+/// `cannot_establish / count_unknown`, the one answer a direct get can give (ADR-0041 D-D: a point read establishes no
+/// universe, and `class=exact` without a census is §22.0's hard 5xx). It is the class
+/// [`FrontierPipelineBlock::new`]'s unknown evidence / knowledge counts imply. The provenance gate is the same one
+/// [`envelope_outcome_block`] applies, and the class recorded on [`PendingEnvelope::finish`] is the one `accept` saw.
+pub fn frontier_outcome_block<T>(
+    request: &RetrievalRequest,
+    provenance: &ProvenanceBlock,
+    accept: impl FnOnce(ExactOutcome) -> Result<T, humaux_domain::error::ErrorCode>,
+) -> Result<PendingEnvelope<T>, humaux_domain::error::ErrorCode> {
+    if !provenance.is_structurally_sound(request) {
+        return Err(humaux_domain::error::ErrorCode::Internal);
+    }
+    let class = CompletenessClass::CannotEstablish {
+        reason: CannotEstablishReason::CountUnknown,
+    };
+    let outcome = exact_outcome_from_class(class, &CensusResult::ok_without_enumeration())?;
+    let value = accept(outcome)?;
+    Ok(PendingEnvelope {
+        value,
+        class,
+        intent: request.intent(),
+    })
 }
 
 fn outcome_block_under<T>(
@@ -1387,11 +1519,13 @@ pub fn no_serving_projection_envelope<I, T>(
 /// §23 full envelope. Generic over the item type — this crate does not itself produce
 /// recall items (that is the Planner/compiler/rerank pipeline's job, out of this task's
 /// scope); `T` lets the eventual `application`-layer caller plug its own item type in
-/// without a second envelope type being invented downstream.
+/// without a second envelope type being invented downstream. `Pl` is the `pipeline` block:
+/// the closure [`PipelineBlock`] of recall / context / enumerate by default, and
+/// [`FrontierPipelineBlock`] on `memory.get` (ADR-0110 D-A), which every other field shares.
 #[derive(Debug, Clone, Serialize)]
-pub struct Envelope<T> {
+pub struct Envelope<T, Pl = PipelineBlock> {
     pub items: Vec<T>,
-    pub pipeline: PipelineBlock,
+    pub pipeline: Pl,
     pub completeness: CompletenessBlock,
     pub provenance: ProvenanceBlock,
     pub freshness: FreshnessBlock,
@@ -2815,7 +2949,11 @@ mod tests {
 
     // ---- ProvenanceBlock / G23-6 ----
 
-    fn provenance_request(query: &str, top_k: u32, enumerable: bool) -> RetrievalRequest {
+    pub(super) fn provenance_request(
+        query: &str,
+        top_k: u32,
+        enumerable: bool,
+    ) -> RetrievalRequest {
         use crate::predicate_registry::{PredicateRow, load_registry};
         use crate::request::{
             RetrievalIntent, build_request, resolve_registered_retrieval_profile,
@@ -2847,7 +2985,7 @@ mod tests {
         build_request(intent, &profile).expect("request")
     }
 
-    fn full_provenance() -> ProvenanceBlock {
+    pub(super) fn full_provenance() -> ProvenanceBlock {
         let request = provenance_request("fixture", 5, true);
         ProvenanceBlock {
             binary_build: "humaux-gateway 2026-08-24T09:11:03Z g1e1529f".to_string(),
@@ -3957,5 +4095,139 @@ mod totals_tests {
                 );
             }
         }
+    }
+}
+
+/// ADR-0110 D-A / G-M13-2 (type half): the frontier wire, `behind`, the `null` + `no_checkpoint` pairing, the fixed
+/// `cannot_establish / count_unknown` class, and the closure wire that recall / context / enumerate keep byte for byte.
+#[cfg(test)]
+mod frontier_tests {
+    use super::tests::{full_provenance, provenance_request};
+    use super::*;
+    use crate::completeness::ledger::{self, LedgerReads};
+    use serde_json::json;
+
+    fn block(issued: u64, prefix: u64) -> FrontierBlock {
+        FrontierBlock::new(issued, prefix, true, "2026-10-27T01:02:03.5Z".to_owned())
+    }
+
+    /// The exact bytes of a frontier: the tag first, then the five fields in declaration order, and nothing else
+    /// (no `visible`, no ratio, no count).
+    #[test]
+    fn frontier_wire_is_the_tagged_object_and_nothing_more() {
+        let wire = serde_json::to_string(&ProjectionReading::Frontier(block(4, 3))).expect("wire");
+        assert_eq!(
+            wire,
+            r#"{"mode":"frontier","issued":4,"settled_prefix":3,"behind":1,"serving":true,"observed_at":"2026-10-27T01:02:03.5Z"}"#
+        );
+    }
+
+    /// `behind = issued - settled_prefix`, and a prefix ahead of the issued mark saturates at 0 instead of wrapping.
+    /// The fault: `issued - settled_prefix` in `FrontierBlock::new` panics in debug or wraps to 2^64-1 in release.
+    #[test]
+    fn behind_is_issued_minus_prefix_and_saturates_at_zero() {
+        for (issued, prefix, behind) in [(4, 3, 1), (10, 0, 10), (7, 7, 0), (0, 0, 0), (3, 5, 0)] {
+            assert_eq!(block(issued, prefix).behind, behind, "{issued} - {prefix}");
+        }
+        assert_eq!(block(u64::MAX, 0).behind, u64::MAX);
+        assert_eq!(block(0, u64::MAX).behind, 0);
+    }
+
+    /// G-M13-2: no checkpoint row is `projection: null` with `no_checkpoint`, never a zero frontier (§23.1④); a row
+    /// is the frontier and carries no reason.
+    #[test]
+    fn no_checkpoint_is_null_with_a_reason_and_a_row_is_a_frontier_without_one() {
+        let absent = serde_json::to_value(FrontierPipelineBlock::new(None)).expect("wire");
+        assert_eq!(absent["projection"], json!(null));
+        assert_eq!(absent["projection_reason"], json!("no_checkpoint"));
+        let present =
+            serde_json::to_value(FrontierPipelineBlock::new(Some(block(4, 3)))).expect("wire");
+        assert_eq!(present["projection"]["mode"], json!("frontier"));
+        assert_eq!(present["projection"]["behind"], json!(1));
+        assert_eq!(present["projection_reason"], json!(null));
+        for wire in [&absent, &present] {
+            let keys: Vec<&str> = wire
+                .as_object()
+                .expect("object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                keys,
+                ["evidence", "knowledge", "projection", "projection_reason"]
+            );
+            assert_eq!(wire["evidence"]["persisted"], json!(null));
+            assert_eq!(wire["knowledge"]["eligible"], json!(null));
+        }
+    }
+
+    /// The closure wire recall / context / enumerate keep: `ProjectionReading::Closure` is the bare
+    /// [`ProjectionBlock`], whose bytes are pinned here. The fault: a tag or wrapper key on the closure variant.
+    #[test]
+    fn closure_wire_is_unchanged() {
+        let ledger = ledger::close(
+            LedgerReads {
+                expected: 2,
+                done: 2,
+                deleted: 0,
+                skipped: 0,
+                open_gaps: 0,
+                pending: 0,
+            },
+            ledger::ProjectionReads {
+                points_expected: 2,
+                points_settled: 2,
+                points_in_flight: 0,
+                points_unsettled: 0,
+                points_retiring: 0,
+                oldest_pending_age_secs: None,
+            },
+        );
+        let closure = build_projection_block(&ledger, Some(2), Duration::from_secs(30)).value;
+        let golden = r#"{"expected":2,"done":2,"deleted":0,"skipped":0,"visible":2,"open_gaps":0,"pending":0,"points_expected":2,"points_settled":2,"points_in_flight":0,"points_unsettled":0,"points_retiring":0,"completeness_ratio":1.0,"current":true}"#;
+        assert_eq!(serde_json::to_string(&closure).expect("wire"), golden);
+        assert_eq!(
+            serde_json::to_string(&ProjectionReading::Closure(closure)).expect("wire"),
+            golden
+        );
+    }
+
+    /// The frontier path records exactly one final metric, only at `finish`, and the class is `cannot_establish /
+    /// count_unknown` whatever `behind` says (§23.1②: it feeds neither A2 nor a LOST verdict).
+    #[test]
+    fn frontier_outcome_is_count_unknown_and_recorded_once_at_finish() {
+        use crate::completeness::take_final_record_trace;
+        let request = provenance_request("fixture", 5, true);
+        assert!(take_final_record_trace().is_empty());
+        let pending =
+            frontier_outcome_block(&request, &full_provenance(), Ok).expect("sound provenance");
+        assert!(
+            take_final_record_trace().is_empty(),
+            "counted before finish"
+        );
+        let outcome = pending.finish();
+        assert_eq!(outcome.class, CompletenessClassWire::CannotEstablish);
+        assert_eq!(
+            outcome.reason,
+            Some(CannotEstablishReasonWire::CountUnknown)
+        );
+        assert_eq!(outcome.exact, None);
+        assert_eq!(outcome.known_lower_bound, None);
+        assert_eq!(
+            take_final_record_trace(),
+            vec![("cannot_establish", "count_unknown")]
+        );
+    }
+
+    /// A provenance that is not sound for the request is a malformed envelope, as on the closure path.
+    #[test]
+    fn frontier_outcome_refuses_unsound_provenance() {
+        let request = provenance_request("fixture", 5, true);
+        let mut provenance = full_provenance();
+        provenance.binary_build = String::new();
+        assert!(matches!(
+            frontier_outcome_block(&request, &provenance, Ok),
+            Err(humaux_domain::error::ErrorCode::Internal)
+        ));
     }
 }
