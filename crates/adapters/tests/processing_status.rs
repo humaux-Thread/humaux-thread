@@ -184,8 +184,8 @@ fn summary_requires_repeatable_read_read_only() {
                 let mut txn = pool.begin().await.unwrap();
                 sqlx::query(&format!("SET TRANSACTION ISOLATION LEVEL {mode}"))
                     .execute(&mut *txn).await.unwrap();
-                assert_eq!(processing_status(&mut txn, &query, &keys).await.unwrap_err(),
-                    ErrorCode::DependencyUnavailable, "summary snapshot contract: {mode}");
+                assert_eq!(processing_status(&mut txn, &query, &keys).await.map(|rows| rows.len()),
+                    Err(ErrorCode::DependencyUnavailable), "summary snapshot contract: {mode}");
                 txn.rollback().await.unwrap();
             }
             let mut txn = pool.begin().await.unwrap();
