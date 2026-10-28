@@ -446,6 +446,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `Qdrant(*)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -1419,6 +1420,14 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `telemetry::metrics`
 - service `HTTP(loopback)`
 
+### process(humaux-billing-worker)
+
+#### `billing-worker::main`
+
+#### `billing-worker::mode`
+- env `HUMAUX_BILLING_CREEM_TEST_BASE_URL`
+- env `HUMAUX_BILLING_PROVIDER_MODE`
+
 ### process(humaux-consolidation-worker)
 
 #### `adapters::affect_repo`
@@ -1935,6 +1944,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -2666,6 +2676,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -3263,6 +3274,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `Qdrant(*)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -4336,6 +4348,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -5001,6 +5014,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
+- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -7079,6 +7093,7 @@ written by:
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
 - (no process): `adapters::tests::processing_runs_fingerprint_rerun`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
 - (no process): `adapters::tests::project_rollup`
@@ -11525,6 +11540,7 @@ written by:
 - (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::projection_lag`
 - (no process): `adapters::tests::projection_worker`
@@ -11579,6 +11595,7 @@ executed by:
 
 ### `projection.stream_log`
 read by:
+- (no process): `adapters::processing_status`
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
@@ -11668,6 +11685,7 @@ written by:
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::projection_lag`
 - (no process): `adapters::tests::projection_worker`
@@ -11741,6 +11759,7 @@ written by:
 executed by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::ledger_frontier`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `gateway::tests::memory_get_frontier`
@@ -12725,6 +12744,7 @@ executed by:
 - `adapters::tests::note_put`
 - `adapters::tests::note_text_once`
 - `adapters::tests::plan_catalog`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_rollup`
 - `adapters::tests::project_tree`
 - `adapters::tests::projection_lag`
@@ -12889,6 +12909,7 @@ executed by:
 - `adapters::tests::operation_receipts`
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::private_projection_registry`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_rollup`
@@ -13086,6 +13107,7 @@ executed by:
 - `adapters::maintenance_repo`
 - `adapters::postgres`
 - `adapters::private_projection_registry`
+- `adapters::processing_status`
 - `adapters::projection_worker`
 - `adapters::provider_budget`
 - `adapters::rebuild`
@@ -13097,6 +13119,7 @@ executed by:
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::model_call_ledger`
 - `adapters::tests::private_projection_registry`
+- `adapters::tests::processing_status`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_lag`
 - `adapters::tests::projection_worker`
@@ -13256,6 +13279,9 @@ executed by:
 - `admin::tests::probes`
 - `public-pool::tests::mechanism_observation`
 
+### `subprocess(humaux-billing-worker)`
+- `billing-worker::tests::mode_gate`
+
 ### `subprocess(humaux-consolidation-worker)`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::exit_codes`
@@ -13396,6 +13422,7 @@ modules naming it:
 - `adapters::postgres`
 - `adapters::private_inference_rpc`
 - `adapters::private_projection_registry`
+- `adapters::processing_status`
 - `adapters::project_rollup`
 - `adapters::projection_worker`
 - `adapters::provider_budget`
@@ -13460,6 +13487,7 @@ modules naming it:
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_rollup`
 - `adapters::tests::project_tree`
 - `adapters::tests::projection_claim`
@@ -13542,6 +13570,7 @@ modules naming it:
 - `adapters::plan_repo`
 - `adapters::postgres`
 - `adapters::private_projection_registry`
+- `adapters::processing_status`
 - `adapters::project_rollup`
 - `adapters::projection_worker`
 - `adapters::provider_budget`
@@ -13623,6 +13652,7 @@ modules naming it:
 - `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
 - `adapters::tests::project_rollup`
@@ -13675,6 +13705,7 @@ modules naming it:
 - `adapters::context_repo`
 - `adapters::continuity_read`
 - `adapters::exact_census`
+- `adapters::processing_status`
 - `adapters::read_gate`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
@@ -13738,6 +13769,7 @@ modules naming it:
 - `adapters::memory_governance_repo`
 - `adapters::model_call_ledger`
 - `adapters::private_inference_rpc`
+- `adapters::processing_status`
 - `adapters::provisioning`
 - `adapters::read_materialize`
 - `adapters::reasoning_route_admission`
@@ -13763,6 +13795,7 @@ modules naming it:
 - `adapters::tests::model_call_ledger`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
 - `adapters::tests::phase9_independence_attestation`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::reasoning_route_runtime`
 - `adapters::tests::support::continuity_0137_fixture`
@@ -13783,6 +13816,7 @@ modules naming it:
 - `adapters::forget_repo`
 - `adapters::memory_governance_repo`
 - `adapters::private_projection_registry`
+- `adapters::processing_status`
 - `adapters::projection_worker`
 - `adapters::provisioning`
 - `adapters::qdrant`
@@ -13810,6 +13844,7 @@ modules naming it:
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
+- `adapters::tests::processing_status`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_lag`
 - `adapters::tests::projection_worker`
@@ -13972,6 +14007,7 @@ modules naming it:
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
@@ -14005,6 +14041,7 @@ modules naming it:
 - `adapters::memory_governance_repo`
 - `adapters::oauth_repo`
 - `adapters::operation_receipt`
+- `adapters::processing_status`
 - `adapters::quota_repo`
 - `adapters::read_gate`
 - `adapters::tests::core_never_auto`
@@ -14022,6 +14059,7 @@ why: serializable onboarding receipts
 modules naming it:
 - `adapters::maintenance_repo`
 - `adapters::plan_repo`
+- `adapters::processing_status`
 - `adapters::project_rollup`
 - `adapters::provisioning`
 - `adapters::reasoning_route_onboarding`
@@ -14162,6 +14200,7 @@ modules naming it:
 - `adapters::tests::phase9_assessed_contract`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
 - `adapters::tests::phase9_independence_attestation`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
@@ -14271,6 +14310,7 @@ modules naming it:
 - `adapters::tests::phase9_independence_attestation`
 - `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_rollup`
 - `adapters::tests::project_tree`
@@ -14402,6 +14442,7 @@ modules naming it:
 - `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
@@ -14519,6 +14560,7 @@ modules naming it:
 - `adapters::tests::phase9_assessed_contract`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
 - `adapters::tests::phase9_independence_attestation`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_continuity_read_0137_acceptance`
@@ -14615,6 +14657,7 @@ modules naming it:
 - `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::projection_claim`
@@ -14708,6 +14751,7 @@ modules naming it:
 - `adapters::tests::outbox_batch_remember`
 - `adapters::tests::plan_catalog`
 - `adapters::tests::private_projection_registry`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_rollup`
 - `adapters::tests::project_tree`
@@ -14757,6 +14801,7 @@ modules naming it:
 - `application::notify`
 - `application::oauth`
 - `application::pin`
+- `application::processing_status`
 - `application::referral`
 - `application::retrieval_embedding_port`
 - `application::session`
@@ -17647,6 +17692,15 @@ default run:
 - UDS
 - subprocess
 
+### `bins/billing-worker/tests/mode_gate.rs`
+db-bound (default run): no
+
+services (computed):
+- subprocess
+
+default run:
+- subprocess
+
 ### `bins/consolidation-worker/tests/consolidation_hop_e2e.rs`
 db-bound (default run): yes
 
@@ -18968,6 +19022,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/processing_runs_fingerprint_rerun.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/processing_status.rs`
 db-bound (default run): yes
 
 services (computed):

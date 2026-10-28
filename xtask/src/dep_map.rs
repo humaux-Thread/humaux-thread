@@ -4925,6 +4925,45 @@ fn unknown_keys_gate(root: &Path) -> Result<Vec<String>, String> {
     Ok(unknown_value_keys(&examples, &values))
 }
 
+/// §71.2 / G-M04-12: every committed values/example file is checked; missing inputs fail (§57.1).
+fn billing_mode_gate(root: &Path) -> Result<(Vec<String>, Vec<String>), String> {
+    let mut files = Vec::new();
+    let mut reasons = Vec::new();
+    for dir in [VALUES_DIR, EXAMPLE_DIR] {
+        let before = files.len();
+        let mut pending = vec![root.join(dir)];
+        while let Some(path) = pending.pop() {
+            for entry in fs::read_dir(&path).map_err(|e| format!("{dir}: {e}"))? {
+                let path = entry.map_err(|e| format!("{dir}: {e}"))?.path();
+                if path.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                let name = path
+                    .strip_prefix(root)
+                    .map_err(|e| e.to_string())?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let text = fs::read_to_string(&path).map_err(|e| format!("{name}: {e}"))?;
+                let file = EnvFile::parse(&name, "", &text);
+                let key = "HUMAUX_BILLING_PROVIDER_MODE";
+                if file.entries.iter().any(|(k, v)| k == key && v == "live")
+                    || file.unreadable.iter().any(|k| k == key)
+                {
+                    reasons.push(format!("G-M04-12:{name}:{key}:fail"));
+                }
+                files.push(name);
+            }
+        }
+        if files.len() == before {
+            return Err(format!("{dir}: no files (G-M04-12 fail)"));
+        }
+    }
+    files.sort();
+    reasons.sort();
+    Ok((files, reasons))
+}
+
 /// Gate (a): every example key is declared in a values file, the secret fixture or the compose document, and the
 /// gateway `mem_limit` of that document follows `HUMAUX_SIZE_GATEWAY_MEM`. `Ok(None)` when docker is absent (the
 /// caller names the missing object, §57.1).
@@ -4977,6 +5016,10 @@ pub fn run_deploy_env(args: &[String]) -> i32 {
         Ok(found) => found,
         Err(e) => return unreadable(e),
     };
+    match billing_mode_gate(&root) {
+        Ok((_, found)) => reasons.extend(found),
+        Err(e) => return unreadable(e),
+    }
     match sizing_gate(&root) {
         Ok(Sizing::Reasons(found)) => reasons.extend(found),
         Ok(Sizing::NotApplicable(line)) => println!("{line}"),
@@ -7211,6 +7254,61 @@ mod tests {
     fn deploy_env_live_values_declare_only_keys_a_process_reads() {
         let reasons = unknown_keys_gate(&repo_root()).expect("committed env files are readable");
         assert!(reasons.is_empty(), "{reasons:#?}");
+    }
+
+    #[test]
+    fn g_m04_12_committed_modes_and_exact_scanned_files() {
+        let (files, reasons) = billing_mode_gate(&repo_root()).unwrap();
+        let mut expected = Vec::new();
+        for dir in ["example", "values"] {
+            for name in [
+                "admin",
+                "consolidation-worker",
+                "gateway",
+                "maintenance",
+                "private-worker",
+                "retrieval-worker",
+            ] {
+                expected.push(format!("deploy/env/{dir}/{name}.env"));
+            }
+        }
+        expected.sort();
+        assert_eq!(files, expected);
+        assert_eq!(
+            reasons,
+            Vec::<String>::new(),
+            "G-M04-12 forbids committed live billing"
+        );
+    }
+
+    #[test]
+    fn g_m04_12_missing_empty_and_live_inputs_fail() {
+        let fx = Fx::new("g-m04-12");
+        assert!(billing_mode_gate(&fx.root).is_err());
+        fs::create_dir_all(fx.root.join(VALUES_DIR)).unwrap();
+        fs::create_dir_all(fx.root.join(EXAMPLE_DIR)).unwrap();
+        assert!(billing_mode_gate(&fx.root).is_err());
+        fx.file(
+            "deploy/env/values/fixture",
+            "export HUMAUX_BILLING_PROVIDER_MODE='live'\n",
+        );
+        assert!(billing_mode_gate(&fx.root).is_err());
+        fx.file(
+            "deploy/env/example/nested/fixture",
+            "HUMAUX_BILLING_PROVIDER_MODE=fake\n",
+        );
+        let (files, reasons) = billing_mode_gate(&fx.root).unwrap();
+        assert_eq!(
+            files,
+            [
+                "deploy/env/example/nested/fixture",
+                "deploy/env/values/fixture"
+            ]
+        );
+        assert_eq!(
+            reasons,
+            ["G-M04-12:deploy/env/values/fixture:HUMAUX_BILLING_PROVIDER_MODE:fail"]
+        );
     }
 
     /// Every key a process reads is declared in its values file, the secret fixture or prod.yml `environment:`

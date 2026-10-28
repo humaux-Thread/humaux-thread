@@ -90,6 +90,8 @@ pub enum PrivateDataPurpose {
     RetrievalEmbedding,
     /// §83.4 registry row 3 / §19.
     RetrievalRerank,
+    /// §71.2: cloud billing provider requests, independent of retrieval credentials.
+    BillingProvider,
     /// §80.1 test-only escape hatch, gated behind the `test-support` Cargo feature (never
     /// compiled into a production binary — the feature is enabled solely via
     /// `humaux-adapters`'s self-referencing `[dev-dependencies]`). Every real variant above

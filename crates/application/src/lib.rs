@@ -27,6 +27,8 @@ pub mod login;
 pub mod notify;
 pub mod oauth;
 pub mod pin;
+/// ADR-0110 D-E: per-account processing status (§15.6).
+pub mod processing_status;
 pub mod referral;
 pub mod remember;
 pub mod retrieval_embedding_port;
