@@ -6230,6 +6230,7 @@ modules:
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::hot_path_indexes`

@@ -10584,6 +10584,7 @@ written by:
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -10849,6 +10850,7 @@ written by:
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
@@ -11582,6 +11584,7 @@ read by:
 - (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::evidence_task_runs`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
@@ -12037,6 +12040,7 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`

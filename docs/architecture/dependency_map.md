@@ -351,6 +351,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `contracts::feature_registry`
 
+#### `contracts::freshness`
+
 #### `contracts::mechanism_registry`
 - reads `public.consensus_ready`
 - service `PostgreSQL(any)`
@@ -874,6 +876,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::signals`
 
 #### `telemetry::degrade`
 
@@ -1861,6 +1865,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
+#### `contracts::freshness`
+
 #### `contracts::retrieval_config`
 
 #### `domain::affect`
@@ -1991,6 +1997,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::signals`
 
 #### `telemetry::degrade`
 
@@ -2432,6 +2440,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
+#### `contracts::freshness`
+
 #### `contracts::retrieval_config`
 
 #### `domain::affect`
@@ -2753,6 +2763,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::request`
 
 #### `retrieval::rerank`
+
+#### `retrieval::signals`
 
 #### `telemetry::admission`
 
@@ -3219,6 +3231,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
+
+#### `contracts::freshness`
 
 #### `contracts::retrieval_config`
 
@@ -3858,6 +3872,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `retrieval::request`
 
+#### `retrieval::signals`
+
 #### `telemetry::degrade`
 
 #### `telemetry::dr`
@@ -4285,6 +4301,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
+#### `contracts::freshness`
+
 #### `contracts::retrieval_config`
 
 #### `domain::affect`
@@ -4465,6 +4483,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::signals`
 
 #### `telemetry::degrade`
 
@@ -4963,6 +4983,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
+#### `contracts::freshness`
+
 #### `contracts::retrieval_config`
 
 #### `domain::affect`
@@ -5176,6 +5198,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::signals`
 
 #### `telemetry::degrade`
 
@@ -9592,6 +9616,7 @@ written by:
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -9782,6 +9807,7 @@ written by:
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
@@ -10168,6 +10194,7 @@ read by:
 - (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::evidence_task_runs`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
@@ -10509,6 +10536,7 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -12824,6 +12852,7 @@ executed by:
 - `adapters::tests::exact_census_project`
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::ledger_frontier`
@@ -12981,6 +13010,7 @@ executed by:
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
@@ -13566,6 +13596,7 @@ modules naming it:
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
@@ -13725,6 +13756,7 @@ modules naming it:
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::ledger_frontier`
@@ -13808,6 +13840,7 @@ modules naming it:
 - `adapters::exact_census`
 - `adapters::processing_status`
 - `adapters::read_gate`
+- `adapters::read_materialize`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
 - `adapters::serving_repo`
@@ -13815,6 +13848,7 @@ modules naming it:
 - `adapters::tests::exact_census_project`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_confirm`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::projection_lag`
 - `adapters::tests::recall_envelope_g23`
@@ -13937,6 +13971,7 @@ modules naming it:
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::ledger_frontier`
 - `adapters::tests::note_chunk_count_parity`
@@ -14148,6 +14183,7 @@ modules naming it:
 - `adapters::processing_status`
 - `adapters::quota_repo`
 - `adapters::read_gate`
+- `adapters::read_materialize`
 - `adapters::tests::billing_doors`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::oauth_persistence`
@@ -14167,6 +14203,7 @@ modules naming it:
 - `adapters::processing_status`
 - `adapters::project_rollup`
 - `adapters::provisioning`
+- `adapters::read_materialize`
 - `adapters::reasoning_route_onboarding`
 
 ### humaux-adapters → `sha2` (normal)
@@ -14396,6 +14433,7 @@ modules naming it:
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
@@ -14744,6 +14782,7 @@ modules naming it:
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::hot_path_indexes`
@@ -18998,6 +19037,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/forget_repo.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/freshness.rs`
 db-bound (default run): yes
 
 services (computed):
