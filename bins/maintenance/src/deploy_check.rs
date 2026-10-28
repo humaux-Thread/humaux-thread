@@ -909,6 +909,7 @@ pub fn pool_budget(
                 return Err(format!("pool_budget_replicas:{}", file.name));
             }
             max.checked_mul(retained_pools(&file.process))
+                .and_then(|max| max.checked_add(u64::from(file.process == "retrieval-worker")))
                 .and_then(|max| max.checked_mul(replicas))
                 .ok_or_else(|| format!("pool_budget_key:{}:{key}", file.name))
         });
@@ -2098,15 +2099,70 @@ mod tests {
 
     // §57.1: flags from a separate shell command cannot satisfy a deploy-check input.
     fn env_commands(command: &str) -> Vec<Vec<String>> {
-        command
-            .split([';', '&', '|'])
-            .map(|part| {
-                part.split_whitespace()
+        let mut parts = Vec::new();
+        let mut args = Vec::new();
+        let mut word = String::new();
+        let mut quote = None;
+        let mut chars = command.chars();
+        while let Some(ch) = chars.next() {
+            match (quote, ch) {
+                (Some(q), c) if q == c => quote = None,
+                (Some('\''), c) => word.push(c),
+                (_, '\\') => word.push(chars.next().expect("complete shell escape")),
+                (Some(_), c) => word.push(c),
+                (None, '\'' | '"') => quote = Some(ch),
+                (None, ';' | '&' | '|' | '\n') => {
+                    finish_word(&mut args, &mut word);
+                    parts.push(std::mem::take(&mut args));
+                }
+                (None, c) if c.is_whitespace() => finish_word(&mut args, &mut word),
+                (None, '#') if word.is_empty() => break,
+                (None, c) => word.push(c),
+            }
+        }
+        assert_eq!(quote, None, "complete shell quote");
+        finish_word(&mut args, &mut word);
+        parts.push(args);
+        parts
+            .into_iter()
+            .filter(|args| {
+                let executable = args.first().map(String::as_str);
+                let direct = executable == Some("dr")
+                    && args.get(1).map(String::as_str) == Some("deploy-check");
+                let compose = executable == Some("$C")
+                    && args.get(1).map(String::as_str) == Some("run")
+                    && args.windows(2).any(|pair| pair == ["dr", "deploy-check"]);
+                (direct || compose) && has(args, "--env")
+            })
+            .collect()
+    }
+
+    fn finish_word(args: &mut Vec<String>, word: &mut String) {
+        if !word.is_empty() {
+            args.push(std::mem::take(word));
+        }
+    }
+
+    #[test]
+    fn pool_budget_runbook_quoted_commands_are_data() {
+        let fake = "dr deploy-check --env --values-dir v --secrets-dir s --examples-dir e --compose-json - --sizing-conf c";
+        for line in [
+            format!("echo 'x; {fake} ; x'"),
+            format!("echo \"x| {fake} & x\""),
+            format!("printf '%s' '{fake}'"),
+            format!("echo dr deploy-check --env"),
+            format!("# {fake}"),
+        ] {
+            assert_eq!(env_commands(&line), Vec::<Vec<String>>::new(), "{line}");
+        }
+        assert_eq!(
+            env_commands(&format!("{fake} ; echo 'x; {fake}'")),
+            vec![
+                fake.split_whitespace()
                     .map(str::to_owned)
                     .collect::<Vec<_>>()
-            })
-            .filter(|args| has(args, "deploy-check") && has(args, "--env"))
-            .collect()
+            ]
+        );
     }
 
     #[test]
@@ -2133,6 +2189,78 @@ mod tests {
                 "{separator}"
             );
         }
+    }
+
+    // §48.1: every deployed binary, including new source files, is pinned; no missing input skips.
+    fn pool_sites(root: &Path, directory: &Path, sites: &mut BTreeMap<String, usize>) {
+        for entry in std::fs::read_dir(directory).expect("deployed binary sources") {
+            let path = entry.expect("source entry").path();
+            if path.is_dir() {
+                pool_sites(root, &path, sites);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).expect("read deployed source");
+                let count = [
+                    concat!("connect_", "pool("),
+                    concat!("DbPool::", "connect"),
+                    concat!("DbPool::", "probe_fresh("),
+                ]
+                .into_iter()
+                .map(|needle| text.matches(needle).count())
+                .sum();
+                if count != 0 {
+                    sites.insert(
+                        path.strip_prefix(root)
+                            .expect("source under bins")
+                            .to_str()
+                            .expect("UTF-8 source path")
+                            .replace('\\', "/"),
+                        count,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pool_budget_every_binary_topology() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut sites = BTreeMap::new();
+        for process in [
+            "admin",
+            "consolidation-worker",
+            "gateway",
+            "maintenance",
+            "private-worker",
+            "retrieval-worker",
+        ] {
+            pool_sites(&root, &root.join(process).join("src"), &mut sites);
+        }
+        assert_eq!(
+            sites,
+            BTreeMap::from(
+                [
+                    ("admin/src/mechanism.rs", 3),
+                    ("admin/src/probe.rs", 1),
+                    ("consolidation-worker/src/main.rs", 5),
+                    ("gateway/src/bootstrap.rs", 2),
+                    ("gateway/src/mcp_application.rs", 3),
+                    ("maintenance/src/deploy_check.rs", 8),
+                    ("maintenance/src/drill.rs", 4),
+                    ("maintenance/src/health_serve.rs", 1),
+                    ("maintenance/src/main.rs", 1),
+                    ("maintenance/src/member.rs", 1),
+                    ("maintenance/src/projection_serve.rs", 1),
+                    ("maintenance/src/rebuild_cli.rs", 1),
+                    ("maintenance/src/roles.rs", 2),
+                    ("maintenance/src/serve.rs", 4),
+                    ("private-worker/src/main.rs", 5),
+                    ("retrieval-worker/src/main.rs", 6),
+                    ("retrieval-worker/src/rpc.rs", 1),
+                ]
+                .map(|(path, count)| (path.to_owned(), count))
+            ),
+            "deployed pool topology changed"
+        );
     }
 
     #[test]
@@ -2176,7 +2304,7 @@ mod tests {
         assert_eq!(
             result,
             json!({"check": "pool_budget", "status": "pass",
-            "reasons": [], "connections": 102, "max_connections": 190})
+            "reasons": [], "connections": 104, "max_connections": 190})
         );
     }
 
@@ -2282,7 +2410,7 @@ mod tests {
             ]
         );
         let result = assert_pool_budget(&files, "pass", &[]);
-        assert_eq!(result["connections"], 82);
+        assert_eq!(result["connections"], 83);
         assert_eq!(result["max_connections"], 190);
     }
 
@@ -2299,7 +2427,7 @@ mod tests {
                     &BTreeMap::new()
                 ),
                 json!({"check": "pool_budget", "status": "pass", "reasons": [],
-                    "connections": 82, "max_connections": 190}),
+                    "connections": 83, "max_connections": 190}),
                 "{value}"
             );
         }
@@ -2348,7 +2476,7 @@ mod tests {
         let result = pool_budget(Some(&files), "sizing-a5.conf", Some(conf), &BTreeMap::new());
         assert_eq!(result["status"], "pass");
         assert_eq!(result["reasons"], json!([]));
-        assert_eq!(result["connections"], 82);
+        assert_eq!(result["connections"], 83);
         assert_eq!(result["max_connections"], 190);
     }
 
@@ -2382,16 +2510,31 @@ mod tests {
         );
         assert_eq!(
             checks[2],
-            json!({"check": "pool_budget", "status": "pass", "reasons": [], "connections": 82, "max_connections": 190})
+            json!({"check": "pool_budget", "status": "pass", "reasons": [], "connections": 83, "max_connections": 190})
+        );
+    }
+
+    #[test]
+    fn pool_budget_transient_readiness() {
+        let files = pool_budget_fixture(Some("10"));
+        assert_eq!(
+            pool_budget(
+                Some(&files),
+                "sizing",
+                Some("max_connections=82"),
+                &BTreeMap::new()
+            ),
+            json!({"check": "pool_budget", "status": "fail", "connections": 83, "max_connections": 82,
+                "reasons": ["pool_budget_exceeded:values/retrieval-worker.env:HUMAUX_RETRIEVAL_WORKER_PG_POOL_MAX_CONNECTIONS"]})
         );
     }
 
     #[test]
     fn pool_budget_boundary() {
-        let exact = assert_pool_budget(&pool_budget_fixture(Some("118")), "pass", &[]);
+        let exact = assert_pool_budget(&pool_budget_fixture(Some("117")), "pass", &[]);
         assert_eq!(exact["connections"], 190);
         let over = assert_pool_budget(
-            &pool_budget_fixture(Some("119")),
+            &pool_budget_fixture(Some("118")),
             "fail",
             &[
                 "pool_budget_exceeded:values/private-worker.env:HUMAUX_PRIVATE_WORKER_PG_POOL_MAX_CONNECTIONS",
@@ -2467,7 +2610,7 @@ mod tests {
 
     #[test]
     fn pool_budget_replicas_are_supplied_by_process() {
-        let files = pool_budget_fixture(Some("100"));
+        let files = pool_budget_fixture(Some("99"));
         let result = pool_budget(
             Some(&files),
             "sizing-a5.conf",

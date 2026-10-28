@@ -184,7 +184,7 @@ async fn readyz_handler(State(state): State<Arc<RpcState>>) -> Response {
         Ok(settings) => settings,
         Err(error) => return (StatusCode::SERVICE_UNAVAILABLE, error).into_response(),
     };
-    match RetrievalWorkerDbPool::connect_with(&state.pg_dsn, &settings).await {
+    match RetrievalWorkerDbPool::probe_fresh(&state.pg_dsn, &settings).await {
         Ok(_) => (StatusCode::OK, "ready\n").into_response(),
         Err(e) => (
             StatusCode::SERVICE_UNAVAILABLE,
