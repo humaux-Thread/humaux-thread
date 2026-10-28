@@ -15,6 +15,10 @@ use humaux_infra_egress::http::{EgressSecret, RetrievalCredentialSource};
 use serde_json::Value;
 use sha2::Sha256;
 use std::collections::BTreeMap;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// §79.4: public fixture token, not an API credential.
 pub const TEST_KEY: &str = "public-fixture-api-token";
@@ -40,10 +44,21 @@ pub async fn start(
     subscription: Value,
     transaction: Value,
 ) -> (String, tokio::task::JoinHandle<()>) {
+    start_with_failure(subscription, transaction, false).await
+}
+/// §79.4: optionally fail the first subscription read with 503.
+pub async fn start_with_failure(
+    subscription: Value,
+    transaction: Value,
+    fail_once: bool,
+) -> (String, tokio::task::JoinHandle<()>) {
     let router = Router::new()
         .route("/v1/subscriptions", get(read))
         .route("/v1/transactions", get(read))
-        .with_state([subscription, transaction]);
+        .with_state((
+            [subscription, transaction],
+            Arc::new(AtomicBool::new(fail_once)),
+        ));
     // dep: HTTP(loopback) — §79.4 isolated provider double; no external network.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -55,7 +70,7 @@ pub async fn start(
     )
 }
 async fn read(
-    State(objects): State<[Value; 2]>,
+    State((objects, failures)): State<([Value; 2], Arc<AtomicBool>)>,
     uri: axum::http::Uri,
     headers: HeaderMap,
     Query(query): Query<BTreeMap<String, String>>,
@@ -71,6 +86,9 @@ async fn read(
     if query.len() != 1 || query.get(parameter).map(String::as_str) != objects[index]["id"].as_str()
     {
         return Err(StatusCode::NOT_FOUND);
+    }
+    if index == 0 && failures.swap(false, Ordering::SeqCst) {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
     Ok(Json(objects[index].clone()))
 }

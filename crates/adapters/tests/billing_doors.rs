@@ -97,6 +97,7 @@ fn subscription() -> ProviderSubscription {
     ProviderSubscription {
         reference: ExternalSubscriptionRef("sub_fixture".into()),
         customer: ExternalCustomerRef("cust_fixture".into()),
+        product: "prod_fixture".into(),
         status: ObservedStatus::Active,
         current_period_start: now - Duration::days(1),
         current_period_end: now + Duration::days(30),

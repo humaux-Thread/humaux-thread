@@ -69,6 +69,8 @@ pub struct ProviderSubscription {
     pub reference: ExternalSubscriptionRef,
     /// The provider's identifier of its customer.
     pub customer: ExternalCustomerRef,
+    /// §71.3: the fetched provider product pins the plan; webhook product state may be stale.
+    pub product: String,
     /// The provider-neutral status, the input of `domain::billing::project_state`.
     pub status: ObservedStatus,
     /// The start of the current paid period.

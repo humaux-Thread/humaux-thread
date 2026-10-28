@@ -1,7 +1,7 @@
 //! `billing-worker::tests::process` — real PG + fake Creem processor gates (§71.3).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-egress, humaux-testkit, postgres, serde_json, tokio, uuid];
 //!   services=[HTTP(loopback), PostgreSQL(owner) r=[control.subscriptions, control.subscription_events, control.entitlement_grants, control.entitlement_snapshots, control.billing_inbox] w=[control.tenants, control.plans, control.plan_versions, control.billing_inbox], PostgreSQL(role_maintenance)]; env=[];
-//!   modules=[adapters::postgres, adapters::tests::support::throwaway_db, billing-worker::creem, billing-worker::process, billing-worker::fake_creem, billing-worker::mode, domain::egress, domain::ids, infra-egress::http, humaux-testkit]
+//!   modules=[adapters::postgres, adapters::tests::support::throwaway_db, billing-worker::creem, billing-worker::process, billing-worker::fake_creem, billing-worker::mode, domain::egress, domain::error, domain::ids, infra-egress::http, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [real maintenance identity; complete snapshot and effect counts; no mock PostgreSQL]
 //! Spec: Baseline §71.3; §76; §79.2
@@ -15,7 +15,7 @@ use humaux_billing_worker::{
     mode::BillingMode,
     process::{ProcessorConfig, process_one},
 };
-use humaux_domain::{egress::ProcessorId, ids::TenantId};
+use humaux_domain::{egress::ProcessorId, error::ErrorCode, ids::TenantId};
 use humaux_infra_egress::http::HttpEgressConfig;
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use postgres::{Client, NoTls};
@@ -87,18 +87,90 @@ fn deliver(h: &mut Handle, id: &str, arrival: &str, tenant: Uuid) {
     assert_eq!(stored, 1);
 }
 fn process(h: &Handle, current: &str) -> bool {
+    process_with(h, current, "prod_fixture", false).unwrap()
+}
+fn process_with(
+    h: &Handle,
+    current: &str,
+    product: &str,
+    fail_once: bool,
+) -> Result<bool, ErrorCode> {
     h.rt.block_on(async {
-        let subscription = json!({"id":"sub_fixture","customer":"cust_fixture","status":current,"current_period_start_date":"2020-01-01T00:00:00Z","current_period_end_date":"2099-01-01T00:00:00Z"});
+        let subscription = json!({"id":"sub_fixture","customer":"cust_fixture","product":{"id":product},"status":current,"current_period_start_date":"2020-01-01T00:00:00Z","current_period_end_date":"2099-01-01T00:00:00Z"});
         // dep: HTTP(loopback) — merged Creem-shaped server; no external call (§79.4).
-        let (base, server) = fake_creem::start(subscription, json!({})).await;
+        let (base, server) = if fail_once {
+            fake_creem::start_with_failure(subscription, json!({}), true).await
+        } else {
+            fake_creem::start(subscription, json!({})).await
+        };
         let secret = Box::leak(Uuid::new_v4().to_string().into_boxed_str());
         let provider = CreemClient::new(&base, &BillingMode::parse(Some("fake"), None).unwrap(), TenantId(h.tenant), ProcessorId(Uuid::new_v4()), HttpEgressConfig::default(), Arc::new(fake_creem::FixtureCredential(fake_creem::TEST_KEY)), Arc::new(fake_creem::FixtureCredential(secret))).unwrap();
         // §71.3: the signature contract remains the merged ingress boundary, not JSON reserialization.
         assert_eq!(fake_creem::sign(b"{}", secret.as_bytes()).len(), 64);
-        let result = process_one(&h.pool, &provider, &h.config).await.unwrap();
+        let result = process_one(&h.pool, &provider, &h.config).await;
         server.abort();
         result
     })
+}
+/// §71.3: an unordered body cannot replace the fetched product's pinned plan.
+#[test]
+fn fetched_product_wins_over_body() {
+    run_db_fixture::<Fixture, _>("fetched_product_wins_over_body", |mut h| {
+        let tenant = h.tenant;
+        h.config
+            .plans
+            .insert("prod_fetched".into(), h.config.free_plan_version);
+        deliver(&mut h, "stale_product", "active", tenant);
+        assert_eq!(process_with(&h, "active", "prod_fetched", false), Ok(true));
+        let rows = h
+            .admin
+            .query("SELECT plan_version_id FROM control.subscriptions", &[])
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get::<_, Uuid>(0), h.config.plans["prod_fetched"]);
+        assert_eq!(snapshot(&mut h), free());
+    });
+}
+/// §71.3: a provider outage cannot consume an acknowledged webhook; invalid answers are terminal.
+#[test]
+fn transient_fetch_retries_received() {
+    run_db_fixture::<Fixture, _>("transient_fetch_retries_received", |mut h| {
+        let tenant = h.tenant;
+        deliver(&mut h, "retry_fetch", "active", tenant);
+        let before = effects(&mut h);
+        let result = process_with(&h, "active", "prod_fixture", true);
+        let row = h
+            .admin
+            .query_one(
+                "SELECT status,error_class FROM control.billing_inbox WHERE event_id='retry_fetch'",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            (row.get::<_, String>(0), row.get::<_, Option<String>>(1)),
+            ("RECEIVED".into(), None)
+        );
+        assert_eq!(result, Err(ErrorCode::DependencyUnavailable));
+        assert_eq!(effects(&mut h), before);
+        assert!(process(&h, "active"));
+        assert_eq!(snapshot(&mut h), paid());
+        deliver(&mut h, "invalid_fetch", "active", tenant);
+        assert!(process(&h, "invalid-status"));
+        let actual: Value = h.admin.query_one("SELECT jsonb_agg(jsonb_build_array(event_id,status,error_class) ORDER BY event_id) FROM control.billing_inbox", &[]).unwrap().get(0);
+        assert_eq!(
+            actual,
+            json!([
+                ["invalid_fetch", "FAILED", "INVALID_INPUT"],
+                ["retry_fetch", "PROCESSED", null]
+            ])
+        );
+        let count: i64 = h
+            .admin
+            .query_one("SELECT count(*) FROM control.subscription_events", &[])
+            .unwrap()
+            .get(0);
+        assert_eq!(count, 1);
+    });
 }
 fn snapshot(h: &mut Handle) -> Value {
     h.admin

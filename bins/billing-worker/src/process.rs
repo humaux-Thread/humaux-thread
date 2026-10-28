@@ -26,7 +26,7 @@ pub struct ProcessorConfig {
     pub free_plan_version: Uuid,
 }
 
-/// §71.3: returns false only for an empty inbox; failures are durably settled with their closed error code.
+/// §71.3: returns false only for an empty inbox; unavailable dependencies roll back for the next poll.
 pub async fn process_one(
     pool: &MaintenanceDbPool,
     provider: &dyn BillingProvider,
@@ -48,6 +48,7 @@ pub async fn process_one(
                 .map_err(|_| ErrorCode::DependencyUnavailable)?;
             None
         }
+        Err(ErrorCode::DependencyUnavailable) => return Err(ErrorCode::DependencyUnavailable),
         Err(error) => {
             effect
                 .rollback()
@@ -90,7 +91,8 @@ async fn apply(
     {
         return Err(ErrorCode::InvalidInput);
     }
-    // §71.3: refunds/disputes and their payment rows are M04-11b; never consume them prematurely.
+    // §71.3: refunds/disputes settle FAILED/INVALID_INPUT today. M04-11b must handle these and
+    // one-time-pack events before any test-mode run (M04-16); the worker is not deployed before then.
     if matches!(
         event.event_type.as_str(),
         "refund.created" | "dispute.created"
@@ -108,11 +110,6 @@ async fn apply(
         .map(TenantId)
         .ok_or(ErrorCode::NotFound)?;
     repo::scope_tenant(txn, tenant).await?;
-    let product = object["product"]
-        .as_str()
-        .or_else(|| object["product"]["id"].as_str())
-        .ok_or(ErrorCode::InvalidInput)?;
-    let plan = config.plans.get(product).ok_or(ErrorCode::NotFound)?;
     let subscription = if event.event_type == "checkout.completed" {
         &object["subscription"]
     } else {
@@ -130,6 +127,10 @@ async fn apply(
     if fetched.reference.0 != reference {
         return Err(ErrorCode::InvalidInput);
     }
+    let plan = config
+        .plans
+        .get(&fetched.product)
+        .ok_or(ErrorCode::NotFound)?;
     // D13h supersedes the domain's historical grace clock; the door revokes PAST_DUE immediately.
     let state = if matches!(
         fetched.status,
