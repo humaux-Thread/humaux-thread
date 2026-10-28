@@ -181,6 +181,7 @@ fn summary_requires_repeatable_read_read_only() {
             let pool = sqlx::Pool::<sqlx::Postgres>::connect(&format!(
                 "{dsn}{sep}options=-c%20role%3Drole_gateway")).await.unwrap();
             for mode in ["READ COMMITTED READ WRITE", "READ COMMITTED READ ONLY", "REPEATABLE READ READ WRITE"] {
+                // dep: PostgreSQL(role_gateway) — reject weaker snapshot modes (§15.3)
                 let mut txn = pool.begin().await.unwrap();
                 sqlx::query(&format!("SET TRANSACTION ISOLATION LEVEL {mode}"))
                     .execute(&mut *txn).await.unwrap();
@@ -188,6 +189,7 @@ fn summary_requires_repeatable_read_read_only() {
                     Err(ErrorCode::DependencyUnavailable), "summary snapshot contract: {mode}");
                 txn.rollback().await.unwrap();
             }
+            // dep: PostgreSQL(role_gateway) — stable summary snapshot (§15.3)
             let mut txn = pool.begin().await.unwrap();
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 .execute(&mut *txn).await.unwrap();
@@ -200,6 +202,7 @@ fn summary_requires_repeatable_read_read_only() {
             assert_eq!(to_value(processing_status(&mut txn, &query, &keys).await.unwrap()).unwrap(), before,
                 "concurrent commit must not change the summary snapshot");
             txn.commit().await.unwrap();
+            // dep: PostgreSQL(role_gateway) — fresh-snapshot positive control (§79.2)
             let mut next = pool.begin().await.unwrap();
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 .execute(&mut *next).await.unwrap();
