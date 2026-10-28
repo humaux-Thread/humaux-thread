@@ -329,6 +329,7 @@ processes:
 - process(cargo-xtask)
 
 modules:
+- `adapters::tests::processing_status`
 - `gateway::tests::oauth_flow`
 - `xtask::contract_impact`
 
@@ -6162,6 +6163,7 @@ modules:
 - `adapters::tests::phase9_independence_attestation`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_rollup`
