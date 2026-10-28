@@ -2,7 +2,8 @@
 //! Depends-on: crates=[async-trait, humaux-contracts, humaux-domain, humaux-infra-network, tokio, uuid, zeroize];
 //!   services=[HTTP(loopback), HTTP(provider)];
 //!   env=[HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET,
-//!   HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE]; modules=[contracts::config_registry,
+//!   HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE,
+//!   HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL]; modules=[contracts::config_registry,
 //!   domain::egress, domain::error, humaux-infra-network, infra-egress::resolver, infra-network::http]
 //! Called-by: [infra-egress::raw, retrieval-provider::adapters]
 //! Invariants: [the only holder of a reqwest client for external destinations (built via infra-network, never
@@ -36,11 +37,9 @@
 //! never prints the value, its buffer zeroizes on drop, and (§73.5) why the header value built
 //! from it is zeroized and marked sensitive too, not only the wrapper.
 //!
-//! §19 DOD-028 "任何 User BYOK MUST NOT 被 Retrieval Provider Plane 自动借用": [`call`](
-//! HttpExternalCall::call) refuses to resolve a credential at all unless `permit.purpose()` is
-//! [`PrivateDataPurpose::RetrievalEmbedding`] or [`PrivateDataPurpose::RetrievalRerank`] — the
-//! platform retrieval credential this module injects can never be attached to a permit minted
-//! for any other purpose, structurally, not by caller discipline.
+//! §19 DOD-028: retrieval instances accept only embedding/rerank permits (POST + Bearer).
+//! §71.2: billing instances require explicit GET/POST, auth header and host allowlist;
+//! credentials cannot cross between these instance purposes.
 //!
 //! [`EnvCredentialSource`] is this module's only [`RetrievalCredentialSource`] impl today, and
 //! is a **dev/OSS-default implementation, not the production credential path** — see its own
@@ -276,6 +275,7 @@ pub struct HttpExternalCall {
     /// pointer, not `Arc<dyn Fn>`: every real classifier (`map_dashscope_status` included) is
     /// a pure function with no state to capture.
     status_classifier: fn(u16) -> ErrorCode,
+    billing: Option<(reqwest::Method, reqwest::header::HeaderName, Vec<String>)>,
 }
 
 impl HttpExternalCall {
@@ -335,7 +335,51 @@ impl HttpExternalCall {
             config,
             credential_source,
             status_classifier,
+            billing: None,
         })
+    }
+
+    /// §71.2: billing credentials require a separate instance and an explicit host allowlist.
+    pub fn with_billing(
+        mut self,
+        method: reqwest::Method,
+        header: reqwest::header::HeaderName,
+        hosts: Vec<String>,
+    ) -> Result<Self, ErrorCode> {
+        if !matches!(method, reqwest::Method::GET | reqwest::Method::POST) || hosts.is_empty() {
+            return Err(ErrorCode::Forbidden);
+        }
+        self.billing = Some((method, header, hosts));
+        Ok(self)
+    }
+
+    fn request_parts(
+        &self,
+        purpose: PrivateDataPurpose,
+    ) -> Result<(reqwest::Method, reqwest::header::HeaderName, bool), ErrorCode> {
+        if purpose == PrivateDataPurpose::BillingProvider {
+            let (method, header, hosts) = self.billing.as_ref().ok_or(ErrorCode::Forbidden)?;
+            let url = reqwest::Url::parse(&self.endpoint).map_err(|_| ErrorCode::Forbidden)?;
+            let host = url.host_str().ok_or(ErrorCode::Forbidden)?;
+            // §71.2: destination authorization precedes credential lookup and request construction.
+            if host.trim_end_matches('.') == "api.creem.io"
+                || !hosts.iter().any(|h| h == host)
+                || !url.username().is_empty()
+                || url.password().is_some()
+            {
+                return Err(ErrorCode::Forbidden);
+            }
+            return Ok((method.clone(), header.clone(), true));
+        }
+        if self.billing.is_some()
+            || !matches!(
+                purpose,
+                PrivateDataPurpose::RetrievalEmbedding | PrivateDataPurpose::RetrievalRerank
+            )
+        {
+            return Err(ErrorCode::Forbidden);
+        }
+        Ok((reqwest::Method::POST, reqwest::header::AUTHORIZATION, false))
     }
 }
 
@@ -346,18 +390,7 @@ impl ExternalCall for HttpExternalCall {
         permit: &EgressPermit,
         payload: &AuthorizedEgressPayload,
     ) -> Result<Vec<u8>, ErrorCode> {
-        // §19 "任何 User BYOK MUST NOT 被 Retrieval Provider Plane 自动借用" / DOD-028: this
-        // transport's `credential_source` is always the *platform* retrieval credential (module
-        // doc "Credential injection") — binding it to only the two retrieval purposes is what
-        // makes that a structural fact rather than a caller discipline. A `UserReasoning`
-        // permit (or any future non-retrieval purpose) must never reach the credential lookup
-        // below at all.
-        if !matches!(
-            permit.purpose(),
-            PrivateDataPurpose::RetrievalEmbedding | PrivateDataPurpose::RetrievalRerank
-        ) {
-            return Err(ErrorCode::Forbidden);
-        }
+        let (method, auth_header, billing) = self.request_parts(permit.purpose())?;
         // §7.4: the ledger's `processor_id` must be the real recipient — a permit minted for
         // processor A must not be honorable by an instance wired to processor B's endpoint.
         if permit.processor() != self.processor {
@@ -387,16 +420,20 @@ impl ExternalCall for HttpExternalCall {
         // `reqwest` builder error that the old blanket `ProviderTransient` mapping made look
         // like a retryable network fault. `set_sensitive(true)` keeps it out of HTTP/2 HPACK
         // indexing and out of any future `Debug` of the request.
-        let bearer = zeroize::Zeroizing::new(format!("Bearer {}", credential.expose()));
+        let bearer = zeroize::Zeroizing::new(if billing {
+            credential.expose().to_owned()
+        } else {
+            format!("Bearer {}", credential.expose())
+        });
         let mut auth_value =
             reqwest::header::HeaderValue::from_str(&bearer).map_err(|_| ErrorCode::Internal)?;
         auth_value.set_sensitive(true);
 
         let mut response = self
             .client
-            .post(&self.endpoint)
+            .request(method, &self.endpoint)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .header(reqwest::header::AUTHORIZATION, auth_value)
+            .header(auth_header, auth_value)
             .body(payload.bytes().to_vec())
             // dep: HTTP(provider) — outbound http call
             .send()
@@ -481,6 +518,127 @@ mod tests {
             test_status_classifier,
         )
         .expect("client builds")
+    }
+
+    fn billing_at(
+        addr: std::net::SocketAddr,
+        processor: ProcessorId,
+        method: reqwest::Method,
+        hosts: Vec<String>,
+        source: Arc<dyn RetrievalCredentialSource>,
+    ) -> HttpExternalCall {
+        let mut call = call_at(addr, processor)
+            .with_billing(
+                method,
+                reqwest::header::HeaderName::from_static("x-api-key"),
+                hosts,
+            )
+            .unwrap();
+        call.credential_source = source;
+        call
+    }
+
+    fn billing_permit(processor: ProcessorId, payload: &AuthorizedEgressPayload) -> EgressPermit {
+        authorize(
+            TenantId::new(),
+            processor,
+            PrivateDataPurpose::BillingProvider,
+            DataClass::Private,
+            payload,
+            StdDuration::from_secs(60),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn billing_non_allowlisted_host_is_refused_before_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let processor = ProcessorId(Uuid::now_v7());
+        let payload = AuthorizedEgressPayload::new(b"x".to_vec());
+        let call = billing_at(
+            listener.local_addr().unwrap(),
+            processor,
+            reqwest::Method::GET,
+            vec!["localhost".into()],
+            Arc::new(FixedCredential),
+        );
+        // dep: HTTP(loopback) — §71.2 destination rejection must precede dialing
+        let result = call
+            .call(&billing_permit(processor, &payload), &payload)
+            .await;
+        let accepted = usize::from(
+            tokio::time::timeout(StdDuration::from_millis(200), listener.accept())
+                .await
+                .is_ok(),
+        );
+        assert_eq!(
+            accepted, 0,
+            "non-allowlisted host must accept zero connections"
+        );
+        assert_eq!(result, Err(ErrorCode::Forbidden));
+    }
+
+    #[tokio::test]
+    async fn billing_get_post_auth_and_redirect_refusal() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let var = "HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL";
+        // §79: unique test-only env name, never read by another test; fixture is not a credential.
+        unsafe {
+            std::env::set_var(var, "fixture-not-a-credential");
+        }
+        for method in [reqwest::Method::GET, reqwest::Method::POST] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let location = format!("http://{}/", target.local_addr().unwrap());
+            let processor = ProcessorId(Uuid::now_v7());
+            let payload = AuthorizedEgressPayload::new(b"x".to_vec());
+            let call = billing_at(
+                listener.local_addr().unwrap(),
+                processor,
+                method.clone(),
+                vec!["127.0.0.1".into()],
+                Arc::new(EnvCredentialSource::new(var)),
+            );
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                while !bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let mut buf = [0; 1024];
+                    let n = socket.read(&mut buf).await.unwrap();
+                    assert_ne!(n, 0);
+                    bytes.extend_from_slice(&buf[..n]);
+                }
+                socket.write_all(format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                String::from_utf8(bytes).unwrap()
+            });
+            // dep: HTTP(loopback) — §71.2 billing must never follow the provider redirect
+            let result = call
+                .call(&billing_permit(processor, &payload), &payload)
+                .await;
+            assert_eq!(result, Err(ErrorCode::ProviderPermanent));
+            let request = tokio::time::timeout(StdDuration::from_secs(2), server)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                request.lines().next(),
+                Some(format!("{method} /x HTTP/1.1").as_str())
+            );
+            let auth: Vec<_> = request
+                .lines()
+                .filter(|l| l.starts_with("x-api-key:") || l.starts_with("authorization:"))
+                .collect();
+            assert_eq!(auth, ["x-api-key: fixture-not-a-credential"]);
+            let accepted = usize::from(
+                tokio::time::timeout(StdDuration::from_millis(200), target.accept())
+                    .await
+                    .is_ok(),
+            );
+            assert_eq!(accepted, 0, "billing redirects must never be followed");
+        }
+        unsafe {
+            std::env::remove_var(var);
+        }
     }
 
     /// §7.3 acceptance test, now actually observing the network rather than inferring it from

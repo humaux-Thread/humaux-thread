@@ -1,0 +1,16 @@
+[package]
+name = "humaux-billing-worker"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[package.metadata.humaux]
+edition = "cloud"
+
+[lints]
+workspace = true
+
+[dependencies]
+# why: shared URL parser; used-by: [billing-worker::mode]
+humaux-infra-network = { path = "../../crates/infra-network" }
