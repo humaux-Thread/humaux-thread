@@ -6004,6 +6004,7 @@ modules:
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_sources`
 - `adapters::tests::evidence_task_runs`
+- `adapters::tests::exact_census_project`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
 - `adapters::tests::forget_confirm`
@@ -6079,6 +6080,7 @@ modules:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::ops_listener`
 - `gateway::tests::service_credentials`
 - `gateway::tests::singleton`
@@ -6135,6 +6137,7 @@ modules:
 - `adapters::tests::visible_index_count`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::ops_listener`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::semantic_recall_wiring`
