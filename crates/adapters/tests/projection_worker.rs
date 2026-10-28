@@ -2989,7 +2989,7 @@ fn archive_uses_set_payload() {
         let first = handle.rt.block_on(run_once(&deps, 10)).expect("first pass");
         assert_eq!(
             (first.done, first.failed, first.projection_highwater),
-            (1, 0, seq)
+            (1, 0, u64::try_from(seq).expect("positive ticket seq"))
         );
         let point = point_id_for_memory(&mut handle, memory);
         let before = point_with_vector(&handle, point);
