@@ -1,6 +1,6 @@
 //! `private-worker::main` — `humaux-private-worker` process entry (§4.2 minimal process set; §4.4 admin probe
 //!   contract; §11/§11.1 T4.4+T4.5; §11.8 ADR-0015 inference RPC).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-telemetry, tokio, uuid]; services=[HTTP(loopback), PostgreSQL(role_private_worker)]; env=[CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_PRIVATE_WORKER_ALLOW_SAME_UID, HUMAUX_PRIVATE_WORKER_CONSOLIDATION_UID, HUMAUX_PRIVATE_WORKER_CREDENTIALS, HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_MAX_CALLS, HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_HARD_DEADLINE_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_IN_FLIGHT, HUMAUX_PRIVATE_WORKER_DISTILL_LEASE_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_MAX_ATTEMPTS, HUMAUX_PRIVATE_WORKER_DISTILL_NOT_READY_PARK_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_POLL_INTERVAL_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_SERVE_METRICS_ADDR, HUMAUX_PRIVATE_WORKER_DNS_PINS, HUMAUX_PRIVATE_WORKER_EGRESS_RECIPIENTS, HUMAUX_PRIVATE_WORKER_HEALTH_RENEW_SECS, HUMAUX_PRIVATE_WORKER_HTTP_TIMEOUT_SECS, HUMAUX_PRIVATE_WORKER_PERMIT_TTL_SECS, HUMAUX_PRIVATE_WORKER_REGIONS, HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH, HUMAUX_PRIVATE_WORKER_SERVE_RPC_METRICS_ADDR, refused:HUMAUX_PRIVATE_WORKER_{CAPABILITIES, CHAT_URL, EGRESS_PROCESSOR_ID, KEY_ENV, MODEL_ID, MODEL_REVISION, PROVIDER_ID, REGION}]; modules=[adapters::byok::ssrf, private-worker::dsn, adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_repo, adapters::jobs, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, domain::authority, humaux-telemetry, infra-cell::uds, private-worker::distill, private-worker::inference_rpc, private-worker::route_providers, telemetry::metrics]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-telemetry, tokio, uuid]; services=[HTTP(loopback), PostgreSQL(role_private_worker)]; env=[HUMAUX_PRIVATE_WORKER_PG_POOL_MAX_CONNECTIONS, CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_PRIVATE_WORKER_ALLOW_SAME_UID, HUMAUX_PRIVATE_WORKER_CONSOLIDATION_UID, HUMAUX_PRIVATE_WORKER_CREDENTIALS, HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_MAX_CALLS, HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_HARD_DEADLINE_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_IN_FLIGHT, HUMAUX_PRIVATE_WORKER_DISTILL_LEASE_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_MAX_ATTEMPTS, HUMAUX_PRIVATE_WORKER_DISTILL_NOT_READY_PARK_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_POLL_INTERVAL_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_SERVE_METRICS_ADDR, HUMAUX_PRIVATE_WORKER_DNS_PINS, HUMAUX_PRIVATE_WORKER_EGRESS_RECIPIENTS, HUMAUX_PRIVATE_WORKER_HEALTH_RENEW_SECS, HUMAUX_PRIVATE_WORKER_HTTP_TIMEOUT_SECS, HUMAUX_PRIVATE_WORKER_PERMIT_TTL_SECS, HUMAUX_PRIVATE_WORKER_REGIONS, HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH, HUMAUX_PRIVATE_WORKER_SERVE_RPC_METRICS_ADDR, refused:HUMAUX_PRIVATE_WORKER_{CAPABILITIES, CHAT_URL, EGRESS_PROCESSOR_ID, KEY_ENV, MODEL_ID, MODEL_REVISION, PROVIDER_ID, REGION}]; modules=[adapters::byok::ssrf, private-worker::dsn, adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_repo, adapters::jobs, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, domain::authority, humaux-telemetry, infra-cell::uds, private-worker::distill, private-worker::inference_rpc, private-worker::route_providers, telemetry::metrics]
 //! Called-by: [process(humaux-private-worker)]
 //! Invariants: [the only process holding both role_private_worker DB write and BYOK decrypt capability (§11.1); a
 //!   missing/invalid env value or unreachable DSN exits non-zero before serving; no provider, model, endpoint,
@@ -8,7 +8,7 @@
 //!   (ADR-0060 D-B/D-C), and a removed process-level key that is set refuses boot (E7); one `RouteProviders`;
 //!   each resident mode reads only its own *_METRICS_ADDR key (required, loopback) and the one-shot modes open no
 //!   listener; --metrics-families reads no configuration]
-//! Spec: Baseline §11.1; §11.8; §78.1; ADR-0037; ADR-0036; ADR-0016; ADR-0058; ADR-0059; ADR-0060 D-B; ADR-0060 D-C;
+//! Spec: Baseline §11.1; §11.8; §78.1; ADR-0037; ADR-0036; ADR-0016; ADR-0058; ADR-0059; ADR-0060 D-B; ADR-0060 D-C;; §48.1; §78.1; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G; ADR-0100
 //!   ADR-0060 D-J; ADR-0060 E3; ADR-0061 D-B; ADR-0061 D-C; ADR-0061 E10; §41.2; §42; ADR-0066 D-D; ADR-0066 D-N; ADR-0066 D-O
 //!
 //! §11.1: "仅 humaux-private-worker 在最贴近 adapter 处解密" — this is the one process in the
@@ -145,6 +145,21 @@ fn pg_dsn() -> Result<String, String> {
     Ok(dsn)
 }
 
+// §48.1 / ADR-0065 D-A/D-B: all process entry points share one validated ceiling.
+async fn connect_pool(dsn: &str) -> Result<PrivateWorkerDbPool, String> {
+    let raw = std::env::var("HUMAUX_PRIVATE_WORKER_PG_POOL_MAX_CONNECTIONS");
+    let raw = match raw {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => return Err("invalid HUMAUX_PRIVATE_WORKER_PG_POOL_MAX_CONNECTIONS".to_owned()),
+    };
+    let settings = humaux_adapters::postgres::load_pool_settings(raw.as_deref())?;
+    // dep: PostgreSQL(role_private_worker) — sized process pool; role identity checked before use
+    PrivateWorkerDbPool::connect_with(dsn, &settings)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let args = env::args().skip(1).collect::<Vec<_>>();
@@ -207,7 +222,7 @@ async fn probe_connection() -> ExitCode {
         }
     };
     // dep: PostgreSQL(role_private_worker) — role-scoped pool call
-    match PrivateWorkerDbPool::connect(&dsn).await {
+    match connect_pool(&dsn).await {
         Ok(_pool) => {
             println!("{BIN}: connected as role_private_worker");
             ExitCode::SUCCESS
@@ -235,7 +250,7 @@ async fn probe_connection() -> ExitCode {
 async fn readyz() -> Result<(), String> {
     let dsn = pg_dsn()?;
     // dep: PostgreSQL(role_private_worker) — role-scoped pool call
-    PrivateWorkerDbPool::connect(&dsn)
+    connect_pool(&dsn)
         .await
         .map_err(|e| format!("PostgreSQL as role_private_worker ({e})"))?;
     println!("humaux-private-worker: ready db=role_private_worker");
@@ -381,7 +396,7 @@ async fn bootstrap() -> Result<Bootstrap, ModeFailure> {
         .map_err(|code| format!("invalid configuration: {code:?}"))?;
 
     // dep: PostgreSQL(role_private_worker) — role-scoped pool call
-    let pool = PrivateWorkerDbPool::connect(&dsn).await.map_err(|e| {
+    let pool = connect_pool(&dsn).await.map_err(|e| {
         ModeFailure::runtime(format!(
             "private worker database role connection failed: {e}"
         ))

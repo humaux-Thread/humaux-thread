@@ -12,8 +12,8 @@
 //!   check, a mode flag without its value, or no check selected is a usage error (exit 2) naming the flag — the
 //!   release gate is fail-closed and its receipt has no `not_applicable` state (review fix 9, F8 / OP-7);
 //!   the pure pool-budget function sums supplied process pools and replicas plus reserves inside the supplied
-//!   connection ceiling, without reading deploy files or changing release checks (§48.1 / §78.1)]
-//! Spec: Baseline §4.2; §4.4; §48.1; §57.1; §67.2; §78.1; ADR-0065 D-A/D-B;
+//!   connection ceiling, without reading deploy files; --env supplies committed deployment inputs (§48.1 / §78.1)]
+//! Spec: Baseline §4.2; §4.4; §48.1; §57.1; §67.2; §78.1; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G;
 //!   ADR-0066 D-C, D-G, D-H, D-J, D-K, D-R; ADR-0100; ADR-0125
 //! dep-map: allow env-undeclared — the HUMAUX_* names here are checked in values files, compose documents and container
 //!   env; this module reads none of them from its own environment
@@ -865,7 +865,15 @@ pub fn pool_budget(
         .lines()
         .filter_map(|line| line.split('#').next()?.split_once('='))
         .filter(|(key, _)| key.trim() == "max_connections")
-        .map(|(_, value)| value.trim().trim_matches('\'').parse::<u64>())
+        .map(|(_, value)| {
+            let value = value.trim();
+            let number = value
+                .strip_prefix('\'')
+                .and_then(|v| v.strip_suffix('\''))
+                .or_else(|| value.strip_prefix('"').and_then(|v| v.strip_suffix('"')))
+                .unwrap_or(value);
+            number.parse::<u64>()
+        })
         .collect();
     if limits.is_empty() {
         return missing(&format!("{sizing_name}:max_connections"));
@@ -1857,9 +1865,10 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 }
 
 /// Every flag that takes a value: present without one is a usage error naming it.
-const VALUE_FLAGS: [&str; 10] = [
+const VALUE_FLAGS: [&str; 11] = [
     "--compose-json",
     "--values-dir",
+    "--sizing-conf",
     "--secrets-dir",
     "--examples-dir",
     "--release",
@@ -1904,16 +1913,35 @@ fn read_compose(source: &str) -> Result<Value, String> {
 /// What a run decided: the checks, or a usage/refusal (exit 2) or an infrastructure failure (exit 1).
 type Outcome = Result<Vec<Value>, (u8, String)>;
 
+// §57.1 / ADR-0066 D-R: full --env inputs; --placement-only needs just the first two.
+const ENV_REQUIRED_FLAGS: [&str; 5] = [
+    "--values-dir",
+    "--secrets-dir",
+    "--examples-dir",
+    "--compose-json",
+    "--sizing-conf",
+];
+
 fn env_checks(
     args: &[String],
     doc: Option<&Value>,
     checks: &mut Vec<Value>,
 ) -> Result<(), (u8, String)> {
     let usage = |m: &str| (2u8, m.to_owned());
+    let [
+        values_flag,
+        secrets_flag,
+        examples_flag,
+        compose_flag,
+        sizing_flag,
+    ] = ENV_REQUIRED_FLAGS;
     let values_dir =
-        flag(args, "--values-dir").ok_or_else(|| usage("--env needs --values-dir DIR"))?;
-    let secrets_dir =
-        flag(args, "--secrets-dir").ok_or_else(|| usage("--env needs --secrets-dir DIR"))?;
+        flag(args, values_flag).ok_or_else(|| usage(&format!("--env needs {values_flag} DIR")))?;
+    let secrets_dir = flag(args, secrets_flag)
+        .ok_or_else(|| usage(&format!("--env needs {secrets_flag} DIR")))?;
+    if !Path::new(&values_dir).is_dir() {
+        return Err(usage(&format!("missing values dir: {values_dir}")));
+    }
     let values = read_env_dir(Path::new(&values_dir), "values", ".env").map_err(|e| (1, e))?;
     let secrets =
         read_env_dir(Path::new(&secrets_dir), "secrets", ".secret.env").map_err(|e| (1, e))?;
@@ -1923,10 +1951,10 @@ fn env_checks(
         // Review P1 (2026-10-08): a missing --examples-dir used to make presence `not_applicable` (exit 0), so the
         // node's only pre-`up` config guard (D-N) never ran. The examples ship in every image (D-T), and the node
         // environment comes from the compose document, so both are required: a caller error, never a quiet pass.
-        let (Some(dir), Some(doc)) = (flag(args, "--examples-dir"), doc) else {
-            return Err(usage(
-                "--env needs --examples-dir DIR and --compose-json FILE|- (or --placement-only)",
-            ));
+        let (Some(dir), Some(doc)) = (flag(args, examples_flag), doc) else {
+            return Err(usage(&format!(
+                "--env needs {examples_flag} DIR and {compose_flag} FILE|- (or --placement-only)"
+            )));
         };
         let examples = read_env_dir(Path::new(&dir), "example", ".env").map_err(|e| (1, e))?;
         if examples.is_empty() {
@@ -1936,6 +1964,23 @@ fn env_checks(
         reasons.extend(presence_reasons(&examples, &values, &secrets, &compose));
         reasons.extend(secret_key_foreign_reasons(&examples, &secrets));
         checks.push(check("env_presence", reasons));
+        let sizing_name = flag(args, sizing_flag)
+            .ok_or_else(|| usage(&format!("--env needs {sizing_flag} FILE")))?;
+        let sizing = match std::fs::read_to_string(&sizing_name) {
+            Ok(text) => Some(text),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => return Err((1, format!("unreadable sizing conf: {sizing_name}"))),
+        };
+        let budget = pool_budget(
+            Some(&values),
+            &sizing_name,
+            sizing.as_deref(),
+            &BTreeMap::new(),
+        );
+        if budget["status"] == "not_applicable" {
+            return Err(usage(&format!("missing object: {}", budget["reasons"])));
+        }
+        checks.push(budget);
     }
     if let Some(doc) = doc {
         // Compose precedence: env files (values, secrets, the other env_files) then `environment:` — the last
@@ -2020,7 +2065,7 @@ fn checks(args: &[String]) -> Outcome {
     Ok(out)
 }
 
-/// `deploy-check (--compose-json FILE|-) (--env --values-dir D --secrets-dir S [--examples-dir E]
+/// `deploy-check (--compose-json FILE|-) (--env --values-dir D --secrets-dir S --sizing-conf FILE [--examples-dir E]
 /// [--placement-only]) (--release TAG --manifest FILE --expect-sha SHA40 [--checkout-tree LINE])
 /// (--running --project P) (--secrets-readable DIR)`: one JSON receipt on stdout; exit 0 all pass, 3 any fail,
 /// 2 usage (a mode flag without its value, no check selected) or `resolved_env_input`, 1 an unreadable input
@@ -2042,6 +2087,58 @@ pub fn run(args: &[String]) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §57.1 / §80.1 / G-M03-10: executable runbook callers satisfy the parser's full --env contract.
+    #[test]
+    fn pool_budget_runbook_env_invocations_have_required_flags() {
+        let runbook = include_str!("../../../docs/ops/runbook.md");
+        let mut step = "";
+        let mut shell = false;
+        let mut command = String::new();
+        let mut invocations = Vec::new();
+        for line in runbook.lines() {
+            if let Some(marker) = line.strip_prefix("<!-- step: ") {
+                step = marker.split_whitespace().next().expect("step id");
+            }
+            if line.starts_with("```") {
+                shell = line == "```sh";
+                continue;
+            }
+            if !shell {
+                continue;
+            }
+            let line = line.trim();
+            if let Some(continued) = line.strip_suffix('\\') {
+                command.push_str(continued);
+                command.push(' ');
+                continue;
+            }
+            command.push_str(line);
+            let args: Vec<String> = command.split_whitespace().map(str::to_owned).collect();
+            if has(&args, "deploy-check") && has(&args, "--env") {
+                invocations.push((step, args));
+            }
+            command.clear();
+        }
+        assert_eq!(invocations.len(), 2, "runbook --env invocation count");
+        assert_eq!(
+            invocations
+                .iter()
+                .map(|(step, _)| *step)
+                .collect::<Vec<_>>(),
+            ["R2", "U3"]
+        );
+        for (step, args) in invocations {
+            let present: Vec<_> = ENV_REQUIRED_FLAGS
+                .into_iter()
+                .filter(|name| flag(&args, name).is_some())
+                .collect();
+            assert_eq!(
+                present, ENV_REQUIRED_FLAGS,
+                "{step}: required --env input flags"
+            );
+        }
+    }
 
     fn pool_budget_fixture(private_max: Option<&str>) -> Vec<EnvFile> {
         [
@@ -2098,6 +2195,106 @@ mod tests {
         let result = assert_pool_budget(&files, "pass", &[]);
         assert_eq!(result["connections"], 72);
         assert_eq!(result["max_connections"], 190);
+    }
+
+    #[test]
+    fn pool_budget_sizing_quotes() {
+        let files = pool_budget_fixture(Some("10"));
+        for value in ["190", "'190'", "\"190\""] {
+            let conf = format!("max_connections = {value}");
+            assert_eq!(
+                pool_budget(
+                    Some(&files),
+                    "sizing-a5.conf",
+                    Some(&conf),
+                    &BTreeMap::new()
+                ),
+                json!({"check": "pool_budget", "status": "pass", "reasons": [],
+                    "connections": 72, "max_connections": 190}),
+                "{value}"
+            );
+        }
+        for value in [
+            "'190",
+            "'190\"",
+            "190'",
+            "\"190",
+            "190\"",
+            "''190''",
+            "[190]",
+            "'190'junk",
+        ] {
+            let conf = format!("max_connections = {value}");
+            assert_eq!(
+                pool_budget(
+                    Some(&files),
+                    "sizing-a5.conf",
+                    Some(&conf),
+                    &BTreeMap::new()
+                ),
+                json!({"check": "pool_budget", "status": "fail",
+                    "reasons": ["pool_budget_key:sizing-a5.conf:max_connections"]}),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn pool_budget_committed_values_pass() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/env/values");
+        let files = read_env_dir(&dir, "values", ".env").expect("committed values");
+        assert_eq!(files.len(), 6);
+        assert_eq!(
+            files.iter().map(|f| f.process.as_str()).collect::<Vec<_>>(),
+            [
+                "admin",
+                "consolidation-worker",
+                "gateway",
+                "maintenance",
+                "private-worker",
+                "retrieval-worker"
+            ]
+        );
+        let conf = include_str!("../../../deploy/postgres/sizing-a5.conf");
+        let result = pool_budget(Some(&files), "sizing-a5.conf", Some(conf), &BTreeMap::new());
+        assert_eq!(result["status"], "pass");
+        assert_eq!(result["reasons"], json!([]));
+        assert_eq!(result["connections"], 72);
+        assert_eq!(result["max_connections"], 190);
+    }
+
+    #[test]
+    fn pool_budget_env_checks_use_committed_inputs() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let args = [
+            ("--values-dir", "deploy/env/values"),
+            ("--secrets-dir", "deploy/env/secret-fixture"),
+            ("--examples-dir", "deploy/env/example"),
+            ("--sizing-conf", "deploy/postgres/sizing-a5.conf"),
+        ]
+        .into_iter()
+        .flat_map(|(flag, path)| [flag.to_owned(), root.join(path).display().to_string()])
+        .collect::<Vec<_>>();
+        let mut checks = Vec::new();
+        assert_eq!(env_checks(&args, Some(&fixture()), &mut checks), Ok(()));
+        assert_eq!(checks.len(), 5);
+        assert_eq!(
+            checks
+                .iter()
+                .map(|c| c["check"].as_str().expect("check name"))
+                .collect::<Vec<_>>(),
+            [
+                "env_placement",
+                "env_presence",
+                "pool_budget",
+                "expected_uid_keys",
+                "host_network_dsn"
+            ]
+        );
+        assert_eq!(
+            checks[2],
+            json!({"check": "pool_budget", "status": "pass", "reasons": [], "connections": 72, "max_connections": 190})
+        );
     }
 
     #[test]
