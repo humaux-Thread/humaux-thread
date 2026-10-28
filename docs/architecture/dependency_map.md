@@ -2011,6 +2011,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `private.memory_projects`
 - service `PostgreSQL(any)`
 
+#### `adapters::billing_repo`
+- writes `control.billing_inbox`
+- service `PostgreSQL(role_gateway)`
+
 #### `adapters::byok`
 - env `CARGO_MANIFEST_DIR`
 
@@ -2425,6 +2429,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::authority`
 
+#### `domain::billing`
+
 #### `domain::boundary`
 
 #### `domain::confirm`
@@ -2459,6 +2465,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::note`
 
+#### `domain::plan`
+
 #### `domain::policy`
 
 #### `domain::relation`
@@ -2478,7 +2486,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `gateway::auth_pages`
 
+#### `gateway::billing_webhook`
+
 #### `gateway::bootstrap`
+- env `HUMAUX_BILLING_WEBHOOK_PROVIDERS`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 - env `HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS`
 - env `HUMAUX_GATEWAY_ADMISSION_CONCURRENCY`
@@ -2595,6 +2606,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS`
 - env `HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS`
 - env `HUMAUX_GATEWAY_UNKNOWN`
+- env `HUMAUX_TEST_WEBHOOK_SECRET`
 - service `PostgreSQL(role_gateway)`
 
 #### `gateway::cached_embedding`
@@ -5402,8 +5414,9 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- (no process): `adapters::billing_repo`
 - (no process): `adapters::tests::billing_repo`
+- (no process): `gateway::tests::billing_webhook`
+- process(humaux-gateway): `adapters::billing_repo`
 
 executed by:
 
@@ -12518,6 +12531,7 @@ executed by:
 - `gateway::main`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::exit_codes`
 - `gateway::tests::oauth_flow`
 - `gateway::tests::ops_listener`
@@ -12671,6 +12685,7 @@ executed by:
 - `domain::consolidate`
 - `domain::context`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::oauth_flow`
 - `maintenance::migrate`
 - `maintenance::projection_serve`
@@ -12925,6 +12940,7 @@ executed by:
 - `gateway::mcp_application`
 - `gateway::status`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16195,6 +16211,7 @@ why: typed PG pools, repositories and wire adapters this package drives
 modules naming it:
 - `gateway::auth`
 - `gateway::auth_pages`
+- `gateway::billing_webhook`
 - `gateway::bootstrap`
 - `gateway::context`
 - `gateway::continuity`
@@ -16207,6 +16224,7 @@ modules naming it:
 - `gateway::retrieval_embedding_client`
 - `gateway::status`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16227,6 +16245,7 @@ why: use-case layer (ports + orchestration) this package wires
 
 modules naming it:
 - `gateway::auth_pages`
+- `gateway::billing_webhook`
 - `gateway::bootstrap`
 - `gateway::cached_embedding`
 - `gateway::continuity`
@@ -16273,6 +16292,7 @@ modules naming it:
 - `gateway::admission`
 - `gateway::auth`
 - `gateway::auth_pages`
+- `gateway::billing_webhook`
 - `gateway::bootstrap`
 - `gateway::cached_embedding`
 - `gateway::context`
@@ -16286,6 +16306,7 @@ modules naming it:
 - `gateway::remember`
 - `gateway::retrieval_embedding_client`
 - `gateway::tests::admission`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16314,6 +16335,7 @@ modules naming it:
 - `gateway::recall`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::console_csrf`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
@@ -16422,11 +16444,13 @@ why: HTTP/UDS server framework
 modules naming it:
 - `gateway::admission`
 - `gateway::auth_pages`
+- `gateway::billing_webhook`
 - `gateway::main`
 - `gateway::mcp_application`
 - `gateway::oauth_http`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16445,6 +16469,7 @@ why: derive (de)serialization for wire/DTO types
 
 modules naming it:
 - `gateway::auth_pages`
+- `gateway::bootstrap`
 - `gateway::context`
 - `gateway::mcp_application`
 - `gateway::memory`
@@ -16456,6 +16481,7 @@ modules naming it:
 why: JSON payloads and envelopes
 
 modules naming it:
+- `gateway::billing_webhook`
 - `gateway::bootstrap`
 - `gateway::context`
 - `gateway::continuity`
@@ -16469,6 +16495,7 @@ modules naming it:
 - `gateway::retrieval_embedding_client`
 - `gateway::status`
 - `gateway::tests::as_metadata`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16493,6 +16520,7 @@ modules naming it:
 - `gateway::guard`
 - `gateway::memory`
 - `gateway::retrieval_embedding_client`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::query_embedding_rpc`
@@ -16542,6 +16570,7 @@ modules naming it:
 - `gateway::status`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16576,6 +16605,7 @@ modules naming it:
 - `gateway::retrieval_embedding_client`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::console_csrf`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
@@ -16615,6 +16645,7 @@ modules naming it:
 - `gateway::status`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16638,6 +16669,7 @@ why: shared DB-bound test harness (skip_or_fail, fixtures)
 modules naming it:
 - `gateway::mcp_application`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -16667,6 +16699,7 @@ why: sync PG client for DB-bound test fixtures
 modules naming it:
 - `gateway::mcp_application`
 - `gateway::tests::auth_pages`
+- `gateway::tests::billing_webhook`
 - `gateway::tests::continuity_get`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_forget`
@@ -17757,6 +17790,15 @@ services (computed):
 default run:
 
 ### `bins/gateway/tests/auth_pages.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `bins/gateway/tests/billing_webhook.rs`
 db-bound (default run): yes
 
 services (computed):
@@ -19731,9 +19773,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3410` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3415` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3420` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3516` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3521` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3526` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
