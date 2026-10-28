@@ -184,7 +184,7 @@ fn guard_settings() -> GuardSettings {
     }
 }
 fn serve(h: &Handle, max: u64) -> SocketAddr {
-    // dep: pg-connect PostgreSQL(role_gateway) — §79.2: exercise the runtime role.
+    // dep: PostgreSQL(role_gateway) — §79.2: exercise the runtime role.
     let pool =
         h.rt.block_on(RuntimeDbPool::connect(&dsn_as_role(&h.dsn)))
             .expect("gateway pool");
