@@ -301,6 +301,7 @@ kind:
 processes:
 
 modules:
+- `maintenance::tests::i4_scan`
 - `maintenance::tests::partitions`
 - `maintenance::tests::retention`
 - `maintenance::tests::serve`
@@ -1870,6 +1871,7 @@ processes:
 - process(humaux-maintenance)
 
 modules:
+- `adapters::tests::code_rls`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::provider_budget`
@@ -3311,6 +3313,21 @@ modules:
 - `maintenance::drill`
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
+
+### `HUMAUX_MAINTENANCE_SERVE_AUTHORITY_I4_EVERY_SECONDS`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(humaux-maintenance)
+
+modules:
+- `maintenance::serve`
+- `maintenance::tests::i4_scan`
+- `maintenance::tests::support::throwaway`
 
 ### `HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS`
 - witness: literal
@@ -5963,6 +5980,7 @@ modules:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
+- `adapters::tests::code_rls`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -5986,6 +6004,7 @@ modules:
 - `adapters::tests::enumerate_scale`
 - `adapters::tests::evidence_sources`
 - `adapters::tests::evidence_task_runs`
+- `adapters::tests::exact_census_project`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::facet_contract`
 - `adapters::tests::forget_confirm`
@@ -6061,6 +6080,7 @@ modules:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::ops_listener`
 - `gateway::tests::service_credentials`
 - `gateway::tests::singleton`
@@ -6117,6 +6137,7 @@ modules:
 - `adapters::tests::visible_index_count`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::ops_listener`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::semantic_recall_wiring`
