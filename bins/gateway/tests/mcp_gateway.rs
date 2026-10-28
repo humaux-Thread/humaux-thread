@@ -105,7 +105,7 @@ use humaux_domain::{
 };
 use humaux_gateway::{
     context::ContextBootstrap,
-    guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
+    guard::{GatewayGuard, GuardRatePolicies, GuardSettings, TenantNetworkPolicy},
     mcp_application::GatewayMcpApplication,
     recall::{SemanticRecallRuntime, SemanticRecallVersions},
     remember::{ProcessFamily, RememberEventKind, RememberPolicy},
@@ -1875,6 +1875,24 @@ fn native_mcp_gateway_real_auth_atomic_replay_and_fail_closed_acceptance() {
     );
 }
 
+/// ADR-0110 D-A: a `memory.get` envelope reports the stream frontier from one checkpoint lookup, so its
+/// `pipeline.projection` carries no `visible`, no ratio and no Qdrant count; the closure stays recall / context /
+/// enumerate's. A helper rather than inline so the route loop stays within clippy.toml's nesting ceiling.
+fn assert_get_reports_the_frontier(route: &str, value: &Value) {
+    let projection = &value["pipeline"]["projection"];
+    assert_eq!(projection["mode"], "frontier", "{route}: {value}");
+    assert_eq!(projection["serving"], true, "{route}: {value}");
+    assert!(projection["behind"].is_u64(), "{route}: {value}");
+    for gone in ["visible", "completeness_ratio", "current"] {
+        assert!(projection.get(gone).is_none(), "{route}: {gone}: {value}");
+    }
+    assert_eq!(
+        value["pipeline"]["projection_reason"],
+        Value::Null,
+        "{route}: {value}"
+    );
+}
+
 #[test]
 #[ignore = "lane(a:request_guard) requires the isolated request-guard PostgreSQL fixture, pinned scanner and disposable Qdrant"]
 #[allow(clippy::too_many_lines)] // Keep the real Gateway, Qdrant, PG and serving-race causal chain together.
@@ -2305,15 +2323,19 @@ fn native_gateway_semantic_recall_real_qdrant_pg_and_ryw_acceptance() {
                         "{route}: no envelope found in the response shape"
                     );
                     let projection = &value["pipeline"]["projection"];
-                    assert_eq!(
-                        projection["visible"], 3,
-                        "{route} must report the SAME live Qdrant count recall.search does —                          it reads the same stream on the same serving version: {value}"
-                    );
-                    assert_eq!(
-                        projection["completeness_ratio"], 1.0,
-                        "{route} reported a null ratio on a healthy projection before card 18:                          {value}"
-                    );
-                    assert_eq!(projection["current"], true, "{route}: {value}");
+                    if route == "memory.get" {
+                        assert_get_reports_the_frontier(route, value);
+                    } else {
+                        assert_eq!(
+                            projection["visible"], 3,
+                            "{route} must report the SAME live Qdrant count recall.search does —                          it reads the same stream on the same serving version: {value}"
+                        );
+                        assert_eq!(
+                            projection["completeness_ratio"], 1.0,
+                            "{route} reported a null ratio on a healthy projection before card 18:                          {value}"
+                        );
+                        assert_eq!(projection["current"], true, "{route}: {value}");
+                    }
                     assert_ne!(
                         value["completeness"]["reason"], "index_count_unavailable",
                         "{route}: {value}"

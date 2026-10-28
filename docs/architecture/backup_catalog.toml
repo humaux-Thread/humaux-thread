@@ -1,0 +1,1321 @@
+# Backup catalog (C-M23-0): every table of docs/architecture/db_objects.md is classified for the knowledge export.
+#
+# Authority: module design note M23 D1 (:74-88) and C-M23-0 (:50); ADR-0121 D-A, including its lead ruling on
+# issue #332 (the KNOWLEDGE set is closed under foreign keys), and its Amendment (M23-2 fix 1, 2026-10-27; M23 D5).
+# Rule (maintenance note :244-247, G-M23-3): a new table lands with its row in the same PR; the knowledge scope changes
+# by a row here, in the table's own PR. `cargo xtask architecture-check` fails G-M23-3 naming any table without a row
+# and any row without a table, and G-M23-3b naming (child, parent[, column]) for any NOT NULL foreign key out of a
+# KNOWLEDGE row into a non-KNOWLEDGE one and for any uncovered or stray `set_null`.
+#
+# One `["schema.table"]` row per `kind: table` / `kind: partitioned` section of db_objects.md (partition leaves are never
+# rows: D2 dumps a parent with --table-and-children), grouped by schema, sorted. `dep-map` also lists a table that a
+# migration creates by dynamic DDL (`created in: <stem> (dynamic DDL)`), so such a table needs its row too.
+#   class    "KNOWLEDGE" | "EXCLUDED"
+#   owner    M01..M29: the module whose design note lists the table as owned data
+#   basis    "<owner source>; <class source>"
+#              owner source: Mxx:N = module_design_Mxx.md line N; map:N = module_map_v3.md line N (the modules with no
+#              design note, M05 and M11); created-in <migration> = no note names the table
+#              class source: D1 = named by D1 (tables or wildcard); D1 principle = unnamed in D1, classified by its
+#              principle; ADR-0121 D-A / #332 = the closure ruling moves it; FK closure: ... = promoted or demoted by it;
+#              M23 D5 + ADR-0121 D-A amendment (M23-2 fix 1) = a restore dependency (revocation fence, its outbox parent,
+#              opt-out, trigger parent) that D1's wildcard or principle would exclude; xtask D5_RESTORE_DEPENDENCIES pins it
+#   reason   required for EXCLUDED, absent for KNOWLEDGE
+#   set_null KNOWLEDGE rows only: the column(s) of a nullable foreign key into a non-KNOWLEDGE table; the restore sets
+#              them to NULL in one step shared by M23-4 and M23-5 (ADR-0121 "Amended (M23-2)")
+
+# ---- control ----
+
+["control.agents"]
+class = "KNOWLEDGE"
+owner = "M02"
+basis = "map:98; D1"
+
+["control.anonymous_claim_trust_authorities"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "map:514; D1 principle"
+
+["control.anonymous_source_lineage"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "map:514; D1 principle"
+
+["control.api_keys"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:59; D1 principle"
+reason = "ADR-0121 D-I: the owner answered Q3 on 2026-10-23 (hashes, never plaintext); the export/hash tension stays open; EXCLUDED fails closed (users re-issue keys)."
+
+["control.audit_event_identity"]
+class = "EXCLUDED"
+owner = "M05"
+basis = "map:202; D1 principle"
+reason = "log or receipt, not knowledge (D1 principle: logs)"
+
+["control.audit_events"]
+class = "EXCLUDED"
+owner = "M05"
+basis = "map:202 partitioned audit leaves; D1 principle"
+reason = "log or receipt, not knowledge (D1 principle: logs)"
+
+["control.auth_events"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:59; D1 principle"
+reason = "log or receipt, not knowledge (D1 principle: logs)"
+
+["control.authenticators"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:60; D1 principle"
+reason = "reserved sign-in factor enum (PASSWORD, PASSKEY, TOTP, RECOVERY_CODE, OIDC, SAML; 0035, no service code writes it); factors are credential material (D1, D9) and users sign in by email code after a restore (ADR-0121 D-G)."
+
+["control.confirm_tokens"]
+class = "EXCLUDED"
+owner = "M07"
+basis = "M07:48; D1 principle"
+reason = "session, challenge or token state; short-lived and excluded (D1, D9)"
+
+["control.contribution_confirmations"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "map:514; D1"
+
+["control.contribution_notice_events"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:64; D1 principle"
+
+["control.contribution_notices"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:64; D1 principle"
+
+["control.contribution_policies"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "map:514; D1"
+
+["control.credential_pepper_state"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:59; D1 principle"
+reason = "singleton API-key pepper epoch (0202) that only has meaning beside the control.api_keys verifiers; it follows that row (ADR-0121 D-I: the Q3 export/hash tension stays open), and a fresh install starts at epoch 0."
+
+["control.credentials"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "map:98; D1 principle"
+reason = "CredentialRef locator (openbao_ref, 0003): the secret lives in OpenBao, never in the database, and the locator is meaningless without that store (D1, D9)."
+
+["control.credit_ledger"]
+class = "EXCLUDED"
+owner = "M04"
+basis = "M04:55; D1 principle"
+reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+
+["control.deletion_requests"]
+class = "KNOWLEDGE"
+owner = "M19"
+basis = "M19:138; D1"
+
+["control.deletion_targets"]
+class = "KNOWLEDGE"
+owner = "M19"
+basis = "M19:139; D1"
+
+["control.egress_policies"]
+class = "EXCLUDED"
+owner = "M05"
+basis = "map:202; D1 principle"
+reason = "tenant flag whose default is deny; a restore falls back to the safe default and the tenant re-opts in"
+
+["control.email_challenges"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:60; D1 principle"
+reason = "session, challenge or token state; short-lived and excluded (D1, D9)"
+
+["control.email_change_requests"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:60; D1 principle"
+reason = "session, challenge or token state; short-lived and excluded (D1, D9)"
+
+["control.entitlement_grants"]
+class = "EXCLUDED"
+owner = "M04"
+basis = "M04:55; D1 principle"
+reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+
+["control.entitlement_snapshots"]
+class = "EXCLUDED"
+owner = "M04"
+basis = "M04:55; D1 principle"
+reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+
+["control.identity_connections"]
+class = "KNOWLEDGE"
+owner = "M02"
+basis = "M02:61; D1 principle"
+
+["control.memberships"]
+class = "KNOWLEDGE"
+owner = "M02"
+basis = "M02:59; D1"
+
+["control.memory_automation_policies"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:157; D1 principle"
+reason = "BYOK automation switch; meaningless without the excluded credential and route stack, defaults return at onboarding"
+
+["control.notification_preferences"]
+class = "KNOWLEDGE"
+owner = "M22"
+basis = "M22:52; M23 D5 + ADR-0121 D-A amendment (M23-2 fix 1): per-user opt-outs, email boolean NOT NULL DEFAULT true (0036:58), so an empty restore re-enables mail"
+
+["control.notifications"]
+class = "EXCLUDED"
+owner = "M22"
+basis = "M22:51; D1 principle"
+reason = "notification preference or delivery state, not knowledge"
+
+["control.oauth_authorization_codes"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:70; D1 principle"
+reason = "session, challenge or token state; short-lived and excluded (D1, D9)"
+
+["control.oauth_client_registrations"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:68; D1 principle"
+reason = "session, challenge or token state; short-lived and excluded (D1, D9)"
+
+["control.oauth_grants"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:72; D1 principle"
+reason = "session, challenge or token state; short-lived and excluded (D1, D9)"
+
+["control.oauth_refresh_tokens"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:74; D1 principle"
+reason = "session, challenge or token state; short-lived and excluded (D1, D9)"
+
+["control.operation_receipts"]
+class = "EXCLUDED"
+owner = "M06"
+basis = "M06:45; D1 principle"
+reason = "log or receipt, not knowledge (D1 principle: logs)"
+
+["control.partition_registry"]
+class = "KNOWLEDGE"
+owner = "M19"
+basis = "M19:138; D1"
+
+["control.password_credentials"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:60; D1 principle"
+reason = "password verifier material (D1, D9); users sign in by email code after a restore (ADR-0121 D-G); the Q3 API-key-hash answer does not cover passwords."
+
+["control.password_reset_challenges"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:60; D1 principle"
+reason = "session, challenge or token state; short-lived and excluded (D1, D9)"
+
+["control.plan_versions"]
+class = "EXCLUDED"
+owner = "M04"
+basis = "M04:58; D1 principle"
+reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+
+["control.plans"]
+class = "EXCLUDED"
+owner = "M04"
+basis = "M04:58; D1 principle"
+reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+
+["control.private_reasoning_domains"]
+class = "KNOWLEDGE"
+owner = "M15"
+basis = "M15:158; FK closure: parent of private.evidence_objects.reasoning_domain_id"
+set_null = ["user_reasoning_profile_id"]
+
+["control.processor_models"]
+class = "EXCLUDED"
+owner = "M05"
+basis = "map:202; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.provider_accounts"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "map:327; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.provider_billing_accounts"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "map:327 provider_billing_*; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.provider_billing_instruments"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "map:327 provider_billing_*; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.provider_endpoints"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "map:327; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.provider_pricing_versions"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "map:327; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.public_moderator_grants"]
+class = "EXCLUDED"
+owner = "M20"
+basis = "map:514; D1 principle"
+reason = "operator role grant whose default is off; the operator re-grants after a restore"
+
+["control.quota_windows"]
+class = "EXCLUDED"
+owner = "M04"
+basis = "M04:55; D1 principle"
+reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+
+["control.reasoning_credential_bindings"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:158; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.reasoning_domain_grants"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:158; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.reasoning_profiles"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:158; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.reasoning_route_bindings"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:158 reasoning_route_*; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.reasoning_route_candidates"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:158 reasoning_route_*; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.reasoning_route_domain_receipts"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:158 reasoning_route_*; D1 principle"
+reason = "route bootstrap receipt; regenerated by the shadow bootstrap"
+
+["control.reasoning_route_policies"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:158 reasoning_route_*; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.reasoning_route_profile_receipts"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:158 reasoning_route_*; D1 principle"
+reason = "route bootstrap receipt; regenerated by the shadow bootstrap"
+
+["control.recovery_codes"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:61; D1 principle"
+reason = "recovery code hashes with used_at (0035 reserve); credential material (D1, D9), and a restored used_at would re-open a code spent after the export; users sign in by email code (ADR-0121 D-G); the Q3 API-key-hash answer does not cover them."
+
+["control.referral_attributions"]
+class = "EXCLUDED"
+owner = "M04"
+basis = "M04:56; D1 principle"
+reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+
+["control.referral_codes"]
+class = "EXCLUDED"
+owner = "M04"
+basis = "M04:56; D1 principle"
+reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+
+["control.referral_rewards"]
+class = "EXCLUDED"
+owner = "M04"
+basis = "M04:56; D1 principle"
+reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+
+["control.repositories"]
+class = "KNOWLEDGE"
+owner = "M16"
+basis = "M16:156; D1 principle"
+
+["control.repository_connections"]
+class = "KNOWLEDGE"
+owner = "M16"
+basis = "M16:156; D1 principle"
+
+["control.retention_policies"]
+class = "KNOWLEDGE"
+owner = "M19"
+basis = "M19:138; D1"
+
+["control.retrieval_predicates"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "created-in 0077_retrieval_predicates_registry; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.retrieval_provider_admission_limits"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "map:327; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.retrieval_provider_routes"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "map:327; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.sessions"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:60; D1 principle"
+reason = "session, challenge or token state; short-lived and excluded (D1, D9)"
+
+["control.support_access_requests"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:61; D1 principle"
+reason = "log or receipt, not knowledge (D1 principle: logs)"
+
+["control.team_invitations"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:61; D1 principle"
+reason = "session, challenge or token state; short-lived and excluded (D1, D9)"
+
+["control.tenants"]
+class = "KNOWLEDGE"
+owner = "M02"
+basis = "M02:58; D1"
+
+["control.usage_reservations"]
+class = "EXCLUDED"
+owner = "M04"
+basis = "M04:55; D1 principle"
+reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+
+["control.user_emails"]
+class = "KNOWLEDGE"
+owner = "M02"
+basis = "M02:59; D1"
+
+["control.user_reasoning_profiles"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:159; D1 principle"
+reason = "provider, route or BYOK configuration registry; seeded by bootstrap or onboarding and tied to excluded credentials"
+
+["control.users"]
+class = "KNOWLEDGE"
+owner = "M02"
+basis = "M02:59; D1"
+
+["control.webauthn_credentials"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:61; D1 principle"
+reason = "WebAuthn public key and sign counter (0035 reserve, protocol not implemented); credential material (D1, D9) and users sign in by email code after a restore (ADR-0121 D-G); the Q3 API-key-hash answer does not cover them."
+
+["control.workspace_memberships"]
+class = "KNOWLEDGE"
+owner = "M02"
+basis = "M02:59; D1"
+
+["control.workspaces"]
+class = "KNOWLEDGE"
+owner = "M02"
+basis = "M02:59; D1"
+
+# ---- coord ----
+
+["coord.canvas_elements"]
+class = "KNOWLEDGE"
+owner = "M18"
+basis = "M18:156; D1"
+
+["coord.canvases"]
+class = "KNOWLEDGE"
+owner = "M18"
+basis = "M18:156; D1"
+
+["coord.handoffs"]
+class = "KNOWLEDGE"
+owner = "M18"
+basis = "M18:156; D1"
+
+["coord.leases"]
+class = "EXCLUDED"
+owner = "M18"
+basis = "map:475; D1"
+reason = "ephemeral coordination state (D1)"
+
+["coord.locks"]
+class = "EXCLUDED"
+owner = "M18"
+basis = "M18:156; D1"
+reason = "ephemeral coordination state (D1)"
+
+["coord.task_runs"]
+class = "EXCLUDED"
+owner = "M18"
+basis = "M18:156; D1"
+reason = "ephemeral coordination state (D1)"
+
+["coord.tasks"]
+class = "KNOWLEDGE"
+owner = "M18"
+basis = "M18:156; D1"
+
+# ---- ops ----
+
+["ops.anonymous_public_revocations"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "map:514; M23 D5 + ADR-0121 D-A amendment (M23-2 fix 1): serving fence, read by public.anonymous_trust_receipt_matches (0134:186-191); revoke_event_id NOT NULL parent is ops.outbox"
+
+["ops.audit_batches"]
+class = "EXCLUDED"
+owner = "M05"
+basis = "map:202; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.backup_receipts"]
+class = "EXCLUDED"
+owner = "M23"
+basis = "M23:58; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.backup_sets"]
+class = "EXCLUDED"
+owner = "M23"
+basis = "M23:58; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.column_vitality"]
+class = "EXCLUDED"
+owner = "M21"
+basis = "M21:175; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.consistency_reports"]
+class = "EXCLUDED"
+owner = "M13"
+basis = "M13:104; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.contribution_execution_job_links"]
+class = "EXCLUDED"
+owner = "M20"
+basis = "map:514; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.data_disclosure_sources"]
+class = "EXCLUDED"
+owner = "M05"
+basis = "map:202; D1"
+reason = "egress log with no serving or purge reader (M23 D5 checked in M23-2 fix 1, stays EXCLUDED); candidate and release guards read it only when a row is inserted or re-linked, never on a restored row."
+
+["ops.data_disclosures"]
+class = "EXCLUDED"
+owner = "M05"
+basis = "map:202; D1"
+reason = "egress log with no serving or purge reader (M23 D5 checked in M23-2 fix 1, stays EXCLUDED); candidate and release guards read it only when a row is inserted or re-linked, never on a restored row."
+
+["ops.deletion_plan_steps"]
+class = "KNOWLEDGE"
+owner = "M19"
+basis = "M19:138; M23 D5 + ADR-0121 D-A amendment (M23-2 fix 1): keeps the EXTERNAL_PENDING outcomes the resume reads (adapters forget_repo.rs:240, :321)"
+
+["ops.distill_calls"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:159; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.distill_tenant_scheduler"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:159; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.email_delivery_events"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:62; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.email_domains"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:62; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.email_outbox"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:62; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.email_provider_health"]
+class = "EXCLUDED"
+owner = "M02"
+basis = "M02:62; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.email_suppressions"]
+class = "KNOWLEDGE"
+owner = "M02"
+basis = "M02:62; M23 D5 + ADR-0121 D-A amendment (M23-2 fix 1): unsubscribe and complaint opt-outs read before every send (adapters email/outbox.rs:100, :120); a restore must not re-enable mail"
+
+["ops.jobs"]
+class = "EXCLUDED"
+owner = "M09"
+basis = "M09:41; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.maintenance_receipts"]
+class = "EXCLUDED"
+owner = "M21"
+basis = "M21:56; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.mechanism_e2e_runs"]
+class = "EXCLUDED"
+owner = "M24"
+basis = "map:620; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.mechanism_observations"]
+class = "EXCLUDED"
+owner = "M24"
+basis = "map:620; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.memory_lifecycle_events"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:49; D1"
+
+["ops.model_call_identity"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "map:327; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.model_call_ledger"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "map:327; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.notification_deliveries"]
+class = "EXCLUDED"
+owner = "M22"
+basis = "M22:52; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.outbox"]
+class = "KNOWLEDGE"
+owner = "M09"
+basis = "M09:41; M23 D5 + ADR-0121 D-A amendment (M23-2 fix 1): closure rule, NOT NULL parent of the revocations' revoke_event_id (0106:18, 0122:91); also the trigger parent of the release rows (0126:59-65, :201)"
+
+["ops.private_inference_rpc_calls"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:160; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.provider_arbiters"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:159; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.provider_slots"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:159; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.public_anonymous_dispatches"]
+class = "EXCLUDED"
+owner = "M20"
+basis = "map:514; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.public_release_revocations"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "map:514; M23 D5 + ADR-0121 D-A amendment (M23-2 fix 1): serving fence, read by public._legacy_receipt_match_basis (0135:93-97) and the revoke survivor check (public_repo.rs:786, :810, :847); revoke_event_id NOT NULL parent is ops.outbox"
+
+["ops.reasoning_account_health_observations"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:160 reasoning_*_health_observations; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.reasoning_provider_health_observations"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:160 reasoning_*_health_observations; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.repair_findings"]
+class = "EXCLUDED"
+owner = "M21"
+basis = "M21:56; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.restore_drills"]
+class = "EXCLUDED"
+owner = "M23"
+basis = "M23:58; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.restore_witnesses"]
+class = "EXCLUDED"
+owner = "M23"
+basis = "M23:58; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.retrieval_embedding_rpc_calls"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "map:327; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.retrieval_provider_budget_allocations"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "map:327; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.retrieval_provider_budget_reservations"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "map:327; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.retrieval_query_log"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "created-in 0258_retrieval_query_log; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.scheduler_leases"]
+class = "EXCLUDED"
+owner = "M09"
+basis = "M09:42; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.selection_snapshot_items"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "map:327; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.selection_snapshots"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "map:327; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.source_acquisition_jobs"]
+class = "EXCLUDED"
+owner = "M20"
+basis = "map:514; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.stage_runs"]
+class = "EXCLUDED"
+owner = "M09"
+basis = "created-in 0008_ops_core; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.tenant_cost_events"]
+class = "EXCLUDED"
+owner = "M04"
+basis = "M04:56; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+["ops.wal_archive_failures"]
+class = "EXCLUDED"
+owner = "M23"
+basis = "M23:59; D1"
+reason = "operational log, job, outbox, receipt or health state (D1 other ops.*)"
+
+# ---- private ----
+
+["private.artifact_parts"]
+class = "EXCLUDED"
+owner = "M17"
+basis = "M17:211; D1 principle"
+reason = "binary-object pointer and parse manifest; the bytes are not exported (D1 images/binaries)"
+
+["private.artifacts"]
+class = "EXCLUDED"
+owner = "M17"
+basis = "M17:209; D1 principle"
+reason = "binary-object pointer and parse manifest; the bytes are not exported (D1 images/binaries)"
+
+["private.code_active_snapshots"]
+class = "EXCLUDED"
+owner = "M16"
+basis = "M16:157; D1"
+reason = "re-indexable code graph (D1 code_*)"
+
+["private.code_files"]
+class = "EXCLUDED"
+owner = "M16"
+basis = "M16:156; D1"
+reason = "re-indexable code graph (D1 code_*)"
+
+["private.code_snapshots"]
+class = "EXCLUDED"
+owner = "M16"
+basis = "M16:156; D1"
+reason = "re-indexable code graph (D1 code_*)"
+
+["private.context_bindings"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:48; D1 principle"
+
+["private.continuity_facet_evidence_links"]
+class = "KNOWLEDGE"
+owner = "M14"
+basis = "M14:126; D1"
+
+["private.continuity_facet_memory_links"]
+class = "KNOWLEDGE"
+owner = "M14"
+basis = "M14:127; D1"
+
+["private.continuity_facet_slots"]
+class = "KNOWLEDGE"
+owner = "M14"
+basis = "M14:126; D1"
+
+["private.continuity_facet_versions"]
+class = "KNOWLEDGE"
+owner = "M14"
+basis = "M14:126; D1"
+
+["private.continuity_projects"]
+class = "KNOWLEDGE"
+owner = "M29"
+basis = "map:906; D1"
+
+["private.contribution_execution_sources"]
+class = "EXCLUDED"
+owner = "M20"
+basis = "created-in 0131_contribution_execution; D1 principle"
+reason = "in-flight contribution side-effect state machine; the durable result is staging.contribution_candidates"
+
+["private.contribution_executions"]
+class = "EXCLUDED"
+owner = "M20"
+basis = "map:514; D1 principle"
+reason = "in-flight contribution side-effect state machine; the durable result is staging.contribution_candidates"
+
+["private.contribution_exports"]
+class = "EXCLUDED"
+owner = "M20"
+basis = "map:514; D1 principle"
+reason = "skeleton without a writer; release lineage is staging.contribution_release_sources"
+
+["private.conversations"]
+class = "KNOWLEDGE"
+owner = "M06"
+basis = "M06:46; D1"
+
+["private.curation_candidate_targets"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "created-in 0277_curation_candidates; D1 principle"
+reason = "proposals only; an accepted change becomes Memory through the M07 doors (M15:10-18), the class D1 gives distill_candidates"
+
+["private.curation_candidates"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:161; D1 principle"
+reason = "proposals only; an accepted change becomes Memory through the M07 doors (M15:10-18), the class D1 gives distill_candidates"
+
+["private.distill_candidates"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:156; D1"
+reason = "pending distill proposals, re-derived (D1)"
+
+["private.entities"]
+class = "KNOWLEDGE"
+owner = "M28"
+basis = "M28:181; D1"
+
+["private.event_identity"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:45; D1"
+
+["private.events"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:45; D1"
+
+["private.evidence_affects"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:48; D1"
+
+["private.evidence_edges"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:46; D1"
+
+["private.evidence_objects"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:45; D1"
+
+["private.evidence_projects"]
+class = "KNOWLEDGE"
+owner = "M29"
+basis = "created-in 0252_work_attribution; D1"
+
+["private.evidence_sources"]
+class = "KNOWLEDGE"
+owner = "M06"
+basis = "M06:48; D1"
+
+["private.evidence_subjects"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:47; D1"
+
+["private.evidence_task_runs"]
+class = "EXCLUDED"
+owner = "M06"
+basis = "map:905; FK closure (ADR-0121 D-A)"
+reason = "FK closure: requires EXCLUDED coord.task_runs (ADR-0121 D-A)"
+
+["private.identity_note_materializations"]
+class = "KNOWLEDGE"
+owner = "M06"
+basis = "M06:44; D1 principle (U6 borderline)"
+
+["private.ingest_tickets"]
+class = "EXCLUDED"
+owner = "M06"
+basis = "M06:44; D1"
+reason = "ephemeral ingest ticket (D1)"
+
+["private.memory_affects"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:48; D1"
+
+["private.memory_applicability"]
+class = "KNOWLEDGE"
+owner = "M14"
+basis = "M14:128; D1 principle"
+
+["private.memory_consolidation_inputs"]
+class = "KNOWLEDGE"
+owner = "M15"
+basis = "M15:157; D1"
+
+["private.memory_consolidation_runs"]
+class = "KNOWLEDGE"
+owner = "M15"
+basis = "M15:157; FK closure: parent of private.memory_consolidation_inputs.run_id"
+
+["private.memory_evidence"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:46; D1"
+
+["private.memory_project_revocations"]
+class = "KNOWLEDGE"
+owner = "M29"
+basis = "created-in 0252_work_attribution; D1"
+
+["private.memory_projects"]
+class = "KNOWLEDGE"
+owner = "M29"
+basis = "created-in 0252_work_attribution; D1"
+
+["private.memory_records"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:46; D1"
+
+["private.memory_rollup_sources"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:156; D1 principle"
+reason = "derived rollup output with no reader today (D1 memory_rollups*; M15:30)"
+
+["private.memory_rollup_subjects"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:157; D1 principle"
+reason = "derived rollup output with no reader today (D1 memory_rollups*; M15:30)"
+
+["private.memory_rollups"]
+class = "EXCLUDED"
+owner = "M15"
+basis = "M15:156; D1"
+reason = "derived rollup output with no reader today (D1 memory_rollups*; M15:30)"
+
+["private.memory_subject_mentions"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:47; D1"
+
+["private.memory_subject_presence"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:47; D1"
+
+["private.memory_subjects"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:47; D1"
+
+["private.messages"]
+class = "KNOWLEDGE"
+owner = "M06"
+basis = "M06:46; D1"
+
+["private.note_heads"]
+class = "KNOWLEDGE"
+owner = "M06"
+basis = "M06:44; D1"
+
+["private.observations"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:46; D1"
+
+["private.processing_runs"]
+class = "KNOWLEDGE"
+owner = "M15"
+basis = "M15:156; ADR-0121 D-A / #332"
+set_null = ["profile_id", "profile_version"]
+
+["private.project_facets"]
+class = "KNOWLEDGE"
+owner = "M18"
+basis = "M18:50, :136; D1 principle (0281 copies the retired private.project_channels rows, which were KNOWLEDGE, into it)"
+
+["private.project_subject_relations"]
+class = "KNOWLEDGE"
+owner = "M29"
+basis = "created-in 0249_relation_kernel (card M29 T05; module_design_M18.md:157 names M29 the owner); D1 private knowledge relations (0249:150 dynamic DDL; served 0271:63)"
+
+["private.project_task_relations"]
+class = "KNOWLEDGE"
+owner = "M29"
+basis = "created-in 0249_relation_kernel (card M29 T05; module_design_M18.md:157 names M29 the owner); D1 private knowledge relations (0249:150 dynamic DDL; served 0271:63)"
+
+["private.relations"]
+class = "KNOWLEDGE"
+owner = "M28"
+basis = "M28:181; D1"
+
+["private.retrieval_query_sources"]
+class = "EXCLUDED"
+owner = "M11"
+basis = "map:327; D1 principle"
+reason = "short-lived query-source log (carries expires_at)"
+
+["private.subject_keys"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:47; D1"
+
+["private.subject_relations"]
+class = "KNOWLEDGE"
+owner = "M29"
+basis = "created-in 0249_relation_kernel (card M29 T05; module_design_M18.md:157 names M29 the owner); D1 private knowledge relations (0249:150 dynamic DDL; served 0271:63)"
+
+["private.subject_roles"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:47; D1"
+
+["private.subjects"]
+class = "KNOWLEDGE"
+owner = "M07"
+basis = "M07:46; D1"
+
+["private.task_binding_grants"]
+class = "EXCLUDED"
+owner = "M14"
+basis = "M14:127; D1 principle"
+reason = "task-epoch authorization grant; re-issued by the task request or tenant policy"
+
+["private.worktree_overlays"]
+class = "EXCLUDED"
+owner = "M16"
+basis = "M16:158; D1"
+reason = "ephemeral worktree overlay (D1)"
+
+# ---- projection ----
+
+["projection.card_profile_policies"]
+class = "EXCLUDED"
+owner = "M10"
+basis = "M10:48; D1"
+reason = "derived projection state; M10 rebuilds it from the KNOWLEDGE tables (D1 projection.*)"
+
+["projection.embedding_fingerprints"]
+class = "EXCLUDED"
+owner = "M10"
+basis = "M10:47; D1"
+reason = "derived projection state; M10 rebuilds it from the KNOWLEDGE tables (D1 projection.*)"
+
+["projection.family_activations"]
+class = "EXCLUDED"
+owner = "M10"
+basis = "M10:47; D1"
+reason = "derived projection state; M10 rebuilds it from the KNOWLEDGE tables (D1 projection.*)"
+
+["projection.index_runs"]
+class = "EXCLUDED"
+owner = "M10"
+basis = "M10:48; D1"
+reason = "derived projection state; M10 rebuilds it from the KNOWLEDGE tables (D1 projection.*)"
+
+["projection.memory_vectors"]
+class = "EXCLUDED"
+owner = "M10"
+basis = "M10:47; D1"
+reason = "derived projection state; M10 rebuilds it from the KNOWLEDGE tables (D1 projection.*)"
+
+["projection.private_memory_points"]
+class = "EXCLUDED"
+owner = "M10"
+basis = "M10:47; D1"
+reason = "derived projection state; M10 rebuilds it from the KNOWLEDGE tables (D1 projection.*)"
+
+["projection.rebuild_runs"]
+class = "EXCLUDED"
+owner = "M10"
+basis = "M10:48; D1"
+reason = "derived projection state; M10 rebuilds it from the KNOWLEDGE tables (D1 projection.*)"
+
+["projection.rebuild_tickets"]
+class = "EXCLUDED"
+owner = "M10"
+basis = "M10:48; D1"
+reason = "derived projection state; M10 rebuilds it from the KNOWLEDGE tables (D1 projection.*)"
+
+["projection.retrieval_cards"]
+class = "EXCLUDED"
+owner = "M10"
+basis = "M10:48; D1"
+reason = "derived projection state; M10 rebuilds it from the KNOWLEDGE tables (D1 projection.*)"
+
+["projection.stream_checkpoints"]
+class = "EXCLUDED"
+owner = "M09"
+basis = "M09:41; D1"
+reason = "derived projection state; M10 rebuilds it from the KNOWLEDGE tables (D1 projection.*)"
+
+["projection.stream_log"]
+class = "EXCLUDED"
+owner = "M09"
+basis = "M09:40; D1"
+reason = "derived projection state; M10 rebuilds it from the KNOWLEDGE tables (D1 projection.*)"
+
+["projection.tenant_placements"]
+class = "EXCLUDED"
+owner = "M10"
+basis = "M10:48; D1"
+reason = "derived projection state; M10 rebuilds it from the KNOWLEDGE tables (D1 projection.*)"
+
+["projection.ticket_reissues"]
+class = "EXCLUDED"
+owner = "M09"
+basis = "M09:41; D1"
+reason = "derived projection state; M10 rebuilds it from the KNOWLEDGE tables (D1 projection.*)"
+
+# ---- public ----
+
+["public.anonymous_claim_trust_receipts"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:61 trust tables; D1"
+
+["public.anonymous_source_authority_events"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:61 trust tables; D1"
+
+["public.anonymous_source_lifecycle_events"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:61 trust tables; D1"
+
+["public.claim_independence_attestations"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:61 trust tables; D1"
+
+["public.claim_trust_evaluation_sources"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:61 trust tables; D1"
+
+["public.claim_trust_evaluations"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:61 trust tables; D1"
+
+["public.claims"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:61; D1"
+
+["public.concept_labels"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:62; D1"
+
+["public.concept_relations"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:62; D1"
+
+["public.concepts"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:62; D1"
+
+["public.knowledge_gaps"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "map:514 public.*; D1"
+
+["public.poisoning_signals"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:61 trust tables; D1 public.* (U6 borderline)"
+
+["public.provenance_edges"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:61; D1"
+
+["public.relations"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "map:514 public.*; D1"
+
+["public.source_closure"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:61; D1"
+
+["public.sources"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:61; D1"
+
+["public.syntheses"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:61; D1"
+
+["public.synthesis_inputs"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:61; D1"
+
+["public.topics"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "map:514 public.*; D1"
+
+["public.unit_conditions"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:62; D1"
+
+["public.unit_fields"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:62; D1"
+
+["public.units"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "M20:62; D1"
+
+# ---- staging ----
+
+["staging.contribution_candidate_phase9_assessments"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "map:514 staging.*; D1 principle"
+
+["staging.contribution_candidate_sources"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "map:514 staging.*; D1 principle"
+
+["staging.contribution_candidates"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "map:514 staging.*; FK closure: parent of control.contribution_confirmations.candidate_id"
+set_null = ["binding_id", "binding_version", "contribution_execution_id", "model_call_id"]
+
+["staging.contribution_release_sources"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "map:514 staging.*; D1 principle"
+
+["staging.contribution_releases"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "map:514 staging.*; FK closure: parent of control.anonymous_source_lineage.contribution_release_id"
+
+["staging.sanitized_public_candidates"]
+class = "KNOWLEDGE"
+owner = "M20"
+basis = "map:514 staging.*; M23 D5 + ADR-0121 D-A amendment (M23-2 fix 1): trigger parent of the assessed branch of 0126 (:97-106, :113-119, raise :121-126), fired by :197/:201; the restored withdraw/revoke and the set_null UPDATE need it; FKs only to KNOWLEDGE (control.tenants, control.anonymous_source_lineage)"

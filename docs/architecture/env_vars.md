@@ -301,6 +301,7 @@ kind:
 processes:
 
 modules:
+- `maintenance::tests::i4_scan`
 - `maintenance::tests::partitions`
 - `maintenance::tests::retention`
 - `maintenance::tests::serve`
@@ -3313,6 +3314,21 @@ modules:
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
 
+### `HUMAUX_MAINTENANCE_SERVE_AUTHORITY_I4_EVERY_SECONDS`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(humaux-maintenance)
+
+modules:
+- `maintenance::serve`
+- `maintenance::tests::i4_scan`
+- `maintenance::tests::support::throwaway`
+
 ### `HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS`
 - witness: literal
 - registry: raw
@@ -6070,6 +6086,7 @@ modules:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::ops_listener`
 - `gateway::tests::service_credentials`
 - `gateway::tests::singleton`
@@ -6126,6 +6143,7 @@ modules:
 - `adapters::tests::visible_index_count`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::ops_listener`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::semantic_recall_wiring`
