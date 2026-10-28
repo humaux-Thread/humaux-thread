@@ -3782,6 +3782,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_LIMIT`
 - env `HUMAUX_MAINTENANCE_SERVE_CYCLE_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_DR_EVIDENCE_EVERY_SECONDS`
+- env `HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_EVERY_SECONDS`
+- env `HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_LIMIT`
 - env `HUMAUX_MAINTENANCE_SERVE_JOBS_DEAD_RETENTION_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_JOBS_DONE_RETENTION_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_JOBS_EVERY_SECONDS`
@@ -10016,6 +10018,7 @@ executed by:
 ### `private.ingest_tickets`
 read by:
 - (no process): `adapters::tests::projection_worker`
+- (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::postgres`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(humaux-admin): `adapters::postgres`
@@ -10036,6 +10039,7 @@ written by:
 - (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `maintenance::tests::partitions`
+- (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`

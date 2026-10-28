@@ -3552,6 +3552,34 @@ modules:
 - `maintenance::tests::serve`
 - `maintenance::tests::support::throwaway`
 
+### `HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_EVERY_SECONDS`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(humaux-maintenance)
+
+modules:
+- `maintenance::serve`
+- `maintenance::tests::serve`
+
+### `HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_LIMIT`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(humaux-maintenance)
+
+modules:
+- `maintenance::serve`
+- `maintenance::tests::serve`
+
 ### `HUMAUX_MAINTENANCE_SERVE_JOBS_DEAD_RETENTION_SECONDS`
 - witness: literal
 - registry: raw

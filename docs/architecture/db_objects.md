@@ -11245,6 +11245,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::projection_worker`
+- (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::postgres`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(humaux-admin): `adapters::postgres`
@@ -11265,6 +11266,7 @@ written by:
 - (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `maintenance::tests::partitions`
+- (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
