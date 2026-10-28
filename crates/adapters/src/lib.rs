@@ -71,6 +71,8 @@ pub mod plan_repo;
 pub mod postgres;
 pub mod private_inference_rpc;
 pub mod private_projection_registry;
+/// ADR-0110 D-E: per-account processing status (§15.6).
+pub mod processing_status;
 pub mod project_rollup;
 pub mod projection_worker;
 pub mod provider_budget;
