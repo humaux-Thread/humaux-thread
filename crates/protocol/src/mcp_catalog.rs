@@ -454,6 +454,9 @@ fn parse_tool(value: &str) -> Option<ToolName> {
 fn schema_source(name: &str) -> Option<&'static str> {
     match name {
         "remember.schema.json" => Some(include_str!("../../../contracts/mcp/remember.schema.json")),
+        "recall.output.schema.json" => Some(include_str!(
+            "../../../contracts/mcp/recall.output.schema.json"
+        )),
         "recall.schema.json" => Some(include_str!("../../../contracts/mcp/recall.schema.json")),
         "memory.schema.json" => Some(include_str!("../../../contracts/mcp/memory.schema.json")),
         "memory.output.schema.json" => Some(include_str!(

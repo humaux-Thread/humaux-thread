@@ -577,3 +577,37 @@ fn identity_lock_guard_rolls_back_on_panic() {
         );
     });
 }
+
+/// §9 / ADR-0111 D-D: a real dedup re-import cannot renew the Evidence timestamp.
+#[test]
+fn g_m13_4_real_dedup_reimport_preserves_evidence_time() {
+    run_db_fixture::<Fixture, _>("G-M13-4 real dedup", |mut handle| {
+        handle.seed_current_entitlement_and_window(10);
+        let principal = handle.principal_id;
+        let source = identity(IngestSourceKind::AgentNote, "freshness", Some("v1"));
+        let before = stored(
+            put(&handle, principal, &source, "first", "original"),
+            "first",
+        );
+        handle.admin.execute("UPDATE private.evidence_objects SET occurred_at=to_timestamp(0) WHERE evidence_id=$1",
+            &[&before.accepted.evidence_id]).expect("historical Evidence fixture");
+        let after = stored(
+            put(&handle, principal, &source, "reimport", "original"),
+            "reimport",
+        );
+        assert_eq!(
+            (before.dedupe, after.dedupe),
+            (Dedupe::New, Dedupe::Existing)
+        );
+        assert_eq!(after.accepted.evidence_id, before.accepted.evidence_id);
+        let row = handle
+            .admin
+            .query_one(
+                "SELECT count(*), min(occurred_at) = to_timestamp(0) \
+            FROM private.evidence_objects WHERE evidence_id=$1",
+                &[&before.accepted.evidence_id],
+            )
+            .expect("Evidence time");
+        assert_eq!((row.get::<_, i64>(0), row.get::<_, bool>(1)), (1, true));
+    });
+}

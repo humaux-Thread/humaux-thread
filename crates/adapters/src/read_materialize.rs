@@ -75,7 +75,7 @@ pub enum MaterializedItem {
 pub struct MaterializedBodies {
     pub snapshot: MaterializationSnapshot,
     pub items: Vec<MaterializedItem>,
-    /// §21.5 / ADR-0111: annotations for admitted Memories, independent of their content shape.
+    /// §21.5 / ADR-0111: annotations for admitted items, independent of their content shape.
     pub freshness: HashMap<Uuid, ItemFreshness>,
 }
 
@@ -85,9 +85,9 @@ pub struct ItemFreshness {
     /// ADR-0111 D-C: independent of completeness and ranking.
     pub class: FreshnessClass,
     /// §50: the values file identity used by the classifier.
-    pub policy_id: &'static str,
+    pub policy_id: Option<&'static str>,
     /// §50: the values file version.
-    pub policy_version: u32,
+    pub policy_version: Option<u32>,
     /// §9: only backing Evidence occurred_at; absent for legacy missing Evidence.
     pub latest_evidence_at: Option<String>,
     /// §21.5: age against the transaction's database clock, absent when unknown.
@@ -95,14 +95,17 @@ pub struct ItemFreshness {
 }
 
 impl MaterializedBodies {
-    /// ADR-0111 D-C: summarize only returned Memories, after any truncation or reranking.
+    /// ADR-0111 D-C: summarize only returned items, after any truncation or reranking.
     pub fn freshness_summary(&self) -> FreshnessBlock {
         let readings: Vec<_> = self
             .items
             .iter()
             .filter_map(|item| match item {
                 MaterializedItem::Memory { memory_id, .. } => self.freshness.get(memory_id),
-                _ => None,
+                MaterializedItem::TemporaryEvidence { evidence_id, .. }
+                | MaterializedItem::ArtifactUnavailable { evidence_id, .. } => {
+                    self.freshness.get(evidence_id)
+                }
             })
             .collect();
         FreshnessBlock {
@@ -134,8 +137,8 @@ fn item_freshness(row: &sqlx::postgres::PgRow) -> Result<ItemFreshness, ErrorCod
     let signal = compute_freshness(kind, evidence.map(Into::into), now.into(), None, None);
     Ok(ItemFreshness {
         class: signal.class,
-        policy_id: signal.policy_id,
-        policy_version: signal.policy_version,
+        policy_id: Some(signal.policy_id),
+        policy_version: Some(signal.policy_version),
         latest_evidence_at: evidence
             .map(|at| {
                 at.format(&time::format_description::well_known::Rfc3339)
@@ -143,6 +146,28 @@ fn item_freshness(row: &sqlx::postgres::PgRow) -> Result<ItemFreshness, ErrorCod
             })
             .transpose()?,
         state_age_seconds: signal.state_age_seconds,
+    })
+}
+
+// §21.5 / ADR-0111 D-C: non-Memory items have no per-MemoryType policy.
+fn overlay_freshness(row: &sqlx::postgres::PgRow) -> Result<ItemFreshness, ErrorCode> {
+    let evidence: Option<OffsetDateTime> = row
+        .try_get("occurred_at")
+        .map_err(|_| ErrorCode::Internal)?;
+    let now: OffsetDateTime = row
+        .try_get("freshness_now")
+        .map_err(|_| ErrorCode::Internal)?;
+    Ok(ItemFreshness {
+        class: FreshnessClass::Unknown,
+        policy_id: None,
+        policy_version: None,
+        latest_evidence_at: evidence
+            .map(|at| {
+                at.format(&time::format_description::well_known::Rfc3339)
+                    .map_err(|_| ErrorCode::Internal)
+            })
+            .transpose()?,
+        state_age_seconds: evidence.and_then(|at| u64::try_from((now - at).whole_seconds()).ok()),
     })
 }
 
@@ -568,6 +593,7 @@ async fn load_memories(
 }
 
 struct RecheckedOverlay {
+    freshness: ItemFreshness,
     evidence_id: Uuid,
     stream_seq: i64,
     processing_state: ProcessingState,
@@ -609,6 +635,8 @@ async fn load_overlay(
                eo.visibility_class,
                eo.visibility_user_id,
                eo.visibility_workspace_id,
+               CASE WHEN eo.evidence_kind = 'EVENT' THEN eo.occurred_at END AS occurred_at,
+               CURRENT_TIMESTAMP AS freshness_now,
                event.payload
         FROM projection.stream_log AS sl
         JOIN ops.outbox AS ob
@@ -661,6 +689,7 @@ async fn load_overlay(
         }
         let state: String = row.try_get("state").map_err(|_| ErrorCode::Internal)?;
         out.push(RecheckedOverlay {
+            freshness: overlay_freshness(&row)?,
             evidence_id: row
                 .try_get("evidence_id")
                 .map_err(|_| ErrorCode::Internal)?,
@@ -953,7 +982,7 @@ async fn materialize_final_bodies_gated_in_txn(
         item.linked_memory_ids
             .retain(|id| readable_memory_ids.contains(id));
     }
-    let freshness = memories
+    let mut freshness: HashMap<_, _> = memories
         .iter()
         .map(|(id, _, reading)| (*id, reading.clone()))
         .collect();
@@ -963,6 +992,7 @@ async fn materialize_final_bodies_gated_in_txn(
         .collect::<Vec<_>>();
     for item in overlay {
         let RecheckedOverlay {
+            freshness: reading,
             evidence_id,
             stream_seq,
             processing_state,
@@ -970,6 +1000,7 @@ async fn materialize_final_bodies_gated_in_txn(
             payload,
             linked_memory_ids,
         } = item;
+        freshness.insert(evidence_id, reading);
         match (evidence_kind.as_str(), payload) {
             ("EVENT", Some(payload)) => items.push(MaterializedItem::TemporaryEvidence {
                 evidence_id,

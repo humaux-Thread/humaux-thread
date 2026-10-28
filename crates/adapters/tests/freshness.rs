@@ -101,7 +101,7 @@ fn assert_annotations(bodies: &MaterializedBodies, ids: &[Uuid]) {
         assert_eq!(reading.class, class);
         assert_eq!(
             (reading.policy_id, reading.policy_version),
-            ("evidence-per-type", 1)
+            (Some("evidence-per-type"), Some(1))
         );
     }
     assert_eq!(bodies.freshness[&ids[3]].latest_evidence_at, None);
@@ -131,7 +131,7 @@ fn g_m13_4_reads_reembed_and_reimport_never_launder_evidence_time() {
         assert_annotations(&before, &ids);
         let reread = read(&handle, &ids);
         assert_annotations(&reread, &ids);
-        // §9: re-embedding's Memory audit time and dedup re-import's recording time cannot renew Evidence.
+        // ponytail: surrogate re-embed timestamps until a callable re-embed adapter exists (§9).
         handle
             .admin
             .execute(
