@@ -865,7 +865,15 @@ pub fn pool_budget(
         .lines()
         .filter_map(|line| line.split('#').next()?.split_once('='))
         .filter(|(key, _)| key.trim() == "max_connections")
-        .map(|(_, value)| value.trim().trim_matches('\'').parse::<u64>())
+        .map(|(_, value)| {
+            let value = value.trim();
+            let number = value
+                .strip_prefix('\'')
+                .and_then(|v| v.strip_suffix('\''))
+                .or_else(|| value.strip_prefix('"').and_then(|v| v.strip_suffix('"')))
+                .unwrap_or(value);
+            number.parse::<u64>()
+        })
         .collect();
     if limits.is_empty() {
         return missing(&format!("{sizing_name}:max_connections"));
@@ -1857,9 +1865,10 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 }
 
 /// Every flag that takes a value: present without one is a usage error naming it.
-const VALUE_FLAGS: [&str; 10] = [
+const VALUE_FLAGS: [&str; 11] = [
     "--compose-json",
     "--values-dir",
+    "--sizing-conf",
     "--secrets-dir",
     "--examples-dir",
     "--release",
@@ -1914,6 +1923,9 @@ fn env_checks(
         flag(args, "--values-dir").ok_or_else(|| usage("--env needs --values-dir DIR"))?;
     let secrets_dir =
         flag(args, "--secrets-dir").ok_or_else(|| usage("--env needs --secrets-dir DIR"))?;
+    if !Path::new(&values_dir).is_dir() {
+        return Err(usage(&format!("missing values dir: {values_dir}")));
+    }
     let values = read_env_dir(Path::new(&values_dir), "values", ".env").map_err(|e| (1, e))?;
     let secrets =
         read_env_dir(Path::new(&secrets_dir), "secrets", ".secret.env").map_err(|e| (1, e))?;
@@ -1936,6 +1948,23 @@ fn env_checks(
         reasons.extend(presence_reasons(&examples, &values, &secrets, &compose));
         reasons.extend(secret_key_foreign_reasons(&examples, &secrets));
         checks.push(check("env_presence", reasons));
+        let sizing_name =
+            flag(args, "--sizing-conf").ok_or_else(|| usage("--env needs --sizing-conf FILE"))?;
+        let sizing = match std::fs::read_to_string(&sizing_name) {
+            Ok(text) => Some(text),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => return Err((1, format!("unreadable sizing conf: {sizing_name}"))),
+        };
+        let budget = pool_budget(
+            Some(&values),
+            &sizing_name,
+            sizing.as_deref(),
+            &BTreeMap::new(),
+        );
+        if budget["status"] == "not_applicable" {
+            return Err(usage(&format!("missing object: {}", budget["reasons"])));
+        }
+        checks.push(budget);
     }
     if let Some(doc) = doc {
         // Compose precedence: env files (values, secrets, the other env_files) then `environment:` — the last
@@ -2020,7 +2049,7 @@ fn checks(args: &[String]) -> Outcome {
     Ok(out)
 }
 
-/// `deploy-check (--compose-json FILE|-) (--env --values-dir D --secrets-dir S [--examples-dir E]
+/// `deploy-check (--compose-json FILE|-) (--env --values-dir D --secrets-dir S --sizing-conf FILE [--examples-dir E]
 /// [--placement-only]) (--release TAG --manifest FILE --expect-sha SHA40 [--checkout-tree LINE])
 /// (--running --project P) (--secrets-readable DIR)`: one JSON receipt on stdout; exit 0 all pass, 3 any fail,
 /// 2 usage (a mode flag without its value, no check selected) or `resolved_env_input`, 1 an unreadable input
@@ -2096,6 +2125,72 @@ mod tests {
             ]
         );
         let result = assert_pool_budget(&files, "pass", &[]);
+        assert_eq!(result["connections"], 72);
+        assert_eq!(result["max_connections"], 190);
+    }
+
+    #[test]
+    fn pool_budget_sizing_quotes() {
+        let files = pool_budget_fixture(Some("10"));
+        for value in ["190", "'190'", "\"190\""] {
+            let conf = format!("max_connections = {value}");
+            assert_eq!(
+                pool_budget(
+                    Some(&files),
+                    "sizing-a5.conf",
+                    Some(&conf),
+                    &BTreeMap::new()
+                ),
+                json!({"check": "pool_budget", "status": "pass", "reasons": [],
+                    "connections": 72, "max_connections": 190}),
+                "{value}"
+            );
+        }
+        for value in [
+            "'190",
+            "'190\"",
+            "190'",
+            "\"190",
+            "190\"",
+            "''190''",
+            "[190]",
+            "'190'junk",
+        ] {
+            let conf = format!("max_connections = {value}");
+            assert_eq!(
+                pool_budget(
+                    Some(&files),
+                    "sizing-a5.conf",
+                    Some(&conf),
+                    &BTreeMap::new()
+                ),
+                json!({"check": "pool_budget", "status": "fail",
+                    "reasons": ["pool_budget_key:sizing-a5.conf:max_connections"]}),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn pool_budget_committed_values_pass() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/env/values");
+        let files = read_env_dir(&dir, "values", ".env").expect("committed values");
+        assert_eq!(files.len(), 6);
+        assert_eq!(
+            files.iter().map(|f| f.process.as_str()).collect::<Vec<_>>(),
+            [
+                "admin",
+                "consolidation-worker",
+                "gateway",
+                "maintenance",
+                "private-worker",
+                "retrieval-worker"
+            ]
+        );
+        let conf = include_str!("../../../deploy/postgres/sizing-a5.conf");
+        let result = pool_budget(Some(&files), "sizing-a5.conf", Some(conf), &BTreeMap::new());
+        assert_eq!(result["status"], "pass");
+        assert_eq!(result["reasons"], json!([]));
         assert_eq!(result["connections"], 72);
         assert_eq!(result["max_connections"], 190);
     }
