@@ -638,9 +638,8 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::billing_repo`
 - (no process): `adapters::tests::billing_repo`
-- (no process): `gateway::tests::billing_webhook`
-- process(humaux-gateway): `adapters::billing_repo`
 
 executed by:
 

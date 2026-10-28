@@ -1,6 +1,6 @@
 //! `domain::context` — §25.4 Mandatory Context Lane + §25.5 Budget/Overflow。
 //! Depends-on: crates=[sha2, uuid]; services=[PostgreSQL(any) r=[private.memory_records]]; env=[]; modules=[domain::authority, domain::confirm, domain::error, domain::evidence, domain::grounding, domain::ids, domain::memory]
-//! Called-by: [adapters::context_repo, adapters::continuity_read, application::continuity, application::pin, gateway::bootstrap, gateway::context, gateway::continuity, gateway::mcp_application, gateway::memory, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, tests]
+//! Called-by: [adapters::context_repo, adapters::continuity_read, application::continuity, application::pin, gateway::bootstrap, gateway::context, gateway::continuity, gateway::mcp_application, gateway::memory, retrieval::brief, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, tests]
 //! Invariants: [zero IO: Mandatory selection has no query/embedding input, Mandatory items are never evicted by
 //!   rerank, and an overflow is cannot_establish, never a silent truncation]
 //! Spec: Baseline §1.2.1; §8.8; §10.1; ADR-0006; ADR-0019; ADR-0045
@@ -906,6 +906,62 @@ impl ContextBudget {
         Ok(SupplementalBudget(
             self.total_tokens.saturating_sub(required),
         ))
+    }
+}
+
+/// §78.1: registry-supplied brief limits have no domain defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BriefBudget {
+    cap_tokens: u32,
+    prefix_share_percent: u8,
+    prevention_cap: usize,
+    reuse_cap: usize,
+}
+
+impl BriefBudget {
+    /// §78.1: configuration must be validated before assembly.
+    ///
+    /// # Errors
+    /// Returns [`ErrorCode::InvalidInput`] for a share outside `0..=100`.
+    pub const fn new(
+        cap_tokens: u32,
+        prefix_share_percent: u8,
+        prevention_cap: usize,
+        reuse_cap: usize,
+    ) -> Result<Self, ErrorCode> {
+        if prefix_share_percent > 100 {
+            return Err(ErrorCode::InvalidInput);
+        }
+        Ok(Self {
+            cap_tokens,
+            prefix_share_percent,
+            prevention_cap,
+            reuse_cap,
+        })
+    }
+
+    /// §25.5: Mandatory and optional sections share this total cap.
+    #[must_use]
+    pub const fn cap_tokens(self) -> u32 {
+        self.cap_tokens
+    }
+
+    /// §25.5: the prefix share limits optional items only.
+    #[must_use]
+    pub const fn optional_prefix_tokens(self) -> u64 {
+        (self.cap_tokens as u64 * self.prefix_share_percent as u64) / 100
+    }
+
+    /// §78.1: prevention quotas come from the registry.
+    #[must_use]
+    pub const fn prevention_cap(self) -> usize {
+        self.prevention_cap
+    }
+
+    /// §78.1: reuse quotas come from the registry.
+    #[must_use]
+    pub const fn reuse_cap(self) -> usize {
+        self.reuse_cap
     }
 }
 
