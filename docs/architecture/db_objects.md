@@ -9064,6 +9064,10 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
+foreign keys (outgoing):
+- fk: tenant_id, snapshot_id, from_symbol_id -> private.code_symbols (NOT NULL)
+- fk: tenant_id, snapshot_id, to_symbol_id -> private.code_symbols (NULL)
+
 read by:
 - (no process): `adapters::tests::facet_contract`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -9156,6 +9160,9 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
+
+foreign keys (outgoing):
+- fk: tenant_id, snapshot_id, file_id -> private.code_files (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::facet_contract`
