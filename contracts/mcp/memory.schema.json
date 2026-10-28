@@ -918,6 +918,16 @@
         "action": {
           "const": "note_put"
         },
+        "evidence_refs": {
+          "description": "module_design_M06.md §2 / D4: M06-4 wires evidence refs; until then a non-empty value is refused with INVALID_INPUT.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "maxItems": 16,
+          "uniqueItems": true
+        },
         "content": {
           "description": "ADR-0067 D-E: the note body, stored verbatim (no trim, no newline or Unicode normalisation) as the Memory's content.key_claim. At most 65536 UTF-8 bytes once decoded (the schema limit counts code points; the server enforces the byte limit); U+0000 is refused, never repaired.",
           "type": "string",
