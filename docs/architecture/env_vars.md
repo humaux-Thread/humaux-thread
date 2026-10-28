@@ -6063,6 +6063,7 @@ modules:
 - `gateway::tests::auth_pages`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::ops_listener`

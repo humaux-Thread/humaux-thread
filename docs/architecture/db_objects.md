@@ -227,6 +227,7 @@ written by:
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::coordinate_task`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::service_credentials`
@@ -702,6 +703,7 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
+- (no process): `gateway::tests::mcp_forget`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -710,6 +712,7 @@ written by:
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::support::governance_ops`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::confirm_token_repo`
@@ -1144,7 +1147,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::forget_repo`
+- process(cargo-xtask): `xtask::architecture_check`
+- process(humaux-gateway): `adapters::forget_repo`
 
 ### `control.deletion_request_freeze`
 - kind: function (SECURITY DEFINER)
@@ -1162,9 +1166,9 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::forget_preview`
 - process(cargo-xtask): `xtask::architecture_check`
+- process(humaux-gateway): `adapters::forget_repo`
 
 ### `control.deletion_requests`
 - kind: table
@@ -1194,12 +1198,14 @@ foreign keys (outgoing):
 - fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
-- (no process): `adapters::forget_repo`
+- (no process): `gateway::tests::mcp_forget`
+- process(humaux-gateway): `adapters::forget_repo`
 
 written by:
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::forget_repo`
+- (no process): `gateway::tests::mcp_forget`
 
 executed by:
 
@@ -1227,14 +1233,15 @@ foreign keys (outgoing):
 - fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
-- (no process): `adapters::forget_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::forget_repo`
+- (no process): `gateway::tests::mcp_forget`
 
 executed by:
 
@@ -6454,13 +6461,14 @@ foreign keys (outgoing):
 - fk: deletion_request_id, tenant_id -> control.deletion_requests (NOT NULL)
 
 read by:
-- (no process): `adapters::forget_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_repo`
+- (no process): `gateway::tests::mcp_forget`
 
 executed by:
 
@@ -7366,6 +7374,7 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
+- (no process): `gateway::tests::mcp_forget`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
@@ -7377,6 +7386,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::forget_confirm`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `gateway::tests::mcp_gateway`
 
 executed by:
@@ -8144,7 +8154,7 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::forget_repo`
+- process(humaux-gateway): `adapters::forget_repo`
 
 ### `ops.record_public_revocation_fact`
 - kind: function
@@ -10237,7 +10247,6 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::contribution_repo`
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::evidence_task_runs`
@@ -10274,6 +10283,7 @@ read by:
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::distill_repo`
 - process(humaux-gateway): `adapters::exact_census`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::memory_governance_repo`
 - process(humaux-gateway): `adapters::note_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
@@ -10515,11 +10525,11 @@ foreign keys (outgoing):
 - fk: tenant_id, subject_id -> private.subjects (NOT NULL)
 
 read by:
-- (no process): `adapters::forget_repo`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::read_materialize`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -11055,12 +11065,12 @@ foreign keys (outgoing):
 - fk: memory_id -> private.memory_records (NOT NULL)
 
 read by:
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - (no process): `private-worker::tests::m29_attribution_e2e`
 - process(cargo-xtask): `adapters::affect_repo`
@@ -11088,6 +11098,7 @@ read by:
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::exact_census`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::memory_governance_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
 - process(humaux-gateway): `adapters::postgres`
@@ -11173,6 +11184,7 @@ written by:
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -11378,7 +11390,6 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::contribution_repo`
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::continuity_publish`
@@ -11392,6 +11403,7 @@ read by:
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `gateway::tests::continuity_get`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::drill`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
@@ -11430,6 +11442,7 @@ read by:
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::exact_census`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::grep_repo`
 - process(humaux-gateway): `adapters::note_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
@@ -11913,12 +11926,12 @@ grants (runtime roles):
 - role_private_worker: SELECT
 
 read by:
-- (no process): `adapters::forget_repo`
 - process(cargo-xtask): `adapters::memory_repo`
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::memory_repo`
 - process(humaux-consolidation-worker): `adapters::read_materialize`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::memory_repo`
 - process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::memory_repo`
@@ -13938,7 +13951,6 @@ grants (runtime roles):
 foreign keys (outgoing):
 
 read by:
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
@@ -13948,6 +13960,7 @@ read by:
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::measure`
 - process(cargo-xtask): `adapters::context_repo`
@@ -13973,6 +13986,7 @@ read by:
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::exact_census`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::memory_governance_repo`
 - process(humaux-gateway): `adapters::note_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
@@ -14012,7 +14026,6 @@ read by:
 - process(humaux-retrieval-worker): `adapters::retrieve`
 
 written by:
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
@@ -14051,6 +14064,7 @@ written by:
 - process(cargo-xtask): `xtask::architecture_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(humaux-consolidation-worker): `adapters::stream_repo`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::projection_worker`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::projection_worker`
