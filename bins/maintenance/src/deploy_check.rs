@@ -10,8 +10,11 @@
 //!   key, file, target) and never a value; a compose document with a resolved secret value is refused
 //!   `resolved_env_input` (exit 2) before any other parsing; any failing reason ⇒ exit 3; a missing input of a
 //!   check, a mode flag without its value, or no check selected is a usage error (exit 2) naming the flag — the
-//!   release gate is fail-closed and its receipt has no `not_applicable` state (review fix 9, F8 / OP-7)]
-//! Spec: Baseline §4.2; §4.4; §57.1; §67.2; ADR-0066 D-C, D-H, D-J, D-K, D-R; ADR-0125
+//!   release gate is fail-closed and its receipt has no `not_applicable` state (review fix 9, F8 / OP-7);
+//!   the pure pool-budget function sums supplied process pools and replicas plus reserves inside the supplied
+//!   connection ceiling, without reading deploy files or changing release checks (§48.1 / §78.1)]
+//! Spec: Baseline §4.2; §4.4; §48.1; §57.1; §67.2; §78.1; ADR-0065 D-A/D-B;
+//!   ADR-0066 D-C, D-G, D-H, D-J, D-K, D-R; ADR-0100; ADR-0125
 //! dep-map: allow env-undeclared — the HUMAUX_* names here are checked in values files, compose documents and container
 //!   env; this module reads none of them from its own environment
 //!
@@ -823,6 +826,98 @@ fn pair_reasons(pair: &Pair, doc: &Value, all: &BTreeMap<&String, &Value>) -> Ve
 // ---------------------------------------------------------------------------------------------------------------
 // --env
 // ---------------------------------------------------------------------------------------------------------------
+
+// §48.1 / ADR-0065 D-A: the three reserved connections sit inside max_connections.
+const PG_RESERVED: u64 = 3;
+// §48.1 / ADR-0100 Ceilings: the singleton adds one session beyond the reusable pool.
+const PG_SINGLETON: u64 = 1;
+// §48.1 / ADR-0066 D-G: arithmetic is by process; an omitted replica count means one.
+const DEFAULT_REPLICAS: u64 = 1;
+
+fn pool_budget_number(file: &EnvFile, key: &str) -> Result<u64, String> {
+    let number = file.value(key).map(str::parse::<u64>).transpose();
+    match number {
+        Ok(value) if !file.unreadable.iter().any(|k| k == key) => value
+            .filter(|n| *n > 0)
+            .ok_or_else(|| format!("pool_budget_key:{}:{key}", file.name)),
+        _ => Err(format!("pool_budget_key:{}:{key}", file.name)),
+    }
+}
+
+/// §48.1 / §57.1: pure budget for the supplied deployed processes; missing inputs never pass.
+/// `replicas` is keyed by process name, defaults to one, and introduces no configuration key.
+/// ADR-0065 D-A/D-B and ADR-0100 reserves are inside the supplied sizing ceiling (§78.1).
+pub fn pool_budget(
+    values: Option<&[EnvFile]>,
+    sizing_name: &str,
+    sizing: Option<&str>,
+    replicas: &BTreeMap<&str, u64>,
+) -> Value {
+    let missing =
+        |name: &str| json!({"check": "pool_budget", "status": "not_applicable", "reasons": [name]});
+    let Some(values) = values.filter(|files| !files.is_empty()) else {
+        return missing("values/");
+    };
+    let Some(sizing) = sizing else {
+        return missing(sizing_name);
+    };
+    let limits: Vec<_> = sizing
+        .lines()
+        .filter_map(|line| line.split('#').next()?.split_once('='))
+        .filter(|(key, _)| key.trim() == "max_connections")
+        .map(|(_, value)| value.trim().trim_matches('\'').parse::<u64>())
+        .collect();
+    if limits.is_empty() {
+        return missing(&format!("{sizing_name}:max_connections"));
+    }
+    let limit = match limits.as_slice() {
+        [Ok(limit)] if *limit > 0 => *limit,
+        _ => {
+            return check(
+                "pool_budget",
+                vec![format!("pool_budget_key:{sizing_name}:max_connections")],
+            );
+        }
+    };
+    let mut total = PG_RESERVED + PG_SINGLETON;
+    let mut largest = (0, String::new());
+    let mut reasons = Vec::new();
+    for file in values {
+        let prefix = format!("HUMAUX_{}", file.process.replace('-', "_").to_uppercase());
+        let key = format!("{prefix}_PG_POOL_MAX_CONNECTIONS");
+        let count = pool_budget_number(file, &key).and_then(|max| {
+            let replicas = replicas
+                .get(file.process.as_str())
+                .copied()
+                .unwrap_or(DEFAULT_REPLICAS);
+            if replicas == 0 {
+                return Err(format!("pool_budget_replicas:{}", file.name));
+            }
+            max.checked_mul(replicas)
+                .ok_or_else(|| format!("pool_budget_key:{}:{key}", file.name))
+        });
+        match count {
+            Ok(count) => {
+                if count > largest.0 {
+                    largest = (count, format!("{}:{key}", file.name));
+                }
+                if let Some(sum) = total.checked_add(count) {
+                    total = sum;
+                } else {
+                    reasons.push(format!("pool_budget_key:{}:{key}", file.name));
+                }
+            }
+            Err(reason) => reasons.push(reason),
+        }
+    }
+    if reasons.is_empty() && total > limit {
+        reasons.push(format!("pool_budget_exceeded:{}", largest.1));
+    }
+    let mut result = check("pool_budget", reasons);
+    result["connections"] = json!(total);
+    result["max_connections"] = json!(limit);
+    result
+}
 
 /// One env file: its display name (`values/<p>.env` / `secrets/<p>.secret.env`), the process stem `<p>`, and its
 /// `KEY=VALUE` lines (comments and blank lines dropped).
@@ -1947,6 +2042,158 @@ pub fn run(args: &[String]) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pool_budget_fixture(private_max: Option<&str>) -> Vec<EnvFile> {
+        [
+            ("admin", Some("10")),
+            ("consolidation-worker", Some("10")),
+            ("gateway", Some("18")),
+            ("maintenance", Some("10")),
+            ("private-worker", private_max),
+            ("retrieval-worker", Some("10")),
+        ]
+        .into_iter()
+        .map(|(process, max)| {
+            let key = format!(
+                "HUMAUX_{}_PG_POOL_MAX_CONNECTIONS",
+                process.replace('-', "_").to_uppercase()
+            );
+            let text = max.map_or_else(String::new, |max| format!("{key}={max}"));
+            EnvFile::parse(&format!("values/{process}.env"), process, &text)
+        })
+        .collect()
+    }
+
+    fn assert_pool_budget(files: &[EnvFile], status: &str, reasons: &[&str]) -> Value {
+        let result = pool_budget(
+            Some(files),
+            "sizing-a5.conf",
+            Some("max_connections = 190"),
+            &BTreeMap::new(),
+        );
+        assert_eq!(result["status"], status);
+        assert_eq!(
+            result["reasons"].as_array().expect("reasons").len(),
+            reasons.len()
+        );
+        assert_eq!(result["reasons"], json!(reasons));
+        result
+    }
+
+    #[test]
+    fn pool_budget_fixture_passes() {
+        let files = pool_budget_fixture(Some("10"));
+        assert_eq!(files.len(), 6);
+        assert_eq!(
+            files.iter().map(|f| f.process.as_str()).collect::<Vec<_>>(),
+            [
+                "admin",
+                "consolidation-worker",
+                "gateway",
+                "maintenance",
+                "private-worker",
+                "retrieval-worker"
+            ]
+        );
+        let result = assert_pool_budget(&files, "pass", &[]);
+        assert_eq!(result["connections"], 72);
+        assert_eq!(result["max_connections"], 190);
+    }
+
+    #[test]
+    fn pool_budget_boundary() {
+        let exact = assert_pool_budget(&pool_budget_fixture(Some("128")), "pass", &[]);
+        assert_eq!(exact["connections"], 190);
+        let over = assert_pool_budget(
+            &pool_budget_fixture(Some("129")),
+            "fail",
+            &[
+                "pool_budget_exceeded:values/private-worker.env:HUMAUX_PRIVATE_WORKER_PG_POOL_MAX_CONNECTIONS",
+            ],
+        );
+        assert_eq!(over["connections"], 191);
+    }
+
+    #[test]
+    fn pool_budget_over_budget_fails() {
+        assert_pool_budget(
+            &pool_budget_fixture(Some("190")),
+            "fail",
+            &[
+                "pool_budget_exceeded:values/private-worker.env:HUMAUX_PRIVATE_WORKER_PG_POOL_MAX_CONNECTIONS",
+            ],
+        );
+    }
+
+    #[test]
+    fn pool_budget_missing_pool_key_fails() {
+        assert_pool_budget(
+            &pool_budget_fixture(None),
+            "fail",
+            &[
+                "pool_budget_key:values/private-worker.env:HUMAUX_PRIVATE_WORKER_PG_POOL_MAX_CONNECTIONS",
+            ],
+        );
+    }
+
+    #[test]
+    fn pool_budget_missing_sizing_not_applicable() {
+        assert_eq!(
+            pool_budget(
+                Some(&pool_budget_fixture(Some("10"))),
+                "sizing-a5.conf",
+                None,
+                &BTreeMap::new(),
+            ),
+            json!({"check": "pool_budget", "status": "not_applicable", "reasons": ["sizing-a5.conf"]})
+        );
+    }
+
+    #[test]
+    fn pool_budget_missing_sizing_key_not_applicable() {
+        let result = pool_budget(
+            Some(&pool_budget_fixture(Some("10"))),
+            "sizing-a5.conf",
+            Some("# unset"),
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            result,
+            json!({"check": "pool_budget", "status": "not_applicable",
+            "reasons": ["sizing-a5.conf:max_connections"]})
+        );
+    }
+
+    #[test]
+    fn pool_budget_missing_values_not_applicable() {
+        for values in [None, Some([].as_slice())] {
+            assert_eq!(
+                pool_budget(
+                    values,
+                    "sizing-a5.conf",
+                    Some("max_connections = 190"),
+                    &BTreeMap::new()
+                ),
+                json!({"check": "pool_budget", "status": "not_applicable", "reasons": ["values/"]})
+            );
+        }
+    }
+
+    #[test]
+    fn pool_budget_replicas_are_supplied_by_process() {
+        let files = pool_budget_fixture(Some("110"));
+        let result = pool_budget(
+            Some(&files),
+            "sizing-a5.conf",
+            Some("max_connections = 190"),
+            &BTreeMap::from([("gateway", 2)]),
+        );
+        assert_eq!(
+            result,
+            json!({"check": "pool_budget", "status": "pass", "reasons": [],
+            "connections": 190, "max_connections": 190})
+        );
+    }
 
     /// `docker compose -p humaux-fixture --env-file deploy/env/sizing-a5.env --env-file deploy/env/node.env.example
     /// -f deploy/compose/prod.yml --profile ops --profile rehearsal config --format json --no-env-resolution`

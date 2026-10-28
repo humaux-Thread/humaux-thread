@@ -446,7 +446,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `Qdrant(*)`
 
 #### `infra-egress::http`
-- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -1420,14 +1419,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `telemetry::metrics`
 - service `HTTP(loopback)`
 
-### process(humaux-billing-worker)
-
-#### `billing-worker::main`
-
-#### `billing-worker::mode`
-- env `HUMAUX_BILLING_CREEM_TEST_BASE_URL`
-- env `HUMAUX_BILLING_PROVIDER_MODE`
-
 ### process(humaux-consolidation-worker)
 
 #### `adapters::affect_repo`
@@ -1944,7 +1935,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
-- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -2674,7 +2664,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
-- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -3270,7 +3259,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `Qdrant(*)`
 
 #### `infra-egress::http`
-- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -4344,7 +4332,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
-- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -5008,7 +4995,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `UDS(private-worker)`
 
 #### `infra-egress::http`
-- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
@@ -5415,6 +5401,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::cost_repo`
 
 executed by:
 
@@ -7055,6 +7042,7 @@ written by:
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::coord_rls`
 - (no process): `adapters::tests::coord_task_run`
+- (no process): `adapters::tests::cost_repo`
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::entitlement_projector`
@@ -8914,13 +8902,23 @@ executed by:
 
 ### `ops.tenant_cost_events`
 read by:
+- (no process): `adapters::tests::cost_repo`
 
 written by:
+- (no process): `adapters::cost_repo`
 - (no process): `adapters::tests::model_call_ledger`
 - process(humaux-consolidation-worker): `adapters::model_call_ledger`
 - process(humaux-maintenance): `adapters::model_call_ledger`
 - process(humaux-private-worker): `adapters::model_call_ledger`
 - process(humaux-retrieval-worker): `adapters::model_call_ledger`
+
+executed by:
+
+### `ops.tenant_margin_v`
+read by:
+- (no process): `adapters::tests::cost_repo`
+
+written by:
 
 executed by:
 
@@ -12560,6 +12558,7 @@ executed by:
 - `adapters::contribution_reasoner`
 - `adapters::contribution_repo`
 - `adapters::coord_repo`
+- `adapters::cost_repo`
 - `adapters::credential_repo`
 - `adapters::disclosure`
 - `adapters::distill_repo`
@@ -12695,6 +12694,7 @@ executed by:
 - `adapters::tests::continuity_publish`
 - `adapters::tests::coord_rls`
 - `adapters::tests::coord_task_project`
+- `adapters::tests::cost_repo`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
@@ -13002,6 +13002,7 @@ executed by:
 - `xtask::soak`
 
 ### `PostgreSQL(role_migration_owner)`
+- `adapters::tests::cost_repo`
 - `adapters::tests::forget_confirm`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::phase9_independence_attestation`
@@ -13020,6 +13021,7 @@ executed by:
 - `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_pipeline`
 - `adapters::tests::contribution_repo`
+- `adapters::tests::cost_repo`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -13242,9 +13244,6 @@ executed by:
 - `admin::tests::probes`
 - `public-pool::tests::mechanism_observation`
 
-### `subprocess(humaux-billing-worker)`
-- `billing-worker::tests::mode_gate`
-
 ### `subprocess(humaux-consolidation-worker)`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::exit_codes`
@@ -13357,6 +13356,7 @@ modules naming it:
 - `adapters::coord_repo`
 - `adapters::coord_task_repo`
 - `adapters::coord_tree_repo`
+- `adapters::cost_repo`
 - `adapters::credential_repo`
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
@@ -13418,6 +13418,7 @@ modules naming it:
 - `adapters::tests::contribution_repo`
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::cost_repo`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -13504,6 +13505,7 @@ modules naming it:
 - `adapters::coord_repo`
 - `adapters::coord_task_repo`
 - `adapters::coord_tree_repo`
+- `adapters::cost_repo`
 - `adapters::credential_repo`
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
@@ -13568,6 +13570,7 @@ modules naming it:
 - `adapters::tests::contribution_scan`
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
+- `adapters::tests::cost_repo`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
@@ -14217,6 +14220,7 @@ modules naming it:
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
+- `adapters::tests::cost_repo`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -14552,6 +14556,7 @@ modules naming it:
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
+- `adapters::tests::cost_repo`
 - `adapters::tests::credential_grants`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
@@ -14662,6 +14667,7 @@ modules naming it:
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
+- `adapters::tests::cost_repo`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::email_outbox`
@@ -15231,6 +15237,7 @@ modules naming it:
 - `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
 - `protocol::tests::page_budget`
+- `protocol::tests::remember_source_contract`
 - `tests`
 
 ### humaux-protocol → `humaux-application` (normal)
@@ -15295,6 +15302,7 @@ modules naming it:
 - `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
 - `protocol::tests::page_budget`
+- `protocol::tests::remember_source_contract`
 - `tests`
 
 ### humaux-protocol → `jsonschema` (normal)
@@ -15540,6 +15548,7 @@ modules naming it:
 why: envelope/signals/completeness/handoff/request DTO (de)serialization
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::completeness`
 - `retrieval::envelope`
 - `retrieval::handoff`
@@ -15559,6 +15568,7 @@ modules naming it:
 why: pure domain types (MemoryType, authority, selection) this crate's logic is keyed on
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::compiler`
 - `retrieval::completeness`
 - `retrieval::envelope`
@@ -15581,6 +15591,7 @@ modules naming it:
 why: Handoff::canonical_bytes' sole serialization step (G80-31 byte domain)
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::envelope`
 - `retrieval::handoff`
 - `retrieval::signals`
@@ -15591,6 +15602,7 @@ modules naming it:
 why: Handoff::sha256 byte fingerprint (G80-31)
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::handoff`
 - `retrieval::tests::planner_predicate_eval`
 - `tests`
@@ -15599,6 +15611,7 @@ modules naming it:
 why: dataset.tsv sha256 manifest verification in the eval harness
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::handoff`
 - `retrieval::tests::planner_predicate_eval`
 - `tests`
@@ -17622,15 +17635,6 @@ default run:
 - UDS
 - subprocess
 
-### `bins/billing-worker/tests/mode_gate.rs`
-db-bound (default run): no
-
-services (computed):
-- subprocess
-
-default run:
-- subprocess
-
 ### `bins/consolidation-worker/tests/consolidation_hop_e2e.rs`
 db-bound (default run): yes
 
@@ -18489,6 +18493,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/core_never_auto.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/cost_repo.rs`
 db-bound (default run): yes
 
 services (computed):
@@ -19426,6 +19439,13 @@ services (computed):
 
 default run:
 
+### `crates/protocol/tests/remember_source_contract.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/public-pool/tests/admission_deid.rs`
 db-bound (default run): no
 
@@ -19651,7 +19671,7 @@ default run:
 - `bins/gateway/src/bootstrap.rs:3410` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/gateway/src/bootstrap.rs:3415` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/gateway/src/bootstrap.rs:3420` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/maintenance/src/deploy_check.rs:15` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
+- `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
 - `crates/adapters/tests/contribution_execution_repo.rs:39` [table-undeclared] (line) — static source-text guard; no DB connection

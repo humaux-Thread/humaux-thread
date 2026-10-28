@@ -28,18 +28,6 @@ modules:
 - `admin::tests::exit_codes`
 - `admin::tests::probes`
 
-### `CARGO_BIN_EXE_humaux-billing-worker`
-- witness: literal
-- registry: raw
-
-kind:
-- build-time
-
-processes:
-
-modules:
-- `billing-worker::tests::mode_gate`
-
 ### `CARGO_BIN_EXE_humaux-consolidation-worker`
 - witness: literal
 - registry: raw
@@ -540,38 +528,6 @@ processes:
 - process(cargo-xtask)
 
 modules:
-- `xtask::dep_map`
-
-### `HUMAUX_BILLING_CREEM_TEST_BASE_URL`
-- witness: literal
-- registry: raw
-
-kind:
-- child
-- runtime
-
-processes:
-- process(humaux-billing-worker)
-
-modules:
-- `billing-worker::mode`
-- `billing-worker::tests::mode_gate`
-
-### `HUMAUX_BILLING_PROVIDER_MODE`
-- witness: literal
-- registry: raw
-
-kind:
-- child
-- runtime
-
-processes:
-- process(cargo-xtask)
-- process(humaux-billing-worker)
-
-modules:
-- `billing-worker::mode`
-- `billing-worker::tests::mode_gate`
 - `xtask::dep_map`
 
 ### `HUMAUX_BUILD_GIT_SHA`
@@ -5915,24 +5871,6 @@ processes:
 modules:
 - `xtask::soak`
 
-### `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
-- witness: literal
-- registry: raw
-
-kind:
-- runtime
-
-processes:
-- process(cargo-xtask)
-- process(humaux-consolidation-worker)
-- process(humaux-gateway)
-- process(humaux-maintenance)
-- process(humaux-private-worker)
-- process(humaux-retrieval-worker)
-
-modules:
-- `infra-egress::http`
-
 ### `HUMAUX_TEST_DISPOSABLE_CLUSTER`
 - witness: literal
 - registry: raw
@@ -6121,6 +6059,7 @@ modules:
 - `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
+- `adapters::tests::cost_repo`
 - `adapters::tests::credential_grants`
 - `adapters::tests::disclosure_ledger`
 - `adapters::tests::distill_dispatch_v2`

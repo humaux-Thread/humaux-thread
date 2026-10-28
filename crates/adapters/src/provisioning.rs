@@ -10,7 +10,7 @@
 //!   modules=[adapters::entitlement_repo, adapters::membership_repo, adapters::postgres, adapters::qdrant, adapters::retrieve, application::auth, domain::audit,
 //!   domain::identity, domain::ids, domain::ticket_family, infra-cell::permit, infra-cell::resource,
 //!   infra-cell::transport, projection::serving]
-//! Called-by: [adapters::maintenance_repo, adapters::reasoning_route_onboarding, adapters::rebuild,
+//! Called-by: [adapters::cost_repo, adapters::maintenance_repo, adapters::reasoning_route_onboarding, adapters::rebuild,
 //!   adapters::role_hygiene, maintenance::drill, maintenance::main, maintenance::rebuild_cli, tests, xtask::e2e_seed]
 //! Invariants: [every write goes through a 0186 / 0197 owner definer as role_maintenance, no table INSERT here; one transaction
 //!   per tenant (onboard_tenant installs the tenant GUC for the caller's transaction); the Qdrant probe runs outside any
