@@ -10,3 +10,15 @@ edition = "cloud"
 
 [lints]
 workspace = true
+
+[dependencies]
+# why: existing billing vocabularies and closed error codes (§52, §78.2); used-by: [billing-worker::normalize, billing-worker::signature, tests]
+humaux-domain = { path = "../../crates/domain" }
+# why: webhook envelope parsing (§71.3); used-by: [billing-worker::normalize, tests]
+serde_json = "1"
+# why: constant-time webhook MAC verification (§71.3); used-by: [billing-worker::signature]
+hmac = "0.13"
+# why: provider SHA256 MAC algorithm (§71.3); used-by: [billing-worker::signature]
+sha2 = "0.11"
+# why: provider signature hex decoding (§71.3); used-by: [billing-worker::signature]
+hex = "0.4"

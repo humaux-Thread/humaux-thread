@@ -1156,6 +1156,13 @@ dependencies = [
 [[package]]
 name = "humaux-billing-worker"
 version = "0.1.0"
+dependencies = [
+ "hex",
+ "hmac 0.13.0",
+ "humaux-domain",
+ "serde_json",
+ "sha2 0.11.0",
+]
 
 [[package]]
 name = "humaux-cache"
