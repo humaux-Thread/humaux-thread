@@ -1,4 +1,4 @@
-//! §25.3: pure brief assembly preserves the stable prefix byte domain.
+//! `retrieval::brief` — §25.3 pure brief assembly preserves the stable prefix byte domain.
 //! Depends-on: crates=[humaux-domain, serde, serde_json, sha2]; services=[];
 //!   env=[]; modules=[domain::context]
 //! Called-by: []
@@ -233,7 +233,7 @@ fn missing(kind: SectionKind) -> &'static str {
         SectionKind::Goal => "GOAL facet",
         SectionKind::Constraints => "CONSTRAINTS facet",
         SectionKind::Rejections => "REJECTIONS facet",
-        SectionKind::Prevention => "private.memory_trigger_clauses",
+        SectionKind::Prevention => "memory_trigger_clauses",
         SectionKind::CurrentState => "CURRENT_STATE facet",
         SectionKind::NextActions => "NEXT_ACTIONS facet",
         SectionKind::ActiveTasks => "M18 task/lease read port",
@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn g_m14_3_prefix_matches_exact_serialization() {
         let brief = assemble(BriefInput::default(), budget(0, 0, 0, 0)).unwrap();
-        let expected = r#"{"protocol_version":1,"sections":[{"kind":"UserPinned","content":{"NotApplicable":{"missing":"user pinned rules"}}},{"kind":"Mandatory","content":{"NotApplicable":{"missing":"Mandatory rules"}}},{"kind":"Goal","content":{"NotApplicable":{"missing":"GOAL facet"}}},{"kind":"Constraints","content":{"NotApplicable":{"missing":"CONSTRAINTS facet"}}},{"kind":"Rejections","content":{"NotApplicable":{"missing":"REJECTIONS facet"}}},{"kind":"Prevention","content":{"NotApplicable":{"missing":"private.memory_trigger_clauses"}}}]}"#;
+        let expected = r#"{"protocol_version":1,"sections":[{"kind":"UserPinned","content":{"NotApplicable":{"missing":"user pinned rules"}}},{"kind":"Mandatory","content":{"NotApplicable":{"missing":"Mandatory rules"}}},{"kind":"Goal","content":{"NotApplicable":{"missing":"GOAL facet"}}},{"kind":"Constraints","content":{"NotApplicable":{"missing":"CONSTRAINTS facet"}}},{"kind":"Rejections","content":{"NotApplicable":{"missing":"REJECTIONS facet"}}},{"kind":"Prevention","content":{"NotApplicable":{"missing":"memory_trigger_clauses"}}}]}"#;
         assert_eq!(brief.prefix_canonical_bytes(), expected.as_bytes());
         assert_eq!(
             brief.prefix_sha256,
@@ -322,14 +322,15 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         );
-        assert_eq!(brief.omitted, [0; 13]);
-        assert_eq!(brief.truncated, false);
+        assert_eq!((brief.omitted, brief.truncated), ([0; 13], false));
     }
     #[test]
     fn g_m14_4_omissions_and_mandatory_retention_are_exact() {
         let brief = assemble(populated(), budget(13, 30, 1, 1)).unwrap();
-        assert_eq!(brief.omitted, [1, 0, 2, 2, 2, 2, 0, 1, 2, 2, 2, 2, 2]);
-        assert_eq!(brief.truncated, true);
+        assert_eq!(
+            (brief.omitted, brief.truncated),
+            ([1, 0, 2, 2, 2, 2, 0, 1, 2, 2, 2, 2, 2], true)
+        );
         assert_eq!(
             brief.prefix.sections[MANDATORY].content,
             SectionContent::Items(vec![item("a", 2), item("b", 2)])
@@ -359,8 +360,10 @@ mod tests {
             })
         );
         let brief = assemble(populated(), budget(4, 0, 0, 0)).unwrap();
-        assert_eq!(brief.omitted, [2, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]);
-        assert_eq!(brief.truncated, true);
+        assert_eq!(
+            (brief.omitted, brief.truncated),
+            ([2, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2], true)
+        );
         assert_eq!(
             brief.prefix.sections[MANDATORY].content,
             SectionContent::Items(vec![item("a", 2), item("b", 2)])
@@ -375,7 +378,9 @@ mod tests {
             u64::from(u32::MAX)
         );
         let brief = assemble(populated(), budget(200, 100, 1, 1)).unwrap();
-        assert_eq!(brief.omitted, [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1]);
-        assert_eq!(brief.truncated, true);
+        assert_eq!(
+            (brief.omitted, brief.truncated),
+            ([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1], true)
+        );
     }
 }

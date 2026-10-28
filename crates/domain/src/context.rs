@@ -1,6 +1,6 @@
 //! `domain::context` — §25.4 Mandatory Context Lane + §25.5 Budget/Overflow。
 //! Depends-on: crates=[sha2, uuid]; services=[PostgreSQL(any) r=[private.memory_records]]; env=[]; modules=[domain::authority, domain::confirm, domain::error, domain::evidence, domain::grounding, domain::ids, domain::memory]
-//! Called-by: [adapters::context_repo, adapters::continuity_read, application::continuity, application::pin, gateway::bootstrap, gateway::context, gateway::continuity, gateway::mcp_application, gateway::memory, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, tests]
+//! Called-by: [adapters::context_repo, adapters::continuity_read, application::continuity, application::pin, gateway::bootstrap, gateway::context, gateway::continuity, gateway::mcp_application, gateway::memory, retrieval::brief, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, tests]
 //! Invariants: [zero IO: Mandatory selection has no query/embedding input, Mandatory items are never evicted by
 //!   rerank, and an overflow is cannot_establish, never a silent truncation]
 //! Spec: Baseline §1.2.1; §8.8; §10.1; ADR-0006; ADR-0019; ADR-0045
