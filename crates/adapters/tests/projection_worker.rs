@@ -3064,10 +3064,6 @@ fn archive_uses_set_payload() {
                 .collect::<Vec<_>>(),
             ["filter", "payload"]
         );
-        eprintln!(
-            "G-M10-3 pass: provider_calls=0 payload_writes=1 vector_equal=true checkpoint={}",
-            archive.stream_seq
-        );
     });
 }
 
