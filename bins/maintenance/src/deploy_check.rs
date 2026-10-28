@@ -2103,6 +2103,7 @@ mod tests {
         let mut args = Vec::new();
         let mut word = String::new();
         let mut quote = None;
+        let mut started = false;
         let mut chars = command.chars();
         while let Some(ch) = chars.next() {
             match (quote, ch) {
@@ -2110,18 +2111,21 @@ mod tests {
                 (Some('\''), c) => word.push(c),
                 (_, '\\') => word.push(chars.next().expect("complete shell escape")),
                 (Some(_), c) => word.push(c),
-                (None, '\'' | '"') => quote = Some(ch),
+                (None, '\'' | '"') => {
+                    started = true;
+                    quote = Some(ch);
+                }
                 (None, ';' | '&' | '|' | '\n') => {
-                    finish_word(&mut args, &mut word);
+                    finish_word(&mut args, &mut word, &mut started);
                     parts.push(std::mem::take(&mut args));
                 }
-                (None, c) if c.is_whitespace() => finish_word(&mut args, &mut word),
+                (None, c) if c.is_whitespace() => finish_word(&mut args, &mut word, &mut started),
                 (None, '#') if word.is_empty() => break,
                 (None, c) => word.push(c),
             }
         }
         assert_eq!(quote, None, "complete shell quote");
-        finish_word(&mut args, &mut word);
+        finish_word(&mut args, &mut word, &mut started);
         parts.push(args);
         parts
             .into_iter()
@@ -2130,17 +2134,24 @@ mod tests {
                 let direct = executable == Some("dr")
                     && args.get(1).map(String::as_str) == Some("deploy-check");
                 let compose = executable == Some("$C")
-                    && args.get(1).map(String::as_str) == Some("run")
-                    && args.windows(2).any(|pair| pair == ["dr", "deploy-check"]);
+                    && args.iter().take(6).map(String::as_str).eq([
+                        "$C",
+                        "run",
+                        "--rm",
+                        "-T",
+                        "dr",
+                        "deploy-check",
+                    ]);
                 (direct || compose) && has(args, "--env")
             })
             .collect()
     }
 
-    fn finish_word(args: &mut Vec<String>, word: &mut String) {
-        if !word.is_empty() {
+    fn finish_word(args: &mut Vec<String>, word: &mut String, started: &mut bool) {
+        if *started || !word.is_empty() {
             args.push(std::mem::take(word));
         }
+        *started = false;
     }
 
     #[test]
@@ -2150,8 +2161,10 @@ mod tests {
             format!("echo 'x; {fake} ; x'"),
             format!("echo \"x| {fake} & x\""),
             format!("printf '%s' '{fake}'"),
-            format!("echo dr deploy-check --env"),
+            "echo dr deploy-check --env".to_owned(),
             format!("# {fake}"),
+            "dr '' deploy-check --env".to_owned(),
+            format!("$C run --rm -T echo {fake}"),
         ] {
             assert_eq!(env_commands(&line), Vec::<Vec<String>>::new(), "{line}");
         }
