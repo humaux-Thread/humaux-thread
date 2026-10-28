@@ -392,7 +392,7 @@ fn g_m19_2_wire_round_one_previews_and_forgets_nothing() {
             assert_eq!(tokens[0].get::<_, Vec<u8>>(0), intent);
             assert_eq!(footprint(&mut h), (0, 0, 0, 0, 0));
             assert_eq!(
-                structured(&get(&rig, &h, memory))["content"]["items"]
+                structured(&get(&rig, &h, memory))["items"]
                     .as_array()
                     .expect("items")
                     .len(),
@@ -456,7 +456,7 @@ fn g_m19_2_wire_closure_grew_is_conflict() {
         assert_eq!(footprint(&mut h), (0, 0, 0, 0, 0));
         for id in [memory, other] {
             assert_eq!(
-                structured(&get(&rig, &h, id))["content"]["items"]
+                structured(&get(&rig, &h, id))["items"]
                     .as_array()
                     .expect("items")
                     .len(),
