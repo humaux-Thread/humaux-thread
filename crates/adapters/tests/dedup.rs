@@ -213,7 +213,7 @@ fn ineligible_targets_are_excluded() {
     for statement in [
         "UPDATE private.memory_records SET archived_at=clock_timestamp() WHERE memory_id=$1",
         "UPDATE private.memory_records SET status='expired' WHERE memory_id=$1",
-        "UPDATE private.memory_records SET note_kind='note' WHERE memory_id=$1",
+        "UPDATE private.memory_records SET note_kind='note',note_id=memory_id WHERE memory_id=$1",
         "UPDATE private.memory_evidence SET role='SUPPORTING' WHERE memory_id=$1",
     ] {
         run_db_fixture::<Fixture, _>("g_m15_14_ineligible", |mut h| {
