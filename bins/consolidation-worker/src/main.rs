@@ -1,7 +1,7 @@
 //! `consolidation-worker::main` — `humaux-consolidation-worker` process entry (§4.2 minimal process set; §4.4 admin
 //!   probe contract; §11.7/§11.8 T4.6+T4.7).
 //! Depends-on: crates=[humaux-adapters, humaux-infra-cell, humaux-telemetry, tokio, uuid]; services=[HTTP(loopback),
-//!   PostgreSQL(role_consolidation_worker), UDS(private-worker)]; env=[CARGO_PKG_VERSION,
+//!   PostgreSQL(role_consolidation_worker), UDS(private-worker)]; env=[HUMAUX_CONSOLIDATION_WORKER_PG_POOL_MAX_CONNECTIONS, CARGO_PKG_VERSION,
 //!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_CONSOLIDATION_WORKER_BATCH,
 //!   HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS, HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS,
 //!   HUMAUX_CONSOLIDATION_WORKER_LEASE_SECS, HUMAUX_CONSOLIDATION_WORKER_MAX_ATTEMPTS,
@@ -15,7 +15,7 @@
 //!   `--readyz` fails unless both PG and the private worker's inference socket answer one live round trip;
 //!   `--serve` reads its own HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR (required, loopback) and the one-shot
 //!   modes open no listener; --metrics-families reads no configuration]
-//! Spec: ADR-0036; ADR-0037; §11.6; ADR-0061 D-B; ADR-0061 E10; ADR-0066 D-D; ADR-0066 D-N; ADR-0066 D-O
+//! Spec: ADR-0036; ADR-0037; §11.6; ADR-0061 D-B; ADR-0061 E10; ADR-0066 D-D; ADR-0066 D-N; ADR-0066 D-O; §48.1; §78.1; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G; ADR-0100
 //!
 //! The actual orchestration ([`run_once`] and friends) lives
 //! in `src/lib.rs` — see that module's doc comment for why: a binary-only crate has no target
@@ -119,6 +119,23 @@ fn pg_dsn() -> Result<String, String> {
     Ok(dsn)
 }
 
+// §48.1 / ADR-0065 D-A/D-B: all process entry points share one validated ceiling.
+async fn connect_pool(dsn: &str) -> Result<ConsolidationDbPool, String> {
+    let raw = std::env::var("HUMAUX_CONSOLIDATION_WORKER_PG_POOL_MAX_CONNECTIONS");
+    let raw = match raw {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => {
+            return Err("invalid HUMAUX_CONSOLIDATION_WORKER_PG_POOL_MAX_CONNECTIONS".to_owned());
+        }
+    };
+    let settings = humaux_adapters::postgres::load_pool_settings(raw.as_deref())?;
+    // dep: PostgreSQL(role_consolidation_worker) — sized process pool; role identity checked before use
+    ConsolidationDbPool::connect_with(dsn, &settings)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let args = env::args().skip(1).collect::<Vec<_>>();
@@ -177,7 +194,7 @@ async fn probe_connection() -> ExitCode {
         }
     };
     // dep: PostgreSQL(role_consolidation_worker) — role-scoped pool call
-    match ConsolidationDbPool::connect(&dsn).await {
+    match connect_pool(&dsn).await {
         Ok(_pool) => {
             println!("{BIN}: connected as role_consolidation_worker");
             ExitCode::SUCCESS
@@ -228,7 +245,7 @@ async fn dispatch_mode(resident: bool) -> Result<(), ModeFailure> {
     };
 
     // dep: PostgreSQL(role_consolidation_worker) — role-scoped pool call
-    let pool = ConsolidationDbPool::connect(&dsn).await.map_err(|e| {
+    let pool = connect_pool(&dsn).await.map_err(|e| {
         ModeFailure::runtime(format!(
             "consolidation worker database role connection failed: {e}"
         ))
@@ -346,7 +363,7 @@ impl Shutdown {
 async fn readyz() -> Result<(), String> {
     let dsn = pg_dsn()?;
     // dep: PostgreSQL(role_consolidation_worker) — role-scoped pool call
-    ConsolidationDbPool::connect(&dsn)
+    connect_pool(&dsn)
         .await
         .map_err(|e| format!("PostgreSQL as role_consolidation_worker ({e})"))?;
     let socket_path = required("HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH")?;

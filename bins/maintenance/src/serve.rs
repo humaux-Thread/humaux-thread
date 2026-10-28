@@ -10,7 +10,7 @@
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-telemetry, libc, serde_json, tokio, uuid];
 //!   services=[PostgreSQL(role_maintenance), fs(statvfs of the DR paths)]; env=[CARGO_PKG_VERSION,
 //!   HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS, HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH, HUMAUX_MAINTENANCE_DR_REPO_FS_PATH,
-//!   HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MAINTENANCE_SERVE_AUTHORITY_I4_EVERY_SECONDS,
+//!   HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MAINTENANCE_PG_POOL_MAX_CONNECTIONS, HUMAUX_MAINTENANCE_SERVE_AUTHORITY_I4_EVERY_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_EVERY_SECONDS, HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_LIMIT,
 //!   HUMAUX_MAINTENANCE_SERVE_CYCLE_SECONDS, HUMAUX_MAINTENANCE_SERVE_DR_EVIDENCE_EVERY_SECONDS,
@@ -47,7 +47,7 @@
 //!   owner door call per tenant whose horizon feeds `quota_window_horizon_seconds` (ADR-0072 D-C, D-D); AUTHORITY_I4 is
 //!   one statement per run, reads no budget key, never repairs a row, and a failed run resets `authority_i4_violations`
 //!   to absent, never to 0 (§41.2: a 0 would hide violations)]
-//! Spec: Baseline §4.2; §6.2.1; §15.2; §41.2; §72.2.1; §77; §78.1; ADR-0037; ADR-0043; ADR-0057 D-F; ADR-0057 D-H;
+//! Spec: §48.1; §78.1; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G; ADR-0100; Baseline §4.2; §6.2.1; §15.2; §41.2; §72.2.1; §77; §78.1; ADR-0037; ADR-0043; ADR-0057 D-F; ADR-0057 D-H;
 //!   ADR-0061 D-B; ADR-0062 D-A..D-D; ADR-0062 D-E..D-J; ADR-0062 D-L; ADR-0062 D-N; ADR-0062 D-P; ADR-0062 D-Q;
 //!   ADR-0063 D-H; ADR-0064 D-K; ADR-0064 10.11 D; ADR-0072 D-C; ADR-0072 D-D; ADR-0123 D3; §59.1; §65
 //!
@@ -74,7 +74,7 @@ use humaux_telemetry::metrics::{Routes, families, write_family, write_single_lab
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::resident::{self, Last, Latch, with_statement_timeout};
+use crate::resident::{self, Last, Latch};
 use crate::{Admin, Args, Failure, Output, Result, env, env_parsed};
 
 /// §78.1 / ADR-0061 D-B: `--serve`'s own ops listener address (loopback only, no default); `readyz serve` probes it.
@@ -751,6 +751,27 @@ fn status(shared: &Shared, cycle: Duration, started: SystemTime) -> String {
     Value::Object(doc).to_string()
 }
 
+// §48.1 / ADR-0061 D-D: the cycle remains the sole server-side statement bound.
+async fn connect_pool(dsn: &str, cycle: Duration) -> Result<MaintenanceDbPool> {
+    let raw = std::env::var("HUMAUX_MAINTENANCE_PG_POOL_MAX_CONNECTIONS");
+    let raw = match raw {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => {
+            return Err(Failure::Infra(
+                "invalid HUMAUX_MAINTENANCE_PG_POOL_MAX_CONNECTIONS".to_owned(),
+            ));
+        }
+    };
+    let mut settings =
+        humaux_adapters::postgres::load_pool_settings(raw.as_deref()).map_err(Failure::Infra)?;
+    settings.statement_timeout = cycle;
+    // dep: PostgreSQL(role_maintenance) — sized pool with the existing cycle-derived startup timeout
+    MaintenanceDbPool::connect_with(dsn, &settings)
+        .await
+        .map_err(|e| Failure::Infra(format!("connect {PG_DSN}: {e}")))
+}
+
 /// `--serve`: runs cycles until SIGTERM / SIGINT, serving readiness and the last cycle on the ops listener.
 pub(crate) async fn serve() -> Result<Output> {
     resident::refuse_owner_credentials()?;
@@ -760,9 +781,7 @@ pub(crate) async fn serve() -> Result<Output> {
     let dsn = env(PG_DSN)?;
     let mut latch = Latch::install()?;
     // dep: PostgreSQL(role_maintenance) — the daemon's pool; every statement bounded by CYCLE_SECONDS
-    let pool = MaintenanceDbPool::connect(&with_statement_timeout(&dsn, cfg.cycle))
-        .await
-        .map_err(|e| Failure::Infra(format!("connect {PG_DSN}: {e}")))?;
+    let pool = connect_pool(&dsn, cfg.cycle).await?;
     let shared = Arc::new(Shared {
         last: Last::pending(),
         cycles: Mutex::new((0, false, Value::Null)),
@@ -853,9 +872,7 @@ pub(crate) async fn sweep_once(args: &Args) -> Result<Output> {
     let dsn = env(PG_DSN)?;
     let latch = Latch::install()?;
     // dep: PostgreSQL(role_maintenance) — the one-shot pool; every statement bounded by CYCLE_SECONDS
-    let pool = MaintenanceDbPool::connect(&with_statement_timeout(&dsn, cfg.cycle))
-        .await
-        .map_err(|e| Failure::Infra(format!("connect {PG_DSN}: {e}")))?;
+    let pool = connect_pool(&dsn, cfg.cycle).await?;
     let mut cursors = [Cursor::default(); Task::ALL.len()];
     let runs = cycle(&pool, &cfg, &mut cursors, 0, &latch, &admin.action()).await;
     let failed = runs.iter().any(|(_, run)| run.failed > 0);

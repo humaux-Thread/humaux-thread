@@ -1,6 +1,6 @@
 //! `public-worker::main` — `humaux-public-worker` explicit bounded Phase 9 runner (§14 / §31).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-public-pool, tokio, uuid];
-//!   services=[PostgreSQL(role_public_worker), Qdrant(*)]; env=[HUMAUX_PUBLIC_WORKER_CALLER,
+//!   services=[PostgreSQL(role_public_worker), Qdrant(*)]; env=[HUMAUX_PUBLIC_WORKER_PG_POOL_MAX_CONNECTIONS, HUMAUX_PUBLIC_WORKER_CALLER,
 //!   HUMAUX_PUBLIC_WORKER_CELL_ID, HUMAUX_PUBLIC_WORKER_LEASE_OWNER, HUMAUX_PUBLIC_WORKER_LIMIT,
 //!   HUMAUX_PUBLIC_WORKER_PG_DSN, HUMAUX_PUBLIC_WORKER_QDRANT_CIDR, HUMAUX_PUBLIC_WORKER_QDRANT_COLLECTION,
 //!   HUMAUX_PUBLIC_WORKER_QDRANT_HOST, HUMAUX_PUBLIC_WORKER_QDRANT_PORT, HUMAUX_PUBLIC_WORKER_QDRANT_TLS,
@@ -8,7 +8,7 @@
 //!   infra-cell::resource, infra-cell::transport, public-pool::public_projection, public-pool::public_repo]
 //! Called-by: [process(humaux-public-worker)]
 //! Invariants: [a worker that cannot reach PostgreSQL or Qdrant exits non-zero rather than silently skipping its lease]
-//! Spec: Baseline §4.2; §4.4; §31; ADR-0037
+//! Spec: Baseline §4.2; §4.4; §31; ADR-0037; §48.1; §78.1; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G; ADR-0100
 //!
 //! Phase10 resident evolution is not enabled — this binary has no poll loop, so its whole
 //! lifetime is one bounded pass.
@@ -52,6 +52,21 @@ fn parse<T: std::str::FromStr>(name: &str) -> Result<T, String> {
 
 fn usage() -> &'static str {
     "usage: humaux-public-worker (--readyz | --run-once | --run-anonymous-once)"
+}
+
+// §48.1 / ADR-0065 D-A/D-B: all process entry points share one validated ceiling.
+async fn connect_pool(dsn: &str) -> Result<PublicWorkerDbPool, String> {
+    let raw = std::env::var("HUMAUX_PUBLIC_WORKER_PG_POOL_MAX_CONNECTIONS");
+    let raw = match raw {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => return Err("invalid HUMAUX_PUBLIC_WORKER_PG_POOL_MAX_CONNECTIONS".to_owned()),
+    };
+    let settings = humaux_adapters::postgres::load_pool_settings(raw.as_deref())?;
+    // dep: PostgreSQL(role_public_worker) — sized process pool; role identity checked before use
+    PublicWorkerDbPool::connect_with(dsn, &settings)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tokio::main]
@@ -116,7 +131,7 @@ impl ShutdownLatch {
 async fn readyz() -> Result<(), String> {
     let dsn = required("HUMAUX_PUBLIC_WORKER_PG_DSN")?;
     // dep: PostgreSQL(role_public_worker) — opens the role_public_worker pool for the projection loop
-    PublicWorkerDbPool::connect(&dsn).await.map_err(|e| {
+    connect_pool(&dsn).await.map_err(|e| {
         format!("not ready — missing object: PostgreSQL as role_public_worker ({e})")
     })?;
     let (permit, transport) = build_cell_access()?;
@@ -222,7 +237,7 @@ async fn run() -> Result<(), String> {
         .map_err(|_| "invalid Qdrant collection configuration".to_owned())?;
     let dsn = required("HUMAUX_PUBLIC_WORKER_PG_DSN")?;
     // dep: PostgreSQL(role_public_worker) — reconnects the pool after a lease-loop error
-    let pool = PublicWorkerDbPool::connect(&dsn)
+    let pool = connect_pool(&dsn)
         .await
         .map_err(|_| "public worker database role connection failed".to_owned())?;
 
