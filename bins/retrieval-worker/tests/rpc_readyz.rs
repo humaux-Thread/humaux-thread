@@ -93,7 +93,7 @@ impl ScratchDb {
         let name = format!("humaux_thread_c34_rw_{}", std::process::id());
         for sql in [
             format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"),
-            format!("CREATE DATABASE {name}"),
+            format!("CREATE DATABASE {name} WITH CONNECTION LIMIT 2"),
         ] {
             Self::exec(owner_dsn, &sql);
         }
@@ -297,6 +297,27 @@ async fn readyz_reads_the_403_a_server_sent_before_closing_without_reading() {
     assert_eq!(code, 403, "{body}");
 }
 
+// §48.1 / ADR-0061 D-F: the retained RPC pool plus exactly one transient session.
+async fn assert_serial_readiness(path: &str, owner: &str, database: &str) {
+    let mut probes = Vec::new();
+    for _ in 0..32 {
+        let path = path.to_owned();
+        probes.push(tokio::spawn(async move { get(&path).await.0 }));
+    }
+    let mut codes = Vec::new();
+    for probe in probes {
+        codes.push(probe.await.expect("probe task"));
+    }
+    assert_eq!(codes, vec![200; 32], "concurrent fresh readiness budget");
+    let sessions = tokio::task::block_in_place(|| {
+        // dep: PostgreSQL(owner) — observe only this throwaway database
+        let mut client = Client::connect(&with_db(owner, "postgres"), NoTls).expect("observer");
+        let row = client.query_one("SELECT count(*) FROM pg_stat_activity WHERE datname = $1 AND usename = 'role_retrieval_worker'", &[&database]).expect("session count");
+        row.get::<_, i64>(0)
+    });
+    assert_eq!(sessions, 1, "only the retained RPC pool remains");
+}
+
 /// T-W5: 200 while `role_retrieval_worker` connects; after CONNECT is revoked and its sessions are
 /// terminated on the scratch database, 503 naming `PostgreSQL as role_retrieval_worker`; a peer with
 /// the wrong uid gets 403 from the existing layer. Fault: answer 200 without connecting ⇒ red.
@@ -332,6 +353,7 @@ async fn readyz_answers_from_a_fresh_role_connection_and_names_it_when_refused()
     let path = serve(state(uid, calls)).await;
     let (code, body) = get(&path).await;
     assert_eq!(code, 200, "{body}");
+    assert_serial_readiness(&path, &owner, &db.name).await;
     // ADR-0084 D-B: the rerank route is on the same router; with the lane off (`router`) the right peer is answered
     // `disabled` and no model, database or artifact is touched.
     let (code, body) = post_rerank(&path).await;

@@ -367,6 +367,32 @@ impl PrivateWorkerDbPool {
 pub struct RetrievalWorkerDbPool(PgPool);
 
 impl RetrievalWorkerDbPool {
+    /// §48.1 / ADR-0061 D-F: one fresh role-checked session, explicitly closed before return.
+    /// The RPC caller owns serialization and shields this future from request cancellation.
+    pub async fn probe_fresh(dsn: &str, settings: &PoolSettings) -> Result<(), PoolInitError> {
+        let mut settings = settings.clone();
+        settings.max_connections = 1;
+        settings.min_connections = 0;
+        let pool = open(dsn, Some(&settings)).await?;
+        let result = async {
+            let actual: String = sqlx::query_scalar("SELECT current_user")
+                // dep: PostgreSQL(role_retrieval_worker) — fresh readiness identity check
+                .fetch_one(&pool)
+                .await
+                .map_err(PoolInitError::Connect)?;
+            if actual != ROLE_RETRIEVAL_WORKER {
+                return Err(PoolInitError::RoleMismatch {
+                    expected: ROLE_RETRIEVAL_WORKER,
+                    actual,
+                });
+            }
+            Ok(())
+        }
+        .await;
+        pool.close().await;
+        result
+    }
+
     /// §6.2.3 assertion E: connects and verifies `current_user == "role_retrieval_worker"`.
     pub async fn connect(dsn: &str) -> Result<Self, PoolInitError> {
         connect_checked(dsn, ROLE_RETRIEVAL_WORKER, None)
