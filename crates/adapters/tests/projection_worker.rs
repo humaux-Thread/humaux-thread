@@ -2970,6 +2970,16 @@ fn payload_probe_deps(handle: &Handle, scope: Uuid) -> (ProjectionWorkerDeps, Ar
     (deps, probe)
 }
 
+/// §17: Qdrant removes these nullable visibility keys on set_payload; the request must still clear both.
+fn assert_payload_readback(request: &serde_json::Value, persisted: &serde_json::Value) {
+    let mut expected = request.as_object().expect("request payload").clone();
+    for key in ["visibility_user_id", "visibility_workspace_id"] {
+        assert_eq!(expected.remove(key), Some(serde_json::Value::Null));
+        assert_eq!(persisted.get(key), None);
+    }
+    assert_eq!(&serde_json::Value::Object(expected), persisted);
+}
+
 /// §17 / G-M10-3: a real governance archive updates only the payload, then advances the visible checkpoint.
 #[test]
 fn archive_uses_set_payload() {
@@ -3044,7 +3054,7 @@ fn archive_uses_set_payload() {
                 handle.collection
             )
         );
-        assert_eq!(writes[0].2["payload"], after["payload"]);
+        assert_payload_readback(&writes[0].2["payload"], &after["payload"]);
         assert_eq!(
             writes[0]
                 .2
