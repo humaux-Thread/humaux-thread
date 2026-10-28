@@ -13,15 +13,17 @@
 //!   for the restore drill and `restore pitr` (ADR-0064 D-L..D-O, S5) the witnesses, the newest VERIFIED set, the
 //!   both-sides check reads (catalog, migrations, per-tenant facts, isolation probes) and the drill receipt; for the
 //!   daemon's DR_EVIDENCE task (ADR-0064 D-K / 10.11 D, S6) the one statement over the receipts, the newest
-//!   succeeded drill and the WAL latch, and the D-V estimate ratio both the backup arm and the daemon use.
+//!   succeeded drill and the WAL latch, and the D-V estimate ratio both the backup arm and the daemon use. For the
+//!   report-only I4 authority scan (ADR-0123 D3, §59.1 I4, §65) it owns the AUTHORITY_I4 task's single statement, which
+//!   appends the owner definer's count and id sample to `ops.repair_findings`, and the `authority_i4_violations` gauge.
 //! Depends-on: crates=[hex, humaux-domain, serde, serde_json, sha2, sqlx, time]; services=[PostgreSQL(role_maintenance)
 //!   r=[control.partition_registry, control.retention_policies, ops.backup_receipts, ops.backup_sets,
 //!   ops.jobs, ops.model_call_ledger, ops.restore_witnesses, ops.wal_archive_failures,
 //!   private.evidence_objects, private.memory_records, projection.embedding_fingerprints,
 //!   projection.private_memory_points, projection.rebuild_tickets, projection.stream_log]
-//!   w=[control.partition_registry, ops.backup_receipts, ops.backup_sets, ops.restore_drills, ops.restore_witnesses,
-//!   ops.wal_archive_failures] x=[
-//!   control.maintenance_tenant_page, ops.auto_redrive_schema_failed,
+//!   w=[control.partition_registry, ops.backup_receipts, ops.backup_sets, ops.repair_findings, ops.restore_drills,
+//!   ops.restore_witnesses, ops.wal_archive_failures] x=[
+//!   control.maintenance_tenant_page, ops.auto_redrive_schema_failed, ops.i4_authority_scan,
 //!   ops.purge_expired_selection_snapshots, ops.purge_terminal_jobs, projection.reissue_unsettled_tickets],
 //!   PostgreSQL(owner) r=[control.partition_registry, control.retention_policies] x=[control.partition_create_month,
 //!   control.partition_drop, control.partition_drop_check, control.partition_drop_statements,
@@ -39,10 +41,12 @@
 //!   and the HXRETAIN key first, never sets row_security, and commits its effect with its §77 row or not at all;
 //!   the executor never selects a leaf, never CASCADEs and never detaches CONCURRENTLY; the backup receipts are only
 //!   ever INSERTed (no UPDATE / DELETE path) and a VERIFIED claim the table refuses surfaces as the database error;
-//!   DR_EVIDENCE writes at most one latch row per run and only when no row since the newest VERIFIED start exists]
+//!   DR_EVIDENCE writes at most one latch row per run and only when no row since the newest VERIFIED start exists;
+//!   the I4 scan is one INSERT of the definer's output into the append-only `ops.repair_findings` and never an UPDATE
+//!   or DELETE of anything it reads, and a failed run resets `authority_i4_violations` to absent, never to 0]
 //! Spec: Baseline §4.2; §6.2.1; §6.2.2; §15.2; §48.1; ADR-0057 D-H; ADR-0062 D-D; ADR-0062 D-E; ADR-0062 D-H;
 //!   ADR-0062 D-I; ADR-0062 D-J; ADR-0062 D-N; ADR-0062 D-P; ADR-0062 D-S; ADR-0063 D-F..D-K; ADR-0064 D-J;
-//!   ADR-0064 D-K; ADR-0064 D-V; ADR-0072 D-C; §41.2; §44; §77
+//!   ADR-0064 D-K; ADR-0064 D-V; ADR-0072 D-C; ADR-0123 D3; §41.2; §44; §59.1; §65; §77
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -246,11 +250,13 @@ pub enum MaintenanceTask {
     Partitions,
     /// [`dr_evidence`] (ADR-0064 D-K / 10.11 D): cluster-level like PARTITIONS; one run = one count.
     DrEvidence,
+    /// [`scan_authority_i4`] (ADR-0123 D3, §65): cluster-level like PARTITIONS and report-only; one run = one count.
+    AuthorityI4,
 }
 
 impl MaintenanceTask {
     /// Every task, in D-C cycle order (the counters' slot order).
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Lost,
         Self::QuotaReservations,
         Self::QuotaRenewal,
@@ -262,6 +268,7 @@ impl MaintenanceTask {
         Self::Redrive,
         Self::Partitions,
         Self::DrEvidence,
+        Self::AuthorityI4,
     ];
 
     /// The `/status`, receipt and §41.2 `task` label value (lowercase D-C name; the frozen value set of §41.2).
@@ -278,6 +285,7 @@ impl MaintenanceTask {
             Self::Redrive => "redrive",
             Self::Partitions => "partitions",
             Self::DrEvidence => "dr_evidence",
+            Self::AuthorityI4 => "authority_i4",
         }
     }
 
@@ -329,9 +337,10 @@ static MAINTENANCE_TASK_RUNS_TOTAL: TaskCounters<{ TASKS * 2 }> = TaskCounters::
 static MAINTENANCE_TASK_ROWS_TOTAL: TaskCounters<TASKS> = TaskCounters::new();
 
 /// ADR-0062 D-S: counts one finished door call of `task` (one tenant; one run for the cluster-level
-/// [`MaintenanceTask::Partitions`] and [`MaintenanceTask::DrEvidence`]): `affected` is `Some(rows)` when it committed, `None` when it
-/// failed. Public so the G80-6 witnesses drive the emit without a database; the one production caller is
-/// `maintenance::serve`'s cycle, once per tenant call (once per run for PARTITIONS and DR_EVIDENCE).
+/// [`MaintenanceTask::Partitions`], [`MaintenanceTask::DrEvidence`] and [`MaintenanceTask::AuthorityI4`]): `affected` is
+/// `Some(rows)` when it committed, `None` when it failed. Public so the G80-6 witnesses drive the emit without a
+/// database; the one production caller is `maintenance::serve`'s cycle, once per tenant call (once per run for
+/// PARTITIONS, DR_EVIDENCE and AUTHORITY_I4).
 pub fn count_task_call(task: MaintenanceTask, affected: Option<u64>) {
     let outcome = if affected.is_some() {
         TaskOutcome::Ok
@@ -352,6 +361,84 @@ pub fn maintenance_task_runs_total(task: MaintenanceTask, outcome: TaskOutcome) 
 /// This process's `maintenance_task_rows_total{task}`.
 pub fn maintenance_task_rows_total(task: MaintenanceTask) -> u64 {
     MAINTENANCE_TASK_ROWS_TOTAL.0[task.slot()].get()
+}
+
+// ============================================================================
+// §59.1 I4 / §65 (ADR-0123 D3): the report-only authority scan of the daemon's AUTHORITY_I4 task. One owner definer
+// counts the rows that break `(status = 'superseded') = (superseded_by IS NOT NULL)`; the run appends its answer to
+// `ops.repair_findings` and publishes `authority_i4_violations`. Nothing on this path repairs a row: a correction of
+// production rows is an owner decision (ADR-0123 owner gates), and xtask G-M21-3 reads `scan_authority_i4` for a write verb.
+// ============================================================================
+
+/// The exact §65 job name: the key of `docs/architecture/schedule_register.toml` and the `job` of every finding row.
+pub const AUTHORITY_I4_JOB: &str = "authority superseded_by consistency scan";
+
+/// One I4 scan (§59.1 I4): how many rows violate the biconditional, and at most 100 of their ids in `memory_id` order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorityI4Scan {
+    /// Rows of `private.memory_records` with `(status = 'superseded')` different from `(superseded_by IS NOT NULL)`.
+    pub violations: i64,
+    /// The first (up to 100) violating `memory_id`s; empty when `violations` is 0.
+    pub sample_ids: Vec<Uuid>,
+}
+
+/// ADR-0123 D3 / U3, as role_maintenance in one statement: the owner definer's count and id sample are appended to the
+/// append-only `ops.repair_findings` (cluster row, `tenant_id` NULL) and returned, so no answer exists unrecorded.
+pub async fn scan_authority_i4(pool: &MaintenanceDbPool) -> Result<AuthorityI4Scan, sqlx::Error> {
+    // dep: PostgreSQL(role_maintenance) — ops.i4_authority_scan (0287 owner definer) appended to ops.repair_findings
+    let (violations, sample_ids): (i64, Vec<Uuid>) = sqlx::query_as(
+        "INSERT INTO ops.repair_findings (job, finding_count, sample_ids) \
+         SELECT $1::text, s.finding_count, s.sample_ids FROM ops.i4_authority_scan() AS s \
+         RETURNING finding_count, sample_ids",
+    )
+    .bind(AUTHORITY_I4_JOB)
+    .fetch_one(pool.pool())
+    .await?;
+    Ok(AuthorityI4Scan {
+        violations,
+        sample_ids,
+    })
+}
+
+/// `authority_i4_violations` (§41.2, §65): `None` = the family renders no sample (never ran, or the last AUTHORITY_I4 run
+/// failed). A failed run must never leave 0 behind: a 0 would read as "no violation" and silence
+/// `authority_i4_violations > 0` while the scan itself is broken (the failure shows on `maintenance_task_runs_total`).
+struct I4Gauge(std::sync::Mutex<Option<i64>>);
+
+impl I4Gauge {
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<i64>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn set(&self, violations: i64) {
+        *self.slot() = Some(violations);
+    }
+
+    fn reset(&self) {
+        *self.slot() = None;
+    }
+}
+
+static AUTHORITY_I4_VIOLATIONS: I4Gauge = I4Gauge(std::sync::Mutex::new(None));
+
+/// ADR-0123 D3 / §41.2: publishes one successful scan's violation count. The family's only `.set()`, taken once at the end
+/// of the scan; public so the G80-6 witness drives it without a database; the one production caller is
+/// `maintenance::serve`'s AUTHORITY_I4 run.
+pub fn set_authority_i4_violations(violations: i64) {
+    // labels: -
+    AUTHORITY_I4_VIOLATIONS.set(violations);
+}
+
+/// ADR-0123 D3 / §41.2: a failed AUTHORITY_I4 run removes the sample (absent, never 0).
+pub fn reset_authority_i4_violations() {
+    AUTHORITY_I4_VIOLATIONS.reset();
+}
+
+/// This process's `authority_i4_violations`, `None` while the family has no sample.
+pub fn authority_i4_violations() -> Option<i64> {
+    *AUTHORITY_I4_VIOLATIONS.slot()
 }
 
 // ============================================================================
