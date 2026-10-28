@@ -5056,6 +5056,7 @@ written by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::coordinate_task`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::health_serve`
 
@@ -5598,6 +5599,7 @@ written by:
 - (no process): `adapters::tests::quota_and_rate`
 - (no process): `adapters::tests::request_guard`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `maintenance::tests::serve`
 
 executed by:
@@ -5735,6 +5737,7 @@ written by:
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -6158,6 +6161,7 @@ written by:
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `maintenance::tests::partitions`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -6923,6 +6927,7 @@ written by:
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::health_serve`
 - (no process): `maintenance::tests::partitions`
@@ -7075,6 +7080,7 @@ written by:
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `gateway::tests::auth_pages`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::serve`
@@ -7121,6 +7127,7 @@ written by:
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `private-worker::tests::distill_hop_e2e`
 
@@ -7166,6 +7173,7 @@ written by:
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::onboarding`
@@ -7515,6 +7523,7 @@ read by:
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::onboarding`
@@ -9412,6 +9421,7 @@ written by:
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::cross_tenant_canary`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::partitions`
@@ -9863,6 +9873,7 @@ written by:
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::memory_repo`
 - process(cargo-xtask): `maintenance::switch_visible`
@@ -10112,6 +10123,7 @@ written by:
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::cross_tenant_canary`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::memory_repo`
@@ -11144,6 +11156,7 @@ written by:
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::cross_tenant_canary`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::drill`
@@ -11282,6 +11295,7 @@ written by:
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::onboarding`
@@ -11340,6 +11354,7 @@ executed by:
 - (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::visible_index_count`
+- (no process): `gateway::tests::memory_get_frontier`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::stream_repo`
@@ -11382,6 +11397,7 @@ written by:
 - (no process): `adapters::tests::tenant_placements_migration`
 - (no process): `gateway::tests::cross_tenant_canary`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::drill`
@@ -12086,6 +12102,7 @@ executed by:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::read_decoupling`
 - `xtask::e2e_onboard`
 - `xtask::load`
@@ -12346,6 +12363,7 @@ executed by:
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::ops_listener`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::singleton`
@@ -12499,6 +12517,7 @@ executed by:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::recall_embedding_cache`
 - `gateway::tests::semantic_recall_wiring`
@@ -12557,6 +12576,7 @@ executed by:
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::visible_index_count`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::service_credentials`
 - `maintenance::backup`
 - `maintenance::drill`
@@ -12708,6 +12728,7 @@ executed by:
 - `admin::cell_resources`
 - `gateway::status`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::semantic_recall_wiring`
 - `infra-cell::tests::mainline_ssrf_probe`
@@ -13558,6 +13579,7 @@ modules naming it:
 - `adapters::oauth_repo`
 - `adapters::operation_receipt`
 - `adapters::quota_repo`
+- `adapters::read_gate`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::oauth_persistence`
 - `adapters::tests::operation_receipts`
@@ -14956,9 +14978,11 @@ modules naming it:
 why: projection payload and receipt JSON
 
 modules naming it:
+- `public-pool::admission::deid`
 - `public-pool::completeness`
 - `public-pool::public_projection`
 - `public-pool::public_repo`
+- `public-pool::tests::admission_deid`
 - `public-pool::tests::completeness`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::public_projection`
@@ -15703,6 +15727,7 @@ modules naming it:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
@@ -15726,6 +15751,7 @@ modules naming it:
 - `gateway::tests::console_csrf`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
@@ -15744,6 +15770,7 @@ modules naming it:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::semantic_recall_wiring`
 - `tests`
@@ -15772,6 +15799,7 @@ modules naming it:
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::limiter`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
@@ -15797,6 +15825,7 @@ modules naming it:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
@@ -15812,6 +15841,7 @@ modules naming it:
 - `gateway::remember`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::semantic_recall_wiring`
 - `tests`
 
@@ -15849,6 +15879,7 @@ modules naming it:
 - `gateway::status`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
@@ -15882,6 +15913,7 @@ modules naming it:
 - `gateway::retrieval_embedding_client`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
@@ -15902,6 +15934,7 @@ modules naming it:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
@@ -15938,6 +15971,7 @@ modules naming it:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::ops_listener`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
@@ -16006,6 +16040,7 @@ modules naming it:
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::limiter`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
@@ -16038,6 +16073,7 @@ modules naming it:
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::limiter`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::ops_listener`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
@@ -16067,6 +16103,7 @@ modules naming it:
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::limiter`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
@@ -16086,6 +16123,7 @@ modules naming it:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::ops_listener`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::semantic_recall_wiring`
@@ -16111,6 +16149,7 @@ modules naming it:
 - `gateway::tests::continuity_get`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::memory_get_frontier`
 - `gateway::tests::ops_listener`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
@@ -17251,6 +17290,17 @@ services (computed):
 default run:
 - PostgreSQL
 - subprocess
+
+### `bins/gateway/tests/memory_get_frontier.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+- Qdrant
+
+default run:
+- PostgreSQL
+- Qdrant
 
 ### `bins/gateway/tests/no_memory_text_reader.rs`
 db-bound (default run): no
@@ -18839,6 +18889,13 @@ services (computed):
 
 default run:
 
+### `crates/public-pool/tests/admission_deid.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/public-pool/tests/completeness.rs`
 db-bound (default run): yes
 
@@ -19063,9 +19120,9 @@ default run:
 - `crates/application/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
 - `crates/protocol/Cargo.toml:44` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
-- `crates/public-pool/src/completeness.rs:377` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
-- `crates/retrieval/src/envelope.rs:2010` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
-- `crates/retrieval/src/envelope.rs:2825` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/public-pool/src/completeness.rs:379` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
+- `crates/retrieval/src/envelope.rs:2144` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2963` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/handoff.rs:461` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
 - `crates/retrieval/src/planner.rs:314` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_eval.rs:108` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
@@ -19074,6 +19131,7 @@ default run:
 - `crates/retrieval/tests/planner_predicate_eval.rs:223` [table-undeclared] (line) — parses migration SQL text; no DB connection
 - `crates/retrieval/tests/planner_predicate_eval.rs:355` [table-undeclared] (line) — parses migration SQL text; no DB connection
 - `crates/testkit/Cargo.toml:25` [cargo-usedby] (line) — no module in this crate imports proptest directly today; kept
-- `xtask/src/dep_map.rs:11` [table-undeclared] (file) — unit-test fixtures name schema objects in strings
-- `xtask/src/dep_map.rs:12` [table-write] (file) — unit-test fixtures spell write statements in strings
-- `xtask/src/dep_map.rs:13` [env-undeclared] (file) — fixtures and test_target_services name HUMAUX_* variables they never read
+- `xtask/src/architecture_check.rs:6` [table-undeclared] (file) — the G-M23-3 / G-M23-3b fixtures name schema objects in strings
+- `xtask/src/dep_map.rs:13` [table-undeclared] (file) — unit-test fixtures name schema objects in strings
+- `xtask/src/dep_map.rs:14` [table-write] (file) — unit-test fixtures spell write statements in strings
+- `xtask/src/dep_map.rs:15` [env-undeclared] (file) — fixtures and test_target_services name HUMAUX_* variables they never read
