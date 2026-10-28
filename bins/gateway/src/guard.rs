@@ -823,34 +823,37 @@ impl GatewayGuard {
         source: Option<SourceIdentity>,
     ) -> Result<AtomicRememberResult, SourcedPutError> {
         match (note, source) {
-            (Some(note), _) => operation_receipt::note_put_atomically(
-                &self.pool,
-                authorization,
-                request,
-                note,
-                &crate::bootstrap::MEMORY_ATTRIBUTION,
-            )
-            .await
-            .map_err(SourcedPutError::from),
+            (Some(note), _) => {
+                operation_receipt::note_put_atomically(
+                    &self.pool,
+                    authorization,
+                    request,
+                    note,
+                    &crate::bootstrap::MEMORY_ATTRIBUTION,
+                )
+                .await
+            }
             (None, Some(source)) => {
-                operation_receipt::remember_sourced_atomically(
+                return operation_receipt::remember_sourced_atomically(
                     &self.pool,
                     authorization,
                     request,
                     &source,
                 )
+                .await;
+            }
+            (None, None) => {
+                operation_receipt::remember_for_task_run_atomically(
+                    &self.pool,
+                    authorization,
+                    request,
+                    task_run,
+                    project,
+                )
                 .await
             }
-            (None, None) => operation_receipt::remember_for_task_run_atomically(
-                &self.pool,
-                authorization,
-                request,
-                task_run,
-                project,
-            )
-            .await
-            .map_err(SourcedPutError::from),
         }
+        .map_err(SourcedPutError::from)
     }
 
     /// A local write, its BMO settlement and its success audit share one commit.
