@@ -1,7 +1,7 @@
 //! `application::signed_token` — HMAC-SHA256 key set and the labelled sign/verify wire shared by every
 //!   self-contained token the gateway issues (RYW `consistency_token` today; M02 access tokens and `context_ref` next).
 //! Depends-on: crates=[hex, hmac, rand, sha2]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::retrieve, application::oauth, application::session, gateway::auth_pages, gateway::oauth_http, protocol::page, tests]
+//! Called-by: [adapters::retrieve, application::oauth, application::session, gateway::auth_pages, gateway::billing_webhook, gateway::oauth_http, protocol::page, tests]
 //! Invariants: [a key is ≥ 32 bytes and `previous != current`; `Debug` and every error name a key id or a rule, never
 //!   key bytes; the token kind lives only in its [`TokenLabel`], so two kinds under one key never share a MAC or a kid;
 //!   a token is MAC-verified before any caller sees one payload byte]
@@ -24,6 +24,18 @@ const MIN_TOKEN_KEY_BYTES: usize = 32;
 const DEBUG_KID_LABEL: &[u8] = b"humaux.signed_token.debug.kid.v1";
 
 type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+
+/// §71.3 invariant: the raw-body webhook MAC is unlabelled and must never be compared with a labelled one.
+#[must_use]
+pub fn verify_hmac_sha256_hex(secret: &[u8], body: &[u8], signature_hex: &str) -> bool {
+    let Ok(tag) = hex::decode(signature_hex) else {
+        return false;
+    };
+    let mut mac =
+        <HmacSha256 as hmac::KeyInit>::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(body);
+    mac.verify_slice(&tag).is_ok()
+}
 
 /// One token kind's domain separation: the MAC label and the kid label. Two kinds that share a key must differ in
 /// both, or one kind's token verifies as the other's.
@@ -183,6 +195,23 @@ pub fn labelled_hmac(key: &[u8], label: &[u8], data: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_webhook_hmac_rfc4231_case2() {
+        let tag = "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843";
+        let verify = |body: &[u8], tag: &str| verify_hmac_sha256_hex(b"Jefe", body, tag);
+        let body = b"what do ya want for nothing?";
+        assert!(verify(body, tag));
+        assert!(verify(body, &tag.to_uppercase()));
+        assert!(!verify(
+            body,
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3842"
+        ));
+        assert!(!verify(body, "0"));
+        assert!(!verify(body, "zz"));
+        assert!(!verify(body, ""));
+        assert!(!verify(b"different bytes", tag));
+    }
 
     const LABEL_A: TokenLabel = TokenLabel::new(b"humaux.test.a.v1", b"humaux.test.a.kid.v1");
     const LABEL_B: TokenLabel = TokenLabel::new(b"humaux.test.b.v1", b"humaux.test.b.kid.v1");
