@@ -1,6 +1,6 @@
 //! `adapters::read_materialize` — Final PostgreSQL body materialization after authorization and token-ledger
 //!   validation.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, sha2, sqlx];
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, sha2, sqlx, time];
 //!   services=[PostgreSQL(role_gateway) r=[ops.outbox, private.events, private.evidence_objects,
 //!   private.evidence_subjects, private.identity_note_materializations, private.memory_evidence,
 //!   private.memory_records, private.memory_subjects, private.memory_text_v, projection.stream_log]]; env=[]; modules=[adapters::affect_repo,
@@ -138,7 +138,7 @@ fn item_freshness(row: &sqlx::postgres::PgRow) -> Result<ItemFreshness, ErrorCod
         policy_version: signal.policy_version,
         latest_evidence_at: evidence
             .map(|at| {
-                at.format(&sqlx::types::time::format_description::well_known::Rfc3339)
+                at.format(&time::format_description::well_known::Rfc3339)
                     .map_err(|_| ErrorCode::Internal)
             })
             .transpose()?,
