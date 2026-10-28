@@ -834,6 +834,12 @@ const PG_SINGLETON: u64 = 1;
 // §48.1 / ADR-0066 D-G: arithmetic is by process; an omitted replica count means one.
 const DEFAULT_REPLICAS: u64 = 1;
 
+// §48.1 / G-M03-10: projection and RPC each retain a provider pool plus a work/readiness pool.
+// The source sentinel below binds this topology to the retrieval-worker construction sites.
+fn retained_pools(process: &str) -> u64 {
+    if process == "retrieval-worker" { 2 } else { 1 }
+}
+
 fn pool_budget_number(file: &EnvFile, key: &str) -> Result<u64, String> {
     let number = file.value(key).map(str::parse::<u64>).transpose();
     match number {
@@ -845,6 +851,7 @@ fn pool_budget_number(file: &EnvFile, key: &str) -> Result<u64, String> {
 }
 
 /// §48.1 / §57.1: pure budget for the supplied deployed processes; missing inputs never pass.
+/// Each process contributes all retained pools, including the retrieval worker provider pool.
 /// `replicas` is keyed by process name, defaults to one, and introduces no configuration key.
 /// ADR-0065 D-A/D-B and ADR-0100 reserves are inside the supplied sizing ceiling (§78.1).
 pub fn pool_budget(
@@ -901,7 +908,8 @@ pub fn pool_budget(
             if replicas == 0 {
                 return Err(format!("pool_budget_replicas:{}", file.name));
             }
-            max.checked_mul(replicas)
+            max.checked_mul(retained_pools(&file.process))
+                .and_then(|max| max.checked_mul(replicas))
                 .ok_or_else(|| format!("pool_budget_key:{}:{key}", file.name))
         });
         match count {
@@ -2088,6 +2096,90 @@ pub fn run(args: &[String]) -> u8 {
 mod tests {
     use super::*;
 
+    // §57.1: flags from a separate shell command cannot satisfy a deploy-check input.
+    fn env_commands(command: &str) -> Vec<Vec<String>> {
+        command
+            .split([';', '&', '|'])
+            .map(|part| {
+                part.split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|args| has(args, "deploy-check") && has(args, "--env"))
+            .collect()
+    }
+
+    #[test]
+    fn pool_budget_runbook_separates_commands() {
+        for separator in [";", "&&", "||", "|"] {
+            let line = format!(
+                "config | dr deploy-check --env --compose-json - --values-dir values \
+                 --secrets-dir secrets --examples-dir examples {separator} echo --sizing-conf sizing"
+            );
+            let commands = env_commands(&line);
+            assert_eq!(commands.len(), 1, "{separator}");
+            let flags: Vec<_> = ENV_REQUIRED_FLAGS
+                .into_iter()
+                .filter(|name| flag(&commands[0], name).is_some())
+                .collect();
+            assert_eq!(
+                flags,
+                [
+                    "--values-dir",
+                    "--secrets-dir",
+                    "--examples-dir",
+                    "--compose-json"
+                ],
+                "{separator}"
+            );
+        }
+    }
+
+    #[test]
+    fn pool_budget_retained_pool_sites() {
+        let source = include_str!("../../retrieval-worker/src/main.rs");
+        let sites: Vec<_> = source
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.contains("connect_pool("))
+            .collect();
+        assert_eq!(
+            sites.len(),
+            5,
+            "retained pool topology changed: update the budget"
+        );
+        assert_eq!(
+            sites,
+            [
+                "async fn connect_pool(dsn: &str) -> Result<RetrievalWorkerDbPool, String> {",
+                "connect_pool(&dsn).await.map_err(|e| {",
+                "let pool = connect_pool(dsn)",
+                "let embedder_pool = connect_pool(dsn).await.map_err(|_| {",
+                "let calls = connect_pool(&dsn).await.map_err(|_| {",
+            ]
+        );
+        assert_eq!(
+            source
+                .matches("RetrievalWorkerDbPool::connect_with(")
+                .count(),
+            1
+        );
+        assert_eq!(source.matches("RetrievalWorkerDbPool::connect(").count(), 0);
+        assert_eq!(retained_pools("retrieval-worker"), 2);
+        let files = pool_budget_fixture(Some("10"));
+        let result = pool_budget(
+            Some(&files),
+            "sizing",
+            Some("max_connections=190"),
+            &BTreeMap::from([("retrieval-worker", 2)]),
+        );
+        assert_eq!(
+            result,
+            json!({"check": "pool_budget", "status": "pass",
+            "reasons": [], "connections": 102, "max_connections": 190})
+        );
+    }
+
     /// §57.1 / §80.1 / G-M03-10: executable runbook callers satisfy the parser's full --env contract.
     #[test]
     fn pool_budget_runbook_env_invocations_have_required_flags() {
@@ -2114,10 +2206,7 @@ mod tests {
                 continue;
             }
             command.push_str(line);
-            let args: Vec<String> = command.split_whitespace().map(str::to_owned).collect();
-            if has(&args, "deploy-check") && has(&args, "--env") {
-                invocations.push((step, args));
-            }
+            invocations.extend(env_commands(&command).into_iter().map(|args| (step, args)));
             command.clear();
         }
         assert_eq!(invocations.len(), 2, "runbook --env invocation count");
@@ -2193,7 +2282,7 @@ mod tests {
             ]
         );
         let result = assert_pool_budget(&files, "pass", &[]);
-        assert_eq!(result["connections"], 72);
+        assert_eq!(result["connections"], 82);
         assert_eq!(result["max_connections"], 190);
     }
 
@@ -2210,7 +2299,7 @@ mod tests {
                     &BTreeMap::new()
                 ),
                 json!({"check": "pool_budget", "status": "pass", "reasons": [],
-                    "connections": 72, "max_connections": 190}),
+                    "connections": 82, "max_connections": 190}),
                 "{value}"
             );
         }
@@ -2259,7 +2348,7 @@ mod tests {
         let result = pool_budget(Some(&files), "sizing-a5.conf", Some(conf), &BTreeMap::new());
         assert_eq!(result["status"], "pass");
         assert_eq!(result["reasons"], json!([]));
-        assert_eq!(result["connections"], 72);
+        assert_eq!(result["connections"], 82);
         assert_eq!(result["max_connections"], 190);
     }
 
@@ -2293,16 +2382,16 @@ mod tests {
         );
         assert_eq!(
             checks[2],
-            json!({"check": "pool_budget", "status": "pass", "reasons": [], "connections": 72, "max_connections": 190})
+            json!({"check": "pool_budget", "status": "pass", "reasons": [], "connections": 82, "max_connections": 190})
         );
     }
 
     #[test]
     fn pool_budget_boundary() {
-        let exact = assert_pool_budget(&pool_budget_fixture(Some("128")), "pass", &[]);
+        let exact = assert_pool_budget(&pool_budget_fixture(Some("118")), "pass", &[]);
         assert_eq!(exact["connections"], 190);
         let over = assert_pool_budget(
-            &pool_budget_fixture(Some("129")),
+            &pool_budget_fixture(Some("119")),
             "fail",
             &[
                 "pool_budget_exceeded:values/private-worker.env:HUMAUX_PRIVATE_WORKER_PG_POOL_MAX_CONNECTIONS",
@@ -2378,7 +2467,7 @@ mod tests {
 
     #[test]
     fn pool_budget_replicas_are_supplied_by_process() {
-        let files = pool_budget_fixture(Some("110"));
+        let files = pool_budget_fixture(Some("100"));
         let result = pool_budget(
             Some(&files),
             "sizing-a5.conf",

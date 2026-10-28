@@ -178,4 +178,4 @@ trybuild = "1"
 # snapshot-bound selection against 60 concurrent inserts on a real thread) and
 # `tokio::task::spawn_blocking` both need it.
 # why: async runtime driving pool-connect fixtures; used-by: [adapters::postgres, tests]
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
