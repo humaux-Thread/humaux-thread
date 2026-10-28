@@ -1,7 +1,7 @@
 //! `domain::billing` — the billing vocabularies of Baseline §71.2 and §71.3 and the pure projection from a provider's
 //!   authoritative subscription status to the local subscription state (module design M04 D7, owner answer Q4).
 //! Depends-on: crates=[time]; services=[]; env=[]; modules=[domain::plan]
-//! Called-by: [adapters::billing_repo, application::billing, billing-worker::creem, billing-worker::normalize, gateway::billing_webhook, gateway::bootstrap, tests]
+//! Called-by: [adapters::billing_processor_repo, adapters::billing_repo, application::billing, billing-worker::creem, billing-worker::normalize, billing-worker::process, gateway::billing_webhook, gateway::bootstrap, tests]
 //! Invariants: [every closed vocabulary below has one wire spelling per variant, mirrored by a CHECK of migration 0288
 //!   and reconciled by contract test (§78.2); project_state is stateless: its result is a function of the observed
 //!   status and the recorded facts only, never of the previous local state or of the order webhooks arrived in; no

@@ -40,6 +40,7 @@ pub async fn process_one(
         return Ok(false);
     };
     // §71.3: a failed apply/recompute must leave no partial effects, while retaining the outer claim lock.
+    // dep: PostgreSQL(role_maintenance) — savepoint retains the durable claim lock (§71.3).
     let mut effect = txn
         .begin()
         .await

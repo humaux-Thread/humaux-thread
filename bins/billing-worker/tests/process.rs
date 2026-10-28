@@ -1,5 +1,5 @@
 //! `billing-worker::tests::process` — real PG + fake Creem processor gates (§71.3).
-//! Depends-on: crates=[humaux-adapters, humaux-billing-worker, humaux-domain, humaux-infra-egress, humaux-testkit, postgres, serde_json, tokio, uuid];
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-egress, humaux-testkit, postgres, serde_json, tokio, uuid];
 //!   services=[HTTP(loopback), PostgreSQL(owner) r=[control.subscriptions, control.subscription_events, control.entitlement_grants, control.entitlement_snapshots, control.billing_inbox] w=[control.tenants, control.plans, control.plan_versions, control.billing_inbox]]; env=[];
 //!   modules=[adapters::postgres, adapters::tests::support::throwaway_db, billing-worker::creem, billing-worker::process, billing-worker::fake_creem, billing-worker::mode, domain::egress, domain::ids, infra-egress::http, humaux-testkit]
 //! Called-by: [cargo-test]
@@ -41,6 +41,7 @@ impl DbIntegrationFixture for Fixture {
         let mut admin = Client::connect(&dsn, NoTls).map_err(|e| setup(e.to_string()))?;
         let rt = tokio::runtime::Runtime::new().map_err(|e| setup(e.to_string()))?;
         let sep = if dsn.contains('?') { '&' } else { '?' };
+        // dep: PostgreSQL(role_maintenance) — real scoped processor identity (§79.2).
         let pool = rt
             .block_on(MaintenanceDbPool::connect(&format!(
                 "{dsn}{sep}options=-c%20role%3Drole_maintenance"

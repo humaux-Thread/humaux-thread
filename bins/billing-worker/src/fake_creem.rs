@@ -1,6 +1,6 @@
 //! `billing-worker::fake_creem` — test-only HTTP double (§71.2).
 //! Depends-on: crates=[async-trait, axum, hex, hmac, humaux-domain, humaux-infra-egress, serde_json, sha2, tokio]; services=[HTTP(loopback)]; env=[]; modules=[domain::error, infra-egress::http]
-//! Called-by: [billing-worker::tests::fetch]
+//! Called-by: [billing-worker::tests::fetch, billing-worker::tests::process]
 //! Invariants: [loopback only; exact query identities; no M04-10 dependency]
 //! Spec: Baseline §71.2; §71.3; §79.4
 use axum::{
