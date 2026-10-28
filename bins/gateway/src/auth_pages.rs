@@ -3,7 +3,7 @@
 //!   services=[]; env=[]; modules=[adapters::email, adapters::login_repo, adapters::postgres, adapters::session_repo,
 //!   application::auth, application::session, application::signed_token, domain::error,
 //!   gateway::guard, protocol::edge]
-//! Called-by: [gateway::bootstrap, gateway::main, gateway::oauth_http, tests]
+//! Called-by: [gateway::billing_webhook, gateway::bootstrap, gateway::main, gateway::oauth_http, tests]
 //! Invariants: [every /auth/* request passes the pre-auth guard entry exactly once before any handler runs and every
 //!   response the pages produce, refusals included, carries the hardening headers; a POST is acted on only when its
 //!   Origin (Referer when Origin is absent) is the configured public origin, checked before any form field is acted
