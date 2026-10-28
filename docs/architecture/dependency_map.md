@@ -11153,6 +11153,7 @@ written by:
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::cross_tenant_canary`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::read_decoupling`
