@@ -155,8 +155,7 @@ fn g_m04_15b_view_sums_and_privileges() {
             let a = tenant(&mut conn).await;
             let b = tenant(&mut conn).await;
             seed_payments(&mut conn, a).await;
-            let month =
-                Date::from_calendar_date(2026, sqlx::types::time::Month::October, 1).unwrap();
+            let month = Date::from_ordinal_date(2026, 274).unwrap(); // October 1 fixture
             // dep: PostgreSQL(owner) — transaction in the isolated database
             let mut txn = conn.begin().await.unwrap();
             // dep: PostgreSQL(role_private_worker) — exercise the producer role
