@@ -1,11 +1,142 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
  "title": "MemoryReadResult",
- "description": "Direct Memory Envelope, one authorized immutable enumeration page, a confirmation_required result of a gated op (memory.supersede / memory.pin / memory.unpin / memory.restore / memory.archive / memory.unarchive / memory.correct / memory.confirm / memory.reject / memory.bind / memory.unbind / memory.note_put's replacement \u2014 the same closed set as ConfirmationRequired.operation), a superseded result, or a pin/unpin/bind/unbind binding result. The catalog resolves the embedded canonical Envelope without network access. memory.get's completeness counts are INTENTIONALLY absent, not unimplemented (ADR-0041 D-D, card 22): the route always answers class=cannot_establish / reason=count_unknown with exact and known_lower_bound null, because classify() maps a DirectGet to QueryClass::Exact and \u00a722.0 makes an exact class without a predicate_id/census a hard 5xx \u2014 filling the five counts without a census would turn a correct 200 into a 500. The unlock is a separate decision: a universe-of-one census for DirectGet. memory.enumerate, which does carry a census, answers exact.",
+ "description": "Direct Memory Envelope, one authorized immutable enumeration page, a confirmation_required result of a gated op (memory.supersede / memory.pin / memory.unpin / memory.restore / memory.archive / memory.unarchive / memory.correct / memory.confirm / memory.reject / memory.bind / memory.unbind / memory.note_put's replacement \u2014 the same closed set as ConfirmationRequired.operation), a superseded result, or a pin/unpin/bind/unbind binding result. The catalog resolves the embedded canonical Envelope without network access. memory.get's completeness counts are INTENTIONALLY absent, not unimplemented (ADR-0041 D-D, card 22): the route always answers class=cannot_establish / reason=count_unknown with exact and known_lower_bound null, because classify() maps a DirectGet to QueryClass::Exact and \u00a722.0 makes an exact class without a predicate_id/census a hard 5xx \u2014 filling the five counts without a census would turn a correct 200 into a 500. The unlock is a separate decision: a universe-of-one census for DirectGet. memory.enumerate, which does carry a census, answers exact. memory.get's pipeline.projection is the ledger frontier (ADR-0110 D-A), not the A1/A2 closure: the GetEnvelope branch below, which is the only shape memory.get may return.",
  "type": "object",
  "$defs": {
   "Envelope": {
    "$ref": "context.output.schema.json#/properties/content"
+  },
+  "GetEnvelope": {
+   "type": "object",
+   "description": "memory.get's Envelope (ADR-0110 D-A): the canonical Envelope in every part except pipeline.projection, which is the ledger frontier read from the stream's one stream_checkpoints row (a primary-key lookup, no closure, no index count) or null. projection is null exactly when pipeline.projection_reason is no_checkpoint, the stream has no checkpoint row: never a zero frontier (23.1 item 4). pipeline.projection_reason follows the nullable reason convention of completeness.reason. The closure shape is not accepted here; recall, context and memory.enumerate keep it through Envelope.",
+   "required": [
+    "items",
+    "pipeline",
+    "completeness",
+    "provenance",
+    "freshness",
+    "grounding",
+    "mandatory",
+    "pinned"
+   ],
+   "properties": {
+    "items": {
+     "$ref": "#/$defs/Envelope/properties/items"
+    },
+    "pipeline": {
+     "type": "object",
+     "required": [
+      "evidence",
+      "knowledge",
+      "projection",
+      "projection_reason"
+     ],
+     "properties": {
+      "evidence": {
+       "$ref": "#/$defs/Envelope/properties/pipeline/properties/evidence"
+      },
+      "knowledge": {
+       "$ref": "#/$defs/Envelope/properties/pipeline/properties/knowledge"
+      },
+      "projection": {
+       "oneOf": [
+        {
+         "type": "null"
+        },
+        {
+         "$ref": "#/$defs/FrontierBlock"
+        }
+       ]
+      },
+      "projection_reason": {
+       "enum": [
+        null,
+        "no_checkpoint"
+       ]
+      }
+     },
+     "oneOf": [
+      {
+       "properties": {
+        "projection": {
+         "type": "object"
+        },
+        "projection_reason": {
+         "const": null
+        }
+       }
+      },
+      {
+       "properties": {
+        "projection": {
+         "type": "null"
+        },
+        "projection_reason": {
+         "const": "no_checkpoint"
+        }
+       }
+      }
+     ],
+     "additionalProperties": false
+    },
+    "completeness": {
+     "$ref": "#/$defs/Envelope/properties/completeness"
+    },
+    "provenance": {
+     "$ref": "#/$defs/Envelope/properties/provenance"
+    },
+    "freshness": {
+     "$ref": "#/$defs/Envelope/properties/freshness"
+    },
+    "grounding": {
+     "$ref": "#/$defs/Envelope/properties/grounding"
+    },
+    "mandatory": {
+     "$ref": "#/$defs/Envelope/properties/mandatory"
+    },
+    "pinned": {
+     "$ref": "#/$defs/Envelope/properties/pinned"
+    }
+   },
+   "additionalProperties": false
+  },
+  "FrontierBlock": {
+   "type": "object",
+   "description": "ADR-0110 D-A, M09 contract C6: how far one stream's projection has come, from its stream_checkpoints row alone. behind = issued - settled_prefix (never negative; 0 when the prefix is not behind), an upper bound on tickets still in flight that never feeds a completeness class. There is no visible, no ratio and no per-state count: a point read has no universe to close.",
+   "required": [
+    "mode",
+    "issued",
+    "settled_prefix",
+    "behind",
+    "serving",
+    "observed_at"
+   ],
+   "properties": {
+    "mode": {
+     "const": "frontier"
+    },
+    "issued": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "settled_prefix": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "behind": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "serving": {
+     "type": "boolean"
+    },
+    "observed_at": {
+     "type": "string",
+     "format": "date-time"
+    }
+   },
+   "additionalProperties": false
   },
   "ConfirmationRequired": {
    "type": "object",
@@ -1085,7 +1216,7 @@
  },
  "oneOf": [
   {
-   "$ref": "#/$defs/Envelope"
+   "$ref": "#/$defs/GetEnvelope"
   },
   {
    "type": "object",

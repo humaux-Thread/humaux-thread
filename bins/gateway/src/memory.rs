@@ -2,14 +2,16 @@
 //! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json,
 //!   sha2, time, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::context_repo,
 //!   adapters::distill_repo, adapters::forget_repo, adapters::grep_repo, adapters::memory_governance_repo, adapters::postgres,
-//!   adapters::read_gate, adapters::read_materialize,
+//!   adapters::read_gate, adapters::read_materialize, adapters::serving_repo,
 //!   adapters::subject_repo, application::forget, domain::affect, domain::authority, domain::confirm, domain::context, domain::error,
 //!   domain::evidence, domain::identity, domain::ids, domain::selection, domain::subject, gateway::bootstrap,
 //!   gateway::context, gateway::guard,
 //!   projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::request]
 //! Called-by: [gateway::mcp_application]
-//! Invariants: [a read that cannot reach its final-body boundary returns the application error, never a partially materialized memory]
-//! Spec: Baseline §22.0; §23.1; §33; §36; ADR-0025; ADR-0026; ADR-0054; ADR-0067; ADR-0069
+//! Invariants: [a read that cannot reach its final-body boundary returns the application error, never a partially materialized memory;
+//!   `memory.get` reports the ledger frontier from one `stream_checkpoints` lookup and never calls the ledger closure or the
+//!   index count, so its cost does not grow with the stream and `behind` feeds no class (ADR-0110 D-A, G-M13-1)]
+//! Spec: Baseline §15.5; §22.0; §23.1; §23.1④; §33; §36; ADR-0025; ADR-0026; ADR-0054; ADR-0067; ADR-0069; ADR-0110 D-A
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -27,9 +29,11 @@ use humaux_adapters::{
     postgres::RuntimeDbPool,
     read_gate::{
         MaterializedMemory, MemoryEnumerationParams, MemoryGetTarget, NoteEnumerationFilter,
-        materialize_memory_enumeration_filtered, materialize_memory_get_target,
+        frontier_pipeline_block, materialize_memory_enumeration_filtered,
+        materialize_memory_get_frontier_target,
     },
     read_materialize::{Lifecycle, MaterializedItem, MemoryHistory},
+    serving_repo::UnservedLedger,
     subject_repo,
 };
 use humaux_domain::{
@@ -47,8 +51,9 @@ use humaux_retrieval::{
     completeness::{CensusResult, FreshnessClass},
     envelope::{
         CompletenessBlock, CompletenessInputs, CountScope, Envelope, EvidenceBlock, FreshnessBlock,
-        KnowledgeBlock, LaneStatus, MandatoryReport, PendingEnvelope, PinnedReport, PipelineBlock,
-        build_projection_block, envelope_outcome_block,
+        FrontierPipelineBlock, KnowledgeBlock, LaneStatus, MandatoryReport, PendingEnvelope,
+        PinnedReport, PipelineBlock, build_projection_block, envelope_outcome_block,
+        frontier_outcome_block,
     },
     request::{RetrievalIntent, RetrievalRequest, build_request},
 };
@@ -201,10 +206,10 @@ fn affect_item(row: AffectRow, effective: BasisPoints) -> Result<AffectItem, Err
 
 /// The affects of every memory in `materialized`, `memory_id → items`, read under the caller's
 /// RLS in one round trip with `effective_intensity(now)` derived per row (ADR-0030 D-B).
-async fn affects_by_memory(
+async fn affects_by_memory<L>(
     pool: &RuntimeDbPool,
     authorization: &AuthorizationScope,
-    materialized: &MaterializedMemory,
+    materialized: &MaterializedMemory<L>,
 ) -> Result<BTreeMap<Uuid, Vec<AffectItem>>, ErrorCode> {
     let memory_ids: Vec<Uuid> = materialized
         .bodies
@@ -229,6 +234,10 @@ async fn affects_by_memory(
 /// `include_history` (ADR-0067 D-H): `false` keeps the pre-40b contract byte for byte (a superseded id is
 /// `NOT_FOUND`); `true` returns the exact version asked for with its lifecycle and provenance. `target` (ADR-0067 D-J2)
 /// is one version or one note; a note is read at its head, and the DirectGet plan names the version actually read.
+///
+/// ADR-0110 D-A: the projection side is the stream frontier, one `stream_checkpoints` primary-key lookup in the
+/// body's snapshot. This route never closes the ledger and never takes an index count, so a get costs the same on a
+/// stream of any size and `behind` feeds no class; the PostgreSQL read stays authoritative (§15.5).
 pub(crate) async fn get<T>(
     pool: Arc<RuntimeDbPool>,
     authorization: AuthorizationScope,
@@ -236,11 +245,11 @@ pub(crate) async fn get<T>(
     bootstrap: ContextBootstrap,
     target: MemoryGetTarget,
     include_history: bool,
-    accept: impl FnOnce(Envelope<MemoryItem>) -> Result<T, ErrorCode>,
+    accept: impl FnOnce(Envelope<MemoryItem, FrontierPipelineBlock>) -> Result<T, ErrorCode>,
 ) -> Result<PendingEnvelope<T>, ErrorCode> {
-    let (authorization, scope, family, stream, serving_version) =
+    let (authorization, scope, family, stream, _) =
         read_scope(&pool, authorization, requested_workspace, &bootstrap).await?;
-    let materialized = materialize_memory_get_target(
+    let materialized = materialize_memory_get_frontier_target(
         &pool,
         &authorization,
         &scope,
@@ -261,27 +270,15 @@ pub(crate) async fn get<T>(
     .map_err(|_| ErrorCode::Internal)?;
     let affects = affects_by_memory(&pool, &authorization, &materialized).await?;
     let archived = materialized.archived;
-    let visible = bootstrap
-        .visible_index_count(
-            &pool,
-            &authorization,
-            &stream,
-            serving_version.as_deref(),
-            &materialized.ledger,
-        )
-        .await;
-    accept_memory_envelope(
+    // §23.1④: no checkpoint row is `projection: null` with `no_checkpoint`, never a zero frontier.
+    let pipeline = frontier_pipeline_block(materialized.ledger)?;
+    accept_get_envelope(
         materialized,
+        pipeline,
         affects,
         &request,
         &bootstrap.binary_build,
-        "direct_get",
-        false,
         archived,
-        visible,
-        bootstrap.projection_lag,
-        // DirectGet has no enumerable universe (§23.3④) — see `accept_memory_envelope`.
-        None,
         accept,
     )
 }
@@ -922,9 +919,11 @@ pub(crate) async fn write_binding(
 /// credential's tenant + that workspace and admit it only if its ledger key was initialised
 /// (`ContextBootstrap::provisioned_request_stream`, ADR-0031 D-A / ADR-0053 D-E). The routes
 /// are PostgreSQL-authoritative and do not need a serving version (it only scopes the §23.1②
-/// visible count). No process pair exists to compare against (ADR-0054 D-D) — one process serves
-/// every provisioned pair; an uninitialised one is `DEPENDENCY_UNAVAILABLE`, and an invisible
-/// object stays `NOT_FOUND`.
+/// visible count). None of them reports an unserved key's ledger, so the admission passes
+/// [`UnservedLedger::Skip`] and an initialised family without a serving version costs no O(stream)
+/// closure (ADR-0110 D-A; `FamilyReadState::unserved` is recall's and context's alone). No process
+/// pair exists to compare against (ADR-0054 D-D) — one process serves every provisioned pair; an
+/// uninitialised one is `DEPENDENCY_UNAVAILABLE`, and an invisible object stays `NOT_FOUND`.
 async fn read_scope(
     pool: &RuntimeDbPool,
     authorization: AuthorizationScope,
@@ -947,7 +946,7 @@ async fn read_scope(
     // visible count is then `null`). §23.1②'s count is scoped to it, not to the ledger key's
     // process-configured version.
     let (family, stream, state) = bootstrap
-        .provisioned_request_stream(pool, &authorization, workspace)
+        .provisioned_request_stream(pool, &authorization, workspace, UnservedLedger::Skip)
         .await?;
     let serving_version = state.serving;
     let scope = Scope {
@@ -1000,8 +999,8 @@ async fn confirmed_write_scope(
 
 /// The page's Memory bodies as items, each with its subject links, affects, note kind and (memory.get with
 /// `include_history` only) its history block. Any non-Memory body is an invariant break.
-fn memory_items(
-    materialized: &mut MaterializedMemory,
+fn memory_items<L>(
+    materialized: &mut MaterializedMemory<L>,
     affects: &mut BTreeMap<Uuid, Vec<AffectItem>>,
     archived: bool,
 ) -> Result<Vec<MemoryItem>, ErrorCode> {
@@ -1036,6 +1035,52 @@ fn memory_items(
             }
         })
         .collect()
+}
+
+/// ADR-0110 D-A: the `memory.get` envelope. Its pipeline is the frontier pipeline and its class is fixed by
+/// [`frontier_outcome_block`] (`cannot_establish / count_unknown`: a point read establishes no universe, ADR-0041
+/// D-D, and §23.3④ forbids a census-less `exact`), so no ledger closure or index count enters it. A DirectGet has no
+/// enumerable universe: the evidence and knowledge counts stay unknown and a page length never becomes one.
+fn accept_get_envelope<T, L>(
+    mut materialized: MaterializedMemory<L>,
+    pipeline: FrontierPipelineBlock,
+    mut affects: BTreeMap<Uuid, Vec<AffectItem>>,
+    request: &RetrievalRequest,
+    binary_build: &str,
+    archived: bool,
+    accept: impl FnOnce(Envelope<MemoryItem, FrontierPipelineBlock>) -> Result<T, ErrorCode>,
+) -> Result<PendingEnvelope<T>, ErrorCode> {
+    const LANE: &str = "direct_get";
+    let items = memory_items(&mut materialized, &mut affects, archived)?;
+    let returned = u32::try_from(items.len()).map_err(|_| ErrorCode::Internal)?;
+    let provenance = provenance(request, binary_build, vec![LANE.to_owned()]);
+    frontier_outcome_block(request, &provenance, |final_outcome| {
+        accept(Envelope {
+            items,
+            pipeline,
+            completeness: CompletenessBlock {
+                class: final_outcome.class,
+                reason: final_outcome.reason,
+                exact: final_outcome.exact,
+                known_lower_bound: final_outcome.known_lower_bound,
+                lanes: BTreeMap::from([(LANE.to_owned(), LaneStatus::Ok)]),
+                candidate_count: 0,
+                reranked_count: 0,
+                returned,
+                truncated: false,
+                degradations: Vec::new(),
+            },
+            provenance: provenance.clone(),
+            freshness: FreshnessBlock {
+                class: FreshnessClass::Unknown,
+                latest_evidence_at: None,
+                state_age_seconds: None,
+            },
+            grounding: materialized.grounding,
+            mandatory: MandatoryReport::NotRun,
+            pinned: PinnedReport::NotRun,
+        })
+    })
 }
 
 #[allow(clippy::too_many_arguments)] // One envelope assembly over the read's fixed inputs + the affect axis.

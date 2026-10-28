@@ -33,7 +33,7 @@ use humaux_adapters::{
         RetrieveError, grouped_recall, materialize_private_read_serving_about, query_hmac,
         query_log_limits, record_recall_query, tombstoned_source_seqs, visible_index_count,
     },
-    serving_repo::family_read_state,
+    serving_repo::{UnservedLedger, family_read_state},
 };
 use tokio::sync::Semaphore;
 
@@ -575,7 +575,7 @@ async fn answer(
     // ADR-0053 D-E: the serving read comes BEFORE the query embedding — an unactivated family
     // cannot use a vector, so it pays no provider egress and no provider budget. Uninitialised
     // key ⇒ DEPENDENCY_UNAVAILABLE (unchanged); initialised but unserved ⇒ the B-shaped read.
-    let state = family_read_state(&pool, &authorization, &key)
+    let state = family_read_state(&pool, &authorization, &key, UnservedLedger::Read)
         .await
         .map_err(|_| {
             eprintln!("humaux-gateway: recall request_id={request_id} projection_selector_failed");
