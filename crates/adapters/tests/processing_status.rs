@@ -197,8 +197,11 @@ fn summary_requires_repeatable_read_read_only() {
             assert_eq!(before, json!([{"workspace_id":workspace,"projection":{"mode":"frontier",
                 "issued":6,"settled_prefix":2,"behind":4,"serving":true,"observed_at":"2026-01-01T00:00:00Z"},
                 "reason":null,"behind_label":"not_yet_confirmed_processed"}]));
-            assert_eq!(admin.execute("UPDATE projection.stream_checkpoints SET issued_highwater=issued_highwater+1
-                WHERE tenant_id=$1 AND scope_id=$2", &[&tenant, &workspace]).unwrap(), 2);
+            let changed = tokio::task::spawn_blocking(move || {
+                admin.execute("UPDATE projection.stream_checkpoints SET issued_highwater=issued_highwater+1
+                    WHERE tenant_id=$1 AND scope_id=$2", &[&tenant, &workspace]).unwrap()
+            }).await.unwrap();
+            assert_eq!(changed, 2);
             assert_eq!(to_value(processing_status(&mut txn, &query, &keys).await.unwrap()).unwrap(), before,
                 "concurrent commit must not change the summary snapshot");
             txn.commit().await.unwrap();
