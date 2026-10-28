@@ -73,11 +73,7 @@ fn exact_events_and_payload_money() {
                 tax_amount: Some(50),
                 period_start: 1000,
                 period_end: 2000,
-                refund_amount: if payment == PaymentKind::Refund {
-                    Some(125)
-                } else {
-                    None
-                }
+                refund_amount: (payment == PaymentKind::Refund).then_some(125)
             })
         );
     }
