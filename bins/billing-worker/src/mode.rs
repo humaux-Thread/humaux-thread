@@ -58,19 +58,25 @@ impl BillingMode {
         // §71.2: HTTP doubles use only the transport's exact loopback hosts.
         let authority = fake_base_url
             .and_then(|s| s.strip_prefix("http://"))
-            .and_then(|s| s.split('/').next())
+            .and_then(|s| s.split(['/', '?', '#']).next())
             .unwrap_or("");
         let host = if let Some(rest) = authority.strip_prefix("[::1]") {
-            rest.strip_prefix(':')
-                .and_then(|port| port.parse::<u16>().ok())
-                .map(|_| "[::1]")
+            if rest.is_empty()
+                || rest
+                    .strip_prefix(':')
+                    .and_then(|port| port.parse::<u16>().ok())
+                    .is_some()
+            {
+                Some("[::1]")
+            } else {
+                None
+            }
         } else {
-            authority.rsplit_once(':').and_then(|(host, port)| {
-                port.parse::<u16>()
-                    .ok()
-                    .filter(|_| matches!(host, "127.0.0.1" | "localhost"))
-                    .map(|_| host)
-            })
+            let (host, port) = authority.split_once(':').unwrap_or((authority, "80"));
+            port.parse::<u16>()
+                .ok()
+                .filter(|_| matches!(host, "127.0.0.1" | "localhost"))
+                .map(|_| host)
         };
         host.map(|h| vec![h.to_owned()])
             .ok_or_else(|| "fake billing requires an explicit loopback base URL".into())

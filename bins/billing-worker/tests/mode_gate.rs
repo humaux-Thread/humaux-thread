@@ -75,6 +75,9 @@ fn explicit_modes_and_destination_sets() {
     for (base, host) in [
         ("http://localhost:1234", "localhost"),
         ("http://[::1]:1234", "[::1]"),
+        ("http://127.0.0.1", "127.0.0.1"),
+        ("http://localhost", "localhost"),
+        ("http://[::1]", "[::1]"),
     ] {
         assert_eq!(fake.allowed_hosts(Some(base)).unwrap(), vec![host]);
     }

@@ -561,6 +561,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn billing_configured_host_has_no_provider_specific_transport_deny() {
+        let processor = ProcessorId(Uuid::now_v7());
+        let call = HttpExternalCall::new(
+            "https://api.creem.io/x",
+            processor,
+            HttpEgressConfig::default(),
+            std::sync::Arc::new(FixedCredential),
+            test_status_classifier,
+        )
+        .unwrap()
+        .with_request_policy(
+            reqwest::Method::GET,
+            reqwest::header::HeaderName::from_static("x-api-key"),
+            vec!["api.creem.io".into()],
+        )
+        .unwrap();
+        // dep: HTTP(provider) — §71.2 checks configured authorization without sending.
+        assert_eq!(
+            call.request_parts(PrivateDataPurpose::BillingProvider),
+            Ok((
+                reqwest::Method::GET,
+                reqwest::header::HeaderName::from_static("x-api-key"),
+                true
+            ))
+        );
+    }
+
+    #[tokio::test]
     async fn retrieval_permit_on_billing_instance_is_refused_before_connection() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let processor = ProcessorId(Uuid::now_v7());

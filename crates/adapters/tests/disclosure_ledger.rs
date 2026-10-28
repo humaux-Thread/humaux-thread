@@ -5,7 +5,7 @@
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio];
 //!   services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.data_disclosure_sources,
 //!   ops.data_disclosures, private.evidence_objects], PostgreSQL(role_maintenance), PostgreSQL(role_private_worker)];
-//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::disclosure, adapters::postgres, domain::dataclass, domain::egress,
+//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::disclosure, adapters::postgres, domain::dataclass, domain::egress, domain::error,
 //!   domain::ids, adapters::tests::support::truncate_probe, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [reserve writes the ledger row and its sources before the call and finalize records the outcome; no
