@@ -16443,7 +16443,27 @@ fn sourced_wire_state(handle: &mut Handle) -> ([i64; 5], Value) {
     })
 }
 
-/// G-M06-8b (§52 / ADR-0098): a changed EmailMessage version preserves its typed wire refusal and original bytes.
+/// §34.0.1 / ADR-0098 D1: the committed receipt must reference the wire source's Evidence.
+fn sourced_wire_receipts(handle: &mut Handle) -> Value {
+    tokio::task::block_in_place(|| {
+        let row = handle
+            .admin
+            .query_one(
+                "SELECT coalesce(jsonb_agg(jsonb_build_array(s.evidence_id, s.owner_user_id, \
+                 s.source_kind, encode(s.object_key_d16,'hex'), s.source_version, \
+                 encode(s.thread_key_d16,'hex'), r.idempotency_key) \
+                 ORDER BY r.idempotency_key), '[]')::text \
+             FROM private.evidence_sources s JOIN control.operation_receipts r \
+             ON r.tenant_id=s.tenant_id AND r.evidence_id=s.evidence_id \
+             WHERE s.tenant_id=$1 AND r.operation='remember.put'",
+                &[&handle.tenant_id],
+            )
+            .expect("source receipt linkage");
+        serde_json::from_str(&row.get::<_, String>(0)).expect("stored source receipts")
+    })
+}
+
+/// G-M06-8b (§34 / §52 / ADR-0098): MCP writes the exact source and receipt; a conflict preserves both.
 #[test]
 fn native_mcp_sourced_put_source_version_conflict() {
     let _metrics = CONTEXT_METRIC_TEST_LOCK
@@ -16470,12 +16490,19 @@ fn native_mcp_sourced_put_source_version_conflict() {
             let put = |id, content, key| rpc(id, "tools/call", call_params("remember", json!({
                 "operation":"put", "content":content, "idempotency_key":key,
                 "visibility_class":"USER_PRIVATE",
-                "source":{"kind":"EmailMessage", "object_key":"synthetic-message", "version":"v1"}
+                "source":{"kind":"EmailMessage", "object_key":"synthetic-message", "version":"v1",
+                    "thread_key":"synthetic-thread"}
             })));
             let original = "original email payload";
             let (status, first) = raw_request(address, &headers, &put(1, original, "source-original")).await;
             assert_eq!(status, 200, "{first}");
             assert_tool_response(&first, ToolName::Remember);
+            let receipts = json!([[
+                first["result"]["structuredContent"]["evidence_id"], handle.user_id, 2,
+                hex::encode(&Sha256::digest(b"synthetic-message")[..16]), "v1",
+                hex::encode(&Sha256::digest(b"synthetic-thread")[..16]), "source-original"
+            ]]);
+            assert_eq!(sourced_wire_receipts(&mut handle), receipts, "G-M06-8b exact source-to-receipt round trip");
             let accepted = sourced_wire_state(&mut handle);
             assert_eq!(accepted.0, before.map(|n| n + 1), "one row in each acceptance table");
             let hash = payload_sha256(serde_json::to_string(original).unwrap().as_bytes()).to_hex();
@@ -16487,6 +16514,7 @@ fn native_mcp_sourced_put_source_version_conflict() {
                 "code":"CONFLICT", "reason":1301, "reason_label":"SOURCE_VERSION_CONFLICT"
             }), "G-M06-8b exact sourced conflict wire");
             assert_eq!(sourced_wire_state(&mut handle), accepted, "refusal changes no rows or payload bytes");
+            assert_eq!(sourced_wire_receipts(&mut handle), receipts, "conflict preserves the exact source and receipt set");
             stop_server(server).await.expect("server shutdown");
         });
     });
