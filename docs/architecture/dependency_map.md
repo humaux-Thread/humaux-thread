@@ -16094,6 +16094,55 @@ modules naming it:
 - `admin::tests::probes`
 - `tests`
 
+### humaux-billing-worker → `humaux-domain` (normal)
+why: existing billing vocabularies and closed error codes (§52, §78.2)
+
+modules naming it:
+- `billing-worker::normalize`
+- `billing-worker::signature`
+- `billing-worker::tests::normalization`
+- `billing-worker::tests::signature`
+- `tests`
+
+### humaux-billing-worker → `serde_json` (normal)
+why: webhook envelope parsing (§71.3)
+
+modules naming it:
+- `billing-worker::normalize`
+- `billing-worker::tests::normalization`
+- `tests`
+
+### humaux-billing-worker → `hmac` (normal)
+why: constant-time webhook MAC verification (§71.3)
+
+modules naming it:
+- `billing-worker::signature`
+- `billing-worker::tests::signature`
+- `tests`
+
+### humaux-billing-worker → `sha2` (normal)
+why: provider SHA256 MAC algorithm (§71.3)
+
+modules naming it:
+- `billing-worker::signature`
+- `billing-worker::tests::signature`
+- `tests`
+
+### humaux-billing-worker → `hex` (normal)
+why: provider signature hex decoding (§71.3)
+
+modules naming it:
+- `billing-worker::signature`
+- `billing-worker::tests::signature`
+- `tests`
+
+### humaux-billing-worker → `uuid` (dev)
+why: runtime-only random HMAC test keys (§79.4)
+
+modules naming it:
+- `billing-worker::tests::signature`
+- `tests`
+
 ### humaux-consolidation-worker → `humaux-adapters` (normal)
 why: humaux-adapters dependency
 
@@ -17764,6 +17813,20 @@ services (computed):
 
 default run:
 - subprocess
+
+### `bins/billing-worker/tests/normalization.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
+### `bins/billing-worker/tests/signature.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
 
 ### `bins/consolidation-worker/tests/consolidation_hop_e2e.rs`
 db-bound (default run): yes
