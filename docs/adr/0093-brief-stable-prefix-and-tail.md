@@ -82,6 +82,7 @@ No gate exists in this PR (docs only). Each gate exists when M14-3a / M14-3b lan
 green record, and that record is added to this ADR.
 
 - §80.1 G-M14-3 (M14-3a pure): targeted run [40677507806](https://github.com/humaux-Thread/humaux-thread/actions/runs/40677507806), mutation `updated_at` derived from NEXT_ACTIONS in the prefix; compiled, then `g_m14_3_prefix_matches_exact_serialization` and `g_m14_3_tail_only_change_keeps_prefix_sha` failed their equality assertions. Green: M14-3a PR CI.
+- §80.1 G-M14-4 (M14-3a): targeted run [40678212907](https://github.com/humaux-Thread/humaux-thread/actions/runs/40678212907), mutation `truncated = false`; compiled, then `g_m14_4_omissions_and_mandatory_retention_are_exact`, `g_m14_4_overflow_has_exact_manifest_and_no_partial_output` and `g_m14_4_caps_share_and_validation` failed exact `(omitted, truncated)` assertions. Green: M14-3a PR CI.
 
 ## Open numbers and owner-gated items
 
