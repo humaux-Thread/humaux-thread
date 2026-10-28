@@ -16432,7 +16432,7 @@ fn sourced_wire_state(handle: &mut Handle) -> ([i64; 5], Value) {
                  encode(s.payload_sha256,'hex'), e.payload) ORDER BY eo.evidence_id), '[]')::text \
               FROM private.evidence_objects eo JOIN private.evidence_sources s \
               ON s.tenant_id=eo.tenant_id AND s.evidence_id=eo.evidence_id \
-              JOIN private.events e ON e.tenant_id=eo.tenant_id AND e.event_id=eo.evidence_id \
+              JOIN private.events e ON e.event_id=eo.evidence_id \
               WHERE eo.tenant_id=$1)",
             &[&handle.tenant_id],
         ).expect("source state");
