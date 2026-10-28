@@ -314,6 +314,7 @@ async fn assert_serial_readiness(path: &str, owner: &str, database: &str) {
     }
     assert_eq!(codes, vec![200; 32], "concurrent fresh readiness budget");
     let sessions = tokio::task::block_in_place(|| {
+        // dep: PostgreSQL(owner) — observe only this throwaway database
         let mut client = Client::connect(&with_db(owner, "postgres"), NoTls).expect("observer");
         let row = client.query_one("SELECT count(*) FROM pg_stat_activity WHERE datname = $1 AND usename = 'role_retrieval_worker'", &[&database]).expect("session count");
         row.get::<_, i64>(0)
