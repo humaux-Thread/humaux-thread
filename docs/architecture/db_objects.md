@@ -4934,6 +4934,7 @@ written by:
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
 - (no process): `adapters::tests::processing_runs_fingerprint_rerun`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
 - (no process): `adapters::tests::project_rollup`
@@ -10768,7 +10769,6 @@ written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::coord_task_project`
-- (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::enumerate_scale`
@@ -10910,7 +10910,6 @@ foreign keys (outgoing):
 - fk: tenant_id, evidence_id -> private.evidence_objects (NOT NULL)
 
 read by:
-- (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -10922,7 +10921,6 @@ read by:
 - process(humaux-retrieval-worker): `adapters::remember`
 
 written by:
-- (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::evidence_sources`
 - process(cargo-xtask): `adapters::remember`
 - process(humaux-consolidation-worker): `adapters::remember`
@@ -11505,7 +11503,6 @@ foreign keys (outgoing):
 - fk: memory_id -> private.memory_records (NOT NULL)
 
 read by:
-- (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::hot_path_indexes`
@@ -11590,7 +11587,6 @@ written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::coord_task_project`
-- (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -11835,14 +11831,12 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::contribution_repo`
-- (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_execution_0131`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::contribution_policy_lifecycle_0132`
-- (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::facet_contract`
@@ -11957,7 +11951,6 @@ written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::coord_task_project`
-- (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -12261,7 +12254,6 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::projection_worker`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -13576,7 +13568,6 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::subject_registry_rls`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -13997,8 +13988,11 @@ read by:
 - (no process): `maintenance::tests::measure`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::soak`
+- process(humaux-gateway): `adapters::projection_worker`
 - process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::projection_worker`
 - process(humaux-maintenance): `adapters::rebuild`
+- process(humaux-retrieval-worker): `adapters::projection_worker`
 
 written by:
 - (no process): `adapters::tests::private_projection_registry`
@@ -14174,15 +14168,18 @@ read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-consolidation-worker): `adapters::stream_repo`
+- process(humaux-gateway): `adapters::projection_worker`
 - process(humaux-gateway): `adapters::retrieve`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::projection_worker`
 - process(humaux-maintenance): `adapters::rebuild`
 - process(humaux-maintenance): `adapters::retrieve`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::retrieve`
 - process(humaux-private-worker): `adapters::stream_repo`
+- process(humaux-retrieval-worker): `adapters::projection_worker`
 - process(humaux-retrieval-worker): `adapters::retrieve`
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 
@@ -14349,6 +14346,7 @@ written by:
 - (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::projection_lag`
 - (no process): `adapters::tests::projection_worker`
@@ -14456,6 +14454,7 @@ grants (runtime roles):
 foreign keys (outgoing):
 
 read by:
+- (no process): `adapters::processing_status`
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
@@ -14545,6 +14544,7 @@ written by:
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::private_projection_registry`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::projection_lag`
 - (no process): `adapters::tests::projection_worker`
@@ -14656,6 +14656,7 @@ written by:
 executed by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::ledger_frontier`
+- (no process): `adapters::tests::processing_status`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `gateway::tests::memory_get_frontier`

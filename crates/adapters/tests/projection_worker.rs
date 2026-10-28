@@ -22,7 +22,8 @@
 //!   retrieval-provider::adapters, retrieval-provider::contract]
 //! Called-by: [cargo-test]
 //! Invariants: [uses a throwaway tenant and Qdrant collection cleaned up on Drop; a ticket is marked done only after
-//!   search-visible confirmation; no DSN, unreachable PG/Qdrant or no local gitleaks is a visible SKIP; the global
+//!   search-visible confirmation; M10-2 archives use fenced payload-only writes with unchanged vectors and no provider;
+//!   missing dependencies fail under CI require flags and otherwise visibly SKIP; the global
 //!   card profile policy row is read or flipped only under one process-wide lock and restored on drop (ADR-0068 D-I)]
 //! Spec: Baseline §17.4; §15.7; §79.2; ADR-0052; ADR-0055; ADR-0056; ADR-0057; ADR-0068; ADR-0083 D-B
 //!
@@ -2870,6 +2871,200 @@ fn archive_step(
     assert!(matches!(result, ArchiveResult::Done(_)), "{result:?}");
     let outcome = handle.rt.block_on(run_once(deps, 10)).expect("run_once");
     assert_eq!((outcome.done, outcome.failed), (1, 0), "{outcome:?}");
+}
+
+/// §17 / G-M10-3: observes the actual worker transport and provider boundary, forwarding to the existing fixtures.
+struct PayloadProbe {
+    transport: Arc<HttpIntraCellTransport>,
+    embedder: TestEmbedder,
+    calls: std::sync::atomic::AtomicUsize,
+    writes: std::sync::Mutex<Vec<(IntraCellMethod, String, serde_json::Value)>>,
+}
+
+#[async_trait]
+impl CardEmbedder for PayloadProbe {
+    async fn embed_cards(
+        &self,
+        tenant: TenantId,
+        dimension: u32,
+        cards: &[SealedRetrievalCard],
+        memories: &[Uuid],
+    ) -> Result<Vec<Vec<f32>>, ErrorCode> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.embedder
+            .embed_cards(tenant, dimension, cards, memories)
+            .await
+    }
+}
+
+#[async_trait]
+impl IntraCellHttpTransport for PayloadProbe {
+    async fn execute(
+        &self,
+        permit: &CellAccessPermit,
+        request: IntraCellRequest,
+    ) -> Result<IntraCellResponse, IntraCellError> {
+        if request.path.contains("/points") && !request.path.ends_with("/scroll") {
+            self.writes.lock().expect("writes").push((
+                request.method,
+                request.path.clone(),
+                request.json_body.clone().expect("write body"),
+            ));
+        }
+        self.transport.execute(permit, request).await
+    }
+}
+
+/// §17 / G-M10-3: only the test reads vectors, serialized to bytes for an exact before/after comparison.
+fn point_with_vector(handle: &Handle, point: Uuid) -> serde_json::Value {
+    let response = handle
+        .rt
+        .block_on(handle.transport.execute(
+            &admin_permit(handle),
+            // dep: Qdrant(*) — test-only vector readback for G-M10-3.
+            IntraCellRequest {
+                method: IntraCellMethod::Post,
+                path: format!("/collections/{}/points/scroll", handle.collection),
+                json_body: Some(serde_json::json!({
+                    "filter": {"must": [{"has_id": [point.to_string()]}]},
+                    "limit": 1, "with_payload": true, "with_vector": true,
+                })),
+                headers: Vec::new(),
+            },
+        ))
+        .expect("vector scroll")
+        .json_body
+        .expect("scroll JSON");
+    let points = response["result"]["points"].as_array().expect("points");
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0]["id"], point.to_string());
+    assert!(points[0]["vector"].is_array() || points[0]["vector"].is_object());
+    points[0].clone()
+}
+
+fn payload_probe_deps(handle: &Handle, scope: Uuid) -> (ProjectionWorkerDeps, Arc<PayloadProbe>) {
+    let provider = Arc::new(TestDoubleProvider::new(
+        embedding_model(),
+        unused_rerank_model(),
+    ));
+    let mut deps = handle
+        .rt
+        .block_on(deps_for(handle, scope, provider.clone()));
+    deps.embedding_version = format!("m10-2-{}", Uuid::new_v4().simple());
+    handle
+        .rt
+        .block_on(bind_embedding_fingerprint(
+            &deps.pool,
+            &deps.embedding_version,
+            &worker_fingerprint_inputs("m10-2-test", &deps.embedding_version, "r1", 4, "v1"),
+        ))
+        .expect("fingerprint binding");
+    let probe = Arc::new(PayloadProbe {
+        transport: handle.transport.clone(),
+        embedder: TestEmbedder(provider),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        writes: std::sync::Mutex::new(Vec::new()),
+    });
+    deps.embedder = probe.clone();
+    deps.transport = probe.clone();
+    (deps, probe)
+}
+
+/// §17: Qdrant removes these nullable visibility keys on set_payload; the request must still clear both.
+fn assert_payload_readback(request: &serde_json::Value, persisted: &serde_json::Value) {
+    let mut expected = request.as_object().expect("request payload").clone();
+    for key in ["visibility_user_id", "visibility_workspace_id"] {
+        assert_eq!(expected.remove(key), Some(serde_json::Value::Null));
+        assert_eq!(persisted.get(key), None);
+    }
+    assert_eq!(&serde_json::Value::Object(expected), persisted);
+}
+
+/// §17 / G-M10-3: a real governance archive updates only the payload, then advances the visible checkpoint.
+#[test]
+fn archive_uses_set_payload() {
+    run_db_fixture::<Fixture, _>("archive_uses_set_payload", |mut handle| {
+        let gov = Governor::seed(&mut handle.admin, handle.tenant_id);
+        let scope = seed_workspace(&mut handle);
+        gov.join(&mut handle.admin, scope);
+        let (seq, memory) = seed_memory_with_visibility(
+            &mut handle,
+            scope,
+            "payload-only archive fixture",
+            "TENANT_SHARED",
+            None,
+            None,
+        );
+        let (deps, probe) = payload_probe_deps(&handle, scope);
+        let first = handle.rt.block_on(run_once(&deps, 10)).expect("first pass");
+        assert_eq!(
+            (first.done, first.failed, first.projection_highwater),
+            (1, 0, u64::try_from(seq).expect("positive ticket seq"))
+        );
+        let point = point_id_for_memory(&mut handle, memory);
+        let before = point_with_vector(&handle, point);
+        let key = (
+            handle.tenant_id,
+            "workspace",
+            scope,
+            "private_memory",
+            "PRIVATE_MEMORY",
+            "v1",
+        );
+        assert_eq!(projection_highwater(&mut handle, &key), seq);
+        assert_eq!(probe.calls.swap(0, std::sync::atomic::Ordering::SeqCst), 1);
+        probe.writes.lock().expect("writes").clear();
+        let ArchiveResult::Done(archive) = governance_ops::archive(
+            &handle.rt,
+            &handle.gateway,
+            &gov.scope(scope),
+            &governance_ops::stream(handle.tenant_id, scope),
+            memory,
+            DestructiveOp::MemoryArchive,
+        )
+        .expect("archive") else {
+            panic!("archive refused")
+        };
+        let second = handle
+            .rt
+            .block_on(run_once(&deps, 10))
+            .expect("archive pass");
+        assert_eq!(
+            probe.calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "archive provider calls"
+        );
+        let after = point_with_vector(&handle, point);
+        assert_eq!(
+            serde_json::to_vec(&after["vector"]).expect("vector bytes"),
+            serde_json::to_vec(&before["vector"]).expect("vector bytes")
+        );
+        assert_eq!(after["payload"]["archived"], true);
+        assert_eq!(projection_highwater(&mut handle, &key), archive.stream_seq);
+        assert_eq!((second.done, second.failed), (1, 0));
+        assert_eq!(point_id_for_memory(&mut handle, memory), point);
+        assert_eq!(live_binding_count(&mut handle), 1);
+        let writes = probe.writes.lock().expect("writes");
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, IntraCellMethod::Post);
+        assert_eq!(
+            writes[0].1,
+            format!(
+                "/collections/{}/points/payload?wait=true&ordering=strong",
+                handle.collection
+            )
+        );
+        assert_payload_readback(&writes[0].2["payload"], &after["payload"]);
+        assert_eq!(
+            writes[0]
+                .2
+                .as_object()
+                .expect("body")
+                .keys()
+                .collect::<Vec<_>>(),
+            ["filter", "payload"]
+        );
+    });
 }
 
 /// Fault: remove archive's `issue_lifecycle_ticket` call (no ticket ⇒ `archived` stays false).

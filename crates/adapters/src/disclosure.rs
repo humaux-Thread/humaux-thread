@@ -170,6 +170,7 @@ fn purpose_as_db_str(purpose: PrivateDataPurpose) -> &'static str {
         PrivateDataPurpose::UserReasoning => "USER_REASONING",
         PrivateDataPurpose::RetrievalEmbedding => "RETRIEVAL_EMBEDDING",
         PrivateDataPurpose::RetrievalRerank => "RETRIEVAL_RERANK",
+        PrivateDataPurpose::BillingProvider => "BILLING_PROVIDER",
         // §80.1 test-only variant (`domain::egress`'s own doc) — `reserve_in_txn`'s
         // `RecipientClass` guard above always rejects it before this fn is ever reached.
         #[cfg(feature = "test-support")]
