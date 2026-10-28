@@ -1,14 +1,18 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
 //! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.curation_candidate_targets, private.curation_candidates] w=[private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main, xtask::vocab_check]
-//! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails]
-//! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §78.4; §52.4; §22.1; §23.1④; ADR-0110 D-B; ADR-0110 D-C
+//! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails; G-M23-3 / G-M23-3b read docs/architecture/db_objects.md and backup_catalog.toml and fail, never not_applicable, on a missing file or an inventory without foreign-key blocks; G-M23-3b also fails unless every D5_RESTORE_DEPENDENCIES entry is a KNOWLEDGE catalog row (M23 D5)]
+//! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §78.4; §52.4; §22.1; §23.1④; ADR-0110 D-B; ADR-0110 D-C; ADR-0121 D-A
+//! dep-map: allow table-undeclared — the G-M23-3 / G-M23-3b fixtures name schema objects in strings
 //!
 //! xtask `architecture-check` — the CI gate family for §53.3 (Outcome fallback rule +
 //! positive sentinels), §55.1 / §48.0① / §59.1 (unique construction points), §78.3
 //! (Workspace Dependency Rule), the §78 Architecture Boundary Lints, §52.4 G52-1, and the open-core
 //! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074), the crate boundary table G-M01-3 (M01 D5), the raw-pool enabler pin G-M01-9 and call-site gate G-M01-10, G-M20-23b/c no-bridge checks, the real-path
-//! fault gate G-M01-4 (M01 D4, ADR-0077), the §78.4 allow-count ratchet G-M01-8 (M01 D6), the one-`Totals`-constructor gate G-M13-3 (ADR-0110 D-C), the dormant-highwater gate G-M13-2 (ADR-0110 D-B) and the G-M26-1 registry gate, which reads `DestructiveOp::wire()` in both directions (ADR-0092 C-M19-1).
+//! fault gate G-M01-4 (M01 D4, ADR-0077), the §78.4 allow-count ratchet G-M01-8 (M01 D6), the one-`Totals`-constructor gate G-M13-3 (ADR-0110 D-C), the dormant-highwater gate G-M13-2 (ADR-0110 D-B), the G-M26-1 registry gate, which reads `DestructiveOp::wire()` in both directions (ADR-0092 C-M19-1),
+//! and the backup-catalog gates G-M23-3 (every table has exactly one KNOWLEDGE/EXCLUDED row) and G-M23-3b (the KNOWLEDGE set is closed under foreign keys,
+//! and the M23 D5 restore dependencies — revocation fences, their outbox, opt-outs, trigger parents — are KNOWLEDGE rows;
+//! C-M23-0, ADR-0121 D-A and its M23-2 fix 1 amendment, #332).
 //!
 //! Every sub-check below is independent and prints its own three-state verdict
 //! (`pass` / `fail` / `not_applicable`); `not_applicable` always names the missing object
@@ -11501,6 +11505,399 @@ fn candidate_isolation_hits(path: &str, source: &str, violations: &mut Vec<Strin
     }
 }
 
+// ============================================================================
+// M23-2 — G-M23-3 (backup catalog complete) and G-M23-3b (catalog closed under foreign keys)
+// ============================================================================
+
+/// C-M23-0 (module design M23 D1, ADR-0121 D-A): every table is classified `KNOWLEDGE` or `EXCLUDED` here.
+const BACKUP_CATALOG: &str = "docs/architecture/backup_catalog.toml";
+/// The generated schema inventory: the table set and each table's outgoing foreign keys (`dep-map`, ADR-0121 D-A).
+const DB_OBJECTS: &str = "docs/architecture/db_objects.md";
+/// The label `dep-map` prints above a table's foreign keys; a table section without it predates the FK lines.
+const FK_LABEL: &str = "foreign keys (outgoing):";
+/// The keys a catalog row may carry; any other key is a typo that would silently disable a rule.
+const CATALOG_KEYS: [&str; 5] = ["class", "owner", "basis", "reason", "set_null"];
+
+/// A catalog row's class (ADR-0121 D-A): what the knowledge export carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CatalogClass {
+    Knowledge,
+    Excluded,
+}
+
+/// One `[schema.table]` row of `backup_catalog.toml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CatalogRow {
+    table: String,
+    class: CatalogClass,
+    set_null: Vec<String>,
+}
+
+/// One outgoing foreign key of a `db_objects.md` table, as `dep-map` prints it from `pg_constraint`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DbFk {
+    columns: Vec<String>,
+    parent: String,
+    not_null: bool,
+}
+
+/// A `kind: table` or `kind: partitioned` section of `db_objects.md`. Partition leaves are never listed there
+/// (ADR-0063 D-L), so a leaf cannot need a catalog row (D2 dumps parents with `--table-and-children`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DbTable {
+    name: String,
+    fks: Vec<DbFk>,
+}
+
+/// `<cols> -> <schema.table> (NOT NULL|NULL)`, the text after `- fk: `, → the foreign key; `None` for another shape.
+fn parse_fk_line(body: &str) -> Option<DbFk> {
+    let (body, not_null) = match body.strip_suffix(" (NOT NULL)") {
+        Some(rest) => (rest, true),
+        None => (body.strip_suffix(" (NULL)")?, false),
+    };
+    let (columns, parent) = body.split_once(" -> ")?;
+    Some(DbFk {
+        columns: columns.split(", ").map(str::to_owned).collect(),
+        parent: parent.to_owned(),
+        not_null,
+    })
+}
+
+/// The tables of `db_objects.md` with their foreign keys. Problems are named by section; a file with no table, or a
+/// table section without the FK label, fails here so a stale generator can never read as a vacuous pass (§57.1).
+fn parse_db_tables(text: &str) -> Result<Vec<DbTable>, Vec<String>> {
+    let mut tables = Vec::new();
+    let mut problems = Vec::new();
+    let mut unlabelled = Vec::new();
+    for block in text.split("\n### `").skip(1) {
+        let Some((name, body)) = block.split_once("`\n") else {
+            problems.push(format!(
+                "{DB_OBJECTS}: a section header has no closing backtick"
+            ));
+            continue;
+        };
+        let is_table = body
+            .lines()
+            .any(|l| l == "- kind: table" || l.starts_with("- kind: partitioned"));
+        if !is_table {
+            continue;
+        }
+        if !body.lines().any(|l| l == FK_LABEL) {
+            unlabelled.push(name);
+        }
+        let mut fks = Vec::new();
+        for item in body.lines().filter_map(|l| l.strip_prefix("- fk: ")) {
+            match parse_fk_line(item) {
+                Some(fk) => fks.push(fk),
+                None => problems.push(format!(
+                    "{DB_OBJECTS}: table `{name}` has a malformed foreign key line `fk: {item}`"
+                )),
+            }
+        }
+        tables.push(DbTable {
+            name: name.to_owned(),
+            fks,
+        });
+    }
+    if tables.is_empty() {
+        problems.push(format!("{DB_OBJECTS} lists no table"));
+    }
+    if !unlabelled.is_empty() {
+        problems.push(format!(
+            "{DB_OBJECTS}: {} table(s) have no `{FK_LABEL}` block (first: {}); regenerate it with `cargo xtask dep-map --write` (ADR-0121 D-A)",
+            unlabelled.len(),
+            unlabelled[0]
+        ));
+    }
+    if problems.is_empty() {
+        Ok(tables)
+    } else {
+        Err(problems)
+    }
+}
+
+/// `M01`..`M29` exactly (the module numbering of the design notes, ADR-0078 added M29).
+fn is_module_owner(owner: &str) -> bool {
+    owner.len() == 3
+        && owner.starts_with('M')
+        && owner[1..].bytes().all(|b| b.is_ascii_digit())
+        && owner[1..]
+            .parse::<u8>()
+            .is_ok_and(|n| (1..=29).contains(&n))
+}
+
+/// The non-empty trimmed string at `key`, if the row has one.
+fn catalog_text<'a>(fields: &'a toml::Table, key: &str) -> Option<&'a str> {
+    fields
+        .get(key)
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// `set_null = ["col", …]`: absent is empty; anything but an array of non-empty strings is `None`.
+fn catalog_set_null(fields: &toml::Table) -> Option<Vec<String>> {
+    let Some(value) = fields.get("set_null") else {
+        return Some(Vec::new());
+    };
+    value
+        .as_array()?
+        .iter()
+        .map(|c| {
+            c.as_str()
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// Validates one catalog row against the C-M23-0 shape; every problem names the table.
+fn catalog_row(table: &str, entry: &toml::Value) -> Result<CatalogRow, Vec<String>> {
+    let Some(fields) = entry.as_table() else {
+        return Err(vec![format!("catalog row `{table}` is not a table")]);
+    };
+    let mut problems: Vec<String> = fields
+        .keys()
+        .filter(|k| !CATALOG_KEYS.contains(&k.as_str()))
+        .map(|k| format!("catalog row `{table}`: unknown key `{k}`"))
+        .collect();
+    let class = match fields.get("class").and_then(toml::Value::as_str) {
+        Some("KNOWLEDGE") => Some(CatalogClass::Knowledge),
+        Some("EXCLUDED") => Some(CatalogClass::Excluded),
+        _ => {
+            problems.push(format!(
+                "catalog row `{table}`: `class` must be \"KNOWLEDGE\" or \"EXCLUDED\""
+            ));
+            None
+        }
+    };
+    if !catalog_text(fields, "owner").is_some_and(is_module_owner) {
+        problems.push(format!(
+            "catalog row `{table}`: `owner` must be one of M01..M29"
+        ));
+    }
+    if catalog_text(fields, "basis").is_none() {
+        problems.push(format!(
+            "catalog row `{table}`: `basis` is missing or empty"
+        ));
+    }
+    match class {
+        Some(CatalogClass::Excluded) if catalog_text(fields, "reason").is_none() => {
+            problems.push(format!(
+                "catalog row `{table}`: an EXCLUDED row needs a non-empty `reason`"
+            ));
+        }
+        Some(CatalogClass::Knowledge) if fields.contains_key("reason") => {
+            problems.push(format!(
+                "catalog row `{table}`: a KNOWLEDGE row has no `reason`"
+            ));
+        }
+        _ => {}
+    }
+    let set_null = catalog_set_null(fields);
+    if set_null.is_none() {
+        problems.push(format!(
+            "catalog row `{table}`: `set_null` must be an array of column names"
+        ));
+    }
+    match (class, set_null) {
+        (Some(class), Some(set_null)) if problems.is_empty() => Ok(CatalogRow {
+            table: table.to_owned(),
+            class,
+            set_null,
+        }),
+        _ => Err(problems),
+    }
+}
+
+/// `backup_catalog.toml` → one row per `["schema.table"]` header. A duplicate header is a TOML error, so "exactly one
+/// row per table" needs no second check here.
+fn parse_backup_catalog(text: &str) -> Result<Vec<CatalogRow>, Vec<String>> {
+    let value: toml::Value =
+        toml::from_str(text).map_err(|error| vec![format!("{BACKUP_CATALOG}: {error}")])?;
+    let Some(table) = value.as_table() else {
+        return Err(vec![format!(
+            "{BACKUP_CATALOG}: the top level is not a table"
+        )]);
+    };
+    let mut rows = Vec::new();
+    let mut problems = Vec::new();
+    for (name, entry) in table {
+        match catalog_row(name, entry) {
+            Ok(row) => rows.push(row),
+            Err(mut found) => problems.append(&mut found),
+        }
+    }
+    if problems.is_empty() {
+        Ok(rows)
+    } else {
+        Err(problems)
+    }
+}
+
+/// G-M23-3: every table of `db_objects.md` has exactly one row and every row names an existing table, both
+/// directions reported by name.
+fn backup_catalog_completeness(tables: &[DbTable], rows: &[CatalogRow]) -> Vec<String> {
+    let existing: BTreeSet<&str> = tables.iter().map(|t| t.name.as_str()).collect();
+    let classified: BTreeSet<&str> = rows.iter().map(|r| r.table.as_str()).collect();
+    let missing = existing
+        .difference(&classified)
+        .map(|t| format!("table `{t}` has no row in {BACKUP_CATALOG}"));
+    let unknown = classified
+        .difference(&existing)
+        .map(|t| format!("catalog row `{t}` names no table or partitioned parent in {DB_OBJECTS}"));
+    missing.chain(unknown).collect()
+}
+
+/// G-M23-3b (ADR-0121 D-A, #332), the static half: the KNOWLEDGE set is closed under foreign keys.
+///
+/// A NOT NULL foreign key from a KNOWLEDGE table must point at a KNOWLEDGE table. A nullable one into a non-KNOWLEDGE
+/// table must have one of its columns in the child's `set_null`, and every `set_null` column must belong to such a
+/// foreign key. Violations are named `(child, parent[, column])`.
+// ponytail: db_objects.md prints one nullability per foreign key, so coverage is per key (one listed column), not
+// per column; print column nullability in dep-map if a composite key ever needs two columns nulled.
+fn backup_catalog_fk_closure(tables: &[DbTable], rows: &[CatalogRow]) -> Vec<String> {
+    let class: BTreeMap<&str, CatalogClass> =
+        rows.iter().map(|r| (r.table.as_str(), r.class)).collect();
+    let fks: BTreeMap<&str, &[DbFk]> = tables
+        .iter()
+        .map(|t| (t.name.as_str(), t.fks.as_slice()))
+        .collect();
+    let mut problems = Vec::new();
+    for row in rows {
+        let own: &[DbFk] = match row.class {
+            CatalogClass::Knowledge => fks.get(row.table.as_str()).copied().unwrap_or(&[]),
+            CatalogClass::Excluded => &[],
+        };
+        let crossing: Vec<&DbFk> = own
+            .iter()
+            .filter(|fk| class.get(fk.parent.as_str()) != Some(&CatalogClass::Knowledge))
+            .collect();
+        for fk in &crossing {
+            if fk.not_null {
+                problems.push(format!(
+                    "NOT NULL foreign key ({}, {}, {}): the parent is not KNOWLEDGE",
+                    row.table,
+                    fk.parent,
+                    fk.columns.join(", ")
+                ));
+            } else if !fk.columns.iter().any(|c| row.set_null.contains(c)) {
+                problems.push(format!(
+                    "nullable foreign key ({}, {}, {}) crosses out of KNOWLEDGE and no column is in `set_null`",
+                    row.table,
+                    fk.parent,
+                    fk.columns.join(", ")
+                ));
+            }
+        }
+        for column in &row.set_null {
+            let real = crossing
+                .iter()
+                .any(|fk| !fk.not_null && fk.columns.contains(column));
+            if !real {
+                problems.push(format!(
+                    "({}, {column}): `set_null` names a column that is not a nullable foreign key into a non-KNOWLEDGE table",
+                    row.table
+                ));
+            }
+        }
+    }
+    problems
+}
+
+/// M23 D5 ("Restores never resurrect") and the ADR-0121 D-A amendment (M23-2 fix 1): fences + trigger parents, the
+/// tables a restore must bring back so that a revoked or withdrawn object stays revoked and an opt-out stays off. The
+/// fences are the two revocation facts that serving reads, their NOT NULL parent `ops.outbox` and the email opt-outs;
+/// `staging.sanitized_public_candidates` is the trigger parent of the assessed branch of 0126. Trigger dependencies
+/// are outside G-M23-3b (it reads foreign keys only); the M23-4 drill (withdraw + revoke after restore) covers them.
+const D5_RESTORE_DEPENDENCIES: [&str; 6] = [
+    "ops.public_release_revocations",
+    "ops.anonymous_public_revocations",
+    "ops.outbox",
+    "ops.email_suppressions",
+    "control.notification_preferences",
+    "staging.sanitized_public_candidates",
+];
+
+/// Whether `table` is a KNOWLEDGE row of the parsed catalog.
+fn is_knowledge_row(rows: &[CatalogRow], table: &str) -> bool {
+    rows.iter()
+        .any(|r| r.table == table && r.class == CatalogClass::Knowledge)
+}
+
+/// How many `D5_RESTORE_DEPENDENCIES` entries are a KNOWLEDGE catalog row. The pin holds iff this equals the list length;
+/// it counts parsed rows, never catalog text, so a comment that names a table cannot satisfy it.
+fn d5_restore_dependencies_pinned(rows: &[CatalogRow]) -> usize {
+    D5_RESTORE_DEPENDENCIES
+        .iter()
+        .filter(|table| is_knowledge_row(rows, table))
+        .count()
+}
+
+/// The D5 pin as problems: one per entry that is not a KNOWLEDGE row, named.
+fn backup_catalog_d5_problems(rows: &[CatalogRow]) -> Vec<String> {
+    if d5_restore_dependencies_pinned(rows) == D5_RESTORE_DEPENDENCIES.len() {
+        return Vec::new();
+    }
+    D5_RESTORE_DEPENDENCIES
+        .iter()
+        .filter(|table| !is_knowledge_row(rows, table))
+        .map(|table| {
+            format!("M23 D5 pin: `{table}` must be a KNOWLEDGE row of {BACKUP_CATALOG} (a restore must not resurrect)")
+        })
+        .collect()
+}
+
+/// The problems of one gate over the two file texts; `closure` picks G-M23-3b over G-M23-3. A text that does not
+/// parse is a problem of both gates, so neither can pass on input the other rejects.
+fn backup_catalog_problems(db_objects: &str, catalog: &str, closure: bool) -> Vec<String> {
+    let (tables, rows) = match (parse_db_tables(db_objects), parse_backup_catalog(catalog)) {
+        (Ok(tables), Ok(rows)) => (tables, rows),
+        (tables, rows) => {
+            return tables
+                .err()
+                .into_iter()
+                .chain(rows.err())
+                .flatten()
+                .collect();
+        }
+    };
+    if closure {
+        backup_catalog_fk_closure(&tables, &rows)
+    } else {
+        backup_catalog_completeness(&tables, &rows)
+    }
+}
+
+/// G-M23-3 (`closure == false`) and G-M23-3b (`closure == true`) over the real tree. A missing input is a `Fail`,
+/// never `NotApplicable`: the catalog is a CI contract, so its absence must not read as a pass (§57.1 第2条).
+fn backup_catalog_gate(root: &Path, closure: bool) -> Verdict {
+    let mut texts = Vec::new();
+    for path in [DB_OBJECTS, BACKUP_CATALOG] {
+        match fs::read_to_string(root.join(path)) {
+            Ok(text) => texts.push(text),
+            Err(error) => return Verdict::Fail(vec![format!("cannot read {path}: {error}")]),
+        }
+    }
+    let gate = if closure { "G-M23-3b" } else { "G-M23-3" };
+    let mut problems = backup_catalog_problems(&texts[0], &texts[1], closure);
+    if closure {
+        // An unparseable catalog is already a problem above; the pin needs parsed rows.
+        let pin = parse_backup_catalog(&texts[1]).map(|rows| backup_catalog_d5_problems(&rows));
+        problems.extend(pin.unwrap_or_default());
+    }
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(
+            problems
+                .into_iter()
+                .map(|p| format!("{gate}: {p}"))
+                .collect(),
+        )
+    }
+}
+
 #[allow(clippy::too_many_lines)] // §57.1: one flat, closed registry of every gate in declaration order — splitting it would hide the list this file exists to make visible.
 pub fn run(_args: &[String]) -> i32 {
     let root = workspace_root();
@@ -11756,6 +12153,14 @@ pub fn run(_args: &[String]) -> i32 {
         (
             "ADR-0084 D-B / T-CI-4 (the rerank image's rerank/ORT ADD pins equal .github/actions/rerank-parity/action.yml; a missing file, stage or pin is not_applicable naming it)",
             rerank_pin_parity(&root),
+        ),
+        (
+            "G-M23-3 (backup catalog complete)",
+            backup_catalog_gate(&root, false),
+        ),
+        (
+            "G-M23-3b (backup catalog closed under foreign keys)",
+            backup_catalog_gate(&root, true),
         ),
     ];
     checks.extend(provider_plane_architecture_gate_checks(&root));
@@ -23423,6 +23828,500 @@ mod candidate_isolation_tests {
             Verdict::Fail(vec![
                 "G-M15-1/G-N09-2: missing input crates/adapters/src/read_materialize.rs".into()
             ])
+        );
+    }
+}
+
+#[cfg(test)]
+mod backup_catalog_tests {
+    use super::*;
+
+    /// Non-comment occurrences of `head` + `tail` in this file's own source; the needle is passed in two halves so
+    /// that this test's source does not contain it and cannot count itself.
+    fn own_source_count(head: &str, tail: &str) -> usize {
+        let needle = format!("{head}{tail}");
+        fs::read_to_string(workspace_root().join(SELF_FILE))
+            .expect("read architecture_check.rs")
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| l.contains(&needle))
+            .count()
+    }
+
+    // -- M23-2: G-M23-3 backup catalog complete / G-M23-3b catalog closed under foreign keys ------------
+
+    /// A `db_objects.md` excerpt in the layout `dep-map` prints: `(table, kind, fk lines)` per section.
+    fn bc_db(sections: &[(&str, &str, &[&str])]) -> String {
+        let mut out = String::from("# Database objects (generated — do not edit)\n\n");
+        for (name, kind, fks) in sections {
+            out.push_str(&format!(
+                "### `{name}`\n- kind: {kind}\n- owner: role_migration_owner\n- RLS: yes\n- FORCE: yes\n- created in: 0001_x\n\ngrants (runtime roles):\n\n{FK_LABEL}\n"
+            ));
+            for fk in *fks {
+                out.push_str(&format!("- fk: {fk}\n"));
+            }
+            out.push_str("\nread by:\n\nwritten by:\n\nexecuted by:\n\n");
+        }
+        out
+    }
+
+    const BC_KNOWLEDGE: &str = "class = \"KNOWLEDGE\"\nowner = \"M07\"\nbasis = \"M07:46; D1\"\n";
+    const BC_EXCLUDED: &str =
+        "class = \"EXCLUDED\"\nowner = \"M09\"\nbasis = \"M09:41; D1\"\nreason = \"derived\"\n";
+
+    /// A catalog from `(table, row body)` pairs.
+    fn bc_catalog(rows: &[(&str, &str)]) -> String {
+        rows.iter()
+            .map(|(table, body)| format!("[\"{table}\"]\n{body}\n"))
+            .collect()
+    }
+
+    /// The problems of both gates on one fixture, G-M23-3 first.
+    fn bc_both(db: &str, catalog: &str) -> (Vec<String>, Vec<String>) {
+        (
+            backup_catalog_problems(db, catalog, false),
+            backup_catalog_problems(db, catalog, true),
+        )
+    }
+
+    /// Two plain tables and one partitioned parent, all classified: both gates pass.
+    #[test]
+    fn backup_catalog_fixture_passes_both_gates() {
+        let db = bc_db(&[
+            ("private.a", "table", &[]),
+            ("private.b", "table", &["tenant_id -> private.a (NOT NULL)"]),
+            (
+                "ops.p",
+                "partitioned (monthly leaves: control.partition_registry)",
+                &[],
+            ),
+        ]);
+        let catalog = bc_catalog(&[
+            ("private.a", BC_KNOWLEDGE),
+            ("private.b", BC_KNOWLEDGE),
+            ("ops.p", BC_EXCLUDED),
+        ]);
+        assert_eq!(bc_both(&db, &catalog), (vec![], vec![]));
+    }
+
+    /// r1 shape: a table without a row is reported by name; a row for no table is reported by name (r2 shape).
+    #[test]
+    fn backup_catalog_reports_both_directions_by_name() {
+        let db = bc_db(&[("private.a", "table", &[]), ("private.b", "table", &[])]);
+        let catalog = bc_catalog(&[("private.a", BC_KNOWLEDGE), ("private.ghost", BC_EXCLUDED)]);
+        assert_eq!(
+            backup_catalog_problems(&db, &catalog, false),
+            vec![
+                format!("table `private.b` has no row in {BACKUP_CATALOG}"),
+                format!(
+                    "catalog row `private.ghost` names no table or partitioned parent in {DB_OBJECTS}"
+                ),
+            ]
+        );
+    }
+
+    /// r3 shape and the reason rule: EXCLUDED needs a non-empty reason, KNOWLEDGE has none.
+    #[test]
+    fn backup_catalog_enforces_the_reason_rule() {
+        let db = bc_db(&[("private.a", "table", &[])]);
+        for reason in ["reason = \"\"\n", "reason = \"  \"\n", ""] {
+            let body = format!("class = \"EXCLUDED\"\nowner = \"M09\"\nbasis = \"x\"\n{reason}");
+            assert_eq!(
+                backup_catalog_problems(&db, &bc_catalog(&[("private.a", &body)]), false),
+                vec![
+                    "catalog row `private.a`: an EXCLUDED row needs a non-empty `reason`"
+                        .to_string()
+                ],
+                "{reason:?}"
+            );
+        }
+        let with_reason = format!("{BC_KNOWLEDGE}reason = \"\"\n");
+        assert_eq!(
+            backup_catalog_problems(&db, &bc_catalog(&[("private.a", &with_reason)]), false),
+            vec!["catalog row `private.a`: a KNOWLEDGE row has no `reason`".to_string()]
+        );
+    }
+
+    /// `owner` is exactly M01..M29.
+    #[test]
+    fn backup_catalog_owner_is_m01_to_m29() {
+        for ok in ["M01", "M09", "M29"] {
+            assert!(is_module_owner(ok), "{ok}");
+        }
+        for bad in [
+            "", "M", "M0", "M1", "M00", "M30", "M+1", "m01", "M001", "X01", "M 1",
+        ] {
+            assert!(!is_module_owner(bad), "{bad:?}");
+        }
+        let db = bc_db(&[("private.a", "table", &[])]);
+        let body = BC_KNOWLEDGE.replace("M07", "M30");
+        assert_eq!(
+            backup_catalog_problems(&db, &bc_catalog(&[("private.a", &body)]), false),
+            vec!["catalog row `private.a`: `owner` must be one of M01..M29".to_string()]
+        );
+    }
+
+    /// `class`, `basis`, unknown keys and a malformed `set_null` are shape problems named by table.
+    #[test]
+    fn backup_catalog_rejects_malformed_rows() {
+        let db = bc_db(&[("private.a", "table", &[])]);
+        let cases: [(&str, &str); 5] = [
+            (
+                "class = \"KEEP\"\nowner = \"M07\"\nbasis = \"x\"\n",
+                "`class` must be",
+            ),
+            (
+                "class = \"KNOWLEDGE\"\nowner = \"M07\"\nbasis = \" \"\n",
+                "`basis` is missing or empty",
+            ),
+            (
+                "class = \"KNOWLEDGE\"\nowner = \"M07\"\nbasis = \"x\"\nreson = \"typo\"\n",
+                "unknown key `reson`",
+            ),
+            (
+                "class = \"KNOWLEDGE\"\nowner = \"M07\"\nbasis = \"x\"\nset_null = \"a\"\n",
+                "`set_null` must be an array",
+            ),
+            (
+                "class = \"KNOWLEDGE\"\nowner = \"M07\"\nbasis = \"x\"\nset_null = [\"\"]\n",
+                "`set_null` must be an array",
+            ),
+        ];
+        for (body, expect) in cases {
+            let found = backup_catalog_problems(&db, &bc_catalog(&[("private.a", body)]), false);
+            assert_eq!(found.len(), 1, "{body:?}: {found:?}");
+            assert!(
+                found[0].starts_with("catalog row `private.a`:") && found[0].contains(expect),
+                "{found:?}"
+            );
+        }
+    }
+
+    /// A duplicate header is a TOML error, so a table cannot hold two rows.
+    #[test]
+    fn backup_catalog_duplicate_row_is_a_parse_failure() {
+        let db = bc_db(&[("private.a", "table", &[])]);
+        let catalog = bc_catalog(&[("private.a", BC_KNOWLEDGE), ("private.a", BC_EXCLUDED)]);
+        let found = backup_catalog_problems(&db, &catalog, false);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].starts_with(BACKUP_CATALOG), "{found:?}");
+    }
+
+    /// A catalog or inventory that does not parse fails both gates, so neither can pass on input the other rejects.
+    #[test]
+    fn backup_catalog_unparseable_input_fails_both_gates() {
+        let db = bc_db(&[("private.a", "table", &[])]);
+        let (complete, closed) = bc_both(&db, "[\"private.a\"\nclass = ");
+        assert_eq!(complete.len(), 1);
+        assert_eq!(complete, closed);
+        let (complete, closed) =
+            bc_both("# nothing\n", &bc_catalog(&[("private.a", BC_KNOWLEDGE)]));
+        assert_eq!(complete, vec![format!("{DB_OBJECTS} lists no table")]);
+        assert_eq!(complete, closed);
+    }
+
+    /// An inventory generated before the FK lines existed is a failure, not a vacuous pass of G-M23-3b.
+    #[test]
+    fn backup_catalog_inventory_without_fk_blocks_fails() {
+        let old = "# Database objects\n\n### `private.a`\n- kind: table\n- created in: 0001_x\n\ngrants (runtime roles):\n\n";
+        let found = backup_catalog_problems(old, &bc_catalog(&[("private.a", BC_KNOWLEDGE)]), true);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0]
+                .contains("1 table(s) have no `foreign keys (outgoing):` block (first: private.a)"),
+            "{found:?}"
+        );
+    }
+
+    /// The `fk:` line shape `dep-map` prints, composite keys and both nullabilities.
+    #[test]
+    fn backup_catalog_parses_fk_lines() {
+        assert_eq!(
+            parse_fk_line("tenant_id, memory_id -> private.memory_records (NOT NULL)"),
+            Some(DbFk {
+                columns: vec!["tenant_id".into(), "memory_id".into()],
+                parent: "private.memory_records".into(),
+                not_null: true,
+            })
+        );
+        assert_eq!(
+            parse_fk_line("release_id -> staging.r (NULL)"),
+            Some(DbFk {
+                columns: vec!["release_id".into()],
+                parent: "staging.r".into(),
+                not_null: false,
+            })
+        );
+        for bad in ["a -> b", "a b (NULL)", "-> b (NULL)x", "a -> b (MAYBE)"] {
+            assert_eq!(parse_fk_line(bad), None, "{bad}");
+        }
+        let db = bc_db(&[("private.a", "table", &["not a foreign key"])]);
+        let found = backup_catalog_problems(&db, &bc_catalog(&[("private.a", BC_KNOWLEDGE)]), true);
+        assert_eq!(
+            found,
+            vec![format!(
+                "{DB_OBJECTS}: table `private.a` has a malformed foreign key line `fk: not a foreign key`"
+            )]
+        );
+    }
+
+    /// r4 shape (the ADR's inject): `private.observations` → `private.processing_runs` NOT NULL, the parent EXCLUDED.
+    #[test]
+    fn fk_closure_names_a_not_null_key_into_an_excluded_parent() {
+        let db = bc_db(&[
+            (
+                "private.observations",
+                "table",
+                &["processing_run_id -> private.processing_runs (NOT NULL)"],
+            ),
+            ("private.processing_runs", "table", &[]),
+        ]);
+        let red = bc_catalog(&[
+            ("private.observations", BC_KNOWLEDGE),
+            ("private.processing_runs", BC_EXCLUDED),
+        ]);
+        assert_eq!(
+            backup_catalog_problems(&db, &red, true),
+            vec![
+                "NOT NULL foreign key (private.observations, private.processing_runs, processing_run_id): the parent is not KNOWLEDGE"
+                    .to_string()
+            ]
+        );
+        assert!(
+            backup_catalog_problems(&db, &red, false).is_empty(),
+            "G-M23-3 judges completeness only"
+        );
+        let green = bc_catalog(&[
+            ("private.observations", BC_KNOWLEDGE),
+            ("private.processing_runs", BC_KNOWLEDGE),
+        ]);
+        assert!(backup_catalog_problems(&db, &green, true).is_empty());
+    }
+
+    /// The direction matters: an EXCLUDED child may reference a KNOWLEDGE parent; a self-reference is closed.
+    #[test]
+    fn fk_closure_only_judges_knowledge_children() {
+        let db = bc_db(&[
+            ("private.a", "table", &["parent_id -> private.a (NULL)"]),
+            ("private.b", "table", &["a_id -> private.a (NOT NULL)"]),
+        ]);
+        let catalog = bc_catalog(&[("private.a", BC_KNOWLEDGE), ("private.b", BC_EXCLUDED)]);
+        assert!(backup_catalog_problems(&db, &catalog, true).is_empty());
+    }
+
+    /// r5 shape: a nullable key into a non-KNOWLEDGE parent needs its column in `set_null`; every listed column must be real.
+    #[test]
+    fn fk_closure_requires_set_null_for_nullable_crossings_and_only_those() {
+        let db = bc_db(&[
+            (
+                "private.c",
+                "table",
+                &[
+                    "tenant_id, release_id -> staging.r (NULL)",
+                    "tenant_id -> private.k (NOT NULL)",
+                ],
+            ),
+            ("private.k", "table", &[]),
+            ("staging.r", "table", &[]),
+        ]);
+        let with = |set_null: &str| {
+            bc_catalog(&[
+                ("private.c", &format!("{BC_KNOWLEDGE}{set_null}")),
+                ("private.k", BC_KNOWLEDGE),
+                ("staging.r", BC_EXCLUDED),
+            ])
+        };
+        assert!(
+            backup_catalog_problems(&db, &with("set_null = [\"release_id\"]\n"), true).is_empty()
+        );
+        assert_eq!(
+            backup_catalog_problems(&db, &with(""), true),
+            vec!["nullable foreign key (private.c, staging.r, tenant_id, release_id) crosses out of KNOWLEDGE and no column is in `set_null`".to_string()]
+        );
+        // `other` is no foreign key column at all; `tenant_id` of the closed NOT NULL key into KNOWLEDGE is not a crossing.
+        let stray =
+            backup_catalog_problems(&db, &with("set_null = [\"release_id\", \"other\"]\n"), true);
+        assert_eq!(
+            stray,
+            vec!["(private.c, other): `set_null` names a column that is not a nullable foreign key into a non-KNOWLEDGE table".to_string()]
+        );
+        // On an EXCLUDED row there is no crossing at all, so any `set_null` is stray.
+        let excluded = bc_catalog(&[
+            (
+                "private.c",
+                &format!("{BC_EXCLUDED}set_null = [\"release_id\"]\n"),
+            ),
+            ("private.k", BC_KNOWLEDGE),
+            ("staging.r", BC_EXCLUDED),
+        ]);
+        assert_eq!(backup_catalog_problems(&db, &excluded, true).len(), 1);
+    }
+
+    /// A nullable key into a KNOWLEDGE parent is closed, so naming its column in `set_null` is stray.
+    #[test]
+    fn fk_closure_set_null_on_a_closed_key_is_stray() {
+        let db = bc_db(&[
+            ("private.c", "table", &["k_id -> private.k (NULL)"]),
+            ("private.k", "table", &[]),
+        ]);
+        let catalog = bc_catalog(&[
+            (
+                "private.c",
+                &format!("{BC_KNOWLEDGE}set_null = [\"k_id\"]\n"),
+            ),
+            ("private.k", BC_KNOWLEDGE),
+        ]);
+        assert_eq!(backup_catalog_problems(&db, &catalog, true).len(), 1);
+    }
+
+    /// A missing input is a `Fail` naming the file, never `NotApplicable` (§57.1 第2条).
+    #[test]
+    fn backup_catalog_missing_input_is_a_failure() {
+        let dir = std::env::temp_dir().join(format!("bc-missing-{}", std::process::id()));
+        let fail = |closure: bool| match backup_catalog_gate(&dir, closure) {
+            Verdict::Fail(found) => found,
+            other => panic!("a missing input must fail, got {other:?}"),
+        };
+        fs::create_dir_all(dir.join("docs/architecture")).unwrap();
+        for closure in [false, true] {
+            let found = fail(closure);
+            assert_eq!(found.len(), 1);
+            assert!(
+                found[0].starts_with(&format!("cannot read {DB_OBJECTS}")),
+                "{found:?}"
+            );
+        }
+        fs::write(dir.join(DB_OBJECTS), "").unwrap();
+        for closure in [false, true] {
+            let found = fail(closure);
+            assert_eq!(found.len(), 1);
+            assert!(
+                found[0].starts_with(&format!("cannot read {BACKUP_CATALOG}")),
+                "{found:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `run()` must list both gates exactly once (a deleted call tuple leaves a gate that never runs).
+    #[test]
+    fn run_wires_the_backup_catalog_gates_exactly_once() {
+        assert_eq!(
+            own_source_count("backup_catalog_", "gate(&root, false),"),
+            1
+        );
+        assert_eq!(own_source_count("backup_catalog_", "gate(&root, true),"), 1);
+    }
+
+    /// The gate wiring end to end over a fixture tree (M23-2 fix 2): with one D5 row EXCLUDED, G-M23-3b fails naming the
+    /// pin while G-M23-3, which judges completeness only, passes; an all-KNOWLEDGE catalog passes both. r7 deletes the
+    /// `if closure {` wiring in `backup_catalog_gate` and turns this red.
+    #[test]
+    fn backup_catalog_gate_runs_the_d5_pin_end_to_end() {
+        let dir = std::env::temp_dir().join(format!("bc-d5-{}", std::process::id()));
+        fs::create_dir_all(dir.join("docs/architecture")).unwrap();
+        let sections: Vec<(&str, &str, &[&str])> = D5_RESTORE_DEPENDENCIES
+            .iter()
+            .map(|t| (*t, "table", &[] as &[&str]))
+            .collect();
+        fs::write(dir.join(DB_OBJECTS), bc_db(&sections)).unwrap();
+        let catalog = |excluded: &str| {
+            let rows: Vec<(&str, &str)> = D5_RESTORE_DEPENDENCIES
+                .iter()
+                .map(|t| {
+                    (
+                        *t,
+                        if *t == excluded {
+                            BC_EXCLUDED
+                        } else {
+                            BC_KNOWLEDGE
+                        },
+                    )
+                })
+                .collect();
+            bc_catalog(&rows)
+        };
+        fs::write(dir.join(BACKUP_CATALOG), catalog("")).unwrap();
+        for closure in [false, true] {
+            assert_eq!(backup_catalog_gate(&dir, closure), Verdict::Pass);
+        }
+        fs::write(dir.join(BACKUP_CATALOG), catalog("ops.outbox")).unwrap();
+        assert_eq!(
+            backup_catalog_gate(&dir, false),
+            Verdict::Pass,
+            "G-M23-3 judges completeness only"
+        );
+        match backup_catalog_gate(&dir, true) {
+            Verdict::Fail(found) => assert!(
+                found
+                    .iter()
+                    .any(|p| p.starts_with("G-M23-3b: M23 D5 pin") && p.contains("`ops.outbox`")),
+                "{found:?}"
+            ),
+            other => panic!("an EXCLUDED D5 row must fail G-M23-3b, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The D5 pin counts KNOWLEDGE rows and names every entry that is absent or EXCLUDED.
+    #[test]
+    fn backup_catalog_d5_pin_names_each_missing_or_excluded_entry() {
+        let row = |table: &str, class: CatalogClass| CatalogRow {
+            table: table.to_owned(),
+            class,
+            set_null: Vec::new(),
+        };
+        let all: Vec<CatalogRow> = D5_RESTORE_DEPENDENCIES
+            .iter()
+            .map(|t| row(t, CatalogClass::Knowledge))
+            .collect();
+        assert_eq!(
+            d5_restore_dependencies_pinned(&all),
+            D5_RESTORE_DEPENDENCIES.len()
+        );
+        assert!(backup_catalog_d5_problems(&all).is_empty());
+        let mut weak = all.clone();
+        weak[0].class = CatalogClass::Excluded;
+        weak.remove(1);
+        assert_eq!(
+            d5_restore_dependencies_pinned(&weak),
+            D5_RESTORE_DEPENDENCIES.len() - 2
+        );
+        let found = backup_catalog_d5_problems(&weak);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found[0].contains(D5_RESTORE_DEPENDENCIES[0]), "{found:?}");
+        assert!(found[1].contains(D5_RESTORE_DEPENDENCIES[1]), "{found:?}");
+    }
+
+    /// The real catalog: every D5 restore dependency is a KNOWLEDGE row (M23 D5, ADR-0121 D-A amendment).
+    /// r6 flips `ops.public_release_revocations` to EXCLUDED and turns this red at its own message.
+    #[test]
+    fn repository_backup_catalog_pins_d5_restore_dependencies() {
+        let text = fs::read_to_string(workspace_root().join(BACKUP_CATALOG))
+            .expect("backup_catalog.toml is readable");
+        let rows = parse_backup_catalog(&text).expect("backup_catalog.toml parses");
+        assert_eq!(
+            d5_restore_dependencies_pinned(&rows),
+            D5_RESTORE_DEPENDENCIES.len(),
+            "M23 D5 pin: {:?}",
+            backup_catalog_d5_problems(&rows)
+        );
+    }
+
+    /// The real tree: every table of the migrated catalog has a row, and the KNOWLEDGE set is closed under foreign keys.
+    /// r1/r2/r3/r4/r5 (ADR-0121 D-A, #332) are mutations of `docs/architecture/backup_catalog.toml` that turn this red.
+    #[test]
+    fn repository_backup_catalog_is_complete_and_closed() {
+        let root = workspace_root();
+        for closure in [false, true] {
+            assert_eq!(backup_catalog_gate(&root, closure), Verdict::Pass);
+        }
+        let db = fs::read_to_string(root.join(DB_OBJECTS)).expect("db_objects.md is readable");
+        let tables = parse_db_tables(&db).expect("db_objects.md parses");
+        assert!(tables.len() > 200, "{} tables", tables.len());
+        assert!(
+            tables.iter().map(|t| t.fks.len()).sum::<usize>() > 200,
+            "the FK lines are the input of G-M23-3b"
         );
     }
 }
