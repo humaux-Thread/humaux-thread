@@ -11,10 +11,10 @@
 //!   x=[private.link_memory_subjects], PostgreSQL(role_gateway) x=[private.declared_project_visible],
 //!   PostgreSQL(role_private_worker)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::coord_repo, adapters::distill_repo,
-//!   adapters::memory_repo, adapters::operation_receipt, adapters::relation_repo, adapters::remember,
+//!   adapters::memory_repo, adapters::operation_receipt, adapters::remember,
 //!   adapters::tests::support::governance_ops, adapters::tests::support::operation_receipt_fixture,
 //!   domain::attribution, domain::audit, domain::authority, domain::confirm, domain::continuity, domain::error,
-//!   domain::evidence, domain::identity, domain::ids,
+//!   domain::evidence, domain::ids,
 //!   domain::memory, domain::relation, domain::subject, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [Evidence enters through the real `remember.put` (the T04c path when it carries a run); the Memory
@@ -57,7 +57,6 @@ use humaux_adapters::{
     distill_repo::{self, ConfirmOutcome, ConfirmRequest},
     memory_repo::{self, AttributionSource, MemoryProducer, NewMemory},
     operation_receipt::{self, AtomicRememberRequest},
-    relation_repo,
     remember::RememberCommand,
 };
 use humaux_domain::{
@@ -68,10 +67,9 @@ use humaux_domain::{
     continuity::ProjectId,
     error::ErrorCode,
     evidence::{EvidenceOriginClass, payload_sha256},
-    identity::PrincipalId,
     ids::{TaskId, TenantId, WorkspaceId},
     memory::MemoryType,
-    relation::{DecidedBy, RelationEdge, RelationId, RelationKind, Timestamp, Validity},
+    relation::{RelationKind, Timestamp, Validity},
 };
 use humaux_testkit::run_db_fixture;
 use sqlx::types::{Uuid, time::OffsetDateTime};
@@ -811,9 +809,11 @@ impl World {
         rows
     }
 
-    /// Revision 2 of r1 with `valid`, through `relation_repo::append_revision`, decided by the governor in a
-    /// `role_gateway` transaction with the visibility GUCs the caller installs (ADR-0078 T06d). Returns every
-    /// revocation of `tenants` as that transaction sees it before it ends, then commits or rolls back.
+    /// Revision 2 of r1 with `valid`, a raw `role_gateway` INSERT decided by the governor with the visibility GUCs the
+    /// caller installs (ADR-0078 T06d). ADR-0102 D-C leaves `coord_task_repo::set_task_project_in_txn` the only
+    /// production writer of a CONTAINS revision, so this correction of a fixture relation is the statement the door
+    /// would have written, judged by the same 0249 / 0253 / 0255 triggers. Returns every revocation of `tenants` as
+    /// that transaction sees it before it ends, then commits or rolls back.
     fn revise(
         &self,
         handle: &Handle,
@@ -841,23 +841,30 @@ impl World {
             .execute(&mut *txn)
             .await
             .expect("session GUCs");
-            let edge = RelationEdge {
-                src_id: self.p1,
-                kind: RelationKind::Contains,
-                dst_id: self.t1.0,
-            };
-            relation_repo::append_revision(
-                &mut txn,
-                &edge,
-                RelationId(self.r1),
-                1,
-                valid,
-                &DecidedBy::Principal(PrincipalId(by)),
-                None,
-                &[],
-                self.e1,
+            let (starts, ends): (Vec<i64>, Vec<Option<i64>>) =
+                valid.segments().iter().copied().unzip();
+            sqlx::query(
+                "INSERT INTO private.project_task_relations (tenant_id, relation_id, revision, src_id, dst_id, \
+                   relation_kind, valid, decided_by, factual_evidence_ids, authorization_evidence_id) \
+                 VALUES ($1, $2, 2, $3, $4, $5, \
+                   (SELECT coalesce(range_agg(tstzrange( \
+                      to_timestamp(s / 1000000) + (s % 1000000) * interval '1 microsecond', \
+                      to_timestamp(e / 1000000) + (e % 1000000) * interval '1 microsecond', '[)')), '{}') \
+                      FROM unnest($6::bigint[], $7::bigint[]) AS v(s, e)), \
+                   $8, '{}', $9)",
             )
-            .await?;
+            .bind(handle.tenant_id)
+            .bind(self.r1)
+            .bind(self.p1)
+            .bind(self.t1.0)
+            .bind(RelationKind::Contains.as_str())
+            .bind(starts)
+            .bind(ends)
+            .bind(format!("principal:{by}"))
+            .bind(self.e1)
+            .execute(&mut *txn)
+            .await
+            .map_err(|_| ErrorCode::DependencyUnavailable)?;
             sqlx::query("RESET ROLE")
                 .execute(&mut *txn)
                 .await
