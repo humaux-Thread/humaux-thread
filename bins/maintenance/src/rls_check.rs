@@ -7617,14 +7617,14 @@ mod tests {
         txn_or_skip!(client, txn);
         assert_eq!(BILLING_PROCESSOR_DOOR_FUNCTIONS.len(), 3);
         let clean = check_billing_processor_doors(&mut txn);
-        assert_eq!(clean.status, GateStatus::Pass, "{}", clean.detail);
+        assert_eq!(clean.status, GateStatus::Pass);
         for signature in BILLING_PROCESSOR_DOOR_FUNCTIONS {
             txn.batch_execute(&format!(
                 "SAVEPOINT billing_acl; GRANT EXECUTE ON FUNCTION {signature} TO role_gateway"
             ))
             .expect("inject ACL fault");
             let red = check_billing_processor_doors(&mut txn);
-            assert_eq!(red.status, GateStatus::Fail, "{}", red.detail);
+            assert_eq!(red.status, GateStatus::Fail);
             txn.batch_execute("ROLLBACK TO SAVEPOINT billing_acl")
                 .expect("restore");
         }
