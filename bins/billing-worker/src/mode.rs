@@ -1,11 +1,9 @@
 //! `billing-worker::mode` — fail-closed non-live startup (§71.2).
-//! Depends-on: crates=[humaux-infra-network]; services=[];
-//!   env=[HUMAUX_BILLING_PROVIDER_MODE, HUMAUX_BILLING_CREEM_TEST_BASE_URL]; modules=[humaux-infra-network]
+//! Depends-on: crates=[]; services=[];
+//!   env=[HUMAUX_BILLING_PROVIDER_MODE, HUMAUX_BILLING_CREEM_TEST_BASE_URL]; modules=[]
 //! Called-by: [billing-worker::main, tests]
 //! Invariants: [no implicit mode; production host refused; fake destinations supplied explicitly]
 //! Spec: Baseline §71.2; §78.1
-
-use humaux_infra_network::reqwest::Url;
 
 /// §71.2: startup configuration cannot represent live billing.
 pub struct BillingMode {
@@ -48,16 +46,17 @@ impl BillingMode {
         if self.name == "test" {
             return Ok(vec!["test-api.creem.io".into()]);
         }
-        let url = Url::parse(fake_base_url.unwrap_or(""))
+        // §71.2: fake doubles use explicit IPv4 socket addresses, never DNS or userinfo.
+        let authority = fake_base_url
+            .and_then(|s| s.strip_prefix("http://"))
+            .and_then(|s| s.split('/').next())
+            .unwrap_or("");
+        let addr = authority
+            .parse::<std::net::SocketAddrV4>()
             .map_err(|_| "fake billing requires an explicit loopback base URL")?;
-        let host = url.host_str().unwrap_or("");
-        if url.scheme() != "http"
-            || !matches!(host, "127.0.0.1" | "[::1]" | "localhost")
-            || !url.username().is_empty()
-            || url.password().is_some()
-        {
+        if !addr.ip().is_loopback() {
             return Err("fake billing requires an explicit loopback base URL".into());
         }
-        Ok(vec![host.to_owned()])
+        Ok(vec![addr.ip().to_string()])
     }
 }

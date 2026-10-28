@@ -520,24 +520,6 @@ mod tests {
         .expect("client builds")
     }
 
-    fn billing_at(
-        addr: std::net::SocketAddr,
-        processor: ProcessorId,
-        method: reqwest::Method,
-        hosts: Vec<String>,
-        source: Arc<dyn RetrievalCredentialSource>,
-    ) -> HttpExternalCall {
-        let mut call = call_at(addr, processor)
-            .with_billing(
-                method,
-                reqwest::header::HeaderName::from_static("x-api-key"),
-                hosts,
-            )
-            .unwrap();
-        call.credential_source = source;
-        call
-    }
-
     fn billing_permit(processor: ProcessorId, payload: &AuthorizedEgressPayload) -> EgressPermit {
         authorize(
             TenantId::new(),
@@ -555,13 +537,13 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let processor = ProcessorId(Uuid::now_v7());
         let payload = AuthorizedEgressPayload::new(b"x".to_vec());
-        let call = billing_at(
-            listener.local_addr().unwrap(),
-            processor,
-            reqwest::Method::GET,
-            vec!["localhost".into()],
-            Arc::new(FixedCredential),
-        );
+        let call = call_at(listener.local_addr().unwrap(), processor)
+            .with_billing(
+                reqwest::Method::GET,
+                reqwest::header::HeaderName::from_static("x-api-key"),
+                vec!["localhost".into()],
+            )
+            .unwrap();
         // dep: HTTP(loopback) — §71.2 destination rejection must precede dialing
         let result = call
             .call(&billing_permit(processor, &payload), &payload)
@@ -578,9 +560,22 @@ mod tests {
         assert_eq!(result, Err(ErrorCode::Forbidden));
     }
 
+    async fn billing_redirect(listener: TcpListener, location: String) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        while !bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+            let mut buf = [0; 1024];
+            let n = socket.read(&mut buf).await.unwrap();
+            assert_ne!(n, 0);
+            bytes.extend_from_slice(&buf[..n]);
+        }
+        socket.write_all(format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+        String::from_utf8(bytes).unwrap()
+    }
+
     #[tokio::test]
     async fn billing_get_post_auth_and_redirect_refusal() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let var = "HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL";
         // §79: unique test-only env name, never read by another test; fixture is not a credential.
         unsafe {
@@ -592,25 +587,15 @@ mod tests {
             let location = format!("http://{}/", target.local_addr().unwrap());
             let processor = ProcessorId(Uuid::now_v7());
             let payload = AuthorizedEgressPayload::new(b"x".to_vec());
-            let call = billing_at(
-                listener.local_addr().unwrap(),
-                processor,
-                method.clone(),
-                vec!["127.0.0.1".into()],
-                Arc::new(EnvCredentialSource::new(var)),
-            );
-            let server = tokio::spawn(async move {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                let mut bytes = Vec::new();
-                while !bytes.windows(4).any(|w| w == b"\r\n\r\n") {
-                    let mut buf = [0; 1024];
-                    let n = socket.read(&mut buf).await.unwrap();
-                    assert_ne!(n, 0);
-                    bytes.extend_from_slice(&buf[..n]);
-                }
-                socket.write_all(format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
-                String::from_utf8(bytes).unwrap()
-            });
+            let mut call = call_at(listener.local_addr().unwrap(), processor)
+                .with_billing(
+                    method.clone(),
+                    reqwest::header::HeaderName::from_static("x-api-key"),
+                    vec!["127.0.0.1".into()],
+                )
+                .unwrap();
+            call.credential_source = Arc::new(EnvCredentialSource::new(var));
+            let server = tokio::spawn(billing_redirect(listener, location));
             // dep: HTTP(loopback) — §71.2 billing must never follow the provider redirect
             let result = call
                 .call(&billing_permit(processor, &payload), &payload)
@@ -620,10 +605,8 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(
-                request.lines().next(),
-                Some(format!("{method} /x HTTP/1.1").as_str())
-            );
+            let first = format!("{method} /x HTTP/1.1");
+            assert_eq!(request.lines().next(), Some(first.as_str()));
             let auth: Vec<_> = request
                 .lines()
                 .filter(|l| l.starts_with("x-api-key:") || l.starts_with("authorization:"))

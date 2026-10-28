@@ -10,7 +10,3 @@ edition = "cloud"
 
 [lints]
 workspace = true
-
-[dependencies]
-# why: shared URL parser; used-by: [billing-worker::mode]
-humaux-infra-network = { path = "../../crates/infra-network" }

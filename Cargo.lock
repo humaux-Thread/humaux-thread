@@ -1156,9 +1156,6 @@ dependencies = [
 [[package]]
 name = "humaux-billing-worker"
 version = "0.1.0"
-dependencies = [
- "humaux-infra-network",
-]
 
 [[package]]
 name = "humaux-cache"
