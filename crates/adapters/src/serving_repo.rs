@@ -3,11 +3,13 @@
 //!   r=[projection.processing_gaps] w=[projection.stream_checkpoints], PostgreSQL(role_gateway),
 //!   PostgreSQL(role_maintenance)]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::stream_repo,
 //!   domain::error, domain::identity, projection::serving, projection::stream, retrieval::completeness]
-//! Called-by: [adapters::retrieve, gateway::context, gateway::recall, tests, maintenance::projection_serve]
+//! Called-by: [adapters::retrieve, gateway::context, gateway::memory, gateway::recall, tests, maintenance::projection_serve]
 //! Invariants: [only fetches the numbers and performs the atomic serving switch UPDATE; the switch decision is
 //!   humaux_projection::serving's pure arithmetic; cross-tenant or unauthenticated calls are typed errors;
-//!   family_read_state reads initialised/serving (and, unserved, the real ledger) in one RR READ ONLY snapshot]
-//! Spec: Baseline §23.1; §69; §17; §55; §16.3; §16.2; §57.1; ADR-0006; ADR-0053
+//!   family_read_state reads initialised/serving (and, with `UnservedLedger::Read` on an unserved key, the real
+//!   ledger) in one RR READ ONLY snapshot; `UnservedLedger::Skip` never touches `stream_log` or
+//!   `stream_point_ledger` (ADR-0110 D-A)]
+//! Spec: Baseline §23.1; §69; §17; §55; §16.3; §16.2; §57.1; ADR-0006; ADR-0053; ADR-0110 D-A
 //!
 //! Pure arithmetic ([`humaux_projection::serving::evaluate_switch`], the "无裁量口" itself)
 //! lives in `humaux_projection::serving` (no IO, unit-tested there); this module only fetches
@@ -219,19 +221,33 @@ pub struct FamilyReadState {
     pub initialized: bool,
     /// §16.2's `serving = true` version of the key's family, `None` before its first activation.
     pub serving: Option<String>,
-    /// Only when `initialized && serving.is_none()`: the key's real §15.4 ledger and §23.3④
-    /// pipeline counts from the same snapshot — what the B-shaped recall/context read reports
-    /// (never an invented 0).
+    /// Only when [`UnservedLedger::Read`] was asked and `initialized && serving.is_none()`: the key's
+    /// real §15.4 ledger and §23.3④ pipeline counts from the same snapshot — what the B-shaped
+    /// recall/context read reports (never an invented 0). Always `None` under [`UnservedLedger::Skip`].
     pub unserved: Option<(LedgerClosure, StreamPipelineCounts)>,
+}
+
+/// Whether [`family_read_state`] reads the key's O(stream) ledger closure and pipeline counts when the key
+/// is initialised but its family has no serving version. A route that never reports them must say
+/// [`UnservedLedger::Skip`] (ADR-0110 D-A: `memory.get` reads the frontier only, recall / context / enumerate keep
+/// the closure); a bare `bool` would let a new caller pay the closure by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnservedLedger {
+    /// Close the ledger and count the pipeline: [`FamilyReadState::unserved`] is `Some` on an unserved key.
+    Read,
+    /// Touch neither `stream_log` nor `stream_point_ledger`: [`FamilyReadState::unserved`] is `None`.
+    Skip,
 }
 
 /// ADR-0053 D-E: [`FamilyReadState`] for `key`, both facts read in one REPEATABLE READ, READ ONLY
 /// snapshot under `role_gateway` (table-level SELECT on `stream_checkpoints`, §6.2.2). Same
-/// cross-tenant / unauthenticated refusals as [`serving_version`].
+/// cross-tenant / unauthenticated refusals as [`serving_version`]. `unserved_ledger` decides whether an
+/// initialised, unserved key also pays the ledger closure and pipeline counts (ADR-0110 D-A).
 pub async fn family_read_state(
     pool: &RuntimeDbPool,
     authorization: &AuthorizationScope,
     key: &StreamKey,
+    unserved_ledger: UnservedLedger,
 ) -> Result<FamilyReadState, ServingRepoError> {
     let family = StreamFamily::new(
         key.tenant_id,
@@ -261,7 +277,7 @@ pub async fn family_read_state(
     .await?
     .try_get("initialized")?;
     let serving = serving_version_in_txn(&mut txn, authorization, &family).await?;
-    let unserved = if initialized && serving.is_none() {
+    let unserved = if unserved_ledger == UnservedLedger::Read && initialized && serving.is_none() {
         let ledger = stream_repo::close_ledger_in_txn(&mut txn, key, authorization).await?;
         let pipeline = context_repo::stream_pipeline_counts_in_txn(&mut txn, key)
             .await
