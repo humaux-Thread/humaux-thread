@@ -2362,11 +2362,8 @@ mod tests {
         let config = values[BILLING_PROVIDERS].replace("\"creem\":", "\"creem-test\":");
         values.insert(BILLING_PROVIDERS.into(), config);
         assert_eq!(
-            GatewayBootstrap::from_raw(values)
-                .err()
-                .expect("unknown provider refused")
-                .to_string(),
-            "gateway bootstrap configuration HUMAUX_BILLING_WEBHOOK_PROVIDERS: unknown provider"
+            GatewayBootstrap::from_raw(values).err().map(|e| e.to_string()),
+            Some("gateway bootstrap configuration HUMAUX_BILLING_WEBHOOK_PROVIDERS: unknown provider".into())
         );
     }
 
@@ -2418,9 +2415,10 @@ mod tests {
             assert_eq!(
                 GatewayBootstrap::from_raw(values)
                     .err()
-                    .expect("invalid contract refused")
-                    .to_string(),
-                format!("gateway bootstrap configuration {BILLING_PROVIDERS}: {reason}")
+                    .map(|e| e.to_string()),
+                Some(format!(
+                    "gateway bootstrap configuration {BILLING_PROVIDERS}: {reason}"
+                ))
             );
         }
         assert_eq!(
