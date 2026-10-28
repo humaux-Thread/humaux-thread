@@ -1231,6 +1231,7 @@ dependencies = [
  "humaux-telemetry",
  "humaux-testkit",
  "postgres",
+ "rand 0.9.5",
  "serde",
  "serde_json",
  "sha2 0.10.9",

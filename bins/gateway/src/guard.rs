@@ -6,7 +6,7 @@
 //!   domain::continuity, domain::coordination, domain::error, domain::identity, domain::ids, domain::selection, domain::subject, gateway::auth,
 //!   gateway::bootstrap, gateway::limiter,
 //!   protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
-//! Called-by: [gateway::admission, gateway::auth_pages, gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::status, tests]
+//! Called-by: [gateway::admission, gateway::auth_pages, gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::oauth_http, gateway::status, tests]
 //! Invariants: [no path mints and accepts in one call; transport owns HTTP validation only; this layer is the sole place that authenticates, authorizes and admits a request, so an operation that bypasses it is a bug, not a variant path]
 //! Spec: Baseline §83; §52.1; ADR-0018; ADR-0028; ADR-0030; ADR-0054; ADR-0065 D-D; ADR-0125
 //!
