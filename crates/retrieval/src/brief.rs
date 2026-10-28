@@ -125,15 +125,14 @@ impl Brief {
 /// §25.5: overflow has the full Mandatory manifest and no partial brief.
 #[derive(Debug, PartialEq, Eq)]
 pub struct BriefOverflow {
-    /// §25.4: every Mandatory item remains visible to the caller.
-    pub manifest: Vec<BriefItem>,
+    /// §25.4: every Mandatory identity remains visible without returning rows.
+    pub manifest: Vec<String>,
     /// §25.5: the rejected validated budget is preserved.
     pub budget: BriefBudget,
     /// §25.5: widened accounting cannot wrap at the total cap's integer bound.
     pub required: u64,
 }
-/// §25.3: lower-priority sections and larger ids are evicted first; duplicate ids
-/// use the remaining item fields as deterministic tie-breakers (§25.3.1).
+/// §25.3: section order and ascending ids define priority; remaining fields break ties.
 ///
 /// # Errors
 /// §25.5: Mandatory overflow returns only its manifest, never partial output.
@@ -145,7 +144,10 @@ pub fn assemble(mut input: BriefInput, budget: BriefBudget) -> Result<Brief, Bri
     let cap = u64::from(budget.cap_tokens());
     if required > cap {
         return Err(BriefOverflow {
-            manifest: input.sections[MANDATORY].clone(),
+            manifest: input.sections[MANDATORY]
+                .iter()
+                .map(|row| row.memory_id.clone())
+                .collect(),
             budget,
             required,
         });
@@ -354,7 +356,7 @@ mod tests {
         assert_eq!(
             assemble(populated(), limits),
             Err(BriefOverflow {
-                manifest: vec![item("a", 2), item("b", 2)],
+                manifest: vec!["a".into(), "b".into()],
                 budget: limits,
                 required: 4,
             })
