@@ -1,0 +1,42 @@
+# §39 / M22-10: empty successes, failed attempts and actual output are distinct.
+rule_files:
+  - ../alerts.rules.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'stage_last_run_timestamp_seconds{stage="lost"}'
+        values: '1+60x1500'
+      - series: 'stage_last_success_timestamp_seconds{stage="lost"}'
+        values: '1+60x1500'
+      - series: 'stage_last_output_timestamp_seconds{stage="lost"}'
+        values: '0x1500'
+    alert_rule_test:
+      - eval_time: 23h
+        alertname: MaintenanceStageNoOutput
+        exp_alerts: []
+      - eval_time: 24h
+        alertname: MaintenanceStageNoOutput
+        exp_alerts:
+          - exp_labels:
+              stage: lost
+              severity: warning
+  - interval: 1m
+    input_series:
+      # Output catches up; frequent attempts alone never establish success.
+      - series: 'stage_last_run_timestamp_seconds{stage="lost"}'
+        values: '1+60x1500'
+      - series: 'stage_last_success_timestamp_seconds{stage="lost"}'
+        values: '1+60x1500'
+      - series: 'stage_last_output_timestamp_seconds{stage="lost"}'
+        values: '1+60x1500'
+      - series: 'stage_last_run_timestamp_seconds{stage="jobs"}'
+        values: '1+60x1500'
+      - series: 'stage_last_success_timestamp_seconds{stage="jobs"}'
+        values: '0x1500'
+      - series: 'stage_last_output_timestamp_seconds{stage="jobs"}'
+        values: '0x1500'
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: MaintenanceStageNoOutput
+        exp_alerts: []

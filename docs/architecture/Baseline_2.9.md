@@ -9892,6 +9892,9 @@ Trace / logs with protected access
 
 | 指标名 | 取数点（章 · 动作 · 处数） | 量纲 | 消费方 |
 |---|---|---|---|
+| `stage_last_run_timestamp_seconds{stage}` | §39 maintenance `MaintenanceTask::ALL`，`telemetry::metrics::stage_started` 内唯一 `.set()` · 1；实际开始；跳过不推进；从未 = 0，进程重启归零 | gauge·unix 秒 | M22-10 stage liveness |
+| `stage_last_success_timestamp_seconds{stage}` | §39 maintenance `MaintenanceTask::ALL`，`telemetry::metrics::stage_finished` 内唯一 `.set()` · 1；完整且无错误的运行；失败或预算中断保留旧值；从未 = 0，进程重启归零 | gauge·unix 秒 | M22-10 stage liveness |
+| `stage_last_output_timestamp_seconds{stage}` | §39 maintenance `MaintenanceTask::ALL`，`telemetry::metrics::stage_finished` 内唯一 `.set()` · 1；affected > 0 的运行；空跑保留旧值，部分提交也计输出；从未 = 0，进程重启归零 | gauge·unix 秒 | M22-10 stage liveness |
 | `humaux_mcp_requests_total{tool,result,plan_class}` | §33 gateway 每次 tool 调用返回处 · 1 | counter·次 | §42 错误率；§54 MCP availability |
 | `mcp_latency_seconds{tool}` | §33 gateway 同一处计时 · 1 | histogram·秒 | §54 p50/p95/p99 |
 | `humaux_retrieval_requests_total{intent,completeness_class}` | §20 planner：每次经 §55.1 `build_request()` 且 envelope 返回时 · 1 | counter·次 | **§53.5 INV-1 分母**；§1.4 坑3 gate |

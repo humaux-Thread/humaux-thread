@@ -70,7 +70,10 @@ use humaux_adapters::postgres::MaintenanceDbPool;
 use humaux_adapters::{confirm_token_repo, provider_budget, quota_repo, stream_repo};
 use humaux_domain::ids::TenantId;
 use humaux_telemetry::dr::{self, DrReading, Limit, Volume};
-use humaux_telemetry::metrics::{Routes, families, write_family, write_single_label};
+use humaux_telemetry::metrics::{
+    Routes, families, render_stage_liveness, stage_finished, stage_started, write_family,
+    write_single_label,
+};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -576,9 +579,16 @@ async fn cycle(
             runs.push((task, run));
             continue;
         }
+        stage_started(task.label(), resident::stage_now());
         run.ran = true;
         cursor.last_run = Some(Instant::now());
         if cluster(task, pool, cfg, &mut run).await {
+            stage_finished(
+                task.label(),
+                resident::stage_now(),
+                run.failed == 0,
+                run.affected > 0,
+            );
             runs.push((task, run));
             continue;
         }
@@ -626,6 +636,12 @@ async fn cycle(
             run.tenants += 1;
             cursor.after = Some(tenant);
         }
+        stage_finished(
+            task.label(),
+            resident::stage_now(),
+            finished && run.failed == 0,
+            run.affected > 0,
+        );
         if finished && page.len() < usize::try_from(cfg.tenants_per_run).unwrap_or(usize::MAX) {
             cursor.after = None;
         }
@@ -672,6 +688,7 @@ pub(crate) fn render_metrics() -> String {
         .collect();
     write_family(&mut out, &families::MAINTENANCE_TASK_RUNS_TOTAL, &samples);
     let names = Task::ALL.map(Task::label);
+    render_stage_liveness(&mut out, &names);
     write_single_label(
         &mut out,
         &families::MAINTENANCE_TASK_ROWS_TOTAL,
