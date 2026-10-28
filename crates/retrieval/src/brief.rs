@@ -194,10 +194,7 @@ pub fn assemble(mut input: BriefInput, budget: BriefBudget) -> Result<Brief, Bri
     let prefix_used = fit(
         &mut input.sections,
         0..PREFIX_LEN,
-        budget
-            .optional_prefix_tokens()
-            .saturating_sub(prefix_overhead)
-            .min(cap - required),
+        budget.optional_prefix_tokens().min(cap - required),
         &mut omitted,
     );
     fit(
@@ -423,7 +420,7 @@ mod tests {
                 row.est_tokens = 100;
             }
         }
-        let brief = assemble(input, budget(overhead() + 650, 29, 1, 1)).unwrap();
+        let brief = assemble(input, budget(overhead() + 650, 10, 1, 1)).unwrap();
         assert_eq!(
             (brief.omitted, brief.truncated),
             ([1, 0, 2, 2, 2, 2, 0, 1, 2, 2, 2, 2, 2], true)
@@ -543,6 +540,35 @@ mod tests {
             (brief.omitted, brief.truncated),
             ([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], true)
         );
+    }
+    #[test]
+    fn g_m14_4_optional_prefix_share_excludes_framing() {
+        assert_eq!(fixed_overhead(empty().availability), (299, 599));
+        for (cap, share, estimate, kept) in [
+            (2000, 50, 800, true),
+            (2000, 50, 1000, true),
+            (2000, 50, 1001, false),
+            (1697, 100, 800, false),
+            (1698, 100, 800, true),
+            (2000, 0, 800, false),
+        ] {
+            let optional = item("optional", estimate);
+            let mut input = empty();
+            input.sections[0] = vec![optional.clone()];
+            let brief = assemble(input, budget(cap, share, 0, 0)).unwrap();
+            let mut expected = SECTIONS.map(|kind| BriefSection {
+                kind,
+                content: SectionContent::Items(vec![]),
+            });
+            if kept {
+                expected[0].content = SectionContent::Items(vec![optional]);
+            }
+            assert_eq!(brief.prefix.sections, expected[..PREFIX_LEN]);
+            assert_eq!(brief.tail, expected[PREFIX_LEN..]);
+            let mut omitted = [0; 13];
+            omitted[0] = usize::from(!kept);
+            assert_eq!((brief.omitted, brief.truncated), (omitted, !kept));
+        }
     }
     #[test]
     fn g_m14_4_caps_share_and_validation() {
