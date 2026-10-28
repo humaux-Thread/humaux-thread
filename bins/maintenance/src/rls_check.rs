@@ -5354,6 +5354,40 @@ pub fn check_entitlement_doors(client: &mut impl GenericClient) -> GateResult {
         fail(check, problems.join("; "))
     }
 }
+/// §71.3 / §76, 0300: the exact processor door set (M04-11a, G-M04-23).
+const BILLING_PROCESSOR_DOOR_FUNCTIONS: [&str; 3] = [
+    "control.billing_inbox_claim(integer)",
+    "control.billing_inbox_settle(text,text,text,text)",
+    "control.billing_apply_subscription(uuid,text,text,text,uuid,uuid,text,timestamptz,timestamptz,timestamptz)",
+];
+const BILLING_PROCESSOR_EXECUTORS: &[&str] = &["role_maintenance"];
+
+/// G-M04-23: owner, definer, pinned search_path and exact maintenance-only EXECUTE (§57.1).
+pub fn check_billing_processor_doors(client: &mut impl GenericClient) -> GateResult {
+    let check = "G-M04-23 billing processor doors";
+    let missing: Vec<String> = match client.query(
+        "SELECT f FROM unnest($1::text[]) AS f WHERE to_regprocedure(f) IS NULL",
+        &[&BILLING_PROCESSOR_DOOR_FUNCTIONS.to_vec()],
+    ) {
+        Ok(rows) => rows.iter().map(|r| r.get(0)).collect(),
+        Err(error) => return fail(check, format!("catalog probe failed: {error}")),
+    };
+    if !missing.is_empty() {
+        return not_applicable(check, format!("missing {}", missing.join(", ")));
+    }
+    let mut problems = Vec::new();
+    for function in BILLING_PROCESSOR_DOOR_FUNCTIONS {
+        check_owner_definer_function(client, &mut problems, function, BILLING_PROCESSOR_EXECUTORS);
+    }
+    if problems.is_empty() {
+        pass(
+            check,
+            "3 owner SECURITY DEFINER doors; search_path=pg_catalog; EXECUTE exactly {role_maintenance}",
+        )
+    } else {
+        fail(check, problems.join("; "))
+    }
+}
 const WRITE_GATE_FN: &str = "projection.stream_checkpoints_workspace_write_gate()";
 
 /// ADR-0060 D-H (migration 0208, card 33b): the operator reasoning-route doors and their read-only
@@ -6008,6 +6042,7 @@ pub fn run(args: &[String]) -> i32 {
             results.push(check_api_key_rehash_boundary(&mut client));
             results.push(check_reasoning_route_doors(&mut client));
             results.push(check_entitlement_doors(&mut client));
+            results.push(check_billing_processor_doors(&mut client));
             results.push(check_health_reader_boundary(&mut client));
             results.push(check_maintenance_doors(&mut client));
             results.push(check_maintenance_delete_doors(&mut client));
@@ -7574,6 +7609,25 @@ mod tests {
                 .expect("restore");
         }
         assert_eq!(check_grant_equality(&mut txn).status, GateStatus::Pass);
+    }
+
+    /// G-M04-23: an extra executor on any one of exactly three doors fails the production check.
+    #[test]
+    fn billing_processor_doors_are_maintenance_only() {
+        txn_or_skip!(client, txn);
+        assert_eq!(BILLING_PROCESSOR_DOOR_FUNCTIONS.len(), 3);
+        let clean = check_billing_processor_doors(&mut txn);
+        assert_eq!(clean.status, GateStatus::Pass, "{}", clean.detail);
+        for signature in BILLING_PROCESSOR_DOOR_FUNCTIONS {
+            txn.batch_execute(&format!(
+                "SAVEPOINT billing_acl; GRANT EXECUTE ON FUNCTION {signature} TO role_gateway"
+            ))
+            .expect("inject ACL fault");
+            let red = check_billing_processor_doors(&mut txn);
+            assert_eq!(red.status, GateStatus::Fail, "{}", red.detail);
+            txn.batch_execute("ROLLBACK TO SAVEPOINT billing_acl")
+                .expect("restore");
+        }
     }
 
     /// §76 (0267): the two projector doors are role_maintenance-only. Faults (rolled back): grant the snapshot writer to

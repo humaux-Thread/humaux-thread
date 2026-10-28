@@ -77,7 +77,7 @@ pub struct ProviderSubscription {
     pub current_period_end: OffsetDateTime,
 }
 
-/// A webhook whose signature and timestamp verified.
+/// A webhook whose raw-body signature verified; provider event ID UNIQUE keys enforce replay protection (§71.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedBillingEvent {
     /// The provider that sent it.
@@ -109,7 +109,8 @@ pub trait BillingProvider: Send + Sync {
         subscription: &ExternalSubscriptionRef,
     ) -> Result<ProviderSubscription, ErrorCode>;
 
-    /// Verifies the signature and the replay window of a webhook over its raw body and returns the event it carries.
+    /// Verifies the raw-body signature; provider event ID UNIQUE keys enforce replay protection (§71.3).
+    /// Creem documents no timestamp; no timestamp window is assumed (M04 lead ruling 2026-10-28).
     /// `headers` are the request's header name and value pairs; `raw_body` is the exact bytes received.
     async fn verify_webhook(
         &self,
