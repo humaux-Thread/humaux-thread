@@ -208,6 +208,7 @@ written by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::coordinate_task`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::health_serve`
 
@@ -1413,6 +1414,7 @@ written by:
 - (no process): `adapters::tests::quota_and_rate`
 - (no process): `adapters::tests::request_guard`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `maintenance::tests::serve`
 
 executed by:
@@ -1711,6 +1713,7 @@ written by:
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -2637,6 +2640,7 @@ written by:
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `maintenance::tests::partitions`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -4493,6 +4497,7 @@ written by:
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::health_serve`
 - (no process): `maintenance::tests::partitions`
@@ -4783,6 +4788,7 @@ written by:
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `gateway::tests::auth_pages`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::serve`
@@ -4872,6 +4878,7 @@ written by:
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `private-worker::tests::distill_hop_e2e`
 
@@ -4940,6 +4947,7 @@ written by:
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::onboarding`
@@ -5775,6 +5783,7 @@ read by:
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::onboarding`
@@ -9837,6 +9846,7 @@ written by:
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::cross_tenant_canary`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::partitions`
@@ -10588,6 +10598,7 @@ written by:
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::memory_repo`
 - process(cargo-xtask): `maintenance::switch_visible`
@@ -10937,6 +10948,7 @@ written by:
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::cross_tenant_canary`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::memory_repo`
@@ -13025,6 +13037,7 @@ written by:
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::cross_tenant_canary`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::drill`
@@ -13214,6 +13227,7 @@ written by:
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::onboarding`
@@ -13310,6 +13324,7 @@ executed by:
 - (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `adapters::tests::visible_index_count`
+- (no process): `gateway::tests::memory_get_frontier`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::stream_repo`
@@ -13373,6 +13388,7 @@ written by:
 - (no process): `adapters::tests::tenant_placements_migration`
 - (no process): `gateway::tests::cross_tenant_canary`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::drill`
