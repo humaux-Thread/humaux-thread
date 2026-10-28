@@ -317,7 +317,7 @@ processes:
 - process(cargo-xtask)
 
 modules:
-- `gateway::tests::billing_webhook`
+- `adapters::tests::processing_status`
 - `gateway::tests::oauth_flow`
 - `xtask::contract_impact`
 
@@ -530,19 +530,6 @@ processes:
 
 modules:
 - `xtask::dep_map`
-
-### `HUMAUX_BILLING_WEBHOOK_PROVIDERS`
-- witness: literal
-- registry: gateway
-
-kind:
-- runtime
-
-processes:
-- process(humaux-gateway)
-
-modules:
-- `gateway::bootstrap`
 
 ### `HUMAUX_BUILD_GIT_SHA`
 - witness: literal
@@ -6114,6 +6101,7 @@ modules:
 - `adapters::tests::phase9_independence_attestation`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_runs_fingerprint_rerun`
+- `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_0136`
 - `adapters::tests::project_continuity_read_0137`
 - `adapters::tests::project_rollup`
@@ -6154,7 +6142,6 @@ modules:
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::run_once_e2e`
 - `gateway::tests::auth_pages`
-- `gateway::tests::billing_webhook`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_forget`
@@ -6258,19 +6245,6 @@ processes:
 
 modules:
 - `adapters::tests::contribution_scan`
-
-### `HUMAUX_TEST_WEBHOOK_SECRET`
-- witness: literal
-- registry: gateway
-
-kind:
-- runtime
-
-processes:
-- process(humaux-gateway)
-
-modules:
-- `gateway::bootstrap`
 
 ### `HUMAUX_W2_V4_DIAGNOSTIC`
 - witness: literal

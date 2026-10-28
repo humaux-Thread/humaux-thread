@@ -3,7 +3,7 @@
 //!   rows run here, never on the shared dev database.
 //! Depends-on: crates=[humaux-testkit, postgres]; services=[PostgreSQL(owner) r=[ops.schema_migrations]];
 //!   env=[CARGO_MANIFEST_DIR, HUMAUX_TEST_PG_DSN]; modules=[humaux-testkit]
-//! Called-by: [adapters::tests::a2_point_identity, adapters::tests::billing_repo, adapters::tests::confirm_token_retention, adapters::tests::cost_repo,
+//! Called-by: [adapters::tests::processing_status, adapters::tests::a2_point_identity, adapters::tests::billing_repo, adapters::tests::confirm_token_retention, adapters::tests::cost_repo,
 //!   adapters::tests::entitlement_projector, adapters::tests::enumerate_scale, adapters::tests::exact_census_project, adapters::tests::ledger_frontier, adapters::tests::maintenance_doors, adapters::tests::plan_catalog, adapters::tests::project_tree, adapters::tests::projection_lag,
 //!   adapters::tests::rebuild, adapters::tests::stream_repo,
 //!   gateway::tests::memory_get_frontier, private-worker::tests::derived_dispatch_e2e]
