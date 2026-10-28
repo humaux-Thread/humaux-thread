@@ -2018,11 +2018,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::billing_repo`
 - writes `control.billing_inbox`
-- executes `control.billing_apply_subscription`
-- executes `control.billing_inbox_claim`
-- executes `control.billing_inbox_settle`
 - service `PostgreSQL(role_gateway)`
-- service `PostgreSQL(role_maintenance)`
 
 #### `adapters::byok`
 - env `CARGO_MANIFEST_DIR`
@@ -2396,8 +2392,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::archive`
 
 #### `application::auth`
-
-#### `application::billing`
 
 #### `application::confirm`
 
@@ -5427,9 +5421,9 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::billing_processor_repo`
 - (no process): `adapters::tests::billing_doors`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::billing_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.billing_customers`
@@ -5446,12 +5440,14 @@ executed by:
 ### `control.billing_inbox`
 read by:
 - (no process): `adapters::tests::facet_contract`
+- (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
+- (no process): `billing-worker::tests::process`
 - (no process): `gateway::tests::billing_webhook`
 - process(humaux-gateway): `adapters::billing_repo`
 
@@ -5463,8 +5459,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::billing_processor_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::billing_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.billing_inbox_settle`
@@ -5473,9 +5469,9 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::billing_processor_repo`
 - (no process): `adapters::tests::billing_doors`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::billing_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.billing_payments`
@@ -5822,6 +5818,7 @@ executed by:
 ### `control.entitlement_grants`
 read by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -5847,6 +5844,7 @@ executed by:
 ### `control.entitlement_snapshots`
 read by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `adapters::request_guard_repo`
@@ -6340,6 +6338,7 @@ written by:
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
+- (no process): `billing-worker::tests::process`
 
 executed by:
 
@@ -6351,6 +6350,7 @@ written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::plan_catalog`
+- (no process): `billing-worker::tests::process`
 
 executed by:
 
@@ -7058,6 +7058,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::facet_contract`
+- (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -7070,6 +7071,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::facet_contract`
+- (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -7108,6 +7110,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::project_continuity_read_0137_acceptance`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
+- (no process): `billing-worker::process`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::provisioning`
 - process(cargo-xtask): `xtask::e2e_onboard`
@@ -7201,6 +7204,7 @@ written by:
 - (no process): `adapters::tests::tenant_placements_migration`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `admin::tests::probes`
+- (no process): `billing-worker::tests::process`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
@@ -12610,6 +12614,7 @@ executed by:
 - `admin::tests::probes`
 - `billing-worker::fake_creem`
 - `billing-worker::tests::fetch`
+- `billing-worker::tests::process`
 - `consolidation-worker::main`
 - `consolidation-worker::tests::ops_listener`
 - `gateway::admission`
@@ -12870,6 +12875,7 @@ executed by:
 - `adapters::tests::tenant_placements_migration`
 - `adapters::tests::visible_index_count`
 - `admin::tests::probes`
+- `billing-worker::tests::process`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -13058,7 +13064,7 @@ executed by:
 - `retrieval-provider::tests::router_rls_integration`
 
 ### `PostgreSQL(role_maintenance)`
-- `adapters::billing_repo`
+- `adapters::billing_processor_repo`
 - `adapters::entitlement_repo`
 - `adapters::health`
 - `adapters::maintenance_repo`
@@ -13100,6 +13106,8 @@ executed by:
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::visible_index_count`
+- `billing-worker::process`
+- `billing-worker::tests::process`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::service_credentials`
 - `maintenance::backup`
@@ -13473,6 +13481,7 @@ modules naming it:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
+- `adapters::billing_processor_repo`
 - `adapters::billing_repo`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -13625,6 +13634,7 @@ modules naming it:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::audit_sink`
+- `adapters::billing_processor_repo`
 - `adapters::billing_repo`
 - `adapters::byok`
 - `adapters::candidate_repo`
@@ -13854,7 +13864,7 @@ why: pure application-layer types/logic this adapter wraps in SQL
 
 modules naming it:
 - `adapters::affect_repo`
-- `adapters::billing_repo`
+- `adapters::billing_processor_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::context_repo`
@@ -14034,6 +14044,7 @@ why: jsonb column binding
 modules naming it:
 - `adapters::affect_repo`
 - `adapters::applicability_repo`
+- `adapters::billing_processor_repo`
 - `adapters::billing_repo`
 - `adapters::byok`
 - `adapters::consolidate_repo`
@@ -14245,7 +14256,7 @@ why: id minting/binding
 modules naming it:
 - `adapters::applicability_repo`
 - `adapters::audit_sink`
-- `adapters::billing_repo`
+- `adapters::billing_processor_repo`
 - `adapters::byok`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -14612,7 +14623,7 @@ why: id minting/binding
 modules naming it:
 - `adapters::applicability_repo`
 - `adapters::audit_sink`
-- `adapters::billing_repo`
+- `adapters::billing_processor_repo`
 - `adapters::byok`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -16174,9 +16185,11 @@ modules naming it:
 - `billing-worker::creem`
 - `billing-worker::fake_creem`
 - `billing-worker::normalize`
+- `billing-worker::process`
 - `billing-worker::signature`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::normalization`
+- `billing-worker::tests::process`
 - `billing-worker::tests::signature`
 - `tests`
 
@@ -16187,8 +16200,10 @@ modules naming it:
 - `billing-worker::creem`
 - `billing-worker::fake_creem`
 - `billing-worker::normalize`
+- `billing-worker::process`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::normalization`
+- `billing-worker::tests::process`
 - `tests`
 
 ### humaux-billing-worker → `hmac` (normal)
@@ -16223,6 +16238,7 @@ why: provider-neutral billing port (§71.2)
 
 modules naming it:
 - `billing-worker::creem`
+- `billing-worker::process`
 - `billing-worker::tests::fetch`
 - `tests`
 
@@ -16233,6 +16249,7 @@ modules naming it:
 - `billing-worker::creem`
 - `billing-worker::fake_creem`
 - `billing-worker::tests::fetch`
+- `billing-worker::tests::process`
 - `tests`
 
 ### humaux-billing-worker → `url` (normal)
@@ -16254,12 +16271,53 @@ why: subscription RFC3339 periods (§71.2)
 
 modules naming it:
 - `billing-worker::creem`
+- `billing-worker::process`
+
+### humaux-billing-worker → `humaux-adapters` (normal)
+why: maintenance-only owner doors and C2 projection (§71.3)
+
+modules naming it:
+- `billing-worker::process`
+- `billing-worker::tests::process`
+- `tests`
+
+### humaux-billing-worker → `sqlx` (normal)
+why: caller transaction savepoints and scoped tenant validation (§71.3)
+
+modules naming it:
+- `billing-worker::process`
+
+### humaux-billing-worker → `uuid` (normal)
+why: configured plan version and opaque tenant IDs (§78.2)
+
+modules naming it:
+- `billing-worker::process`
+- `billing-worker::tests::fetch`
+- `billing-worker::tests::process`
+- `billing-worker::tests::signature`
+- `tests`
+
+### humaux-billing-worker → `humaux-testkit` (dev)
+why: real PostgreSQL isolated fixture (§79.2)
+
+modules naming it:
+- `billing-worker::tests::process`
+- `tests`
+
+### humaux-billing-worker → `postgres` (dev)
+why: independent owner readback of exact DB effects (§79.2)
+
+modules naming it:
+- `billing-worker::tests::process`
+- `tests`
 
 ### humaux-billing-worker → `uuid` (dev)
 why: runtime-only random HMAC test keys (§79.4)
 
 modules naming it:
+- `billing-worker::process`
 - `billing-worker::tests::fetch`
+- `billing-worker::tests::process`
 - `billing-worker::tests::signature`
 - `tests`
 
@@ -16276,6 +16334,7 @@ why: test HTTP double lifecycle (§79.4)
 modules naming it:
 - `billing-worker::fake_creem`
 - `billing-worker::tests::fetch`
+- `billing-worker::tests::process`
 - `tests`
 
 ### humaux-consolidation-worker → `humaux-adapters` (normal)
@@ -17962,6 +18021,15 @@ db-bound (default run): no
 services (computed):
 
 default run:
+
+### `bins/billing-worker/tests/process.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
 
 ### `bins/billing-worker/tests/signature.rs`
 db-bound (default run): no
