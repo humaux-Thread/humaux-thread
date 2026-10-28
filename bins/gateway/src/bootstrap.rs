@@ -21,6 +21,8 @@
 //!   HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST, HUMAUX_GATEWAY_LOGIN_CODE_PEPPER, HUMAUX_GATEWAY_LOGIN_MAIL_FROM,
 //!   HUMAUX_GATEWAY_PUBLIC_BASE_URL, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS,
 //!   HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS,
+//!   HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS,
+//!   HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_EMBEDDING_DIMENSION, HUMAUX_GATEWAY_EMBEDDING_MODEL_ID, HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION,
 //!   HUMAUX_GATEWAY_EMBEDDING_PROVIDER_ID, HUMAUX_GATEWAY_EMBEDDING_VERSION, HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP,
@@ -52,7 +54,7 @@
 //!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::attribution_repo, adapters::postgres, domain::error, gateway::limiter,
 //!   adapters::email, adapters::retrieve, application::auth, application::retrieval_embedding_port, cache::bounded, contracts::config_registry,
 //!   contracts::retrieval_config, domain::context, domain::dataclass, domain::identity, gateway::admission,
-//!   gateway::auth_pages, gateway::cached_embedding, gateway::context,
+//!   gateway::auth_pages, gateway::oauth_http, gateway::cached_embedding, gateway::context,
 //!   gateway::guard, gateway::mcp_application, gateway::recall, gateway::remember, gateway::rerank_client,
 //!   gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource,
 //!   infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::metrics]
@@ -112,6 +114,7 @@ use crate::{
     context::ContextBootstrap,
     guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
     mcp_application::GatewayMcpApplication,
+    oauth_http::OAuthHttpConfig,
     recall::{SemanticRecallRuntime, SemanticRecallVersions},
     remember::{self, ProcessFamily, RememberEventKind, RememberPolicy},
     rerank_client::{GatewayRerankClient, RerankLane},
@@ -147,6 +150,10 @@ const LOGIN_CODE_PEPPER_KEY: &str = "HUMAUX_GATEWAY_LOGIN_CODE_PEPPER";
 const EMAIL_RECIPIENT_ALLOWLIST_KEY: &str = "HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST";
 /// ADR-0125 8e (§78.1): the console session's absolute and idle lifetimes, the login code's lifetime and attempt cap,
 /// and the resend cooldown. Registry defaults are the former `AuthConfig::default()` values.
+const OAUTH_CODE_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS";
+const OAUTH_ACCESS_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS";
+const OAUTH_REFRESH_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS";
+const OAUTH_GRANT_MAX_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS";
 const AUTH_SESSION_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS";
 const AUTH_SESSION_IDLE_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS";
 const AUTH_LOGIN_CODE_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS";
@@ -292,6 +299,7 @@ pub struct GatewayBootstrap {
     /// M02 D3 / ADR-0125 `/auth/*` configuration; `Some` exactly when `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED` is true. Its
     /// MAC keys are a separate pair from `token_keys`: one leak must not mint both token families.
     auth_pages: Option<AuthPagesConfig>,
+    oauth_http: Option<OAuthHttpConfig>,
     /// ADR-0061 D-B `HUMAUX_GATEWAY_METRICS_ADDR`: the loopback ops listener (`/metrics`, `/status`).
     metrics_addr: SocketAddr,
     /// ADR-0061 D-F `HUMAUX_GATEWAY_READINESS_REFRESH_SECONDS`.
@@ -348,6 +356,7 @@ pub struct GatewayRuntime {
     readiness_refresh: Duration,
     effective_config: Value,
     auth_pages: Option<AuthPagesConfig>,
+    oauth_http: Option<OAuthHttpConfig>,
 }
 
 // §67.2 / ADR-0100: a stalled original session is lost; never reconnect or continue serving.
@@ -373,6 +382,11 @@ impl GatewayRuntime {
     /// the first call).
     pub fn take_auth_pages(&mut self) -> Option<AuthPagesConfig> {
         self.auth_pages.take()
+    }
+
+    /// M02-10 routes share the auth-surface switch and admission (ADR-0125).
+    pub fn take_oauth_http(&mut self) -> Option<OAuthHttpConfig> {
+        self.oauth_http.take()
     }
 
     #[must_use]
@@ -558,6 +572,7 @@ impl GatewayBootstrap {
             readiness_refresh: self.readiness_refresh,
             effective_config: self.effective_config,
             auth_pages: self.auth_pages,
+            oauth_http: self.oauth_http,
         })
     }
 
@@ -586,6 +601,7 @@ impl GatewayBootstrap {
         )?;
         let token_keys = parse_token_keys(&effective)?;
         let auth_pages = parse_auth_pages(&effective, &token_keys, &guard)?;
+        let oauth_http = parse_oauth_http(&effective, &token_keys)?;
         let metrics_addr = parse_metrics_addr(required(&effective, METRICS_ADDR_KEY)?)?;
         let readiness_refresh = seconds(
             required(&effective, READINESS_REFRESH_KEY)?,
@@ -645,6 +661,7 @@ impl GatewayBootstrap {
             mood_half_life,
             token_keys,
             auth_pages,
+            oauth_http,
             metrics_addr,
             readiness_refresh,
             task_lease_ttl,
@@ -827,6 +844,37 @@ fn parse_auth_pages(
         code_pepper,
         allowlist,
         auth: parse_auth_lifetimes(effective)?,
+    }))
+}
+
+/// M02 D3/D4 (§78.1): policy values are bounded only while the surface is on; errors name keys, never values.
+fn parse_oauth_http(
+    effective: &BTreeMap<String, String>,
+    token_keys: &TokenKeys,
+) -> Result<Option<OAuthHttpConfig>, BootstrapError> {
+    let Some(keys) = parse_auth_keys(effective, token_keys)? else {
+        return Ok(None);
+    };
+    let lifetime = |key, range| {
+        bounded(effective, key, range, "outside OAuth lifetime bounds").map(Duration::from_secs)
+    };
+    let code_ttl = lifetime(OAUTH_CODE_TTL_KEY, 60..=600)?;
+    let access_ttl = lifetime(OAUTH_ACCESS_TTL_KEY, 300..=86_400)?;
+    let refresh_ttl = lifetime(OAUTH_REFRESH_TTL_KEY, 3_600..=7_776_000)?;
+    let grant_max_ttl = lifetime(OAUTH_GRANT_MAX_TTL_KEY, 86_400..=31_536_000)?;
+    if refresh_ttl > grant_max_ttl {
+        return Err(BootstrapError::new(
+            OAUTH_REFRESH_TTL_KEY,
+            "must not exceed HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS",
+        ));
+    }
+    Ok(Some(OAuthHttpConfig {
+        keys,
+        issuer: parse_public_origin(required(effective, PUBLIC_BASE_URL_KEY)?)?,
+        code_ttl,
+        access_ttl,
+        refresh_ttl,
+        grant_max_ttl,
     }))
 }
 
@@ -1612,6 +1660,16 @@ pub fn registry() -> Vec<ConfigEntry> {
             (AUTH_LOGIN_CODE_COOLDOWN_KEY, "u64", "60"),
         ]
         .map(|(name, type_name, default)| entry_with_default(name, type_name, false, default)),
+    );
+    // M02 D3/D4: code 5 min, access 1 h, refresh 30 d, absolute grant 90 d (§78.1).
+    entries.extend(
+        [
+            (OAUTH_CODE_TTL_KEY, "300"),
+            (OAUTH_ACCESS_TTL_KEY, "3600"),
+            (OAUTH_REFRESH_TTL_KEY, "2592000"),
+            (OAUTH_GRANT_MAX_TTL_KEY, "7776000"),
+        ]
+        .map(|(name, default)| entry_with_default(name, "u64", false, default)),
     );
     entries.extend(
         ["REMEMBER_TENANT_ID", "REMEMBER_WORKSPACE_ID"]
@@ -2881,6 +2939,68 @@ mod tests {
         let mut off = raw();
         off.insert(AUTH_SESSION_TTL_KEY.into(), "0".into());
         assert!(GatewayBootstrap::from_raw(off).is_ok());
+    }
+
+    #[test]
+    fn oauth_lifetimes_are_registry_keys_with_the_note_defaults_and_are_bounded() {
+        let enabled = |overrides: &[(&str, &str)]| {
+            let mut values = raw();
+            values.insert(AUTH_SURFACE_ENABLED_KEY.into(), "true".into());
+            values.insert(AUTH_HMAC_KEY_KEY.into(), generated_key_hex());
+            values.extend(auth_page_values());
+            for (key, value) in overrides {
+                values.insert((*key).to_owned(), (*value).to_owned());
+            }
+            GatewayBootstrap::from_raw(values)
+        };
+        let config = enabled(&[]).expect("defaults boot").oauth_http.expect("on");
+        assert_eq!(
+            [
+                config.code_ttl.as_secs(),
+                config.access_ttl.as_secs(),
+                config.refresh_ttl.as_secs(),
+                config.grant_max_ttl.as_secs()
+            ],
+            [300, 3600, 2592000, 7776000]
+        );
+        for (key, min, max) in [
+            (OAUTH_CODE_TTL_KEY, 60, 600),
+            (OAUTH_ACCESS_TTL_KEY, 300, 86400),
+            (OAUTH_REFRESH_TTL_KEY, 3600, 7776000),
+            (OAUTH_GRANT_MAX_TTL_KEY, 86400, 31536000),
+        ] {
+            for bad in [
+                (min - 1).to_string(),
+                (max + 1).to_string(),
+                "bad".to_owned(),
+            ] {
+                match enabled(&[(key, &bad)]) {
+                    Err(error) => assert_eq!(error.key, key),
+                    Ok(_) => panic!("out-of-bounds key accepted"),
+                }
+            }
+            for bound in [min.to_string(), max.to_string()] {
+                let values = if key == OAUTH_GRANT_MAX_TTL_KEY {
+                    vec![(key, bound.as_str()), (OAUTH_REFRESH_TTL_KEY, "3600")]
+                } else {
+                    vec![(key, bound.as_str())]
+                };
+                assert!(enabled(&values).is_ok());
+            }
+        }
+        match enabled(&[
+            (OAUTH_REFRESH_TTL_KEY, "86401"),
+            (OAUTH_GRANT_MAX_TTL_KEY, "86400"),
+        ]) {
+            Err(error) => assert_eq!(error.key, OAUTH_REFRESH_TTL_KEY),
+            Ok(_) => panic!("refresh outlives grant"),
+        }
+        assert!(
+            GatewayBootstrap::from_raw(raw())
+                .expect("off")
+                .oauth_http
+                .is_none()
+        );
     }
 
     #[test]

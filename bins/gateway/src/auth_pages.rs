@@ -197,16 +197,26 @@ async fn gate(
     request: Request,
     next: Next,
 ) -> Response {
+    guarded(&pages.guard, AUDIT_SURFACE, peer, request, next).await
+}
+
+/// ADR-0125 D3: shared pre-auth tier, exactly once, before a surface handler; harden every answer.
+pub(crate) async fn guarded(
+    guard: &GatewayGuard,
+    surface: &'static str,
+    peer: SocketAddr,
+    request: Request,
+    next: Next,
+) -> Response {
     let Ok(forwarded) = single_header(request.headers(), "forwarded") else {
         return harden(page(StatusCode::BAD_REQUEST, BAD_REQUEST_PAGE));
     };
-    let admitted = pages
-        .guard
+    let admitted = guard
         .preflight_peer(
             Uuid::now_v7(),
             peer.ip(),
             forwarded.as_deref(),
-            AUDIT_SURFACE,
+            surface,
             None,
         )
         .await;
@@ -216,7 +226,8 @@ async fn gate(
     })
 }
 
-fn harden(mut response: Response) -> Response {
+/// ADR-0125 D7: hardening is shared by every auth and OAuth response.
+pub(crate) fn harden(mut response: Response) -> Response {
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(
