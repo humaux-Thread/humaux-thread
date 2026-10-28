@@ -14,6 +14,8 @@ pub mod applicability_repo;
 pub mod attribution_repo;
 pub mod audit_sink;
 pub mod batch;
+/// C4 (M04 D7): the webhook inbox door of §71.3, `role_gateway` INSERT only.
+pub mod billing_repo;
 pub mod byok;
 /// ADR-0113: isolated candidate-only proposal and confirmation API.
 pub mod candidate_repo;
@@ -23,6 +25,8 @@ pub mod consolidation_reasoner;
 pub mod context_repo;
 pub mod continuity_read;
 pub mod continuity_repo;
+/// ADR-0090 D-A: the public-pool eligibility predicate over the M07 closure (G-M20-5).
+pub mod contribution_eligibility;
 pub mod contribution_entry_repo;
 pub mod contribution_execution_ingress;
 pub mod contribution_execution_repo;

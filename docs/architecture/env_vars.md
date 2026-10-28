@@ -5020,9 +5020,11 @@ kind:
 
 processes:
 - process(cargo-xtask)
+- process(humaux-gateway)
 - process(humaux-retrieval-worker)
 
 modules:
+- `gateway::bootstrap`
 - `retrieval-worker::main`
 - `retrieval-worker::tests::exit_codes`
 - `retrieval-worker::tests::ops_listener`
@@ -5040,9 +5042,11 @@ kind:
 
 processes:
 - process(cargo-xtask)
+- process(humaux-gateway)
 - process(humaux-retrieval-worker)
 
 modules:
+- `gateway::bootstrap`
 - `retrieval-worker::main`
 - `retrieval-worker::tests::ops_listener`
 - `retrieval-worker::tests::same_uid_boot`
@@ -5221,9 +5225,11 @@ kind:
 
 processes:
 - process(cargo-xtask)
+- process(humaux-gateway)
 - process(humaux-retrieval-worker)
 
 modules:
+- `gateway::bootstrap`
 - `retrieval-worker::main`
 - `retrieval-worker::tests::exit_codes`
 - `retrieval-worker::tests::ops_listener`
@@ -5981,11 +5987,13 @@ modules:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::code_rls`
+- `adapters::tests::code_schema`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
+- `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_execution_0131`
 - `adapters::tests::contribution_execution_ingress_0131`
 - `adapters::tests::contribution_execution_repo_0131`

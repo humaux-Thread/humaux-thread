@@ -2,8 +2,10 @@
 //! Depends-on: crates=[serde_json, tokio];
 //!   services=[HTTP(loopback)]; env=[]; modules=[gateway::tests::mcp_gateway]
 //! Called-by: [gateway::tests::mcp_gateway]
-//! Invariants: [each case isolates one production guard tier; frozen time prevents refill during DB I/O]
-//! Spec: Baseline §72.3; §79; §80.1; ADR-0065 W-10; ADR-0100
+//! Invariants: [each case isolates one production guard tier; frozen time prevents refill during DB I/O; the global
+//!   denylist refuses before authentication, beats the emergency allowlist, and the emergency allowlist beats the
+//!   tenant's own deny (§73.3); a policy refusal moves no rate counter]
+//! Spec: Baseline §72.3; §73.3; §79; §80.1; ADR-0065 W-10; ADR-0100
 
 use super::*;
 
@@ -260,5 +262,133 @@ fn g_m03_9_preflight_ip_capacity_has_retry_after_and_metric() {
             server.abort();
             clock.abort();
         });
+    });
+}
+
+/// §73.3: a documentation range (never routable) that the G-M03-13 cases deny; `DENIED_IP` sits inside it.
+const DENIED_NET: &str = "203.0.113.0/24";
+const DENIED_IP: &str = "203.0.113.7";
+const OTHER_IP: &str = "198.51.100.1";
+
+/// Guard settings whose client IP comes from `Forwarded:`, because the loopback peer is a trusted proxy (§73.3).
+fn proxied_settings() -> GuardSettings {
+    let mut settings = guard_settings();
+    settings.trusted_proxies.trusted_proxy_cidrs = vec!["127.0.0.0/8".parse().unwrap()];
+    settings
+}
+
+/// One `tools/list` per `(bearer, client ip)` probe, in order, through a real guard built from `settings`.
+/// The guard comes back so a case can check that a policy refusal moved no `rate_limit_rejected_total` (§73.3, §72.3).
+fn probe(
+    handle: &Handle,
+    settings: GuardSettings,
+    probes: &[(&str, &str)],
+) -> (Vec<(u16, String)>, Arc<GatewayGuard>) {
+    let (app, guard) = configured(handle, settings);
+    frozen().block_on(async {
+        let clock = tokio::spawn(hold_clock());
+        let (addr, server) = start(app).await;
+        let mut replies = Vec::new();
+        for &(bearer, ip) in probes {
+            let (status, _, body) =
+                wire_from(addr, Some(bearer), &format!("Forwarded: {ip}\r\n")).await;
+            replies.push((status, body));
+        }
+        server.abort();
+        clock.abort();
+        (replies, guard)
+    })
+}
+
+#[test]
+fn g_m03_13_global_denylist_is_preauth_and_is_not_a_rate_refusal() {
+    run_db_fixture::<Fixture, _>("g_m03_13_global_denylist", |mut handle| {
+        let credential = seed(&mut handle);
+        let invalid = format!("Bearer nope.{}", "x".repeat(32));
+        let mut settings = proxied_settings();
+        settings.global_denylist = vec![DENIED_NET.parse().unwrap()];
+        // One token per client: a deny that charged the pre-auth bucket would make the second DENIED_IP probe a 429.
+        settings.rates.preauth_ip = RatePolicy::new(1, 1).unwrap();
+        let (got, guard) = probe(
+            &handle,
+            settings,
+            &[
+                (invalid.as_str(), DENIED_IP),
+                (credential.bearer.as_str(), DENIED_IP),
+                (credential.bearer.as_str(), OTHER_IP),
+            ],
+        );
+        let denied: (u16, String) = (403, "FORBIDDEN".to_owned());
+        assert_eq!(
+            got[0], denied,
+            "G-M03-13 an invalid bearer from a denied client is a 403, not a 401: the deny is pre-auth"
+        );
+        assert_eq!(
+            got[1], denied,
+            "G-M03-13 a valid bearer from a denied client is a 403"
+        );
+        assert_eq!(
+            got[2].0, 200,
+            "G-M03-13 the same bearer from another client is served"
+        );
+        assert_rate_metrics(&guard, "");
+    });
+}
+
+#[test]
+fn g_m03_13_global_denylist_beats_the_emergency_allowlist() {
+    run_db_fixture::<Fixture, _>("g_m03_13_deny_beats_emergency_allow", |mut handle| {
+        let credential = seed(&mut handle);
+        let mut settings = proxied_settings();
+        settings.global_denylist = vec!["203.0.113.7/32".parse().unwrap()];
+        settings.global_emergency_allowlist = vec!["203.0.113.7/32".parse().unwrap()];
+        let (got, _) = probe(
+            &handle,
+            settings,
+            &[(credential.bearer.as_str(), DENIED_IP)],
+        );
+        let denied: (u16, String) = (403, "FORBIDDEN".to_owned());
+        assert_eq!(
+            got[0], denied,
+            "G-M03-13 an IP on both lists stays denied (edge.rs evaluate_ip_policy)"
+        );
+    });
+}
+
+#[test]
+fn g_m03_13_emergency_allowlist_beats_the_tenants_own_deny_postauth() {
+    run_db_fixture::<Fixture, _>("g_m03_13_emergency_beats_tenant_deny", |mut handle| {
+        let credential = seed(&mut handle);
+        // `seed` inserts the key under `Handle::tenant_id` (operation_receipt_fixture.rs, control.api_keys.tenant_id),
+        // the tenant the post-auth tier looks the policy up by.
+        let tenant = handle.tenant_id;
+        let settings_for = |emergency: bool| {
+            let mut settings = proxied_settings();
+            settings.tenant_network = BTreeMap::from([(
+                tenant,
+                TenantNetworkPolicy {
+                    denylist: vec![DENIED_NET.parse().unwrap()],
+                    allowlist: vec![],
+                },
+            )]);
+            if emergency {
+                settings.global_emergency_allowlist = vec!["203.0.113.7/32".parse().unwrap()];
+            }
+            settings
+        };
+        let probes = [(credential.bearer.as_str(), DENIED_IP)];
+        let (refused, _) = probe(&handle, settings_for(false), &probes);
+        // Post-auth: the handler answers, so the code is the JSON-RPC error message, not the pre-auth plain body.
+        let error: Value = serde_json::from_str(&refused[0].1).unwrap();
+        assert_eq!(
+            refused[0].0, 403,
+            "G-M03-13 the tenant's own deny refuses without an emergency allow"
+        );
+        assert_eq!(error["error"]["message"], "FORBIDDEN");
+        let (allowed, _) = probe(&handle, settings_for(true), &probes);
+        assert_eq!(
+            allowed[0].0, 200,
+            "G-M03-13 the emergency allow beats the tenant's own deny"
+        );
     });
 }

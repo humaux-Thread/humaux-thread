@@ -1,8 +1,10 @@
 //! `adapters::tests::code_rls` — G-M16-7 isolation of the code-graph tables: FORCE RLS, tenant-and-workspace scoped reads through a
 //!   real role_gateway login, read-only grants, and the composite FKs that keep a file or active row inside its own tenant.
+//!   The symbol and edge tables (0291) ride the same reads and catalog pins; their one-snapshot FKs are G-M16-3 (code_schema).
 //! Depends-on: crates=[humaux-domain, humaux-testkit, postgres, uuid]; services=[PostgreSQL(owner)
 //!   w=[control.memberships, control.repositories, control.tenants, control.users, control.workspace_memberships,
-//!   control.workspaces, private.code_active_snapshots, private.code_files, private.code_snapshots],
+//!   control.workspaces, private.code_active_snapshots, private.code_edges, private.code_files, private.code_snapshots,
+//!   private.code_symbols],
 //!   PostgreSQL(role_gateway)]; env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[domain::code, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [the owner connection only seeds and removes this scenario's tenants, repositories and code rows; every
@@ -11,11 +13,13 @@
 //! Spec: Baseline §62; §6.1.1; §78.2; §79.2; ADR-0114 D-B
 //!
 //! Scenario: tenant A holds two workspaces (WA1, WA2) and three users (A1 in WA1, A2 in WA2, A3 in none); tenant B holds WB1 and
-//! user B1. One repository per workspace, plus one repository without a workspace, each with a READY snapshot, two files and an
-//! active row. Visibility is the tenant predicate AND an ACTIVE workspace membership in the repository's workspace (0284), so
+//! user B1. One repository per workspace, plus one repository without a workspace, each with a READY snapshot, two files, one
+//! symbol per file, one edge between the two symbols and an active row. Visibility is the tenant predicate AND an ACTIVE workspace membership in the repository's workspace (0284), so
 //! each request context must see exactly its own repository's rows and nothing else.
 
-use humaux_domain::code::{RepositoryProvider, SnapshotKind, SnapshotState};
+use humaux_domain::code::{
+    EdgeKind, EvidenceLevel, RepositoryProvider, SnapshotKind, SnapshotState, SymbolKind,
+};
 use humaux_testkit::{ExternalDep, skip_or_fail};
 use postgres::error::SqlState;
 use postgres::{Client, NoTls, Transaction};
@@ -23,10 +27,12 @@ use uuid::Uuid;
 
 const NAME: &str = "code_rls";
 
-const TABLES: [&str; 3] = [
+const TABLES: [&str; 5] = [
     "private.code_snapshots",
     "private.code_files",
     "private.code_active_snapshots",
+    "private.code_symbols",
+    "private.code_edges",
 ];
 
 const NON_OWNER_ROLES: [&str; 8] = [
@@ -83,12 +89,15 @@ fn gateway() -> Option<Client> {
     Some(client)
 }
 
-/// One repository with its READY snapshot, two files and (in the scenario) one active row.
+/// One repository with its READY snapshot, two files, a symbol per file, an edge between the symbols and (in the scenario)
+/// one active row.
 struct Repo {
     repository: Uuid,
     workspace: Option<Uuid>,
     snapshot: Uuid,
     files: [Uuid; 2],
+    symbols: [Uuid; 2],
+    edge: Uuid,
 }
 
 impl Repo {
@@ -98,16 +107,20 @@ impl Repo {
             workspace,
             snapshot: Uuid::new_v4(),
             files: [Uuid::new_v4(), Uuid::new_v4()],
+            symbols: [Uuid::new_v4(), Uuid::new_v4()],
+            edge: Uuid::new_v4(),
         }
     }
 }
 
-/// What one request context reads from the three code tables, ids sorted.
+/// What one request context reads from the five code tables, ids sorted.
 #[derive(Debug, PartialEq, Eq)]
 struct Seen {
     snapshots: Vec<Uuid>,
     files: Vec<Uuid>,
     active: Vec<Uuid>,
+    symbols: Vec<Uuid>,
+    edges: Vec<Uuid>,
 }
 
 fn expected(repos: &[&Repo]) -> Seen {
@@ -115,15 +128,21 @@ fn expected(repos: &[&Repo]) -> Seen {
         snapshots: Vec::new(),
         files: Vec::new(),
         active: Vec::new(),
+        symbols: Vec::new(),
+        edges: Vec::new(),
     };
     for repo in repos {
         seen.snapshots.push(repo.snapshot);
         seen.files.extend(repo.files);
         seen.active.push(repo.repository);
+        seen.symbols.extend(repo.symbols);
+        seen.edges.push(repo.edge);
     }
     seen.snapshots.sort_unstable();
     seen.files.sort_unstable();
     seen.active.sort_unstable();
+    seen.symbols.sort_unstable();
+    seen.edges.sort_unstable();
     seen
 }
 
@@ -135,7 +154,7 @@ fn ids(txn: &mut Transaction<'_>, sql: &str) -> Vec<Uuid> {
         .collect()
 }
 
-/// A gateway request transaction: the same two GUCs the request path sets, then three bare reads (never a join, which
+/// A gateway request transaction: the same two GUCs the request path sets, then five bare reads (never a join, which
 /// would let one table's policy hide another's leak).
 fn seen_by(gateway: &mut Client, tenant: Uuid, user: Uuid) -> Seen {
     let mut txn = gateway.transaction().expect("gateway request transaction");
@@ -156,6 +175,14 @@ fn seen_by(gateway: &mut Client, tenant: Uuid, user: Uuid) -> Seen {
         active: ids(
             &mut txn,
             "SELECT repository_id FROM private.code_active_snapshots ORDER BY repository_id",
+        ),
+        symbols: ids(
+            &mut txn,
+            "SELECT symbol_id FROM private.code_symbols ORDER BY symbol_id",
+        ),
+        edges: ids(
+            &mut txn,
+            "SELECT edge_id FROM private.code_edges ORDER BY edge_id",
         ),
     };
     txn.rollback().expect("end gateway request");
@@ -307,6 +334,39 @@ fn seed_repo(admin: &mut Client, tenant: Uuid, repo: &Repo) {
             )
             .expect("seed file");
     }
+    for (n, (symbol, file)) in repo.symbols.iter().zip(&repo.files).enumerate() {
+        admin
+            .execute(
+                "INSERT INTO private.code_symbols(tenant_id,snapshot_id,symbol_id,file_id,kind,name,qualified_name,\
+                 start_line,end_line,start_byte,end_byte,content_sha256) \
+                 VALUES($1,$2,$3,$4,$5,$6,$6,1,2,0,10,$7)",
+                &[
+                    &tenant,
+                    &repo.snapshot,
+                    symbol,
+                    file,
+                    &SymbolKind::Function.as_db_str(),
+                    &format!("f{n}"),
+                    &vec![4_u8; 32],
+                ],
+            )
+            .expect("seed symbol");
+    }
+    admin
+        .execute(
+            "INSERT INTO private.code_edges(tenant_id,snapshot_id,edge_id,from_symbol_id,to_symbol_id,kind,evidence_level) \
+             VALUES($1,$2,$3,$4,$5,$6,$7)",
+            &[
+                &tenant,
+                &repo.snapshot,
+                &repo.edge,
+                &repo.symbols[0],
+                &repo.symbols[1],
+                &EdgeKind::Calls.as_db_str(),
+                &EvidenceLevel::SyntaxCandidate.as_db_str(),
+            ],
+        )
+        .expect("seed edge");
     admin
         .execute(
             "INSERT INTO private.code_active_snapshots(tenant_id,repository_id,snapshot_id,generation) \
@@ -322,6 +382,8 @@ impl Drop for Scenario {
         let users = vec![self.user_a1, self.user_a2, self.user_a3, self.user_b1];
         for statement in [
             "DELETE FROM private.code_active_snapshots WHERE tenant_id = ANY($1)",
+            "DELETE FROM private.code_edges WHERE tenant_id = ANY($1)",
+            "DELETE FROM private.code_symbols WHERE tenant_id = ANY($1)",
             "DELETE FROM private.code_files WHERE tenant_id = ANY($1)",
             "DELETE FROM private.code_snapshots WHERE tenant_id = ANY($1)",
             "DELETE FROM control.repositories WHERE tenant_id = ANY($1)",
@@ -348,8 +410,8 @@ impl Drop for Scenario {
     }
 }
 
-/// G-M16-7: each request context reads exactly its own repository's snapshots, files and active rows. Fault: a code_files
-/// policy with the tenant predicate only ⇒ A2 also reads A1's files ⇒ red.
+/// G-M16-7: each request context reads exactly its own repository's snapshots, files, active rows, symbols and edges. Fault: a
+/// code_files or code_symbols policy with the tenant predicate only ⇒ A2 also reads A1's rows and A3 reads its whole tenant's ⇒ red.
 #[test]
 fn g_m16_7_reads_follow_tenant_and_workspace_membership() {
     let Some(admin) = admin() else { return };
@@ -368,6 +430,20 @@ fn g_m16_7_reads_follow_tenant_and_workspace_membership() {
         .expect("owner count")
         .get(0);
     assert_eq!(seeded, 4, "the scenario seeds one snapshot per repository");
+    for (table, want) in [("code_symbols", 8_i64), ("code_edges", 4)] {
+        let rows: i64 = scenario
+            .admin
+            .query_one(
+                &format!("SELECT count(*) FROM private.{table} WHERE tenant_id = ANY($1)"),
+                &[&tenants],
+            )
+            .expect("owner count")
+            .get(0);
+        assert_eq!(
+            rows, want,
+            "the scenario seeds {table} rows the policies then hide"
+        );
+    }
 
     let cases = [
         (
@@ -412,7 +488,8 @@ fn g_m16_7_reads_follow_tenant_and_workspace_membership() {
     }
 }
 
-/// G-M16-7: FORCE RLS, the owner, exactly one tenant-keyed ALL policy, and a gateway that can read and nothing else.
+/// G-M16-7: FORCE RLS, the owner, exactly one tenant-keyed ALL policy, and a gateway that can read and nothing else, on all
+/// five code-graph tables.
 #[test]
 fn g_m16_7_catalog_pins_force_rls_owner_policy_and_read_only_grants() {
     let Some(mut admin) = admin() else { return };
@@ -433,7 +510,7 @@ fn g_m16_7_catalog_pins_force_rls_owner_policy_and_read_only_grants() {
             skip_or_fail(
                 NAME,
                 &format!(
-                    "missing object: {table} — run `cargo xtask migrate` (migrations/0284_code_snapshots.sql)"
+                    "missing object: {table} — run `cargo xtask migrate` (migrations/0284_code_snapshots.sql, 0291_code_symbols_edges.sql)"
                 ),
                 ExternalDep::Postgres,
             );
