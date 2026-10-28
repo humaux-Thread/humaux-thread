@@ -1,5 +1,5 @@
 //! `humaux-billing-worker` — cloud-only startup and pure provider boundaries (§71.2).
-//! Depends-on: crates=[async-trait, hex, hmac, humaux-application, humaux-domain, humaux-infra-egress, humaux-infra-network, serde_json, sha2, time]; services=[]; env=[]; modules=[]
+//! Depends-on: crates=[]; services=[]; env=[]; modules=[]
 //! Called-by: []
 //! Invariants: [no processing loop; no live mode]
 //! Spec: Baseline §71.2; ADR-0074

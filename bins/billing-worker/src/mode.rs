@@ -1,7 +1,7 @@
 //! `billing-worker::mode` — fail-closed non-live startup (§71.2).
 //! Depends-on: crates=[]; services=[];
 //!   env=[HUMAUX_BILLING_PROVIDER_MODE, HUMAUX_BILLING_CREEM_TEST_BASE_URL]; modules=[]
-//! Called-by: [billing-worker::main, tests]
+//! Called-by: [billing-worker::creem, billing-worker::main, tests]
 //! Invariants: [no implicit mode; production host refused; fake destinations supplied explicitly]
 //! Spec: Baseline §71.2; §78.1
 

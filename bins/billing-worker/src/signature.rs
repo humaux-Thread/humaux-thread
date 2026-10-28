@@ -1,6 +1,6 @@
 //! `billing-worker::signature` — raw-body authentication boundary (§71.3).
 //! Depends-on: crates=[hex, hmac, humaux-domain, sha2]; services=[]; env=[]; modules=[domain::error]
-//! Called-by: [tests]
+//! Called-by: [billing-worker::creem, tests]
 //! Invariants: [hex HMAC-SHA256; constant-time MAC comparison; no timestamp invented]
 //! Spec: Baseline §71.3; §52
 

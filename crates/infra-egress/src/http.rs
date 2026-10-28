@@ -5,7 +5,7 @@
 //!   HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE,
 //!   HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL]; modules=[contracts::config_registry,
 //!   domain::egress, domain::error, humaux-infra-network, infra-egress::resolver, infra-network::http]
-//! Called-by: [infra-egress::raw, retrieval-provider::adapters]
+//! Called-by: [billing-worker::creem, infra-egress::raw, retrieval-provider::adapters, tests]
 //! Invariants: [the only holder of a reqwest client for external destinations (built via infra-network, never
 //!   Client::new here); non-HTTPS endpoints are refused; provider HTTP statuses map to typed ErrorCodes (401
 //!   Unauthorized, 429 RateLimited, 5xx Transient)]

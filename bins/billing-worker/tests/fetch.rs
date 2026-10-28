@@ -1,5 +1,5 @@
 //! `billing-worker::tests::fetch` — authoritative reads through HTTP (§71.3).
-//! Depends-on: crates=[humaux-application, humaux-billing-worker, humaux-domain, humaux-infra-egress, serde_json, tokio, uuid]; services=[HTTP(loopback)]; env=[]; modules=[application::billing, billing-worker::creem, billing-worker::mode, billing-worker::normalize, domain::billing, domain::egress, domain::error, domain::ids, infra-egress::http]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-infra-egress, serde_json, tokio, uuid]; services=[HTTP(loopback)]; env=[]; modules=[application::billing, billing-worker::creem, billing-worker::fake_creem, billing-worker::mode, billing-worker::normalize, domain::billing, domain::egress, domain::error, domain::ids, infra-egress::http]
 //! Called-by: [cargo-test]
 //! Invariants: [no external calls; wrong credentials and altered bodies fail closed]
 //! Spec: Baseline §71.2; §71.3; §79.5
@@ -31,6 +31,7 @@ fn client(base: &str, key: &'static str) -> CreemClient {
 async fn authoritative_fetch_and_authentication() {
     let transaction = json!({"id":"txn_fixture","amount":500,"currency":"USD","tax_amount":50,"period_start":1000,"period_end":2000});
     let subscription = json!({"id":"sub_fixture","customer":{"id":"cust_fixture"},"status":"past_due","current_period_start_date":"2026-10-01T00:00:00Z","current_period_end_date":"2026-11-01T00:00:00Z"});
+    // dep: HTTP(loopback) — §79.4 isolated provider double; no external network.
     let (base, server) = fake_creem::start(subscription, transaction.clone()).await;
     let provider = client(&base, TEST_KEY);
     assert_eq!(

@@ -1,6 +1,6 @@
 //! `billing-worker::fake_creem` — test-only HTTP double (§71.2).
 //! Depends-on: crates=[async-trait, axum, hex, hmac, humaux-domain, humaux-infra-egress, serde_json, sha2, tokio]; services=[HTTP(loopback)]; env=[]; modules=[domain::error, infra-egress::http]
-//! Called-by: [tests]
+//! Called-by: [billing-worker::tests::fetch]
 //! Invariants: [loopback only; exact query identities; no M04-10 dependency]
 //! Spec: Baseline §71.2; §71.3; §79.4
 use axum::{
@@ -46,6 +46,7 @@ pub async fn start(
         .route("/v1/subscriptions", get(read))
         .route("/v1/transactions", get(read))
         .with_state([subscription, transaction]);
+    // dep: HTTP(loopback) — §79.4 isolated provider double; no external network.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     (
