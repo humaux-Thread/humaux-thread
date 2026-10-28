@@ -130,6 +130,7 @@ fn g_m15_14_two_genuine_messages_remain_active() {
                 .expect("list");
         assert_eq!(candidates.len(), 1);
         let candidate = &candidates[0];
+        assert_eq!(candidate.targets.len(), 2);
         assert_eq!(candidate.candidate_id, result.proposed[0]);
         assert_eq!(candidate.kind, CandidateKind::DuplicateGroup);
         assert_eq!(candidate.state, CandidateState::Proposed);
