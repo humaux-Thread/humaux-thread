@@ -14,6 +14,8 @@ pub mod applicability_repo;
 pub mod attribution_repo;
 pub mod audit_sink;
 pub mod batch;
+/// §71.3: maintenance-only processor doors, isolated from gateway linkage.
+pub mod billing_processor_repo;
 /// C4 (M04 D7): the webhook inbox door of §71.3, `role_gateway` INSERT only.
 pub mod billing_repo;
 pub mod byok;
