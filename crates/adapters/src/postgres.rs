@@ -14,7 +14,7 @@
 //!   workspace's one pool-builder site: PoolSettings (gateway and process loaders) sizes the pool and sets
 //!   statement_timeout / idle_in_transaction_session_timeout as startup options (pg_settings source = client), never a
 //!   role GUC (ADR-0065 D-A / D-B); every pool's sessions start with jit = off (ADR-0071 D-B); process loaders preserve sqlx defaults except the configured ceiling]
-//! Spec: Baseline §48.1; §78.1; ADR-0066 D-G; ADR-0100; Baseline §58; §6.2.3; §15.4; §15.2; §6.2.2; ADR-0059; ADR-0063 D-H; ADR-0065 D-A / D-B
+//! Spec: Baseline §48.1; §78.1; ADR-0066 D-G; ADR-0100; Baseline §58; §6.2.3; §15.4; §15.2; §6.2.2; ADR-0059; ADR-0063 D-H; ADR-0065 D-A / D-B; §48.1; §78.1; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G; ADR-0100
 //!
 //! Spec canonical path is `crates/adapters/postgres/src/pools.rs`; this repo's crate layout
 //! (§58) flattens adapters into `crates/adapters/src/<name>.rs` modules, so **this file IS

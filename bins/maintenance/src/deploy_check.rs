@@ -12,8 +12,8 @@
 //!   check, a mode flag without its value, or no check selected is a usage error (exit 2) naming the flag — the
 //!   release gate is fail-closed and its receipt has no `not_applicable` state (review fix 9, F8 / OP-7);
 //!   the pure pool-budget function sums supplied process pools and replicas plus reserves inside the supplied
-//!   connection ceiling, without reading deploy files or changing release checks (§48.1 / §78.1)]
-//! Spec: Baseline §4.2; §4.4; §48.1; §57.1; §67.2; §78.1; ADR-0065 D-A/D-B;
+//!   connection ceiling, without reading deploy files; --env supplies committed deployment inputs (§48.1 / §78.1)]
+//! Spec: Baseline §4.2; §4.4; §48.1; §57.1; §67.2; §78.1; ADR-0065 D-A/D-B;; §48.1; §78.1; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G; ADR-0100
 //!   ADR-0066 D-C, D-G, D-H, D-J, D-K, D-R; ADR-0100; ADR-0125
 //! dep-map: allow env-undeclared — the HUMAUX_* names here are checked in values files, compose documents and container
 //!   env; this module reads none of them from its own environment
@@ -2193,6 +2193,40 @@ mod tests {
         assert_eq!(result["reasons"], json!([]));
         assert_eq!(result["connections"], 72);
         assert_eq!(result["max_connections"], 190);
+    }
+
+    #[test]
+    fn pool_budget_env_checks_use_committed_inputs() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let args = [
+            ("--values-dir", "deploy/env/values"),
+            ("--secrets-dir", "deploy/env/secret-fixture"),
+            ("--examples-dir", "deploy/env/example"),
+            ("--sizing-conf", "deploy/postgres/sizing-a5.conf"),
+        ]
+        .into_iter()
+        .flat_map(|(flag, path)| [flag.to_owned(), root.join(path).display().to_string()])
+        .collect::<Vec<_>>();
+        let mut checks = Vec::new();
+        assert_eq!(env_checks(&args, Some(&fixture()), &mut checks), Ok(()));
+        assert_eq!(checks.len(), 5);
+        assert_eq!(
+            checks
+                .iter()
+                .map(|c| c["check"].as_str().expect("check name"))
+                .collect::<Vec<_>>(),
+            [
+                "env_placement",
+                "env_presence",
+                "pool_budget",
+                "expected_uid_keys",
+                "host_network_dsn"
+            ]
+        );
+        assert_eq!(
+            checks[2],
+            json!({"check": "pool_budget", "status": "pass", "reasons": [], "connections": 72, "max_connections": 190})
+        );
     }
 
     #[test]
