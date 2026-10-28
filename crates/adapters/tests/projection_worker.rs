@@ -2879,6 +2879,10 @@ struct PayloadProbe {
     embedder: TestEmbedder,
     calls: std::sync::atomic::AtomicUsize,
     writes: std::sync::Mutex<Vec<(IntraCellMethod, String, serde_json::Value)>>,
+    hold_visibility: std::sync::atomic::AtomicBool,
+    visibility_entered: tokio::sync::Notify,
+    visibility_release: tokio::sync::Notify,
+    visibility_checks: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait]
@@ -2911,7 +2915,24 @@ impl IntraCellHttpTransport for PayloadProbe {
                 request.json_body.clone().expect("write body"),
             ));
         }
-        self.transport.execute(permit, request).await
+        let hold = request.path.ends_with("/scroll")
+            && self
+                .hold_visibility
+                .load(std::sync::atomic::Ordering::SeqCst)
+            && self
+                .writes
+                .lock()
+                .expect("writes")
+                .iter()
+                .any(|(_, path, _)| path.contains("/points/payload?"));
+        let response = self.transport.execute(permit, request).await;
+        if hold {
+            self.visibility_checks
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.visibility_entered.notify_one();
+            self.visibility_release.notified().await;
+        }
+        response
     }
 }
 
@@ -2964,6 +2985,10 @@ fn payload_probe_deps(handle: &Handle, scope: Uuid) -> (ProjectionWorkerDeps, Ar
         embedder: TestEmbedder(provider),
         calls: std::sync::atomic::AtomicUsize::new(0),
         writes: std::sync::Mutex::new(Vec::new()),
+        hold_visibility: std::sync::atomic::AtomicBool::new(false),
+        visibility_entered: tokio::sync::Notify::new(),
+        visibility_release: tokio::sync::Notify::new(),
+        visibility_checks: std::sync::atomic::AtomicUsize::new(0),
     });
     deps.embedder = probe.clone();
     deps.transport = probe.clone();
@@ -2978,6 +3003,51 @@ fn assert_payload_readback(request: &serde_json::Value, persisted: &serde_json::
         assert_eq!(persisted.get(key), None);
     }
     assert_eq!(&serde_json::Value::Object(expected), persisted);
+}
+
+/// §17.4 / G-M10-3: the post-write visibility response must precede checkpoint advancement.
+fn payload_pass_holds_checkpoint(
+    handle: &mut Handle,
+    deps: ProjectionWorkerDeps,
+    probe: &PayloadProbe,
+    key: &(Uuid, &str, Uuid, &str, &str, &str),
+    previous: i64,
+) -> (u64, u64) {
+    probe
+        .hold_visibility
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let task = handle.rt.spawn(async move { run_once(&deps, 10).await });
+    handle.rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(30), probe.visibility_entered.notified())
+            .await
+            .expect("G-M10-3: post-payload visibility probe must run");
+    });
+    assert_eq!(
+        projection_highwater(handle, key),
+        previous,
+        "G-M10-3: checkpoint must stay put while visibility is pending"
+    );
+    assert_eq!(
+        probe
+            .visibility_checks
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    probe.visibility_release.notify_one();
+    let outcome = handle.rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(30), task)
+            .await
+            .expect("G-M10-3: worker must finish after visibility")
+            .expect("worker task")
+            .expect("archive pass")
+    });
+    assert_eq!(
+        probe
+            .visibility_checks
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    (outcome.done, outcome.failed)
 }
 
 /// §17 / G-M10-3: a real governance archive updates only the payload, then advances the visible checkpoint.
@@ -3025,10 +3095,7 @@ fn archive_uses_set_payload() {
         .expect("archive") else {
             panic!("archive refused")
         };
-        let second = handle
-            .rt
-            .block_on(run_once(&deps, 10))
-            .expect("archive pass");
+        let second = payload_pass_holds_checkpoint(&mut handle, deps, &probe, &key, seq);
         assert_eq!(
             probe.calls.load(std::sync::atomic::Ordering::SeqCst),
             0,
@@ -3041,7 +3108,7 @@ fn archive_uses_set_payload() {
         );
         assert_eq!(after["payload"]["archived"], true);
         assert_eq!(projection_highwater(&mut handle, &key), archive.stream_seq);
-        assert_eq!((second.done, second.failed), (1, 0));
+        assert_eq!(second, (1, 0));
         assert_eq!(point_id_for_memory(&mut handle, memory), point);
         assert_eq!(live_binding_count(&mut handle), 1);
         let writes = probe.writes.lock().expect("writes");
