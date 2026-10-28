@@ -15523,6 +15523,7 @@ modules naming it:
 why: envelope/signals/completeness/handoff/request DTO (de)serialization
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::completeness`
 - `retrieval::envelope`
 - `retrieval::handoff`
@@ -15542,6 +15543,7 @@ modules naming it:
 why: pure domain types (MemoryType, authority, selection) this crate's logic is keyed on
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::compiler`
 - `retrieval::completeness`
 - `retrieval::envelope`
@@ -15564,6 +15566,7 @@ modules naming it:
 why: Handoff::canonical_bytes' sole serialization step (G80-31 byte domain)
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::envelope`
 - `retrieval::handoff`
 - `retrieval::signals`
@@ -15574,6 +15577,7 @@ modules naming it:
 why: Handoff::sha256 byte fingerprint (G80-31)
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::handoff`
 - `retrieval::tests::planner_predicate_eval`
 - `tests`
@@ -15582,6 +15586,7 @@ modules naming it:
 why: dataset.tsv sha256 manifest verification in the eval harness
 
 modules naming it:
+- `retrieval::brief`
 - `retrieval::handoff`
 - `retrieval::tests::planner_predicate_eval`
 - `tests`
