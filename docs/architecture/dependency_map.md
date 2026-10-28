@@ -912,6 +912,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `private.processing_runs`
 - writes `private.task_binding_grants`
 - writes `projection.stream_log`
+- executes `control.deletion_request_accept`
 - executes `control.deletion_request_freeze`
 - executes `control.resolve_user_reasoning_admission`
 - executes `ops.i4_authority_scan`
@@ -2097,6 +2098,22 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.memory_in_project`
 - service `PostgreSQL(any)`
 
+#### `adapters::forget_repo`
+- reads `control.deletion_requests`
+- reads `control.deletion_targets`
+- reads `ops.deletion_plan_steps`
+- reads `private.evidence_objects`
+- reads `private.evidence_subjects`
+- reads `private.memory_evidence`
+- reads `private.memory_records`
+- reads `private.memory_text_v`
+- reads `projection.stream_log`
+- writes `projection.stream_log`
+- executes `control.deletion_request_accept`
+- executes `control.deletion_request_freeze`
+- executes `ops.record_deletion_plan_step`
+- service `PostgreSQL(any)`
+
 #### `adapters::grep_repo`
 - reads `private.memory_records`
 - service `PostgreSQL(role_gateway)`
@@ -2362,6 +2379,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::continuity`
 
 #### `application::correct`
+
+#### `application::forget`
 
 #### `application::login`
 
@@ -5202,6 +5221,7 @@ written by:
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::coordinate_task`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::service_credentials`
@@ -5427,6 +5447,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
+- (no process): `gateway::tests::mcp_forget`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -5435,6 +5456,7 @@ written by:
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::support::governance_ops`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::confirm_token_repo`
@@ -5618,7 +5640,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::forget_repo`
+- process(cargo-xtask): `xtask::architecture_check`
+- process(humaux-gateway): `adapters::forget_repo`
 
 ### `control.deletion_request_freeze`
 read by:
@@ -5626,31 +5649,34 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::forget_preview`
 - process(cargo-xtask): `xtask::architecture_check`
+- process(humaux-gateway): `adapters::forget_repo`
 
 ### `control.deletion_requests`
 read by:
-- (no process): `adapters::forget_repo`
+- (no process): `gateway::tests::mcp_forget`
+- process(humaux-gateway): `adapters::forget_repo`
 
 written by:
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::forget_repo`
+- (no process): `gateway::tests::mcp_forget`
 
 executed by:
 
 ### `control.deletion_targets`
 read by:
-- (no process): `adapters::forget_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::forget_repo`
+- (no process): `gateway::tests::mcp_forget`
 
 executed by:
 
@@ -7826,13 +7852,14 @@ executed by:
 
 ### `ops.deletion_plan_steps`
 read by:
-- (no process): `adapters::forget_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_repo`
+- (no process): `gateway::tests::mcp_forget`
 
 executed by:
 
@@ -8218,6 +8245,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
+- (no process): `gateway::tests::mcp_forget`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
@@ -8229,6 +8257,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::forget_confirm`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `gateway::tests::mcp_gateway`
 
 executed by:
@@ -8611,7 +8640,7 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::forget_repo`
+- process(humaux-gateway): `adapters::forget_repo`
 
 ### `ops.renew_lease`
 read by:
@@ -9550,7 +9579,6 @@ executed by:
 ### `private.evidence_objects`
 read by:
 - (no process): `adapters::contribution_repo`
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::evidence_task_runs`
@@ -9587,6 +9615,7 @@ read by:
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::distill_repo`
 - process(humaux-gateway): `adapters::exact_census`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::memory_governance_repo`
 - process(humaux-gateway): `adapters::note_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
@@ -9759,11 +9788,11 @@ executed by:
 
 ### `private.evidence_subjects`
 read by:
-- (no process): `adapters::forget_repo`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::read_materialize`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -10027,12 +10056,12 @@ executed by:
 
 ### `private.memory_evidence`
 read by:
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - (no process): `private-worker::tests::m29_attribution_e2e`
 - process(cargo-xtask): `adapters::affect_repo`
@@ -10060,6 +10089,7 @@ read by:
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::exact_census`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::memory_governance_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
 - process(humaux-gateway): `adapters::postgres`
@@ -10147,6 +10177,7 @@ written by:
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -10239,7 +10270,6 @@ executed by:
 ### `private.memory_records`
 read by:
 - (no process): `adapters::contribution_repo`
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::continuity_publish`
@@ -10253,6 +10283,7 @@ read by:
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `gateway::tests::continuity_get`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::i4_scan`
@@ -10292,6 +10323,7 @@ read by:
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::exact_census`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::grep_repo`
 - process(humaux-gateway): `adapters::note_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
@@ -10563,12 +10595,12 @@ executed by:
 
 ### `private.memory_text_v`
 read by:
-- (no process): `adapters::forget_repo`
 - process(cargo-xtask): `adapters::memory_repo`
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::memory_repo`
 - process(humaux-consolidation-worker): `adapters::read_materialize`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::memory_repo`
 - process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::memory_repo`
@@ -11485,6 +11517,7 @@ written by:
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::cross_tenant_canary`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::read_decoupling`
@@ -11522,7 +11555,6 @@ executed by:
 
 ### `projection.stream_log`
 read by:
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
@@ -11532,6 +11564,7 @@ read by:
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
+- (no process): `gateway::tests::mcp_forget`
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::measure`
 - process(cargo-xtask): `adapters::context_repo`
@@ -11557,6 +11590,7 @@ read by:
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::exact_census`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::memory_governance_repo`
 - process(humaux-gateway): `adapters::note_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
@@ -11596,7 +11630,6 @@ read by:
 - process(humaux-retrieval-worker): `adapters::retrieve`
 
 written by:
-- (no process): `adapters::forget_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
@@ -11636,6 +11669,7 @@ written by:
 - process(cargo-xtask): `xtask::architecture_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(humaux-consolidation-worker): `adapters::stream_repo`
+- process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::projection_worker`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::projection_worker`
@@ -12432,6 +12466,7 @@ executed by:
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::read_decoupling`
@@ -12700,6 +12735,7 @@ executed by:
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::ops_listener`
 - `gateway::tests::read_decoupling`
@@ -12857,6 +12893,7 @@ executed by:
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::oauth_flow`
@@ -16098,6 +16135,7 @@ modules naming it:
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::oauth_flow`
@@ -16118,12 +16156,14 @@ modules naming it:
 - `gateway::cached_embedding`
 - `gateway::continuity`
 - `gateway::guard`
+- `gateway::memory`
 - `gateway::oauth_http`
 - `gateway::recall`
 - `gateway::retrieval_embedding_client`
 - `gateway::tests::auth_pages`
 - `gateway::tests::console_csrf`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::oauth_flow`
@@ -16144,6 +16184,7 @@ modules naming it:
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::read_decoupling`
@@ -16174,6 +16215,7 @@ modules naming it:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::limiter`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::oauth_flow`
@@ -16201,6 +16243,7 @@ modules naming it:
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::oauth_flow`
@@ -16312,6 +16355,7 @@ modules naming it:
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::oauth_flow`
@@ -16353,6 +16397,7 @@ modules naming it:
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::oauth_flow`
@@ -16426,6 +16471,7 @@ modules naming it:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::limiter`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::oauth_flow`
@@ -16460,6 +16506,7 @@ modules naming it:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::limiter`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::oauth_flow`
@@ -16497,6 +16544,7 @@ modules naming it:
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::limiter`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::oauth_flow`
@@ -16518,6 +16566,7 @@ modules naming it:
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::oauth_flow`
@@ -16545,6 +16594,7 @@ modules naming it:
 - `gateway::tests::auth_pages`
 - `gateway::tests::continuity_get`
 - `gateway::tests::cross_tenant_canary`
+- `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::oauth_flow`
@@ -17682,6 +17732,15 @@ db-bound (default run): no
 services (computed):
 
 default run:
+
+### `bins/gateway/tests/mcp_forget.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
 
 ### `bins/gateway/tests/mcp_gateway.rs`
 db-bound (default run): yes

@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.curation_candidate_targets, private.curation_candidates, private.memory_projects, private.memory_projects_live, private.nodes, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.subjects, public.entities] w=[coord.tasks, private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.i4_authority_scan, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
+//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.curation_candidate_targets, private.curation_candidates, private.memory_projects, private.memory_projects_live, private.nodes, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.subjects, public.entities] w=[coord.tasks, private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.i4_authority_scan, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main, xtask::vocab_check]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails; G-M23-3 / G-M23-3b read docs/architecture/db_objects.md and backup_catalog.toml and fail, never not_applicable, on a missing file or an inventory without foreign-key blocks; G-M23-3b also fails unless every D5_RESTORE_DEPENDENCIES entry is a KNOWLEDGE catalog row (M23 D5)]
 //! Spec: Baseline §53.3; §55.1; §59.1; §65; §78.3; §78; §78.4; §52.4; §22.1; §23.1④; ADR-0110 D-B; ADR-0110 D-C; ADR-0121 D-A; ADR-0123 D3
@@ -3830,6 +3830,20 @@ fn m19_freeze_sole_call(root: &Path) -> Verdict {
         "M19 freeze",
         "freeze caller",
         &[("control.deletion_request_freeze(", HOME)],
+        &[],
+    )
+}
+
+/// ADR-0092 D-B / #358 P2-1: only the checked adapter may enter the accept door (§37.2).
+fn m19_accept_sole_call(root: &Path) -> Verdict {
+    sole_door_statements(
+        root,
+        "M19 accept",
+        "accept caller",
+        &[(
+            "control.deletion_request_accept(",
+            "crates/adapters/src/forget_repo.rs",
+        )],
         &[],
     )
 }
@@ -9268,7 +9282,7 @@ fn w2_continuity_contract_from(
         );
     }
     for needle in [
-        "SUPPORTED_OPERATION_KEYS: [&str; 28]",
+        "SUPPORTED_OPERATION_KEYS: [&str; 29]",
         "\"continuity.get\" =>",
         "\"continuity.publish\" =>",
     ] {
@@ -12321,6 +12335,10 @@ pub fn run(_args: &[String]) -> i32 {
             m19_freeze_sole_call(&root),
         ),
         (
+            "M19 / #358 P2-1 (accept door has exactly one Rust call site)",
+            m19_accept_sole_call(&root),
+        ),
+        (
             "M07 D9 / G-M07-1 (Evidence and Memory INSERT doors: one statement each in non-test code)",
             m07_1_insert_doors(&root),
         ),
@@ -13398,7 +13416,7 @@ runs:
             (5, "WorkspaceAdmission::PreserveContinuityFilter => None"),
             (5, "operation.operation_key() != \"continuity.get\""),
             (6, "catalog.validate_output(ToolName::Continuity, &value)"),
-            (6, "SUPPORTED_OPERATION_KEYS: [&str; 28]"),
+            (6, "SUPPORTED_OPERATION_KEYS: [&str; 29]"),
             (6, "\"continuity.get\" =>"),
             (6, "\"continuity.publish\" =>"),
         ] {
@@ -13448,7 +13466,7 @@ runs:
         )
         .unwrap();
         let keys = catalog_operation_keys(&root).unwrap();
-        assert_eq!(keys.len(), 53);
+        assert_eq!(keys.len(), 54);
         let scopes = catalog_operation_scopes(
             &root.join("contracts/mcp"),
             manifest["tools"].as_array().unwrap(),
@@ -13588,8 +13606,9 @@ runs:
             .find(|op| op["op"] == "memory.archive")
             .unwrap()
             .clone();
-        // McpPending / Rest op registered (its schema branch admitted, so only the wire rule can fire).
-        for (key, wire) in [("memory.forget", "McpPending"), ("account.delete", "Rest")] {
+        // Rest op registered (schema branch admitted, so only the wire rule can fire). No McpPending DestructiveOp exists since M19-6 (memory.forget is Mcp); the McpPending arm stays in operation_registry_failures for a future pending op.
+        {
+            let key = "account.delete";
             let mut entry = template.clone();
             entry["op"] = key.into();
             let mut fixture = manifest.clone();
@@ -13600,7 +13619,7 @@ runs:
             admitted_scopes.insert(key.to_string(), scopes["memory.archive"].clone());
             assert_eq!(
                 operation_registry_failures(&fixture, &admitted, &admitted_scopes),
-                vec![format!("registry carries {wire} DestructiveOp: `{key}`")]
+                vec![format!("registry carries Rest DestructiveOp: `{key}`")]
             );
         }
         // Mcp op dropped from the registry.
@@ -13627,8 +13646,8 @@ runs:
         let shrunk = dispatch
             .replace("    DestructiveOp::MemoryConfirm.operation_key(),\n", "")
             .replace(
+                "SUPPORTED_OPERATION_KEYS: [&str; 29]",
                 "SUPPORTED_OPERATION_KEYS: [&str; 28]",
-                "SUPPORTED_OPERATION_KEYS: [&str; 27]",
             );
         assert!(
             matches!(
@@ -13640,8 +13659,8 @@ runs:
 
         // (2) the array's declared length stops matching its entries.
         let miscounted = dispatch.replace(
-            "SUPPORTED_OPERATION_KEYS: [&str; 28]",
             "SUPPORTED_OPERATION_KEYS: [&str; 29]",
+            "SUPPORTED_OPERATION_KEYS: [&str; 30]",
         );
         assert!(
             matches!(
@@ -17927,6 +17946,12 @@ async fn serving_version_in_txn() {}
     #[test]
     fn m19_freeze_sole_call_real_repo() {
         assert_eq!(m19_freeze_sole_call(&real_root()), Verdict::Pass);
+    }
+
+    /// ADR-0092 D-B / #358 P2-1: exactly one accept caller in the production tree (§37.2).
+    #[test]
+    fn m19_accept_sole_call_real_repo() {
+        assert_eq!(m19_accept_sole_call(&real_root()), Verdict::Pass);
     }
 
     /// #315: the same sentinel rejects zero, two, misplaced and missing callers.

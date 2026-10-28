@@ -1256,6 +1256,47 @@
         "pattern"
       ],
       "additionalProperties": false
-    }
-  ]
+    },
+{
+ "x-humaux-operation": {
+  "operation_key": "memory.forget",
+  "required_scope": "memory:write",
+  "feature_key": "mcp.billable_operations.per_period",
+  "meter_kind": "ordinary1"
+ },
+ "description": "Two rounds: roots freeze a preview and issue a token; request_id plus confirm_token accepts deletion. Not restorable.",
+ "properties": {
+  "action": {
+   "const": "forget"
+  },
+  "memory_id": {
+   "type": "string",
+   "format": "uuid"
+  },
+  "evidence_ids": {
+   "type": "array",
+   "items": {
+    "type": "string",
+    "format": "uuid"
+   },
+   "minItems": 1,
+   "maxItems": 50,
+   "uniqueItems": true
+  },
+  "request_id": {
+   "type": "string",
+   "format": "uuid"
+  },
+  "confirm_token": {
+   "type": "string",
+   "minLength": 16,
+   "maxLength": 512
+  }
+ },
+ "required": [
+  "action"
+ ],
+ "additionalProperties": false
+}
+]
 }

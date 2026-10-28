@@ -1,9 +1,9 @@
 //! `gateway::memory` — Authenticated Memory reads through the existing final-body and Envelope boundaries.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json,
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json,
 //!   sha2, time, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::context_repo,
-//!   adapters::distill_repo, adapters::grep_repo, adapters::memory_governance_repo, adapters::postgres,
+//!   adapters::distill_repo, adapters::forget_repo, adapters::grep_repo, adapters::memory_governance_repo, adapters::postgres,
 //!   adapters::read_gate, adapters::read_materialize, adapters::serving_repo,
-//!   adapters::subject_repo, domain::affect, domain::authority, domain::confirm, domain::context, domain::error,
+//!   adapters::subject_repo, application::forget, domain::affect, domain::authority, domain::confirm, domain::context, domain::error,
 //!   domain::evidence, domain::identity, domain::ids, domain::selection, domain::subject, gateway::bootstrap,
 //!   gateway::context, gateway::guard,
 //!   projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::request]
@@ -62,7 +62,7 @@ use uuid::Uuid;
 
 use crate::{
     context::{ContextBootstrap, ContextItem, provenance},
-    guard::ConfirmedWrite,
+    guard::{AuthorizedRequest, ConfirmedWrite},
 };
 
 /// Pagination metadata deliberately omits snapshot totals and skipped/lost-access counts.
@@ -734,6 +734,62 @@ pub(crate) async fn reject(
         },
     )
     .await
+}
+
+/// ADR-0092 D-A/D-B / §37: freeze and preview in one adapter-owned transaction; source roots are server-authorized.
+pub(crate) async fn forget_prepare(
+    pool: Arc<RuntimeDbPool>,
+    request: AuthorizedRequest,
+    bootstrap: ContextBootstrap,
+    memory_id: Option<Uuid>,
+    evidence_ids: Vec<Uuid>,
+) -> Result<(Uuid, [u8; 32], serde_json::Value), ErrorCode> {
+    use humaux_adapters::forget_repo;
+    use humaux_application::forget::{DeletionScopeKind, confirmation_digest};
+    let (auth, _) = write_scope(
+        &pool,
+        request.authorization().clone(),
+        request.workspace_id(),
+        &bootstrap,
+    )
+    .await?;
+    let (frozen, preview) = forget_repo::freeze_and_preview(&pool, &auth, memory_id, &evidence_ids)
+        .await
+        .map_err(forget_error)?;
+    let intent = confirmation_digest(preview.scope_kind, &preview.manifest_hash);
+    // ponytail: fixed 50-item caps; move to protocol::page Pager in M26-8
+    let view = serde_json::json!({
+        "scope": if preview.scope_kind == DeletionScopeKind::Memory { "memory" } else { "evidence_closure" },
+        "memory_count": preview.memory_count, "evidence_count": preview.evidence_count,
+        "memory_titles": preview.memory_titles.iter().take(50).collect::<Vec<_>>(),
+        "memory_titles_omitted": preview.memory_titles.len().saturating_sub(50),
+        "multi_person_evidence": preview.multi_person_evidence.iter().take(50).collect::<Vec<_>>(),
+        "multi_person_evidence_omitted": preview.multi_person_evidence.len().saturating_sub(50),
+        "source_retained": preview.source_retained, "restore_supported": false,
+    });
+    Ok((frozen.request_id, intent, view))
+}
+
+/// ADR-0092 D-B / §37.2: the owner door consumes the token; any refusal drops the whole transaction.
+pub(crate) async fn forget_accept(
+    pool: Arc<RuntimeDbPool>,
+    mut write: ConfirmedWrite,
+    bootstrap: ContextBootstrap,
+    request_id: Uuid,
+) -> Result<(), ErrorCode> {
+    use humaux_adapters::forget_repo;
+    let (auth, _) = confirmed_write_scope(&pool, &write, &bootstrap).await?;
+    forget_repo::accept_previewed(&pool, &auth, request_id, &mut write.claim)
+        .await
+        .map_err(forget_error)
+}
+
+/// §52.1: refusal codes cross the wire; internal reasons and database details never do.
+fn forget_error(error: humaux_adapters::forget_repo::ForgetRepoError) -> ErrorCode {
+    match error {
+        humaux_adapters::forget_repo::ForgetRepoError::Refused { code, .. } => code,
+        humaux_adapters::forget_repo::ForgetRepoError::Db(_) => ErrorCode::DependencyUnavailable,
+    }
 }
 
 /// §36 `memory.archive` / `memory.unarchive`, second (confirmed) call (ADR-0024). Same

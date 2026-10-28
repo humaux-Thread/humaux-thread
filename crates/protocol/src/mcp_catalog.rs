@@ -653,7 +653,7 @@ mod tests {
                     .map(|op| op.metadata.operation_key.clone())
             })
             .collect();
-        assert_eq!(catalog.operations().len(), 53);
+        assert_eq!(catalog.operations().len(), 54);
         assert_eq!(
             catalog
                 .operations()
@@ -804,20 +804,24 @@ mod tests {
         let registry = CanonicalCatalog::load().unwrap().operations().clone();
         assert!(confirm_wire_holds(&registry));
         let template = registry["memory.archive"].clone();
-        for key in ["memory.forget", "account.delete"] {
-            let mut widened = registry.clone();
-            widened.insert(
-                key.to_string(),
-                Operation {
-                    op: key.to_string(),
-                    ..template.clone()
-                },
-            );
-            assert!(!confirm_wire_holds(&widened), "{key} must stay out");
+        // M19-6: memory.forget is Mcp-wire now, so it must be present; account.delete stays REST-only.
+        let mut widened = registry.clone();
+        widened.insert(
+            "account.delete".to_string(),
+            Operation {
+                op: "account.delete".to_string(),
+                ..template
+            },
+        );
+        assert!(
+            !confirm_wire_holds(&widened),
+            "account.delete must stay out"
+        );
+        for key in ["memory.archive", "memory.forget"] {
+            let mut omitted = registry.clone();
+            omitted.remove(key);
+            assert!(!confirm_wire_holds(&omitted), "{key} must stay in");
         }
-        let mut omitted = registry;
-        omitted.remove("memory.archive");
-        assert!(!confirm_wire_holds(&omitted));
     }
 
     fn assert_invalid_registry(fixture: &Value) {
@@ -1464,7 +1468,7 @@ mod tests {
                 .as_array()
                 .expect("stable output union")
                 .len(),
-            19
+            20
         );
         // ADR-0110 D-A: memory.get's branch is the frontier envelope (the contract fingerprint bump of M13-2); the
         // closure Envelope is still the `content` of the enumerate page (branch 1, asserted below).
@@ -1504,6 +1508,8 @@ mod tests {
         assert_eq!(advertised["oneOf"][17]["$ref"], "#/$defs/StaleNoteVersion");
         // ADR-0069: memory.grep's keyset page of matching lines.
         assert_eq!(advertised["oneOf"][18]["$ref"], "#/$defs/GrepPage");
+        // ADR-0092 D-B: memory.forget's executed result (its preview round is the ConfirmationRequired branch).
+        assert_eq!(advertised["oneOf"][19]["$ref"], "#/$defs/Forgotten");
         // D-D: the Envelope item may carry its affect annotations with effective_intensity.
         assert_eq!(
             advertised["$defs"]["Envelope"]["properties"]["items"]["items"]["properties"]["affects"]

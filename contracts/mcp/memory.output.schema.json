@@ -197,6 +197,10 @@
       "note_id": {
        "type": "string",
        "format": "uuid"
+      },
+      "deletion_request_id": {
+       "type": "string",
+       "format": "uuid"
       }
      },
      "additionalProperties": false,
@@ -205,6 +209,9 @@
     "expires_at": {
      "type": "string",
      "format": "date-time"
+    },
+    "preview": {
+     "$ref": "#/$defs/ForgetPreview"
     }
    },
    "additionalProperties": false,
@@ -269,15 +276,36 @@
       }
      },
      "else": {
-      "properties": {
-       "target": {
-        "required": [
-         "memory_id"
-        ],
-        "not": {
+      "if": {
+       "properties": {
+        "operation": {
+         "const": "memory.forget"
+        }
+       }
+      },
+      "then": {
+       "required": [
+        "preview"
+       ],
+       "properties": {
+        "target": {
          "required": [
-          "candidate_id"
+          "deletion_request_id"
          ]
+        }
+       }
+      },
+      "else": {
+       "properties": {
+        "target": {
+         "required": [
+          "memory_id"
+         ],
+         "not": {
+          "required": [
+           "candidate_id"
+          ]
+         }
         }
        }
       }
@@ -930,7 +958,7 @@
       "scheduled",
       "excluded"
      ],
-     "description": "scheduled: the outbox indexes the note after the commit (never awaited); excluded: data_class SECRET_MATERIAL, which §18.2 never cards or embeds — no recall leg will ever exist for this note."
+     "description": "scheduled: the outbox indexes the note after the commit (never awaited); excluded: data_class SECRET_MATERIAL, which \u00a718.2 never cards or embeds \u2014 no recall leg will ever exist for this note."
     }
    },
    "additionalProperties": false
@@ -1103,6 +1131,87 @@
     }
    },
    "additionalProperties": false
+  },
+  "ForgetPreview": {
+   "type": "object",
+   "required": [
+    "scope",
+    "memory_count",
+    "evidence_count",
+    "memory_titles",
+    "memory_titles_omitted",
+    "multi_person_evidence",
+    "multi_person_evidence_omitted",
+    "source_retained",
+    "restore_supported"
+   ],
+   "properties": {
+    "scope": {
+     "enum": [
+      "memory",
+      "evidence_closure"
+     ]
+    },
+    "memory_count": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "evidence_count": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "memory_titles": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "maxItems": 50
+    },
+    "memory_titles_omitted": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "multi_person_evidence": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "maxItems": 50
+    },
+    "multi_person_evidence_omitted": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "source_retained": {
+     "type": "boolean"
+    },
+    "restore_supported": {
+     "const": false
+    }
+   },
+   "additionalProperties": false
+  },
+  "Forgotten": {
+   "type": "object",
+   "required": [
+    "forgotten",
+    "deletion_request_id",
+    "restore_supported"
+   ],
+   "properties": {
+    "forgotten": {
+     "const": true
+    },
+    "deletion_request_id": {
+     "type": "string",
+     "format": "uuid"
+    },
+    "restore_supported": {
+     "const": false
+    }
+   },
+   "additionalProperties": false
   }
  },
  "oneOf": [
@@ -1194,6 +1303,9 @@
   },
   {
    "$ref": "#/$defs/GrepPage"
+  },
+  {
+   "$ref": "#/$defs/Forgotten"
   }
  ]
 }

@@ -108,9 +108,8 @@ impl DestructiveOp {
             | Self::MemoryReject
             | Self::MemoryBind
             | Self::MemoryUnbind
-            | Self::MemoryNoteReplace => ConfirmWire::Mcp,
-            // ADR-0092 D-B; flips to `Mcp` in card M19-6, which adds its registry row.
-            Self::MemoryForget => ConfirmWire::McpPending,
+            | Self::MemoryNoteReplace
+            | Self::MemoryForget => ConfirmWire::Mcp,
             // ADR-0092 D-E / C-M19-1: REST entry, never an MCP op.
             Self::AccountDelete => ConfirmWire::Rest,
         }
@@ -246,10 +245,8 @@ mod tests {
     /// is a reviewed edit of this table, never a silent widening of the M26-1 catalog invariant.
     #[test]
     fn non_mcp_wire_ops_are_pinned_exactly() {
-        let pinned: HashSet<(DestructiveOp, ConfirmWire)> = HashSet::from([
-            (DestructiveOp::MemoryForget, ConfirmWire::McpPending),
-            (DestructiveOp::AccountDelete, ConfirmWire::Rest),
-        ]);
+        let pinned: HashSet<(DestructiveOp, ConfirmWire)> =
+            HashSet::from([(DestructiveOp::AccountDelete, ConfirmWire::Rest)]);
         let actual: HashSet<(DestructiveOp, ConfirmWire)> = DestructiveOp::ALL
             .iter()
             .map(|op| (*op, op.wire()))

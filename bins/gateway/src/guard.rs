@@ -7,7 +7,7 @@
 //!   gateway::bootstrap, gateway::limiter,
 //!   protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::admission, gateway::auth_pages, gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::oauth_http, gateway::status, tests]
-//! Invariants: [transport owns HTTP validation only; this layer is the sole place that authenticates, authorizes and admits a request, so an operation that bypasses it is a bug, not a variant path]
+//! Invariants: [no path mints and accepts in one call; transport owns HTTP validation only; this layer is the sole place that authenticates, authorizes and admits a request, so an operation that bypasses it is a bug, not a variant path]
 //! Spec: Baseline §83; §52.1; ADR-0018; ADR-0028; ADR-0030; ADR-0054; ADR-0065 D-D; ADR-0125
 //!
 //! Transport owns HTTP validation; this layer owns authentication through finalization.
@@ -1123,6 +1123,75 @@ impl GatewayGuard {
                 }
             }
             result.map(ConfirmedOutcome::Executed)
+        }
+        .await;
+        self.record_request(operation, &result);
+        result
+    }
+
+    /// ADR-0092 D-B / §33.10: prepare a frozen target after admission, then mint; never accept.
+    pub(crate) async fn run_confirmed_write_prepared<T, P, Fut>(
+        &self,
+        context: &McpHttpContext,
+        operation: &OperationDescriptor,
+        ttl: Duration,
+        prepare: P,
+    ) -> Result<(ConfirmToken, OffsetDateTime, Uuid, T), ErrorCode>
+    where
+        P: FnOnce(AuthorizedRequest) -> Fut,
+        Fut: Future<Output = Result<(Uuid, [u8; 32], T), ErrorCode>>,
+    {
+        let result = async {
+            let admitted = self.admit(context, operation, None).await?;
+            let op = DestructiveOp::MemoryForget;
+            let refused = if operation.operation_key() != op.operation_key()
+                || operation.meter_kind() != MeterKind::Ordinary
+            {
+                Some(ErrorCode::DependencyUnavailable)
+            } else {
+                admitted
+                    .request
+                    .authorization()
+                    .user_id()
+                    .is_none()
+                    .then_some(ErrorCode::Forbidden)
+            };
+            if let Some(code) = refused {
+                return self.denied(context, operation, &admitted, code).await;
+            }
+            let prepared = tokio::time::timeout(
+                self.settings.handler_timeout,
+                prepare(admitted.request.clone()),
+            )
+            .await
+            .unwrap_or(Err(ErrorCode::DependencyUnavailable));
+            let (target_id, intent, view) = match prepared {
+                Ok(view) => view,
+                Err(code) => return self.denied(context, operation, &admitted, code).await,
+            };
+            let gate = ConfirmGate {
+                op,
+                target_id,
+                successor_id: None,
+                presented: None,
+                ttl,
+                request_sha256: Some(intent),
+            };
+            let mut audit = self.audit_event(
+                context,
+                &admitted.network,
+                Some(admitted.request.authorization()),
+                McpAuditAction::McpRequestFinished,
+                operation.operation_key(),
+                None,
+            );
+            audit
+                .risk_tags
+                .extend([RISK_TAG_CONFIRMATION_MINTED.into()]);
+            match self.mint_confirmation(&admitted, &gate, &audit).await {
+                Ok((token, expires)) => Ok((token, expires, target_id, view)),
+                Err(code) => self.denied(context, operation, &admitted, code).await,
+            }
         }
         .await;
         self.record_request(operation, &result);
