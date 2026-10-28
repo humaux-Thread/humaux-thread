@@ -81,6 +81,7 @@ fn explicit_modes_and_destination_sets() {
     ] {
         assert_eq!(fake.allowed_hosts(Some(base)).unwrap(), vec![host]);
     }
-    let test = BillingMode::parse(Some("test"), Some("https://test-api.creem.io/")).unwrap();
-    assert_eq!(test.allowed_hosts(None).unwrap(), vec!["test-api.creem.io"]);
+    let hosts = BillingMode::parse(Some("test"), Some("https://test-api.creem.io/"))
+        .and_then(|mode| mode.allowed_hosts(None));
+    assert_eq!(hosts, Ok(vec!["test-api.creem.io".to_string()]));
 }
