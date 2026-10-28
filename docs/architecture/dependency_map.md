@@ -2089,6 +2089,18 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `private.note_heads`
 - service `PostgreSQL(any)`
 
+#### `adapters::oauth_repo`
+- executes `control.oauth_client_lookup`
+- executes `control.oauth_client_register`
+- executes `control.oauth_code_consume`
+- executes `control.oauth_code_issue`
+- executes `control.oauth_grant_issue`
+- executes `control.oauth_grant_lookup`
+- executes `control.oauth_grant_revoke`
+- executes `control.oauth_refresh_family_revoke`
+- executes `control.oauth_refresh_rotate`
+- service `PostgreSQL(any)`
+
 #### `adapters::operation_receipt`
 - reads `control.memberships`
 - reads `control.tenants`
@@ -2285,6 +2297,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::login`
 
+#### `application::oauth`
+
 #### `application::pin`
 
 #### `application::retrieval_embedding_port`
@@ -2381,6 +2395,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS`
 - env `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS`
+- env `HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS`
+- env `HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS`
+- env `HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS`
+- env `HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED`
@@ -2514,6 +2532,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `HTTP(gateway)`
 
 #### `gateway::memory`
+
+#### `gateway::oauth_http`
 
 #### `gateway::recall`
 
@@ -5220,6 +5240,7 @@ written by:
 executed by:
 - (no process): `adapters::tests::console_session`
 - (no process): `gateway::tests::mcp_gateway`
+- (no process): `gateway::tests::oauth_flow`
 - process(cargo-xtask): `adapters::membership_repo`
 - process(humaux-maintenance): `adapters::membership_repo`
 
@@ -5714,6 +5735,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::oauth_persistence`
+- (no process): `gateway::tests::oauth_flow`
 
 executed by:
 
@@ -5723,8 +5745,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_client_register`
@@ -5733,8 +5755,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_client_registrations`
@@ -5746,6 +5768,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::oauth_persistence`
+- (no process): `gateway::tests::oauth_flow`
 
 executed by:
 
@@ -5755,9 +5778,9 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - (no process): `adapters::tests::oauth_persistence`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_code_issue`
@@ -5766,8 +5789,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_issue`
@@ -5776,8 +5799,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_lookup`
@@ -5786,8 +5809,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_revoke`
@@ -5796,8 +5819,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grants`
@@ -5809,6 +5832,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::oauth_persistence`
+- (no process): `gateway::tests::oauth_flow`
 
 executed by:
 
@@ -5818,8 +5842,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_refresh_rotate`
@@ -5828,8 +5852,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_refresh_tokens`
@@ -5841,6 +5865,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::oauth_persistence`
+- (no process): `gateway::tests::oauth_flow`
 
 executed by:
 
@@ -6859,6 +6884,7 @@ written by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::health_serve`
 - (no process): `maintenance::tests::partitions`
@@ -7012,6 +7038,7 @@ written by:
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `gateway::tests::auth_pages`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::serve`
@@ -12053,6 +12080,7 @@ executed by:
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
 - `gateway::tests::exit_codes`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::ops_listener`
 - `gateway::tests::singleton`
 - `gateway::tests::support::guard_limiter`
@@ -12201,6 +12229,7 @@ executed by:
 - `domain::consolidate`
 - `domain::context`
 - `gateway::tests::auth_pages`
+- `gateway::tests::oauth_flow`
 - `maintenance::migrate`
 - `maintenance::projection_serve`
 - `maintenance::rls_check`
@@ -12446,6 +12475,7 @@ executed by:
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::recall_embedding_cache`
 - `gateway::tests::semantic_recall_wiring`
@@ -15630,6 +15660,7 @@ modules naming it:
 - `gateway::guard`
 - `gateway::mcp_application`
 - `gateway::memory`
+- `gateway::oauth_http`
 - `gateway::recall`
 - `gateway::remember`
 - `gateway::retrieval_embedding_client`
@@ -15640,6 +15671,7 @@ modules naming it:
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
@@ -15657,6 +15689,7 @@ modules naming it:
 - `gateway::cached_embedding`
 - `gateway::continuity`
 - `gateway::guard`
+- `gateway::oauth_http`
 - `gateway::recall`
 - `gateway::retrieval_embedding_client`
 - `gateway::tests::auth_pages`
@@ -15664,6 +15697,7 @@ modules naming it:
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
@@ -15702,6 +15736,7 @@ modules naming it:
 - `gateway::limiter`
 - `gateway::mcp_application`
 - `gateway::memory`
+- `gateway::oauth_http`
 - `gateway::recall`
 - `gateway::remember`
 - `gateway::retrieval_embedding_client`
@@ -15712,6 +15747,7 @@ modules naming it:
 - `gateway::tests::limiter`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
@@ -15738,6 +15774,7 @@ modules naming it:
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
@@ -15840,6 +15877,7 @@ modules naming it:
 - `gateway::auth_pages`
 - `gateway::main`
 - `gateway::mcp_application`
+- `gateway::oauth_http`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
 - `gateway::tests::continuity_get`
@@ -15847,6 +15885,7 @@ modules naming it:
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
@@ -15861,6 +15900,7 @@ modules naming it:
 - `gateway::context`
 - `gateway::mcp_application`
 - `gateway::memory`
+- `gateway::oauth_http`
 - `gateway::rerank_client`
 - `gateway::retrieval_embedding_client`
 
@@ -15874,16 +15914,19 @@ modules naming it:
 - `gateway::guard`
 - `gateway::mcp_application`
 - `gateway::memory`
+- `gateway::oauth_http`
 - `gateway::recall`
 - `gateway::remember`
 - `gateway::rerank_client`
 - `gateway::retrieval_embedding_client`
 - `gateway::status`
+- `gateway::tests::as_metadata`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::ops_listener`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
@@ -15915,6 +15958,7 @@ modules naming it:
 - `gateway::guard`
 - `gateway::mcp_application`
 - `gateway::memory`
+- `gateway::oauth_http`
 - `gateway::tests::mcp_gateway`
 - `tests`
 
@@ -15925,10 +15969,12 @@ modules naming it:
 - `gateway::guard`
 - `gateway::mcp_application`
 - `gateway::memory`
+- `gateway::oauth_http`
 - `gateway::recall`
 - `gateway::remember`
 - `gateway::tests::continuity_get`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::semantic_recall_wiring`
 - `tests`
 
@@ -15953,6 +15999,7 @@ modules naming it:
 - `gateway::tests::limiter`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
@@ -15986,6 +16033,7 @@ modules naming it:
 - `gateway::tests::limiter`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::ops_listener`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
@@ -15994,6 +16042,12 @@ modules naming it:
 - `gateway::tests::singleton`
 - `gateway::tests::support::singleton_env`
 - `tests`
+
+### humaux-gateway → `rand` (normal)
+why: OS CSPRNG for opaque OAuth refresh secrets
+
+modules naming it:
+- `gateway::oauth_http`
 
 ### humaux-gateway → `tokio` (dev)
 why: freeze the production limiter clock for exact hierarchy/restart assertions
@@ -16016,6 +16070,7 @@ modules naming it:
 - `gateway::tests::limiter`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
@@ -16036,6 +16091,7 @@ modules naming it:
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::ops_listener`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::semantic_recall_wiring`
@@ -16062,6 +16118,7 @@ modules naming it:
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::ops_listener`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
@@ -17129,6 +17186,13 @@ services (computed):
 
 default run:
 
+### `bins/gateway/tests/as_metadata.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `bins/gateway/tests/auth_pages.rs`
 db-bound (default run): yes
 
@@ -17220,6 +17284,15 @@ db-bound (default run): no
 services (computed):
 
 default run:
+
+### `bins/gateway/tests/oauth_flow.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
 
 ### `bins/gateway/tests/ops_listener.rs`
 db-bound (default run): yes

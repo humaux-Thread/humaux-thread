@@ -316,6 +316,7 @@ processes:
 - process(cargo-xtask)
 
 modules:
+- `gateway::tests::oauth_flow`
 - `xtask::contract_impact`
 
 ### `CONSOLIDATION_WORKER_PG_DSN`
@@ -1259,6 +1260,58 @@ modules:
 - `gateway::bootstrap`
 
 ### `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS`
 - witness: literal
 - registry: gateway
 
@@ -6065,6 +6118,7 @@ modules:
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::ops_listener`
 - `gateway::tests::service_credentials`
 - `gateway::tests::singleton`
