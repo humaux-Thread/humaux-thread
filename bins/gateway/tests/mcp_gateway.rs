@@ -14335,8 +14335,9 @@ fn every_text_storing_write_refuses_u0000_at_ingress() {
 /// `contracts/mcp/remember.schema.json` without any note-lane change: the file as of M29 T06c, whose `task_run` field
 /// (design v0.2 §15, T04c) and `project_id` field (ADR-0078 D-D A1, T06c) are the only changes since card 40a's pin
 /// (main 17c5895). G25: `remember.put` gains no field, branch or response key from the note lane.
+// M06-2 (lead ruling 2026-10-28): remember.put.source moved this pin to the new schema; the byte-identical check stays.
 const REMEMBER_SCHEMA_SHA256_WITHOUT_NOTE_LANE: &str =
-    "4b540cde2d3a00cec8d09d4c8eaa803acbe7335d42ecaf4961fc8ffac918bd74";
+    "797effec604b0334a272dffb857963d449761c306aec1e309298c70d960d6783";
 
 /// A `tools/call` for tool `memory` built from a hand-written arguments object, so a test controls the exact bytes of the
 /// JSON text (escapes survive; `json!` would normalise `a` to `a`).
