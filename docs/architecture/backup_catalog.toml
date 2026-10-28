@@ -71,22 +71,19 @@ basis = "M02:60; D1 principle"
 reason = "reserved sign-in factor enum (PASSWORD, PASSKEY, TOTP, RECOVERY_CODE, OIDC, SAML; 0035, no service code writes it); factors are credential material (D1, D9) and users sign in by email code after a restore (ADR-0121 D-G)."
 
 ["control.billing_customers"]
-class = "EXCLUDED"
+class = "KNOWLEDGE"
 owner = "M04"
-basis = "M04:60; D1 principle"
-reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+basis = "M04:60; ADR-0128 (M04 D13c, amends M23 D1 for the billing ledger)"
 
 ["control.billing_inbox"]
-class = "EXCLUDED"
+class = "KNOWLEDGE"
 owner = "M04"
-basis = "M04:63; D1 principle"
-reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+basis = "M04:63; ADR-0128 (M04 D13c, amends M23 D1 for the billing ledger)"
 
 ["control.billing_payments"]
-class = "EXCLUDED"
+class = "KNOWLEDGE"
 owner = "M04"
-basis = "M04:62; D1 principle"
-reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+basis = "M04:62; ADR-0128 (M04 D13c, amends M23 D1 for the billing ledger)"
 
 ["control.confirm_tokens"]
 class = "EXCLUDED"
@@ -247,16 +244,14 @@ basis = "M02:60; D1 principle"
 reason = "session, challenge or token state; short-lived and excluded (D1, D9)"
 
 ["control.plan_versions"]
-class = "EXCLUDED"
+class = "KNOWLEDGE"
 owner = "M04"
-basis = "M04:58; D1 principle"
-reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+basis = "M04:58; ADR-0128 (lead ruling 2026-10-28, grandfathered versions; FK closure: parent of control.subscriptions.plan_version_id)"
 
 ["control.plans"]
-class = "EXCLUDED"
+class = "KNOWLEDGE"
 owner = "M04"
-basis = "M04:58; D1 principle"
-reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+basis = "M04:58; ADR-0128 (FK closure: parent of control.plan_versions.plan_id, NOT NULL)"
 
 ["control.private_reasoning_domains"]
 class = "KNOWLEDGE"
@@ -424,16 +419,14 @@ basis = "M02:60; D1 principle"
 reason = "session, challenge or token state; short-lived and excluded (D1, D9)"
 
 ["control.subscription_events"]
-class = "EXCLUDED"
+class = "KNOWLEDGE"
 owner = "M04"
-basis = "M04:61; D1 principle"
-reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+basis = "M04:61; ADR-0128 (M04 D13c, amends M23 D1 for the billing ledger)"
 
 ["control.subscriptions"]
-class = "EXCLUDED"
+class = "KNOWLEDGE"
 owner = "M04"
-basis = "M04:60; D1 principle"
-reason = "billing, quota, entitlement or referral state; Creem and the plan values file rebuild it (D1)"
+basis = "M04:60; ADR-0128 (M04 D13c, amends M23 D1 for the billing ledger)"
 
 ["control.support_access_requests"]
 class = "EXCLUDED"
