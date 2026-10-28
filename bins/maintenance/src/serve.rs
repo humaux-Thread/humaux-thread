@@ -4,11 +4,14 @@
 //!   the same tasks for one page with cadence ignored (D-Q). The cluster-level PARTITIONS task (ADR-0063 D-K) runs once
 //!   per due run without a tenant page: it proposes candidate leaves and publishes `partition_horizon_months`. The
 //!   cluster-level DR_EVIDENCE task (ADR-0064 D-K / 10.11 D) runs the same way: one statement over the backup and
-//!   drill receipts with the WAL latch, two in-process `statvfs` reads, and one `telemetry::dr::publish`.
+//!   drill receipts with the WAL latch, two in-process `statvfs` reads, and one `telemetry::dr::publish`. The cluster-level
+//!   AUTHORITY_I4 task (ADR-0123 D3, §65) is the report-only §59.1 I4 scan: one statement appends the owner definer's count to
+//!   `ops.repair_findings`, then `authority_i4_violations` is set once.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-telemetry, libc, serde_json, tokio, uuid];
 //!   services=[PostgreSQL(role_maintenance), fs(statvfs of the DR paths)]; env=[CARGO_PKG_VERSION,
 //!   HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS, HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH, HUMAUX_MAINTENANCE_DR_REPO_FS_PATH,
-//!   HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS,
+//!   HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MAINTENANCE_SERVE_AUTHORITY_I4_EVERY_SECONDS,
+//!   HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_EVERY_SECONDS, HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_LIMIT,
 //!   HUMAUX_MAINTENANCE_SERVE_CYCLE_SECONDS, HUMAUX_MAINTENANCE_SERVE_DR_EVIDENCE_EVERY_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_JOBS_DEAD_RETENTION_SECONDS,
@@ -41,16 +44,19 @@
 //!   the daemon's system identity (`--serve`) or the operator's fields (`sweep once`); `sweep once` requires the §77
 //!   fields like every writing subcommand; DR_EVIDENCE reads no budget key (the receipts carry the limits) and a
 //!   failed run publishes nothing, so the DR gauges keep their last values, never reset; a quota renewal is one
-//!   owner door call per tenant whose horizon feeds `quota_window_horizon_seconds` (ADR-0072 D-C, D-D)]
+//!   owner door call per tenant whose horizon feeds `quota_window_horizon_seconds` (ADR-0072 D-C, D-D); AUTHORITY_I4 is
+//!   one statement per run, reads no budget key, never repairs a row, and a failed run resets `authority_i4_violations`
+//!   to absent, never to 0 (§41.2: a 0 would hide violations)]
 //! Spec: Baseline §4.2; §6.2.1; §15.2; §41.2; §72.2.1; §77; §78.1; ADR-0037; ADR-0043; ADR-0057 D-F; ADR-0057 D-H;
 //!   ADR-0061 D-B; ADR-0062 D-A..D-D; ADR-0062 D-E..D-J; ADR-0062 D-L; ADR-0062 D-N; ADR-0062 D-P; ADR-0062 D-Q;
-//!   ADR-0063 D-H; ADR-0064 D-K; ADR-0064 10.11 D; ADR-0072 D-C; ADR-0072 D-D
+//!   ADR-0063 D-H; ADR-0064 D-K; ADR-0064 10.11 D; ADR-0072 D-C; ADR-0072 D-D; ADR-0123 D3; §59.1; §65
 //!
 //! Metrics: `maintenance_task_runs_total{task,outcome}` and `maintenance_task_rows_total{task}` (ADR-0062 D-S),
 //!   counted once per tenant door call through `adapters::maintenance_repo::count_task_call`, served by `/metrics`
 //!   only while ready and printed at zero by `--serve --metrics-families`; `/status` carries the last finished cycle
 //!   per task. The six DR families (`telemetry::dr`, ADR-0064 D-K) render 0 until the first DR_EVIDENCE run;
-//!   `quota_window_horizon_seconds` (ADR-0072 D-D) renders no sample until a renewing tenant was visited.
+//!   `quota_window_horizon_seconds` (ADR-0072 D-D) renders no sample until a renewing tenant was visited, and so does
+//!   `authority_i4_violations` (ADR-0123 D3) until the first AUTHORITY_I4 run, and again after a failed one.
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
@@ -132,12 +138,14 @@ const fn every_key(task: Task) -> &'static str {
         Task::Redrive => "HUMAUX_MAINTENANCE_SERVE_REDRIVE_EVERY_SECONDS",
         Task::Partitions => "HUMAUX_MAINTENANCE_SERVE_PARTITIONS_EVERY_SECONDS",
         Task::DrEvidence => "HUMAUX_MAINTENANCE_SERVE_DR_EVIDENCE_EVERY_SECONDS",
+        Task::AuthorityI4 => "HUMAUX_MAINTENANCE_SERVE_AUTHORITY_I4_EVERY_SECONDS",
     }
 }
 
 /// ADR-0062 D-C: the LIMIT of a task's per-tenant statement (> 0); `None` for the cluster-level PARTITIONS task
-/// (ADR-0063 D-K: one statement over a few hundred registry rows, no tenant page) and DR_EVIDENCE (ADR-0064 D-K: one
-/// statement over the receipts, which hold a few rows a day).
+/// (ADR-0063 D-K: one statement over a few hundred registry rows, no tenant page), DR_EVIDENCE (ADR-0064 D-K: one
+/// statement over the receipts, which hold a few rows a day) and AUTHORITY_I4 (ADR-0123 D3: one statement whose
+/// sample the definer bounds at 100 ids).
 const fn limit_key(task: Task) -> Option<&'static str> {
     Some(match task {
         Task::Lost => "HUMAUX_MAINTENANCE_SERVE_LOST_LIMIT",
@@ -149,7 +157,7 @@ const fn limit_key(task: Task) -> Option<&'static str> {
         Task::Jobs => "HUMAUX_MAINTENANCE_SERVE_JOBS_LIMIT",
         Task::Reissue => "HUMAUX_MAINTENANCE_SERVE_REISSUE_LIMIT",
         Task::Redrive => "HUMAUX_MAINTENANCE_SERVE_REDRIVE_LIMIT",
-        Task::Partitions | Task::DrEvidence => return None,
+        Task::Partitions | Task::DrEvidence | Task::AuthorityI4 => return None,
     })
 }
 
@@ -362,8 +370,10 @@ async fn call(
         .await
         .map(i64::unsigned_abs)
         .map_err(|e| e.to_string()),
-        // Cluster-level: [`partitions`] / [`dr_evidence`] run once per run, never per tenant.
-        Task::Partitions | Task::DrEvidence => Err(format!("{} has no tenant call", task.label())),
+        // Cluster-level: [`cluster`] runs these once per run, never per tenant.
+        Task::Partitions | Task::DrEvidence | Task::AuthorityI4 => {
+            Err(format!("{} has no tenant call", task.label()))
+        }
     }
 }
 
@@ -389,6 +399,43 @@ async fn partitions(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
             run.fail(e);
         }
     }
+}
+
+/// ADR-0123 D3 / §65: one AUTHORITY_I4 run, counted once (not per tenant). Success sets `authority_i4_violations` once, at
+/// the scan's end; a failure removes the sample and never writes 0, because a 0 would silence `authority_i4_violations > 0`
+/// (§41.2) while the scan is broken. One finding row is the run's `affected` count.
+async fn authority_i4(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
+    // dep: PostgreSQL(role_maintenance) — the one-statement scan (adapters::maintenance_repo::scan_authority_i4)
+    let done =
+        match tokio::time::timeout(cfg.cycle, maintenance_repo::scan_authority_i4(pool)).await {
+            Ok(Ok(scan)) => Ok(scan),
+            Ok(Err(e)) => Err(format!("authority_i4: {e}")),
+            Err(_) => Err(format!("authority_i4: no answer within {CYCLE_SECONDS}")),
+        };
+    match done {
+        Ok(scan) => {
+            maintenance_repo::set_authority_i4_violations(scan.violations);
+            count_task_call(Task::AuthorityI4, Some(1));
+            run.affected += 1;
+        }
+        Err(e) => {
+            maintenance_repo::reset_authority_i4_violations();
+            count_task_call(Task::AuthorityI4, None);
+            run.fail(e);
+        }
+    }
+}
+
+/// Runs a cluster-level `task` once, without a tenant page (ADR-0063 D-K, ADR-0064 D-K, ADR-0123 D3); `false` for a
+/// per-tenant task, which the caller walks page by page.
+async fn cluster(task: Task, pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) -> bool {
+    match task {
+        Task::Partitions => partitions(pool, cfg, run).await,
+        Task::DrEvidence => dr_evidence(pool, cfg, run).await,
+        Task::AuthorityI4 => authority_i4(pool, cfg, run).await,
+        _ => return false,
+    }
+    true
 }
 
 /// Paths whose `statvfs` still runs on a blocking thread. A timed-out read cannot be cancelled, so a hung mount
@@ -531,13 +578,7 @@ async fn cycle(
         }
         run.ran = true;
         cursor.last_run = Some(Instant::now());
-        if task == Task::Partitions {
-            partitions(pool, cfg, &mut run).await;
-            runs.push((task, run));
-            continue;
-        }
-        if task == Task::DrEvidence {
-            dr_evidence(pool, cfg, &mut run).await;
+        if cluster(task, pool, cfg, &mut run).await {
             runs.push((task, run));
             continue;
         }
@@ -663,6 +704,13 @@ pub(crate) fn render_metrics() -> String {
         &families::QUOTA_WINDOW_HORIZON_SECONDS,
         &quota_horizon,
     );
+    // ADR-0123 D3: the one sample while the last AUTHORITY_I4 run succeeded, none otherwise (the header stays, so
+    // `--metrics-families` names the family at zero state); absent, never 0, before the first run and after a failed one.
+    let i4: Vec<(&[&'static str], f64)> = maintenance_repo::authority_i4_violations()
+        .map(|violations| -> (&[&'static str], f64) { (&[], violations as f64) })
+        .into_iter()
+        .collect();
+    write_family(&mut out, &families::AUTHORITY_I4_VIOLATIONS, &i4);
     // ADR-0064 D-K: the six DR families from the last successful DR_EVIDENCE run (0 before the first).
     dr::render(&mut out);
     out

@@ -848,6 +848,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `public-pool::tests::notice`
 
 executed by:
@@ -2739,6 +2740,7 @@ written by:
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_authorization`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::contribution_reasoner`
 - (no process): `adapters::tests::contribution_repo`
@@ -4698,6 +4700,7 @@ written by:
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_policy_lifecycle_0132`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
@@ -4776,6 +4779,7 @@ written by:
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::health_serve`
+- (no process): `maintenance::tests::i4_scan`
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::rebuild_cli`
 - (no process): `maintenance::tests::retention`
@@ -5038,6 +5042,7 @@ written by:
 - (no process): `adapters::tests::console_session`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::evidence_sources`
@@ -6058,6 +6063,7 @@ grants (runtime roles):
 read by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::continuity_publish`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::exact_completeness_eval`
@@ -7046,21 +7052,27 @@ executed by:
 - process(humaux-maintenance): `maintenance::health_serve`
 - process(humaux-maintenance): `maintenance::rls_check`
 
-### `ops.i4_authority_consistency_scan`
+### `ops.i4_authority_scan`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
 - RLS: —
 - FORCE: —
-- created in: 0004_private_evidence_memory
+- created in: 0287_repair_findings_i4_scan
 
 grants (runtime roles):
-- PUBLIC (default): EXECUTE
+- role_maintenance: EXECUTE
+- role_migration_owner: EXECUTE
 
 read by:
 
 written by:
 
 executed by:
+- (no process): `maintenance::tests::i4_scan`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(cargo-xtask): `xtask::architecture_check`
+- process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `ops.jobs`
 - kind: table
@@ -7698,6 +7710,7 @@ written by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::evidence_sources`
@@ -8209,6 +8222,38 @@ executed by:
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
 - process(humaux-retrieval-worker): `adapters::jobs`
+
+### `ops.repair_findings`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0287_repair_findings_i4_scan
+
+grants (runtime roles):
+- role_maintenance: INSERT
+- role_maintenance: SELECT
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+foreign keys (outgoing):
+
+read by:
+- (no process): `maintenance::tests::i4_scan`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+- (no process): `maintenance::tests::i4_scan`
+- process(humaux-maintenance): `adapters::maintenance_repo`
+
+executed by:
 
 ### `ops.requeue_dead_distill`
 - kind: function (SECURITY DEFINER)
@@ -9489,6 +9534,27 @@ written by:
 
 executed by:
 
+### `private.contribution_eligibility`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0286_contribution_eligibility
+
+grants (runtime roles):
+- role_migration_owner: EXECUTE
+- role_private_worker: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::contribution_eligibility`
+- (no process): `adapters::tests::contribution_eligibility`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `private.contribution_execution_closure_seal_immutable`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
@@ -9659,6 +9725,23 @@ read by:
 written by:
 
 executed by:
+
+### `private.contribution_unit_type`
+- kind: function
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0286_contribution_eligibility
+
+grants (runtime roles):
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::contribution_eligibility`
 
 ### `private.conversations`
 - kind: table
@@ -10164,6 +10247,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::distill_repo`
 
 written by:
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::affect_repo`
@@ -10329,6 +10413,7 @@ written by:
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_authorization`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
@@ -10534,6 +10619,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::read_materialize`
 
 written by:
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -10873,6 +10959,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `gateway::tests::mcp_gateway`
@@ -10934,6 +11021,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
+- (no process): `adapters::tests::contribution_eligibility`
 
 executed by:
 
@@ -11141,6 +11229,7 @@ written by:
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::contribution_authorization`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - (no process): `adapters::tests::enumerate_scale`
@@ -11401,6 +11490,7 @@ read by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::drill`
+- (no process): `maintenance::tests::i4_scan`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - (no process): `private-worker::tests::m29_attribution_e2e`
@@ -11498,6 +11588,7 @@ written by:
 - (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
@@ -11546,6 +11637,7 @@ written by:
 - (no process): `gateway::tests::cross_tenant_canary`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `maintenance::tests::i4_scan`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::memory_repo`
@@ -11878,6 +11970,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::subject_repo`
 
 written by:
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::note_reads`
 - (no process): `adapters::tests::projection_worker`
 - (no process): `gateway::tests::mcp_gateway`
@@ -12909,6 +13002,7 @@ read by:
 
 written by:
 - (no process): `adapters::relation_repo`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::project_rollup`
 
 executed by:
@@ -12945,6 +13039,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::subject_registry_rls`
 - process(cargo-xtask): `adapters::subject_repo`
 - process(humaux-consolidation-worker): `adapters::subject_repo`
@@ -12989,6 +13084,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::applicability`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_attribution`
@@ -13830,6 +13926,7 @@ written by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::auth_scope_rls`
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::forget_confirm`
@@ -14023,6 +14120,7 @@ written by:
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
+- (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_confirm`
