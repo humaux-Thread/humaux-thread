@@ -37,6 +37,10 @@
   depth guarantee and creates two hierarchy stores (note D1 :43-45); `ltree`, materialised path or a closure table as
   the authority — a closure table may come later only as an accelerator (note D1 :44-45; §15 :249).
 
+**Amended (M18-1):** `project_ancestors` / `project_subtree` are SECURITY DEFINER doors in 0271/0254's shape (tenant assertion, caller workspace list, `declared_project_visible` per row), not `security_invoker`: 0136:505-509 keeps runtime roles off the registry.
+
+**Amended (M18-1, lead ruling on rv-357 P1-1):** `private.project_move` reads `coord.project_max_depth` from the transaction-local GUC `humaux.project_max_depth`, which only the gateway's tree adapter sets from config; role_gateway is the trusted holder of this bound (same tier as `p_workspaces` and the tenant GUC). A sole-setter sentinel and the env→GUC wiring test are tracked in the M18 P2 issue.
+
 ### D-B Moves run under a tenant topology guard (note D2)
 
 - `project_move(id, new_parent, expected_version)` takes
@@ -56,6 +60,8 @@
 - A channel becomes a project only with its own goal, lifecycle and archive. Cross-project goals are collections
   (task `GROUP`), never a second parent. M29's business relations (Project —SERVES→ BRAND, and the rest) are
   unchanged; no `PROJECT`-under-`PROJECT` triple is added.
+
+**Amended (M18-1):** M14-4 had built `project_channels` (0271); 0281 copies it into `project_facets` (CHANNEL), re-points `set_project_channel` / `read_project_rollup` with unchanged signatures, and drops it.
 
 ### D-D M14 D3 is superseded by this contract (note §9 M14 row)
 

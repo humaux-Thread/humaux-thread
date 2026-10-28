@@ -1,0 +1,41 @@
+# §46.1 / ADR-0101: preserve every channel assignment; runtime roles remain outside the registry.
+migration_id = "0281_project_tree"
+class = "EXPAND_CONTRACT"
+precheck = """
+SELECT to_regclass('private.project_channels') IS NOT NULL
+ AND to_regclass('private.project_facets') IS NULL
+ AND NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid='private.continuity_projects'::regclass
+   AND attname='parent_id' AND NOT attisdropped) AS precheck_ok
+"""
+postcheck = """
+SELECT to_regclass('private.project_channels') IS NULL
+ AND EXISTS (SELECT 1 FROM pg_class WHERE oid=to_regclass('private.project_facets')
+   AND relrowsecurity AND relforcerowsecurity AND relowner='role_migration_owner'::regrole)
+ AND (SELECT count(*)=1 FROM pg_constraint
+   WHERE conrelid='private.continuity_projects'::regclass
+     AND conname='continuity_projects_tree_parent_fkey' AND contype='f')
+ AND (SELECT count(*)=5 FROM pg_proc WHERE oid IN (
+   to_regprocedure('private.project_ancestors(uuid,uuid,uuid[])'),
+   to_regprocedure('private.project_subtree(uuid,uuid,uuid[])'),
+   to_regprocedure('private.project_move(uuid,uuid,uuid,bigint,uuid[],uuid,uuid)'),
+   to_regprocedure('private.set_project_channel(uuid,uuid,uuid[],text)'),
+   to_regprocedure('private.read_project_rollup(uuid,uuid,text,uuid[])'))
+   AND prosecdef AND proowner='role_migration_owner'::regrole
+   AND proconfig=ARRAY['search_path=pg_catalog, pg_temp']
+   AND (SELECT array_agg(grantee::regrole::text ORDER BY grantee::regrole::text)
+     FROM aclexplode(proacl) WHERE privilege_type='EXECUTE')
+       = ARRAY['role_gateway','role_migration_owner'])
+ AND (SELECT count(*)=2 FROM pg_proc WHERE oid IN (
+   to_regprocedure('private.project_ancestors(uuid,uuid,uuid[])'),
+   to_regprocedure('private.project_subtree(uuid,uuid,uuid[])')) AND provolatile='s')
+ AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['role_gateway','role_private_worker',
+   'role_consolidation_worker','role_public_worker','role_retrieval_worker',
+   'role_batch_issuer','role_maintenance','role_admin']) AS r(role_name)
+   WHERE has_table_privilege(role_name,'private.continuity_projects',
+     'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+   OR has_any_column_privilege(role_name,'private.continuity_projects','SELECT,INSERT,UPDATE,REFERENCES')
+   OR has_table_privilege(role_name,'private.project_facets',
+     'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')) AS postcheck_ok
+"""
+rollback_or_forward_fix = "Forward fix preserving registry and facet rows; never discard channel assignments or tree versions. 0271 is unchanged."
+backup_restore_requirement = "Standard pre-deploy snapshot. No production deployment is performed by M18-1."

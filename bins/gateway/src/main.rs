@@ -1,10 +1,10 @@
 //! `gateway::main` — `humaux-gateway` 进程入口（最小必要进程集见 §4.2；admin 探针契约见 §4.4）。
 //! Depends-on: crates=[axum, humaux-telemetry, tokio]; services=[HTTP(loopback)]; env=[CARGO_PKG_VERSION,
 //!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_GATEWAY_BIND_ADDR]; modules=[gateway::bootstrap,
-//!   gateway::admission, gateway::guard, gateway::status, humaux-telemetry, telemetry::metrics]
+//!   gateway::admission, gateway::auth_pages, gateway::guard, gateway::status, humaux-telemetry, telemetry::metrics]
 //! Called-by: [process(humaux-gateway)]
 //! Invariants: [/readyz flips to 503 and the accept loop keeps draining for DRAIN_ANNOUNCE_WINDOW before closing, so a k8s readinessProbe never sees ECONNREFUSED confused with a crash; the ops listener stays up through the drain window and closes after it; `--metrics-families` and `--version` read no configuration; `--readyz` / `--livez` read only HUMAUX_GATEWAY_BIND_ADDR; no argument = serve, any other argument = usage and exit 2; a configuration error exits 2, a runtime failure 1 (ADR-0066 D-N)]
-//! Spec: Baseline §4.2; §4.4; §67.2; ADR-0037; ADR-0061 D-B; ADR-0061 D-F; ADR-0065 D-C; ADR-0066 D-D; ADR-0066 D-N
+//! Spec: Baseline §4.2; §4.4; §67.2; ADR-0037; ADR-0061 D-B; ADR-0061 D-F; ADR-0065 D-C; ADR-0066 D-D; ADR-0066 D-N; ADR-0125
 //!
 //! ## Supervision surface (card 15, ADR-0037)
 //!
@@ -39,13 +39,19 @@
 //! to protect here, while a supervisor probing over the pod IP has no Host header the allowlist
 //! could be configured to accept. Anything that would report *what* this process is (version,
 //! fingerprint, tenant counts) belongs behind the boundary or in `humaux-admin q`, not here.
+//!
+//! ## Auth surface (M02-7, ADR-0125)
+//!
+//! When `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED` is true the `/auth/*` routes are merged onto the MCP router BEFORE
+//! admission wraps it, so they share the body bound, the concurrency cap and the queue; the pre-auth IP tier is
+//! their own `/auth/*` layer, not the MCP boundary's. With the switch off no `/auth/*` route exists.
 
 use std::future::IntoFuture;
 use std::{error::Error, net::SocketAddr, process::ExitCode, sync::Arc, time::Duration};
 
 use axum::{Router, http::StatusCode, routing::get};
 use humaux_gateway::{
-    admission,
+    admission, auth_pages,
     bootstrap::GatewayBootstrap,
     guard::GuardMetrics,
     status::{METRICS_ADDR_KEY, Readiness, Verdict, render_metrics},
@@ -175,9 +181,14 @@ async fn serve(bootstrap: GatewayBootstrap) -> Result<(), Box<dyn Error>> {
         },
     )?;
     let listener = tokio::net::TcpListener::bind(runtime.bind_addr()).await?;
+    // ADR-0125: the /auth/* pages, when the switch is on, join the MCP router so admission wraps both.
+    let mut mcp = runtime.adapter().router();
+    if let Some(config) = runtime.take_auth_pages() {
+        mcp = mcp.merge(auth_pages::router(runtime.guard(), config));
+    }
     // ADR-0065 D-C: admission wraps the MCP router only; /livez and /readyz are merged outside it.
     let app = admission::wrap(
-        runtime.adapter().router(),
+        mcp,
         supervision_routes(readiness.clone()),
         runtime.admission(),
     );

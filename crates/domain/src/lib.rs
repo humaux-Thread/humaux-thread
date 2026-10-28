@@ -68,6 +68,8 @@ pub mod memory;
 pub mod note;
 pub mod plan;
 pub mod policy;
+/// ADR-0101: hierarchy and facet closed sets (§78.2).
+pub mod project_tree;
 pub mod public;
 pub mod relation;
 pub mod selection;
