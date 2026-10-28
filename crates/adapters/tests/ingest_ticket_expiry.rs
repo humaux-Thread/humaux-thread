@@ -1,4 +1,4 @@
-//! G-M21-4: the M09 expiry door preserves §15.6's denominator and only expires due ISSUED tickets.
+//! `adapters::tests::ingest_ticket_expiry` — G-M21-4: preserve §15.6's denominator and expire only due ISSUED tickets.
 //! Depends-on: crates=[humaux-adapters, humaux-testkit, postgres, sqlx, tokio];
 //!   services=[PostgreSQL(owner) w=[control.tenants, control.private_reasoning_domains, private.evidence_objects,
 //!   private.events, private.ingest_tickets], PostgreSQL(role_maintenance)]; env=[HUMAUX_TEST_PG_DSN];
