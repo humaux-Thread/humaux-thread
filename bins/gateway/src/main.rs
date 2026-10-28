@@ -51,7 +51,7 @@ use std::{error::Error, net::SocketAddr, process::ExitCode, sync::Arc, time::Dur
 
 use axum::{Router, http::StatusCode, routing::get};
 use humaux_gateway::{
-    admission, auth_pages, billing_webhook,
+    auth_pages, billing_webhook,
     bootstrap::GatewayBootstrap,
     guard::GuardMetrics,
     oauth_http,
@@ -190,14 +190,13 @@ async fn serve(bootstrap: GatewayBootstrap) -> Result<(), Box<dyn Error>> {
             mcp = mcp.merge(oauth_http::router(runtime.guard(), config));
         }
     }
-    if let Some(config) = runtime.take_billing_webhook() {
-        mcp = mcp.merge(billing_webhook::router(runtime.guard(), config));
-    }
     // ADR-0065 D-C: admission wraps the MCP router only; /livez and /readyz are merged outside it.
-    let app = admission::wrap(
+    let app = billing_webhook::compose(
         mcp,
         supervision_routes(readiness.clone()),
         runtime.admission(),
+        runtime.guard(),
+        runtime.take_billing_webhook(),
     );
 
     // Both handlers are installed before `axum::serve` exists: `tokio::signal::ctrl_c()` only

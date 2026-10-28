@@ -1,6 +1,6 @@
 //! `gateway::billing_webhook` — verified inbox ingress only (§71.3); M04-11 owns processing.
 //! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, serde_json]; services=[]; env=[];
-//!   modules=[adapters::billing_repo, application::signed_token, domain::billing, domain::error, gateway::auth_pages, gateway::guard]
+//!   modules=[adapters::billing_repo, application::signed_token, domain::billing, domain::error, gateway::admission, gateway::auth_pages, gateway::guard]
 //! Called-by: [gateway::bootstrap, gateway::main, tests]
 //! Invariants: [admission buffers first; provider, cap and MAC precede parsing; no secret Debug; duplicates acknowledge]
 //! Spec: §71.3; §52; §78.1; M04 D7
@@ -20,7 +20,11 @@ use humaux_domain::{billing::BillingProviderId, error::ErrorCode};
 use serde_json::Value;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
-use crate::{auth_pages, guard::GatewayGuard};
+use crate::{
+    admission::{self, Admission},
+    auth_pages,
+    guard::GatewayGuard,
+};
 
 /// §71.3: one provider's unlabelled HMAC-SHA256-hex ingress contract; never exposes secret bytes through Debug.
 pub struct BillingWebhookConfig {
@@ -53,6 +57,30 @@ pub fn router(
         .route("/v1/billing/webhooks/{provider}", post(ingress))
         .layer(middleware::from_fn_with_state(Arc::clone(&state), gate))
         .with_state(state)
+}
+
+/// §71.3 / ADR-0065 D-C: production and tests share the webhook's admission boundary.
+pub fn compose(
+    routes: Router,
+    supervision: Router,
+    admission: Arc<Admission>,
+    guard: Arc<GatewayGuard>,
+    providers: Option<HashMap<String, BillingWebhookConfig>>,
+) -> Router {
+    let webhook = providers.map(|p| router(guard, p)).unwrap_or_default();
+    admission::wrap(routes.merge(webhook), supervision, admission)
+}
+
+// §71.3: jsonb cannot represent U+0000 in either object keys or string values.
+fn jsonb_storable(value: &Value) -> bool {
+    match value {
+        Value::String(s) => !s.contains('\0'),
+        Value::Array(values) => values.iter().all(jsonb_storable),
+        Value::Object(fields) => fields
+            .iter()
+            .all(|(k, v)| !k.contains('\0') && jsonb_storable(v)),
+        _ => true,
+    }
 }
 
 async fn gate(
@@ -89,6 +117,9 @@ async fn ingress(
     let Ok(payload) = serde_json::from_slice::<Value>(&body) else {
         return StatusCode::BAD_REQUEST;
     };
+    if !jsonb_storable(&payload) {
+        return StatusCode::BAD_REQUEST;
+    }
     let (Some(id), Some(kind)) = (
         payload
             .pointer(&config.event_id_pointer)
