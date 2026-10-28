@@ -2,7 +2,7 @@
 //!   core talks to a billing provider, so no provider type enters the core (module design M04 D7).
 //! Depends-on: crates=[async-trait, humaux-domain, time, uuid]; services=[]; env=[];
 //!   modules=[domain::billing, domain::error]
-//! Called-by: []
+//! Called-by: [billing-worker::creem, tests]
 //! Invariants: [the port and its DTOs hold no provider type and no HTTP type: the application crate takes no `http`
 //!   dependency, so headers cross as `&[(&str, &str)]`; every method fails with `ErrorCode` and nothing else (the
 //!   two-error-enum rule of §52 overrides the §71.2 sketch's `BillingError`); the trait stays object-safe, so a worker

@@ -12555,6 +12555,8 @@ executed by:
 - `adapters::tests::support::scratch_qdrant`
 - `admin::ops_status`
 - `admin::tests::probes`
+- `billing-worker::fake_creem`
+- `billing-worker::tests::fetch`
 - `consolidation-worker::main`
 - `consolidation-worker::tests::ops_listener`
 - `gateway::admission`
@@ -12593,6 +12595,7 @@ executed by:
 - `private-worker::route_providers`
 
 ### `HTTP(provider)`
+- `billing-worker::creem`
 - `infra-egress::http`
 - `infra-egress::raw`
 
@@ -16098,8 +16101,11 @@ modules naming it:
 why: existing billing vocabularies and closed error codes (§52, §78.2)
 
 modules naming it:
+- `billing-worker::creem`
+- `billing-worker::fake_creem`
 - `billing-worker::normalize`
 - `billing-worker::signature`
+- `billing-worker::tests::fetch`
 - `billing-worker::tests::normalization`
 - `billing-worker::tests::signature`
 - `tests`
@@ -16108,7 +16114,10 @@ modules naming it:
 why: webhook envelope parsing (§71.3)
 
 modules naming it:
+- `billing-worker::creem`
+- `billing-worker::fake_creem`
 - `billing-worker::normalize`
+- `billing-worker::tests::fetch`
 - `billing-worker::tests::normalization`
 - `tests`
 
@@ -16116,6 +16125,7 @@ modules naming it:
 why: constant-time webhook MAC verification (§71.3)
 
 modules naming it:
+- `billing-worker::fake_creem`
 - `billing-worker::signature`
 - `billing-worker::tests::signature`
 - `tests`
@@ -16124,6 +16134,7 @@ modules naming it:
 why: provider SHA256 MAC algorithm (§71.3)
 
 modules naming it:
+- `billing-worker::fake_creem`
 - `billing-worker::signature`
 - `billing-worker::tests::signature`
 - `tests`
@@ -16132,15 +16143,69 @@ modules naming it:
 why: provider signature hex decoding (§71.3)
 
 modules naming it:
+- `billing-worker::fake_creem`
 - `billing-worker::signature`
 - `billing-worker::tests::signature`
 - `tests`
+
+### humaux-billing-worker → `humaux-application` (normal)
+why: provider-neutral billing port (§71.2)
+
+modules naming it:
+- `billing-worker::creem`
+- `billing-worker::tests::fetch`
+- `tests`
+
+### humaux-billing-worker → `humaux-infra-egress` (normal)
+why: purpose-bound transport and credential sources (§71.2)
+
+modules naming it:
+- `billing-worker::creem`
+- `billing-worker::fake_creem`
+- `billing-worker::tests::fetch`
+- `tests`
+
+### humaux-billing-worker → `url` (normal)
+why: the existing canonical URL parser; no Layer 0 dependency or second client (§83.4)
+
+modules naming it:
+- `billing-worker::creem`
+
+### humaux-billing-worker → `async-trait` (normal)
+why: object-safe provider port implementation (§71.2)
+
+modules naming it:
+- `billing-worker::creem`
+- `billing-worker::fake_creem`
+- `tests`
+
+### humaux-billing-worker → `time` (normal)
+why: subscription RFC3339 periods (§71.2)
+
+modules naming it:
+- `billing-worker::creem`
 
 ### humaux-billing-worker → `uuid` (dev)
 why: runtime-only random HMAC test keys (§79.4)
 
 modules naming it:
+- `billing-worker::tests::fetch`
 - `billing-worker::tests::signature`
+- `tests`
+
+### humaux-billing-worker → `axum` (dev)
+why: test-only loopback Creem routes (§79.4)
+
+modules naming it:
+- `billing-worker::fake_creem`
+- `tests`
+
+### humaux-billing-worker → `tokio` (dev)
+why: test HTTP double lifecycle (§79.4)
+
+modules naming it:
+- `billing-worker::fake_creem`
+- `billing-worker::tests::fetch`
 - `tests`
 
 ### humaux-consolidation-worker → `humaux-adapters` (normal)
@@ -17804,6 +17869,13 @@ default run:
 - PostgreSQL
 - UDS
 - subprocess
+
+### `bins/billing-worker/tests/fetch.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
 
 ### `bins/billing-worker/tests/mode_gate.rs`
 db-bound (default run): no
