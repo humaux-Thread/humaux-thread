@@ -24,5 +24,5 @@ sha2 = "0.11"
 hex = "0.4"
 
 [dev-dependencies]
-# why: runtime-only random HMAC test keys (§79.4); used-by: [tests::signature]
+# why: runtime-only random HMAC test keys (§79.4); used-by: [billing-worker::tests::signature, tests]
 uuid = { version = "1.25.0", features = ["v4"] }
