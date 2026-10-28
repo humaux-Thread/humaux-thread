@@ -36,8 +36,6 @@ time = { version = "0.3", features = ["parsing"] }
 
 # why: maintenance-only owner doors and C2 projection (§71.3); used-by: [billing-worker::process]
 humaux-adapters = { path = "../../crates/adapters" }
-# why: caller transaction savepoints and scoped tenant validation (§71.3); used-by: [billing-worker::process]
-sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio", "uuid", "time", "json"] }
 # why: configured plan version and opaque tenant IDs (§78.2); used-by: [billing-worker::process]
 uuid = { version = "1.25.0" }
 

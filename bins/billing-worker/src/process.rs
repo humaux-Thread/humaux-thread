@@ -1,6 +1,6 @@
 //! `billing-worker::process` — one durable inbox task (§71.3, M04 D13h).
-//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json, sqlx, time, uuid];
-//!   services=[PostgreSQL(role_maintenance) r=[control.tenants]]; env=[];
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json, time, uuid];
+//!   services=[]; env=[];
 //!   modules=[adapters::billing_processor_repo, adapters::entitlement_repo, adapters::postgres, application::billing, billing-worker::normalize, domain::billing, domain::error, domain::ids]
 //! Called-by: [tests]
 //! Invariants: [ingress authenticates raw bytes; inbox identity checked; fetched state wins; C2 alone writes snapshots]
@@ -15,7 +15,6 @@ use humaux_domain::{
     ids::TenantId,
 };
 use serde_json::Value;
-use sqlx::Acquire;
 use std::collections::BTreeMap;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -40,11 +39,7 @@ pub async fn process_one(
         return Ok(false);
     };
     // §71.3: a failed apply/recompute must leave no partial effects, while retaining the outer claim lock.
-    // dep: PostgreSQL(role_maintenance) — savepoint retains the durable claim lock (§71.3).
-    let mut effect = txn
-        .begin()
-        .await
-        .map_err(|_| ErrorCode::DependencyUnavailable)?;
+    let mut effect = repo::savepoint(&mut txn).await?;
     let result = apply(&mut effect, provider, config, event, payload).await;
     let error = match result {
         Ok(()) => {
@@ -80,7 +75,7 @@ pub async fn process_one(
 }
 
 async fn apply(
-    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    txn: &mut repo::Txn<'_>,
     provider: &dyn BillingProvider,
     config: &ProcessorConfig,
     event: &VerifiedBillingEvent,
@@ -111,21 +106,7 @@ async fn apply(
         .filter(|id| !id.is_nil())
         .map(TenantId)
         .ok_or(ErrorCode::NotFound)?;
-    sqlx::query("SELECT set_config('humaux.tenant_id',$1,true)")
-        .bind(tenant.0.to_string())
-        .execute(&mut **txn)
-        .await
-        .map_err(|_| ErrorCode::DependencyUnavailable)?;
-    // dep: PostgreSQL(role_maintenance) — scoped existence check before any effect (§71.3).
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM control.tenants WHERE tenant_id=$1)")
-            .bind(tenant.0)
-            .fetch_one(&mut **txn)
-            .await
-            .map_err(|_| ErrorCode::DependencyUnavailable)?;
-    if !exists {
-        return Err(ErrorCode::NotFound);
-    }
+    repo::scope_tenant(txn, tenant).await?;
     let product = object["product"]
         .as_str()
         .or_else(|| object["product"]["id"].as_str())

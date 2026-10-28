@@ -1,5 +1,5 @@
 //! `adapters::billing_processor_repo` — maintenance-only 0300 doors (§71.3).
-//! Depends-on: crates=[humaux-application, humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(role_maintenance) x=[control.billing_inbox_claim, control.billing_inbox_settle, control.billing_apply_subscription]]; env=[];
+//! Depends-on: crates=[humaux-application, humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(role_maintenance) r=[control.tenants] x=[control.billing_inbox_claim, control.billing_inbox_settle, control.billing_apply_subscription]]; env=[];
 //!   modules=[adapters::postgres, application::billing, domain::billing, domain::error, domain::ids]
 //! Called-by: [billing-worker::process, tests]
 //! Invariants: [no gateway caller; unchanged 0300 doors; C2 alone writes snapshots]
@@ -12,10 +12,10 @@ use humaux_domain::{
     ids::TenantId,
 };
 use serde_json::Value;
-use sqlx::Row;
+use sqlx::{Acquire, Row};
 use uuid::Uuid;
-type Txn<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
-
+/// §71.3: caller-owned processor transaction; database access remains in this adapter.
+pub type Txn<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
 fn db_error(error: sqlx::Error) -> ErrorCode {
     match error {
         sqlx::Error::Database(ref db) => match db.code().as_deref() {
@@ -33,6 +33,27 @@ pub async fn begin_processor(pool: &MaintenanceDbPool) -> Result<Txn<'_>, ErrorC
     pool.pool().begin().await.map_err(db_error)
 }
 
+/// §71.3: failed effects roll back to this savepoint while the outer inbox claim stays locked.
+pub async fn savepoint<'a>(txn: &'a mut Txn<'_>) -> Result<Txn<'a>, ErrorCode> {
+    // dep: PostgreSQL(role_maintenance) — savepoint preserves the outer durable claim.
+    txn.begin().await.map_err(db_error)
+}
+/// §71.3: unknown tenants fail before any subscription or entitlement effect.
+pub async fn scope_tenant(txn: &mut Txn<'_>, tenant: TenantId) -> Result<(), ErrorCode> {
+    sqlx::query("SELECT set_config('humaux.tenant_id',$1,true)")
+        .bind(tenant.0.to_string())
+        .execute(&mut **txn)
+        .await
+        .map_err(|_| ErrorCode::DependencyUnavailable)?;
+    // dep: PostgreSQL(role_maintenance) — scoped existence check before any effect (§71.3).
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM control.tenants WHERE tenant_id=$1)")
+            .bind(tenant.0)
+            .fetch_one(&mut **txn)
+            .await
+            .map_err(|_| ErrorCode::DependencyUnavailable)?;
+    exists.then_some(()).ok_or(ErrorCode::NotFound)
+}
 /// Claims oldest RECEIVED rows without waiting for another processor's locks (0300, §71.3).
 pub async fn inbox_claim(
     txn: &mut Txn<'_>,
