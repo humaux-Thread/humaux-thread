@@ -52,24 +52,23 @@ fn exact_events_and_payload_money() {
         ),
         (
             "dispute.created",
-            json!({"transaction":transaction(),"amount":500,"currency":"USD"}),
+            json!({"transaction":transaction(),"amount":600,"currency":"USD"}),
             PaymentKind::Chargeback,
         ),
     ] {
         let actual = normalize(&event(kind, object), None).unwrap();
-        assert_eq!(
-            (
-                &*actual.id,
-                &*actual.event_type,
-                actual.created_at,
-                actual.kind
-            ),
-            ("evt_fixture", kind, 3000, EventKind::Payment(payment))
-        );
+        assert_eq!(actual.id, "evt_fixture");
+        assert_eq!(actual.event_type, kind);
+        assert_eq!(actual.created_at, 3000);
+        assert_eq!(actual.kind, EventKind::Payment(payment));
         assert_eq!(
             actual.money,
             Some(Money {
-                amount_cents: 500,
+                amount_cents: if payment == PaymentKind::Chargeback {
+                    600
+                } else {
+                    500
+                },
                 currency: Currency::Usd,
                 tax_amount: Some(50),
                 period_start: 1000,
