@@ -1,7 +1,7 @@
 //! `adapters::tests::freshness` — G-M13-4 Evidence-time wiring through the shared final materializer.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit,
-//!   serde_json, sqlx]; services=[PostgreSQL(owner) w=[private.evidence_objects, private.events,
-//!   private.memory_records], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN];
+//!   sqlx]; services=[PostgreSQL(owner) w=[private.evidence_objects, private.events,
+//!   private.memory_records] r=[private.memory_evidence], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::read_materialize, adapters::tests::support::operation_receipt_fixture,
 //!   domain::ids, humaux-testkit, projection::serving, retrieval::completeness]
 //! Called-by: [cargo-test]
