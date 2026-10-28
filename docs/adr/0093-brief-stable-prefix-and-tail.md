@@ -84,9 +84,13 @@ green record, and that record is added to this ADR.
 - §80.1 G-M14-3 (M14-3a pure): targeted run [40677507806](https://github.com/humaux-Thread/humaux-thread/actions/runs/40677507806), mutation `updated_at` derived from NEXT_ACTIONS in the prefix; compiled, then `g_m14_3_prefix_matches_exact_serialization` and `g_m14_3_tail_only_change_keeps_prefix_sha` failed their equality assertions. Green: M14-3a PR CI.
 - §80.1 G-M14-4 (M14-3a): targeted run [40678212907](https://github.com/humaux-Thread/humaux-thread/actions/runs/40678212907), mutation `truncated = false`; compiled, then `g_m14_4_omissions_and_mandatory_retention_are_exact`, `g_m14_4_overflow_has_exact_manifest_and_no_partial_output` and `g_m14_4_caps_share_and_validation` failed exact `(omitted, truncated)` assertions. Green: M14-3a PR CI.
 
-- §80.1 G-M14-4 (#443 availability): targeted run [40747360583](https://github.com/humaux-Thread/humaux-thread/actions/runs/40747360583), mutation bypasses failed-source rejection; `g_m14_4_availability_is_not_inferred_from_row_count` failed at `brief.rs:486:13`: actual `Ok` with Mandatory `NotApplicable`, expected `Err` with exactly `[Mandatory]`. Green: #443 PR CI.
+- §80.1 G-M14-4 (#443 availability): targeted run [40747360583](https://github.com/humaux-Thread/humaux-thread/actions/runs/40747360583), mutation bypasses failed-source rejection; `g_m14_4_availability_is_not_inferred_from_row_count` failed at `brief.rs:486:13`: actual `Ok` with Mandatory `NotApplicable`, expected `Err` with exactly `[Mandatory]`. Green: the repair PR for issue #443.
 
-- §80.1 G-M14-4 (#443 framing): targeted run [40748620460](https://github.com/humaux-Thread/humaux-thread/actions/runs/40748620460), mutation charges zero fixed framing; `g_m14_4_fixed_framing_is_charged_at_the_boundary` failed at `brief.rs:508:13`: cap zero returned `Ok`, expected `Err(required=898)`. Green: #443 PR CI.
+- §80.1 G-M14-4 (#443 framing): targeted run [40748620460](https://github.com/humaux-Thread/humaux-thread/actions/runs/40748620460), mutation charges zero fixed framing; `g_m14_4_fixed_framing_is_charged_at_the_boundary` failed at `brief.rs:508:13`: cap zero returned `Ok`, expected `Err(required=898)`. Green: the repair PR for issue #443.
+
+- §80.1 G-M14-4 (#443 Mandatory eviction, distinct from the truncation red): targeted run [40749379181](https://github.com/humaux-Thread/humaux-thread/actions/runs/40749379181), mutation removes Mandatory exclusion from the eviction loop; `g_m14_4_mandatory_cannot_be_evicted_to_meet_the_cap` failed at `brief.rs:537:9`: actual IDs `[a]`, expected exactly `[a,b]`. Green: the repair PR for issue #443.
+
+- §80.1 G-M14-3 (#443 tail framing): targeted run [40749939082](https://github.com/humaux-Thread/humaux-thread/actions/runs/40749939082), mutation releases framing budget when tail input becomes available; `g_m14_3_tail_only_change_keeps_prefix_sha` failed at `brief.rs:385:9`: the prefix changed from no pinned row to `[pinned]` after only tail availability changed. Green: the repair PR for issue #443.
 
 ## Open numbers and owner-gated items
 
