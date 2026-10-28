@@ -325,7 +325,7 @@ pub mod families {
     /// `stage_last_output_timestamp_seconds{stage}` (§39).
     pub const STAGE_LAST_OUTPUT_TIMESTAMP_SECONDS: Family = f(
         "stage_last_output_timestamp_seconds",
-        "Latest maintenance stage run with affected rows, including partial runs.",
+        "Latest maintenance stage output (affected rows or published reading), including partial runs.",
         Kind::Gauge,
         &["stage"],
     );
@@ -563,7 +563,7 @@ pub fn stage_started(stage: &'static str, now: f64) {
     STAGE_LAST_RUN_TIMESTAMP_SECONDS.set(stage, now); // labels: stage
 }
 
-/// §39: success requires a complete run without errors; output requires affected rows.
+/// §39: success requires a complete run without errors; output requires the stage's declared product.
 /// Partial committed output advances output even if another call failed or the budget expired.
 pub fn stage_finished(stage: &'static str, now: f64, success: bool, output: bool) {
     if success {
