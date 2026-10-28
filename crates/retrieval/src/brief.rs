@@ -70,11 +70,23 @@ pub struct BriefItem {
     /// §25.4: authority labels accompany rules where applicable.
     pub authority: Option<String>,
 }
-/// §25.3.1: indices follow [`SectionKind`]; empty input names the absent object.
-#[derive(Debug, Clone, Default)]
+/// §57.1: only an undelivered owner may be not applicable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SectionAvailability {
+    /// §25.3.1: a successful read may return zero rows.
+    Available,
+    /// §57.1: the owner has not delivered this source yet.
+    NotDelivered,
+    /// §25.4: a selected source failed; completeness cannot be established.
+    Failed,
+}
+/// §25.3.1: indices follow [`SectionKind`]; availability is required for every source.
+#[derive(Debug, Clone)]
 pub struct BriefInput {
     /// §25.3: all thirteen sections use the same snapshot and fixed ordering.
     pub sections: [Vec<BriefItem>; 13],
+    /// §57.1: row count cannot establish whether a source was read successfully.
+    pub availability: [SectionAvailability; 13],
 }
 /// §57.1: absence remains distinct from an available section trimmed to zero.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -122,37 +134,54 @@ impl Brief {
         serde_json::to_vec(&self.prefix).expect("brief prefix is infallibly serializable")
     }
 }
-/// §25.5: overflow has the full Mandatory manifest and no partial brief.
+/// §25.4–§25.5: unavailable required input or overflow returns no partial brief.
 #[derive(Debug, PartialEq, Eq)]
-pub struct BriefOverflow {
+pub struct BriefFailure {
     /// §25.4: every Mandatory identity remains visible without returning rows.
     pub manifest: Vec<String>,
     /// §25.5: the rejected validated budget is preserved.
     pub budget: BriefBudget,
     /// §25.5: widened accounting cannot wrap at the total cap's integer bound.
     pub required: u64,
+    /// §25.4: failed sources and unavailable Mandatory input in fixed section order.
+    pub failed_sections: Vec<SectionKind>,
 }
 /// §25.3: section order and ascending ids define priority; remaining fields break ties.
 ///
 /// # Errors
-/// §25.5: Mandatory overflow returns only its manifest, never partial output.
-pub fn assemble(mut input: BriefInput, budget: BriefBudget) -> Result<Brief, BriefOverflow> {
+/// §25.4–§25.5: failed sources or Mandatory overflow return no partial output.
+pub fn assemble(mut input: BriefInput, budget: BriefBudget) -> Result<Brief, BriefFailure> {
     for rows in &mut input.sections {
         rows.sort();
     }
-    let required = tokens(&input.sections[MANDATORY]);
+    let failed_sections = SECTIONS
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| {
+            let state = input.availability[*index];
+            state == SectionAvailability::Failed
+                || (state != SectionAvailability::Available
+                    && (*index == MANDATORY || !input.sections[*index].is_empty()))
+        })
+        .map(|(_, kind)| *kind)
+        .collect::<Vec<_>>();
+    let (prefix_overhead, tail_overhead) = fixed_overhead(input.availability);
+    let required = prefix_overhead + tail_overhead + tokens(&input.sections[MANDATORY]);
     let cap = u64::from(budget.cap_tokens());
-    if required > cap {
-        return Err(BriefOverflow {
+    if required > cap || !failed_sections.is_empty() {
+        return Err(BriefFailure {
             manifest: input.sections[MANDATORY]
                 .iter()
                 .map(|row| row.memory_id.clone())
                 .collect(),
             budget,
             required,
+            failed_sections,
         });
     }
-    let available = input.sections.each_ref().map(|rows| !rows.is_empty());
+    let available = input
+        .availability
+        .map(|state| state == SectionAvailability::Available);
     let mut omitted = [0; 13];
     for (index, limit) in [
         (SectionKind::Prevention as usize, budget.prevention_cap()),
@@ -165,7 +194,10 @@ pub fn assemble(mut input: BriefInput, budget: BriefBudget) -> Result<Brief, Bri
     let prefix_used = fit(
         &mut input.sections,
         0..PREFIX_LEN,
-        budget.optional_prefix_tokens().min(cap - required),
+        budget
+            .optional_prefix_tokens()
+            .saturating_sub(prefix_overhead)
+            .min(cap - required),
         &mut omitted,
     );
     fit(
@@ -202,6 +234,35 @@ pub fn assemble(mut input: BriefInput, budget: BriefBudget) -> Result<Brief, Bri
     };
     brief.prefix_sha256 = Sha256::digest(brief.prefix_canonical_bytes()).into();
     Ok(brief)
+}
+fn fixed_overhead(availability: [SectionAvailability; 13]) -> (u64, u64) {
+    // §25.5: one UTF-8 byte per token conservatively bounds fixed JSON framing;
+    // item estimates include their own serialization and separators, not this framing.
+    let mut sections = SECTIONS
+        .into_iter()
+        .enumerate()
+        .map(|(index, kind)| BriefSection {
+            kind,
+            content: if availability[index] == SectionAvailability::Available {
+                SectionContent::Items(Vec::new())
+            } else {
+                SectionContent::NotApplicable {
+                    missing: missing(kind),
+                }
+            },
+        })
+        .collect::<Vec<_>>();
+    let tail = sections.split_off(PREFIX_LEN);
+    let prefix = BriefPrefix {
+        protocol_version: PROTOCOL_VERSION,
+        sections,
+    };
+    (
+        serde_json::to_vec(&prefix)
+            .expect("serializable prefix")
+            .len() as u64,
+        serde_json::to_vec(&tail).expect("serializable tail").len() as u64,
+    )
 }
 fn tokens(rows: &[BriefItem]) -> u64 {
     rows.iter().map(|row| u64::from(row.est_tokens)).sum()
@@ -261,21 +322,32 @@ mod tests {
     fn budget(cap: u32, share: u8, prevention: usize, reuse: usize) -> BriefBudget {
         BriefBudget::new(cap, share, prevention, reuse).expect("valid budget")
     }
+    fn empty() -> BriefInput {
+        BriefInput {
+            sections: std::array::from_fn(|_| vec![]),
+            availability: [SectionAvailability::Available; 13],
+        }
+    }
+    fn overhead() -> u32 {
+        let (prefix, tail) = fixed_overhead(empty().availability);
+        u32::try_from(prefix + tail).unwrap()
+    }
     fn populated() -> BriefInput {
         BriefInput {
             sections: std::array::from_fn(|_| vec![item("b", 2), item("a", 2)]),
+            availability: [SectionAvailability::Available; 13],
         }
     }
     #[test]
     fn g_m14_3_same_and_permuted_inputs_have_identical_bytes_and_sha() {
         let input = populated();
-        let first = assemble(input.clone(), budget(200, 70, 3, 3)).unwrap();
-        let same = assemble(input.clone(), budget(200, 70, 3, 3)).unwrap();
+        let first = assemble(input.clone(), budget(2000, 70, 3, 3)).unwrap();
+        let same = assemble(input.clone(), budget(2000, 70, 3, 3)).unwrap();
         let mut permuted = input;
         for rows in &mut permuted.sections {
             rows.reverse();
         }
-        let permuted = assemble(permuted, budget(200, 70, 3, 3)).unwrap();
+        let permuted = assemble(permuted, budget(2000, 70, 3, 3)).unwrap();
         for other in [same, permuted] {
             assert_eq!(
                 first.prefix_canonical_bytes(),
@@ -293,9 +365,9 @@ mod tests {
     #[test]
     fn g_m14_3_tail_only_change_keeps_prefix_sha() {
         let mut input = populated();
-        let first = assemble(input.clone(), budget(200, 70, 3, 3)).unwrap();
+        let first = assemble(input.clone(), budget(2000, 70, 3, 3)).unwrap();
         input.sections[SectionKind::NextActions as usize][0].body = "changed".into();
-        let second = assemble(input, budget(200, 70, 3, 3)).unwrap();
+        let second = assemble(input, budget(2000, 70, 3, 3)).unwrap();
         assert_eq!(
             first.prefix_canonical_bytes(),
             second.prefix_canonical_bytes()
@@ -305,8 +377,11 @@ mod tests {
     }
     #[test]
     fn g_m14_3_prefix_matches_exact_serialization() {
-        let brief = assemble(BriefInput::default(), budget(0, 0, 0, 0)).unwrap();
-        let expected = r#"{"protocol_version":1,"sections":[{"kind":"UserPinned","content":{"NotApplicable":{"missing":"user pinned rules"}}},{"kind":"Mandatory","content":{"NotApplicable":{"missing":"Mandatory rules"}}},{"kind":"Goal","content":{"NotApplicable":{"missing":"GOAL facet"}}},{"kind":"Constraints","content":{"NotApplicable":{"missing":"CONSTRAINTS facet"}}},{"kind":"Rejections","content":{"NotApplicable":{"missing":"REJECTIONS facet"}}},{"kind":"Prevention","content":{"NotApplicable":{"missing":"memory_trigger_clauses"}}}]}"#;
+        let mut input = empty();
+        input.availability = [SectionAvailability::NotDelivered; 13];
+        input.availability[MANDATORY] = SectionAvailability::Available;
+        let brief = assemble(input, budget(2000, 0, 0, 0)).unwrap();
+        let expected = r#"{"protocol_version":1,"sections":[{"kind":"UserPinned","content":{"NotApplicable":{"missing":"user pinned rules"}}},{"kind":"Mandatory","content":{"Items":[]}},{"kind":"Goal","content":{"NotApplicable":{"missing":"GOAL facet"}}},{"kind":"Constraints","content":{"NotApplicable":{"missing":"CONSTRAINTS facet"}}},{"kind":"Rejections","content":{"NotApplicable":{"missing":"REJECTIONS facet"}}},{"kind":"Prevention","content":{"NotApplicable":{"missing":"memory_trigger_clauses"}}}]}"#;
         assert_eq!(brief.prefix_canonical_bytes(), expected.as_bytes());
         assert_eq!(
             brief.prefix_sha256,
@@ -328,10 +403,10 @@ mod tests {
     }
     #[test]
     fn g_m14_4_omissions_and_mandatory_retention_are_exact() {
-        let brief = assemble(populated(), budget(13, 30, 1, 1)).unwrap();
+        let brief = assemble(populated(), budget(overhead() + 13, 100, 1, 1)).unwrap();
         assert_eq!(
             (brief.omitted, brief.truncated),
-            ([1, 0, 2, 2, 2, 2, 0, 1, 2, 2, 2, 2, 2], true)
+            ([0, 0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2], true)
         );
         assert_eq!(
             brief.prefix.sections[MANDATORY].content,
@@ -339,29 +414,24 @@ mod tests {
         );
         assert_eq!(
             brief.prefix.sections[0].content,
-            SectionContent::Items(vec![item("a", 2)])
-        );
-        assert_eq!(
-            brief.tail[0].content,
             SectionContent::Items(vec![item("a", 2), item("b", 2)])
         );
-        assert_eq!(
-            brief.tail[1].content,
-            SectionContent::Items(vec![item("a", 2)])
-        );
+        assert_eq!(brief.tail[0].content, SectionContent::Items(vec![]));
+        assert_eq!(brief.tail[1].content, SectionContent::Items(vec![]));
     }
     #[test]
     fn g_m14_4_overflow_has_exact_manifest_and_no_partial_output() {
-        let limits = budget(3, 0, 0, 0);
+        let limits = budget(overhead() + 3, 0, 0, 0);
         assert_eq!(
             assemble(populated(), limits),
-            Err(BriefOverflow {
+            Err(BriefFailure {
                 manifest: vec!["a".into(), "b".into()],
                 budget: limits,
-                required: 4,
+                required: u64::from(overhead()) + 4,
+                failed_sections: vec![],
             })
         );
-        let brief = assemble(populated(), budget(4, 0, 0, 0)).unwrap();
+        let brief = assemble(populated(), budget(overhead() + 4, 0, 0, 0)).unwrap();
         assert_eq!(
             (brief.omitted, brief.truncated),
             ([2, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2], true)
@@ -372,6 +442,83 @@ mod tests {
         );
     }
     #[test]
+    fn g_m14_4_availability_is_not_inferred_from_row_count() {
+        let limits = budget(2000, 100, 0, 0);
+        let brief = assemble(empty(), limits).unwrap();
+        let expected = SECTIONS.map(|kind| BriefSection {
+            kind,
+            content: SectionContent::Items(vec![]),
+        });
+        assert_eq!(brief.prefix.sections, expected[..PREFIX_LEN]);
+        assert_eq!(brief.tail, expected[PREFIX_LEN..]);
+        for state in [
+            SectionAvailability::Failed,
+            SectionAvailability::NotDelivered,
+        ] {
+            let mut input = empty();
+            input.availability[MANDATORY] = state;
+            let (prefix, tail) = fixed_overhead(input.availability);
+            assert_eq!(
+                assemble(input, limits),
+                Err(BriefFailure {
+                    manifest: vec![],
+                    budget: limits,
+                    required: prefix + tail,
+                    failed_sections: vec![SectionKind::Mandatory],
+                })
+            );
+        }
+        let mut input = empty();
+        input.availability = [SectionAvailability::Failed; 13];
+        assert_eq!(
+            assemble(input, limits).unwrap_err().failed_sections,
+            SECTIONS
+        );
+    }
+    #[test]
+    fn g_m14_4_fixed_framing_is_charged_at_the_boundary() {
+        assert_eq!(fixed_overhead(empty().availability), (299, 314));
+        for cap in [0, 612] {
+            let limits = budget(cap, 100, 0, 0);
+            assert_eq!(
+                assemble(empty(), limits),
+                Err(BriefFailure {
+                    manifest: vec![],
+                    budget: limits,
+                    required: 613,
+                    failed_sections: vec![],
+                })
+            );
+        }
+        let brief = assemble(empty(), budget(613, 100, 0, 0)).unwrap();
+        assert_eq!(brief.prefix_canonical_bytes().len(), 299);
+        assert_eq!(serde_json::to_vec(&brief.tail).unwrap().len(), 314);
+        assert_eq!((brief.omitted, brief.truncated), ([0; 13], false));
+        let mut input = empty();
+        input.sections[0] = vec![item("optional", 1)];
+        let brief = assemble(input, budget(613, 100, 0, 0)).unwrap();
+        assert_eq!(brief.omitted, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            brief.prefix.sections[0].content,
+            SectionContent::Items(vec![])
+        );
+    }
+    #[test]
+    fn g_m14_4_mandatory_cannot_be_evicted_to_meet_the_cap() {
+        let mut input = empty();
+        input.sections[MANDATORY] = vec![item("b", 2), item("a", 2)];
+        input.sections[0] = vec![item("optional", 6)];
+        let brief = assemble(input, budget(621, 100, 0, 0)).unwrap();
+        assert_eq!(
+            brief.prefix.sections[MANDATORY].content,
+            SectionContent::Items(vec![item("a", 2), item("b", 2)])
+        );
+        assert_eq!(
+            (brief.omitted, brief.truncated),
+            ([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], true)
+        );
+    }
+    #[test]
     fn g_m14_4_caps_share_and_validation() {
         assert_eq!(BriefBudget::new(7, 101, 0, 0), Err(ErrorCode::InvalidInput));
         assert_eq!(budget(7, 0, 0, 0).optional_prefix_tokens(), 0);
@@ -379,7 +526,7 @@ mod tests {
             budget(u32::MAX, 100, 0, 0).optional_prefix_tokens(),
             u64::from(u32::MAX)
         );
-        let brief = assemble(populated(), budget(200, 100, 1, 1)).unwrap();
+        let brief = assemble(populated(), budget(2000, 100, 1, 1)).unwrap();
         assert_eq!(
             (brief.omitted, brief.truncated),
             ([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1], true)
