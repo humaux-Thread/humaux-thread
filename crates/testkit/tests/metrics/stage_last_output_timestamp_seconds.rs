@@ -1,9 +1,9 @@
 // witness: family=stage_last_output_timestamp_seconds labels=stage
 //! `testkit::tests::metrics::stage_last_output_timestamp_seconds` — §39 timestamp witness.
-//! Depends-on: crates=[humaux-adapters, humaux-telemetry]; services=[]; env=[];
+//! Depends-on: crates=[humaux-telemetry]; services=[]; env=[];
 //!   modules=[adapters::maintenance_repo, telemetry::metrics]
-//! Called-by: []
-//! Invariants: [exact closed stage set and values; empty success, failure and partial output differ]
+//! Called-by: [maintenance::tests::stage_liveness]
+//! Invariants: [exact closed stage set and values; only committed affected rows advance last_output]
 //! Spec: Baseline §39; §41.2; §80.2; ADR-0123
 
 use humaux_adapters::maintenance_repo::MaintenanceTask;
