@@ -8,6 +8,7 @@
 /// §71.2: startup configuration cannot represent live billing.
 pub struct BillingMode {
     name: &'static str,
+    test_host: Option<String>,
 }
 
 impl BillingMode {
@@ -30,10 +31,18 @@ impl BillingMode {
             Some("test") => "test",
             _ => return Err("HUMAUX_BILLING_PROVIDER_MODE must be fake or test".into()),
         };
-        if name == "test" && test_base_url != Some("https://test-api.creem.io") {
-            return Err("HUMAUX_BILLING_CREEM_TEST_BASE_URL must use the test API origin".into());
-        }
-        Ok(Self { name })
+        let test_host = if name == "test" {
+            let origin = test_base_url.unwrap_or("").trim_end_matches('/');
+            if origin != "https://test-api.creem.io" {
+                return Err(
+                    "HUMAUX_BILLING_CREEM_TEST_BASE_URL must use the test API origin".into(),
+                );
+            }
+            Some(origin.strip_prefix("https://").unwrap().to_owned())
+        } else {
+            None
+        };
+        Ok(Self { name, test_host })
     }
 
     /// §71.2: startup output exposes the mode name alone.
@@ -44,19 +53,26 @@ impl BillingMode {
     /// §71.2: fake destinations have no default and must be loopback HTTP doubles.
     pub fn allowed_hosts(&self, fake_base_url: Option<&str>) -> Result<Vec<String>, String> {
         if self.name == "test" {
-            return Ok(vec!["test-api.creem.io".into()]);
+            return Ok(vec![self.test_host.clone().unwrap()]);
         }
-        // §71.2: fake doubles use explicit IPv4 socket addresses, never DNS or userinfo.
+        // §71.2: HTTP doubles use only the transport's exact loopback hosts.
         let authority = fake_base_url
             .and_then(|s| s.strip_prefix("http://"))
             .and_then(|s| s.split('/').next())
             .unwrap_or("");
-        let addr = authority
-            .parse::<std::net::SocketAddrV4>()
-            .map_err(|_| "fake billing requires an explicit loopback base URL")?;
-        if !addr.ip().is_loopback() {
-            return Err("fake billing requires an explicit loopback base URL".into());
-        }
-        Ok(vec![addr.ip().to_string()])
+        let host = if let Some(rest) = authority.strip_prefix("[::1]") {
+            rest.strip_prefix(':')
+                .and_then(|port| port.parse::<u16>().ok())
+                .map(|_| "[::1]")
+        } else {
+            authority.rsplit_once(':').and_then(|(host, port)| {
+                port.parse::<u16>()
+                    .ok()
+                    .filter(|_| matches!(host, "127.0.0.1" | "localhost"))
+                    .map(|_| host)
+            })
+        };
+        host.map(|h| vec![h.to_owned()])
+            .ok_or_else(|| "fake billing requires an explicit loopback base URL".into())
     }
 }
