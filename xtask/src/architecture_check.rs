@@ -1,15 +1,15 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.memory_projects, private.memory_projects_live, private.nodes, private.subjects, public.entities, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.curation_candidate_targets, private.curation_candidates] w=[coord.tasks, private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
+//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.curation_candidate_targets, private.curation_candidates, private.memory_projects, private.memory_projects_live, private.nodes, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.subjects, public.entities] w=[coord.tasks, private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.i4_authority_scan, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main, xtask::vocab_check]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails; G-M23-3 / G-M23-3b read docs/architecture/db_objects.md and backup_catalog.toml and fail, never not_applicable, on a missing file or an inventory without foreign-key blocks; G-M23-3b also fails unless every D5_RESTORE_DEPENDENCIES entry is a KNOWLEDGE catalog row (M23 D5)]
-//! Spec: Baseline §53.3; §55.1; §59.1; §78.3; §78; §78.4; §52.4; §22.1; §23.1④; ADR-0110 D-B; ADR-0110 D-C; ADR-0121 D-A
+//! Spec: Baseline §53.3; §55.1; §59.1; §65; §78.3; §78; §78.4; §52.4; §22.1; §23.1④; ADR-0110 D-B; ADR-0110 D-C; ADR-0121 D-A; ADR-0123 D3
 //! dep-map: allow table-undeclared — the G-M23-3 / G-M23-3b fixtures name schema objects in strings
 //!
 //! xtask `architecture-check` — the CI gate family for §53.3 (Outcome fallback rule +
 //! positive sentinels), §55.1 / §48.0① / §59.1 (unique construction points), §78.3
 //! (Workspace Dependency Rule), the §78 Architecture Boundary Lints, §52.4 G52-1, and the open-core
 //! edition gates G-M01-1 / G-M01-2 (ADR-0073 D-B, ADR-0074), the crate boundary table G-M01-3 (M01 D5), the raw-pool enabler pin G-M01-9 and call-site gate G-M01-10, G-M20-23b/c no-bridge checks, the real-path
-//! fault gate G-M01-4 (M01 D4, ADR-0077), the §78.4 allow-count ratchet G-M01-8 (M01 D6), the one-`Totals`-constructor gate G-M13-3 (ADR-0110 D-C), the dormant-highwater gate G-M13-2 (ADR-0110 D-B), the G-M26-1 registry gate, which reads `DestructiveOp::wire()` in both directions (ADR-0092 C-M19-1),
+//! fault gate G-M01-4 (M01 D4, ADR-0077), the §78.4 allow-count ratchet G-M01-8 (M01 D6), the one-`Totals`-constructor gate G-M13-3 (ADR-0110 D-C), the dormant-highwater gate G-M13-2 (ADR-0110 D-B), the G-M26-1 registry gate, which reads `DestructiveOp::wire()` in both directions (ADR-0092 C-M19-1), the G-M21-3 report-only gate over the I4 authority scan (ADR-0123 D3),
 //! and the backup-catalog gates G-M23-3 (every table has exactly one KNOWLEDGE/EXCLUDED row) and G-M23-3b (the KNOWLEDGE set is closed under foreign keys,
 //! and the M23 D5 restore dependencies — revocation fences, their outbox, opt-outs, trigger parents — are KNOWLEDGE rows;
 //! C-M23-0, ADR-0121 D-A and its M23-2 fix 1 amendment, #332).
@@ -11621,6 +11621,116 @@ fn candidate_isolation_hits(path: &str, source: &str, violations: &mut Vec<Strin
     }
 }
 
+/// G-M21-3 (ADR-0123 D3, §65 "只报数，不 UPDATE"): the Rust bodies on the report-only I4 scan's path, each located by its
+/// `fn` signature: the adapter statement and the daemon's runner. `ops.i4_authority_scan()`'s definer bodies are read from
+/// `migrations/*.sql` ([`M21_3_DEFINER_HEADS`]).
+const M21_3_RUST_BODIES: [(&str, &str); 2] = [
+    (
+        "crates/adapters/src/maintenance_repo.rs",
+        "fn scan_authority_i4(",
+    ),
+    ("bins/maintenance/src/serve.rs", "fn authority_i4("),
+];
+
+/// Both spellings that define the scan's definer, as [`t07_sql_normalised`] writes them; `OR REPLACE` in a later
+/// migration is a second body and is judged like the first.
+const M21_3_DEFINER_HEADS: [&str; 2] = [
+    "create function ops.i4_authority_scan(",
+    "create or replace function ops.i4_authority_scan(",
+];
+
+/// The write verbs G-M21-3 bans against `private.*`, spelled in two pieces so this file never contains the statement it
+/// forbids. A scan that reads authority rows has no business changing, removing or adding one.
+fn m21_3_write_needles() -> [String; 4] {
+    ["update ", "delete from ", "truncate ", "insert into "]
+        .map(|verb| verb.to_owned() + "private.")
+}
+
+/// The `$$ … $$` bodies of every [`M21_3_DEFINER_HEADS`] statement in one [`t07_sql_normalised`] migration text. A
+/// definer whose body is not `$$`-quoted cannot be read here, which is an error rather than a pass.
+///
+/// ponytail: `$$` only; a tagged quote (`$body$`) is reported as unreadable, upgrade to dollar-tag parsing if one is ever
+/// written for this function.
+fn m21_3_definer_bodies(text: &str) -> Result<Vec<&str>, String> {
+    let mut bodies = Vec::new();
+    for head in M21_3_DEFINER_HEADS {
+        for (at, _) in text.match_indices(head) {
+            let after = at + head.len();
+            let open = text[after..].find("$$").map(|i| after + i + 2);
+            let close = open.and_then(|o| text[o..].find("$$").map(|i| o + i));
+            let (Some(open), Some(close)) = (open, close) else {
+                return Err(format!("`{head}` has no `$$`-quoted body to read"));
+            };
+            bodies.push(&text[open..close]);
+        }
+    }
+    Ok(bodies)
+}
+
+/// G-M21-3 (ADR-0123 D3, §65, §59.1 I4): the report-only I4 scan changes no row it reads. The [`M21_3_RUST_BODIES`]
+/// functions and every `ops.i4_authority_scan()` definer body hold [`m21_3_write_needles`] exactly `== 0` times; a
+/// function or definer that cannot be located is red, since a renamed scan must not read as a clean one.
+/// `not_applicable` only when none of the scan's files and no definer exists yet, naming them all (§57.1 第2条).
+///
+/// ponytail: matches the spelled-out statement text, so a write assembled from separate string pieces or issued through
+/// another function evades it; upgrade to statement parsing, or to a database-level check that the scan's role cannot
+/// write, if that ever shows up.
+fn m21_3_i4_scan_report_only(root: &Path) -> Verdict {
+    const GATE: &str = "ADR-0123 D3 / G-M21-3";
+    let mut bodies: Vec<(String, String)> = Vec::new();
+    let mut problems = Vec::new();
+    let mut missing = Vec::new();
+    for (file, signature) in M21_3_RUST_BODIES {
+        let Ok(source) = fs::read_to_string(root.join(file)) else {
+            missing.push(file.to_owned());
+            continue;
+        };
+        match r3_function_body(&code_without_comments(&source), signature) {
+            Some(body) => bodies.push((format!("{file} `{signature}`"), t07_normalised(body))),
+            None => problems.push(format!("{GATE}: no `{signature}` in {file}")),
+        }
+    }
+    let mut definers = 0;
+    for (path, source) in read_files(&walk_files(&root.join("migrations"), &["sql"])) {
+        let disp = display(root, &path);
+        match m21_3_definer_bodies(&t07_sql_normalised(&source)) {
+            Ok(found) => {
+                definers += found.len();
+                bodies.extend(
+                    found
+                        .into_iter()
+                        .map(|body| (format!("{disp} ops.i4_authority_scan()"), body.to_owned())),
+                );
+            }
+            Err(error) => problems.push(format!("{GATE}: {disp}: {error}")),
+        }
+    }
+    if definers == 0 {
+        missing.push("ops.i4_authority_scan() in migrations/*.sql".to_owned());
+    }
+    if missing.len() == M21_3_RUST_BODIES.len() + 1 && problems.is_empty() {
+        return Verdict::NotApplicable(format!("missing object: {}", missing.join(", ")));
+    }
+    problems.extend(
+        missing
+            .iter()
+            .map(|object| format!("{GATE}: missing object: {object}")),
+    );
+    let needles = m21_3_write_needles();
+    for (what, body) in &bodies {
+        let hits: usize = needles
+            .iter()
+            .map(|n| body.matches(n.as_str()).count())
+            .sum();
+        if hits != 0 {
+            problems.push(format!(
+                "{GATE}: {what} holds {hits} write(s) against private.*; the scan is report-only (expected 0)"
+            ));
+        }
+    }
+    verdict_from_violations(problems)
+}
+
 // ============================================================================
 // M23-2 — G-M23-3 (backup catalog complete) and G-M23-3b (catalog closed under foreign keys)
 // ============================================================================
@@ -12273,6 +12383,10 @@ pub fn run(_args: &[String]) -> i32 {
         (
             "ADR-0084 D-B / T-CI-4 (the rerank image's rerank/ORT ADD pins equal .github/actions/rerank-parity/action.yml; a missing file, stage or pin is not_applicable naming it)",
             rerank_pin_parity(&root),
+        ),
+        (
+            "ADR-0123 D3 / G-M21-3 (the report-only I4 scan holds no UPDATE, DELETE, TRUNCATE or INSERT against private.*: its adapter statement, the daemon's runner and every ops.i4_authority_scan() definer body, == 0)",
+            m21_3_i4_scan_report_only(&root),
         ),
         (
             "G-M23-3 (backup catalog complete)",
@@ -19493,6 +19607,212 @@ async fn serving_version_in_txn() {}
             "impl MemoryAttribution for Noop {}\n",
         );
         red(m29_5a_attribution_site(&tmp), "found 2");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // -- ADR-0123 D3 / G-M21-3 (card M21-2) ---------------------------------------------------------------------
+
+    const M21_3_MIGRATION: &str = "migrations/0287_repair_findings_i4_scan.sql";
+
+    /// The adapter fn as a fixture; `extra` is spliced into its statement text.
+    fn m21_3_adapter(extra: &str) -> String {
+        format!(
+            "// UPDATE private.memory_records is prose here\npub async fn scan_authority_i4(pool: &P) -> R {{\n    let _ = \"INSERT INTO t (job) VALUES ($1) {extra}\";\n}}\n"
+        )
+    }
+
+    /// The daemon runner as a fixture; `extra` is spliced into its statement text.
+    fn m21_3_runner(extra: &str) -> String {
+        format!(
+            "async fn authority_i4(pool: &P) {{\n    let _ = \"SELECT 1 {extra}\";\n}}\nfn other() {{ let _ = \"DELETE FROM private.memory_records\"; }}\n"
+        )
+    }
+
+    /// One migration defining the definer, with `extra` spliced into its body.
+    fn m21_3_definer(head: &str, extra: &str) -> String {
+        format!(
+            "-- UPDATE private.memory_records is prose here\n{head} ops.i4_authority_scan()\nRETURNS bigint LANGUAGE sql AS $$\n  SELECT count(*) FROM private.memory_records {extra}\n$$;\n"
+        )
+    }
+
+    fn m21_3_seed(tmp: &Path, adapter: &str, runner: &str, definer: &str) {
+        fs::remove_dir_all(tmp).ok();
+        for (rel, body) in [
+            (M21_3_RUST_BODIES[0].0, adapter),
+            (M21_3_RUST_BODIES[1].0, runner),
+            (M21_3_MIGRATION, definer),
+        ] {
+            m07_write(tmp, rel, body);
+        }
+    }
+
+    fn m21_3_red(root: &Path, needle: &str) {
+        match m21_3_i4_scan_report_only(root) {
+            Verdict::Fail(lines) => assert!(lines.iter().any(|l| l.contains(needle)), "{lines:?}"),
+            other => panic!("expected Fail naming {needle}, got {other:?}"),
+        }
+    }
+
+    /// The tree as M21-2 leaves it.
+    #[test]
+    fn g_m21_3_real_repo_passes() {
+        assert_eq!(m21_3_i4_scan_report_only(&real_root()), Verdict::Pass);
+    }
+
+    /// `run()` must list the gate exactly once (a deleted call tuple leaves a gate that never runs).
+    #[test]
+    fn run_wires_the_m21_3_gate_exactly_once() {
+        assert_eq!(own_source_count("m21_3_i4_scan_report_", "only(&root),"), 1);
+    }
+
+    /// `not_applicable` names every missing object (§57.1 第2条).
+    #[test]
+    fn g_m21_3_is_not_applicable_naming_the_missing_objects() {
+        let tmp = fresh_tmp("m21-3-na");
+        fs::create_dir_all(&tmp).unwrap();
+        match m21_3_i4_scan_report_only(&tmp) {
+            Verdict::NotApplicable(detail) => {
+                for object in [
+                    M21_3_RUST_BODIES[0].0,
+                    M21_3_RUST_BODIES[1].0,
+                    "ops.i4_authority_scan()",
+                ] {
+                    assert!(detail.contains(object), "{detail}");
+                }
+            }
+            other => panic!("expected NotApplicable, got {other:?}"),
+        }
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 注错 (G-M21-3): a write verb against `private.*` in the adapter fn, the runner fn or either definer spelling is
+    /// red, each naming its own body; prose, an unrelated fn next to the runner and a `DELETE` of another schema are not.
+    #[test]
+    fn g_m21_3_fails_on_each_write_in_the_scan_path() {
+        let tmp = fresh_tmp("m21-3-red");
+        let create = "CREATE FUNCTION";
+        let clean = |tmp: &Path| {
+            m21_3_seed(
+                tmp,
+                &m21_3_adapter(""),
+                &m21_3_runner(""),
+                &m21_3_definer(create, ""),
+            )
+        };
+        clean(&tmp);
+        assert_eq!(m21_3_i4_scan_report_only(&tmp), Verdict::Pass);
+        m21_3_seed(
+            &tmp,
+            &m21_3_adapter("; DELETE FROM scratch.findings"),
+            &m21_3_runner(""),
+            &m21_3_definer(create, ""),
+        );
+        assert_eq!(m21_3_i4_scan_report_only(&tmp), Verdict::Pass);
+        for (adapter, runner, definer, named) in [
+            (
+                m21_3_adapter("; UPDATE private.memory_records SET status = 'active'"),
+                m21_3_runner(""),
+                m21_3_definer(create, ""),
+                "fn scan_authority_i4(",
+            ),
+            (
+                m21_3_adapter(
+                    "; UPDATE  \\\"private\\\".\\\"memory_records\\\" SET status = 'active'",
+                ),
+                m21_3_runner(""),
+                m21_3_definer(create, ""),
+                "fn scan_authority_i4(",
+            ),
+            (
+                m21_3_adapter(""),
+                m21_3_runner("; delete\nfrom private.memory_records"),
+                m21_3_definer(create, ""),
+                "fn authority_i4(",
+            ),
+            (
+                m21_3_adapter(""),
+                m21_3_runner("; TRUNCATE private.memory_records"),
+                m21_3_definer(create, ""),
+                "fn authority_i4(",
+            ),
+            (
+                m21_3_adapter(""),
+                m21_3_runner("; INSERT INTO private.memory_records (a) SELECT 1"),
+                m21_3_definer(create, ""),
+                "fn authority_i4(",
+            ),
+            (
+                m21_3_adapter(""),
+                m21_3_runner(""),
+                m21_3_definer(
+                    create,
+                    "; UPDATE private.memory_records SET status = 'active'",
+                ),
+                M21_3_MIGRATION,
+            ),
+            (
+                m21_3_adapter(""),
+                m21_3_runner(""),
+                m21_3_definer(
+                    "CREATE OR REPLACE FUNCTION",
+                    "; DELETE FROM private.memory_records",
+                ),
+                M21_3_MIGRATION,
+            ),
+        ] {
+            m21_3_seed(&tmp, &adapter, &runner, &definer);
+            m21_3_red(&tmp, named);
+        }
+        clean(&tmp);
+        m07_write(
+            &tmp,
+            "migrations/0300_redefine.sql",
+            &m21_3_definer(
+                "CREATE OR REPLACE FUNCTION",
+                "; UPDATE private.memory_records SET status = 'active'",
+            ),
+        );
+        m21_3_red(&tmp, "0300_redefine.sql");
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A scan that cannot be located is red, not clean: a renamed fn, a missing definer and a definer whose body is not
+    /// `$$`-quoted each fail naming the object; with the other files present a single missing file is `Fail`, not
+    /// `not_applicable`.
+    #[test]
+    fn g_m21_3_fails_when_the_scan_cannot_be_found() {
+        let tmp = fresh_tmp("m21-3-missing");
+        let create = "CREATE FUNCTION";
+        m21_3_seed(
+            &tmp,
+            &m21_3_adapter("").replace("scan_authority_i4", "renamed"),
+            &m21_3_runner(""),
+            &m21_3_definer(create, ""),
+        );
+        m21_3_red(&tmp, "no `fn scan_authority_i4(`");
+        m21_3_seed(
+            &tmp,
+            &m21_3_adapter(""),
+            &m21_3_runner(""),
+            &m21_3_definer(create, ""),
+        );
+        fs::remove_file(tmp.join(M21_3_MIGRATION)).unwrap();
+        m21_3_red(&tmp, "missing object: ops.i4_authority_scan()");
+        m21_3_seed(
+            &tmp,
+            &m21_3_adapter(""),
+            &m21_3_runner(""),
+            &m21_3_definer(create, "").replace("$$", "$body$"),
+        );
+        m21_3_red(&tmp, "no `$$`-quoted body");
+        m21_3_seed(
+            &tmp,
+            &m21_3_adapter(""),
+            &m21_3_runner(""),
+            &m21_3_definer(create, ""),
+        );
+        fs::remove_file(tmp.join(M21_3_RUST_BODIES[1].0)).unwrap();
+        m21_3_red(&tmp, M21_3_RUST_BODIES[1].0);
         fs::remove_dir_all(&tmp).ok();
     }
 

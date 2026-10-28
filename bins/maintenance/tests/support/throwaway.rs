@@ -7,7 +7,8 @@
 //!   w=[control.retention_policies] x=[control.partition_adopt_leaf], PostgreSQL(role_maintenance)
 //!   w=[control.partition_registry], HTTP(loopback), subprocess(humaux-maintenance), subprocess(kill)]; env=[CARGO_BIN_EXE_humaux-maintenance, CARGO_MANIFEST_DIR,
 //!   HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS, HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH, HUMAUX_MAINTENANCE_DR_REPO_FS_PATH,
-//!   HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS,
+//!   HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MAINTENANCE_SERVE_AUTHORITY_I4_EVERY_SECONDS,
+//!   HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_CYCLE_SECONDS, HUMAUX_MAINTENANCE_SERVE_DR_EVIDENCE_EVERY_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_JOBS_DEAD_RETENTION_SECONDS, HUMAUX_MAINTENANCE_SERVE_JOBS_DONE_RETENTION_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_LOST_AFTER_SECONDS, HUMAUX_MAINTENANCE_SERVE_METRICS_ADDR,
@@ -16,14 +17,14 @@
 //!   HUMAUX_MAINTENANCE_SERVE_TENANTS_PER_RUN, HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS, HUMAUX_TEST_PG_DSN];
 //!   modules=[humaux-testkit, testkit::reaped]
 //! Called-by: [maintenance::tests::backup, maintenance::tests::drill, maintenance::tests::health_serve,
-//!   maintenance::tests::measure, maintenance::tests::partition_pg_facts, maintenance::tests::partitions,
+//!   maintenance::tests::i4_scan, maintenance::tests::measure, maintenance::tests::partition_pg_facts, maintenance::tests::partitions,
 //!   maintenance::tests::rebuild_cli, maintenance::tests::retention, maintenance::tests::serve,
 //!   maintenance::tests::spike]
 //! Invariants: [every database is humaux_thread_<prefix>_<pid>_<n>, created by the fixture and dropped WITH (FORCE)
 //!   by its Drop even on panic, so the shared dev database never sees a fixture row; the spawned process is
 //!   killed by its own Drop (the DR_EVIDENCE pass holds it as testkit::reaped::Reaped); missing env -> §79.2
 //!   skip_or_fail]
-//! Spec: Baseline §78.1; §79.2; ADR-0061 D-D; ADR-0062 D-A; ADR-0063 D-E; ADR-0063 D-J; ADR-0064 D-K
+//! Spec: Baseline §78.1; §79.2; ADR-0061 D-D; ADR-0062 D-A; ADR-0063 D-E; ADR-0063 D-J; ADR-0064 D-K; ADR-0123 D3
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -347,7 +348,7 @@ pub const SERVE_TASKS: [&str; 9] = [
 ];
 
 /// Every key `--serve` requires, valid for `cycle` seconds (EVERY = CYCLE, LIMIT 50, ages one hour, LOST_AFTER >
-/// LAG); the cluster-level PARTITIONS and DR_EVIDENCE cadences, and the two DR `df` paths (`repo_fs`, `/`).
+/// LAG); the cluster-level PARTITIONS, DR_EVIDENCE and AUTHORITY_I4 cadences, and the two DR `df` paths (`repo_fs`, `/`).
 pub fn serve_keys(
     addr: SocketAddr,
     dsn: &str,
@@ -380,9 +381,13 @@ pub fn serve_keys(
         ));
     }
     for (key, value) in [
-        // ADR-0063 D-K / ADR-0064 D-K: the cluster-level tasks have a cadence and no LIMIT.
+        // ADR-0063 D-K / ADR-0064 D-K / ADR-0123 D1: the cluster-level tasks have a cadence and no LIMIT.
         (
             "HUMAUX_MAINTENANCE_SERVE_PARTITIONS_EVERY_SECONDS",
+            cycle.to_string(),
+        ),
+        (
+            "HUMAUX_MAINTENANCE_SERVE_AUTHORITY_I4_EVERY_SECONDS",
             cycle.to_string(),
         ),
         (
