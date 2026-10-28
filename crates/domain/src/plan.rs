@@ -1,7 +1,7 @@
 //! `domain::plan` — the plan catalogue shapes of §71.1: the closed vocabularies and the validated plan-version spec that a
 //!   values file seeds into `control.plan_versions` (module design M04 D2).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::entitlement_repo, adapters::plan_repo, application::entitlement, tests, xtask::architecture_check]
+//! Called-by: [adapters::entitlement_repo, adapters::plan_repo, application::entitlement, domain::billing, tests, xtask::architecture_check]
 //! Invariants: [every closed vocabulary below has one wire spelling per variant, mirrored by a CHECK of migration 0262 and
 //!   reconciled by contract test (§78.2); no plan name, price, limit or block size is spelled here (§78.1): a value
 //!   arrives from the values file and is only validated for shape; a spec that fails validation is never built]
@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 /// A closed wire vocabulary (§78.2): the enum, `ALL`, `wire` and `parse_wire` come from one list, so they cannot drift
-/// from each other. The DB side is a CHECK in migration 0262, compared against `ALL` by contract test.
+/// from each other. The DB side is a CHECK literal list (migrations 0262, 0288), compared against `ALL` by contract test.
 macro_rules! wire_enum {
     (
         $(#[$meta:meta])*
@@ -48,6 +48,8 @@ macro_rules! wire_enum {
         }
     };
 }
+// §78.2: crate-visible so `domain::billing` declares its vocabularies from the same list-to-enum macro.
+pub(crate) use wire_enum;
 
 wire_enum! {
     /// The currency a plan price is stated in. USD only: the owner priced in USD (2026-10-15).

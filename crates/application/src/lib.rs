@@ -11,6 +11,8 @@
 pub mod affect;
 pub mod archive;
 pub mod auth;
+/// C3 (M04 D7): the `BillingProvider` port of §71.2; no provider type, no implementation.
+pub mod billing;
 pub mod confirm;
 pub mod consolidate;
 pub mod continuity;
