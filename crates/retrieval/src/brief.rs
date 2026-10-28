@@ -238,12 +238,14 @@ pub fn assemble(mut input: BriefInput, budget: BriefBudget) -> Result<Brief, Bri
 fn fixed_overhead(availability: [SectionAvailability; 13]) -> (u64, u64) {
     // §25.5: one UTF-8 byte per token conservatively bounds fixed JSON framing;
     // item estimates include their own serialization and separators, not this framing.
+    // §25.3: reserve the largest tail framing so tail availability cannot evict prefix items.
     let mut sections = SECTIONS
         .into_iter()
         .enumerate()
         .map(|(index, kind)| BriefSection {
             kind,
-            content: if availability[index] == SectionAvailability::Available {
+            content: if index < PREFIX_LEN && availability[index] == SectionAvailability::Available
+            {
                 SectionContent::Items(Vec::new())
             } else {
                 SectionContent::NotApplicable {
@@ -374,6 +376,17 @@ mod tests {
         );
         assert_eq!(first.prefix_sha256, second.prefix_sha256);
         assert_ne!(first.tail, second.tail);
+        let mut input = empty();
+        input.sections[0] = vec![item("pinned", 20)];
+        let first = assemble(input.clone(), budget(918, 100, 0, 0)).unwrap();
+        input.availability[SectionKind::CurrentState as usize] = SectionAvailability::NotDelivered;
+        let second = assemble(input, budget(918, 100, 0, 0)).unwrap();
+        assert_eq!(first.prefix, second.prefix);
+        assert_eq!(first.prefix_sha256, second.prefix_sha256);
+        assert_eq!(
+            first.prefix.sections[0].content,
+            SectionContent::Items(vec![item("pinned", 20)])
+        );
     }
     #[test]
     fn g_m14_3_prefix_matches_exact_serialization() {
@@ -403,21 +416,33 @@ mod tests {
     }
     #[test]
     fn g_m14_4_omissions_and_mandatory_retention_are_exact() {
-        let brief = assemble(populated(), budget(overhead() + 13, 100, 1, 1)).unwrap();
+        let mut input = populated();
+        for rows in &mut input.sections {
+            for row in rows {
+                row.est_tokens = 100;
+            }
+        }
+        let brief = assemble(input, budget(overhead() + 650, 29, 1, 1)).unwrap();
         assert_eq!(
             (brief.omitted, brief.truncated),
-            ([0, 0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2], true)
+            ([1, 0, 2, 2, 2, 2, 0, 1, 2, 2, 2, 2, 2], true)
         );
         assert_eq!(
             brief.prefix.sections[MANDATORY].content,
-            SectionContent::Items(vec![item("a", 2), item("b", 2)])
+            SectionContent::Items(vec![item("a", 100), item("b", 100)])
         );
         assert_eq!(
             brief.prefix.sections[0].content,
-            SectionContent::Items(vec![item("a", 2), item("b", 2)])
+            SectionContent::Items(vec![item("a", 100)])
         );
-        assert_eq!(brief.tail[0].content, SectionContent::Items(vec![]));
-        assert_eq!(brief.tail[1].content, SectionContent::Items(vec![]));
+        assert_eq!(
+            brief.tail[0].content,
+            SectionContent::Items(vec![item("a", 100), item("b", 100)])
+        );
+        assert_eq!(
+            brief.tail[1].content,
+            SectionContent::Items(vec![item("a", 100)])
+        );
     }
     #[test]
     fn g_m14_4_overflow_has_exact_manifest_and_no_partial_output() {
@@ -477,26 +502,26 @@ mod tests {
     }
     #[test]
     fn g_m14_4_fixed_framing_is_charged_at_the_boundary() {
-        assert_eq!(fixed_overhead(empty().availability), (299, 314));
-        for cap in [0, 612] {
+        assert_eq!(fixed_overhead(empty().availability), (299, 599));
+        for cap in [0, 897] {
             let limits = budget(cap, 100, 0, 0);
             assert_eq!(
                 assemble(empty(), limits),
                 Err(BriefFailure {
                     manifest: vec![],
                     budget: limits,
-                    required: 613,
+                    required: 898,
                     failed_sections: vec![],
                 })
             );
         }
-        let brief = assemble(empty(), budget(613, 100, 0, 0)).unwrap();
+        let brief = assemble(empty(), budget(898, 100, 0, 0)).unwrap();
         assert_eq!(brief.prefix_canonical_bytes().len(), 299);
         assert_eq!(serde_json::to_vec(&brief.tail).unwrap().len(), 314);
         assert_eq!((brief.omitted, brief.truncated), ([0; 13], false));
         let mut input = empty();
         input.sections[0] = vec![item("optional", 1)];
-        let brief = assemble(input, budget(613, 100, 0, 0)).unwrap();
+        let brief = assemble(input, budget(898, 100, 0, 0)).unwrap();
         assert_eq!(brief.omitted, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
             brief.prefix.sections[0].content,
@@ -508,7 +533,7 @@ mod tests {
         let mut input = empty();
         input.sections[MANDATORY] = vec![item("b", 2), item("a", 2)];
         input.sections[0] = vec![item("optional", 6)];
-        let brief = assemble(input, budget(621, 100, 0, 0)).unwrap();
+        let brief = assemble(input, budget(906, 100, 0, 0)).unwrap();
         assert_eq!(
             brief.prefix.sections[MANDATORY].content,
             SectionContent::Items(vec![item("a", 2), item("b", 2)])
