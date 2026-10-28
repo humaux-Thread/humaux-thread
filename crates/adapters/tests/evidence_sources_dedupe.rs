@@ -1,7 +1,7 @@
 //! `adapters::tests::evidence_sources_dedupe` — M06-1b (ADR-0098 D1/D3): `remember_sourced_atomically` against a real
 //!   Postgres: one Evidence per source identity across agents, `SOURCE_VERSION_CONFLICT`, and the 0265 receipt trigger.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, hex, serde_json, sqlx, tokio];
-//!   services=[PostgreSQL(role_gateway) r=[control.audit_events, control.operation_receipts, control.usage_reservations,
+//!   services=[PostgreSQL(owner) w=[private.evidence_objects], PostgreSQL(role_gateway) r=[control.audit_events, control.operation_receipts, control.usage_reservations,
 //!   ops.outbox, private.evidence_objects, private.evidence_sources, private.events, projection.stream_log]];
 //!   env=[]; modules=[adapters::operation_receipt, adapters::postgres, adapters::remember,
 //!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::error, domain::evidence,
