@@ -97,3 +97,14 @@ a precondition of the cloud AUTO path); calling the pool text "anonymous" in pub
 
 Module design note M20 v2, D2' and §13 to §15; batch-33 public-pool research digest (B33) and its first-hand
 verification note; Baseline §12.1, §12.1.1, §12.6, §13, §7.1; ADR-0078; ADR-0090; ADR-0091; CJEU C-413/23 P.
+
+## Amendment (M20-5, 2026-10-27) — scope categories are the phase-1 unit-type names (migration 0286)
+
+A notice's `scope_categories` (D-A, D-B) draw from one closed vocabulary: the unit-type names of ADR-0090 D-B, `FIX`,
+`DECISION`, `RESEARCH`, `USAGE`, `CHECKLIST`, `FAILURE_CASE`. Migration 0286 adds
+`contribution_notices_scope_categories_unit_types_check` (`scope_categories <@` those six literals); the manifest precheck
+refuses to run while a row would violate it. A new unit type (`PLAYBOOK` and `DATA` in phase 2) is a new category, hence a
+new notice version under D-A, and its migration widens the CHECK. The `crates/public-pool/tests/notice.rs` placeholder
+`PRIVATE_MEMORY` was never a category; it is now `FIX`. The CHECK's set equals the `units_type_check` set (0275), which
+`crates/public-pool/tests/completeness.rs` pins to `UnitType`; a §78.2 contract test in
+`crates/adapters/tests/contribution_eligibility.rs` pins the two DB sets to each other, both ways.

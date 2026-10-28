@@ -943,3 +943,36 @@ fn g_m03_1_the_pre_auth_limiter_applies_to_the_auth_pages() {
         );
     });
 }
+
+/// §73.3 / ADR-0125: the global denylist is part of the pre-auth tier every `/auth/*` request passes before its handler.
+/// A POST from a denied client is a 403 that enqueues no mail; the same POST from another client is served, so the
+/// 403 is the denylist and not the Origin check.
+#[test]
+fn g_m03_13_auth_pages_global_deny_is_preauth() {
+    run_db_fixture::<PagesFixture, _>("g_m03_13_http_global_deny", |mut h| {
+        let mut settings = guard_settings(10_000);
+        settings.trusted_proxies.trusted_proxy_cidrs =
+            vec![Cidr::from_str("127.0.0.1/32").expect("cidr")];
+        settings.global_denylist = vec![Cidr::from_str("203.0.113.0/24").expect("cidr")];
+        let pool = gateway_pool(&h.rt, &h.dsn).expect("role_gateway pool");
+        let guard = Arc::new(GatewayGuard::new(pool, settings).expect("guard settings"));
+        let address = h.rt.block_on(start(guard)).0;
+        let body = format!("email={}", h.email);
+        let login_as = |h: &Handle, client: &str| {
+            let headers = [("Origin", ORIGIN), ("Forwarded", client)];
+            call(h, address, "POST", "/auth/login", &headers, &body)
+        };
+
+        let denied = login_as(&h, "203.0.113.7");
+        assert_eq!(denied.status, 403, "{denied:?}");
+        assert_eq!(
+            count(&mut h, "ops.email_outbox"),
+            0,
+            "a denied client enqueues nothing"
+        );
+
+        let served = login_as(&h, "198.51.100.1");
+        assert_eq!(served.status, 303, "{served:?}");
+        assert_eq!(count(&mut h, "ops.email_outbox"), 1);
+    });
+}
