@@ -5524,6 +5524,7 @@ grants (runtime roles):
 
 foreign keys (outgoing):
 - fk: tenant_id -> control.tenants (NOT NULL)
+- fk: tenant_id, project_id -> private.continuity_projects (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::coord_task_project`
@@ -5576,6 +5577,9 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
+
+foreign keys (outgoing):
+- fk: tenant_id, workspace_id, project_id -> private.continuity_projects (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::coord_task_project`
@@ -12259,14 +12263,24 @@ foreign keys (outgoing):
 - fk: tenant_id, src_id -> private.continuity_projects (NOT NULL)
 
 read by:
-- (no process): `adapters::relation_repo`
 - (no process): `adapters::tests::relation_kernel`
+- process(cargo-xtask): `adapters::relation_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-consolidation-worker): `adapters::relation_repo`
+- process(humaux-gateway): `adapters::relation_repo`
+- process(humaux-maintenance): `adapters::relation_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
+- process(humaux-private-worker): `adapters::relation_repo`
+- process(humaux-retrieval-worker): `adapters::relation_repo`
 
 written by:
-- (no process): `adapters::relation_repo`
 - (no process): `adapters::tests::project_rollup`
+- process(cargo-xtask): `adapters::relation_repo`
+- process(humaux-consolidation-worker): `adapters::relation_repo`
+- process(humaux-gateway): `adapters::relation_repo`
+- process(humaux-maintenance): `adapters::relation_repo`
+- process(humaux-private-worker): `adapters::relation_repo`
+- process(humaux-retrieval-worker): `adapters::relation_repo`
 
 executed by:
 
@@ -12317,17 +12331,36 @@ foreign keys (outgoing):
 - fk: tenant_id, src_id -> private.continuity_projects (NOT NULL)
 
 read by:
-- (no process): `adapters::relation_repo`
+- (no process): `adapters::tests::coord_task_project`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `private-worker::tests::m29_attribution_e2e`
+- process(cargo-xtask): `adapters::coord_task_repo`
+- process(cargo-xtask): `adapters::relation_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-consolidation-worker): `adapters::coord_task_repo`
+- process(humaux-consolidation-worker): `adapters::relation_repo`
 - process(humaux-gateway): `adapters::attribution_repo`
+- process(humaux-gateway): `adapters::coord_task_repo`
+- process(humaux-gateway): `adapters::relation_repo`
+- process(humaux-maintenance): `adapters::coord_task_repo`
+- process(humaux-maintenance): `adapters::relation_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::attribution_repo`
+- process(humaux-private-worker): `adapters::coord_task_repo`
+- process(humaux-private-worker): `adapters::relation_repo`
+- process(humaux-retrieval-worker): `adapters::coord_task_repo`
+- process(humaux-retrieval-worker): `adapters::relation_repo`
 
 written by:
-- (no process): `adapters::relation_repo`
+- (no process): `adapters::tests::coord_task_project`
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `private-worker::tests::m29_attribution_e2e`
+- process(cargo-xtask): `adapters::relation_repo`
+- process(humaux-consolidation-worker): `adapters::relation_repo`
+- process(humaux-gateway): `adapters::relation_repo`
+- process(humaux-maintenance): `adapters::relation_repo`
+- process(humaux-private-worker): `adapters::relation_repo`
+- process(humaux-retrieval-worker): `adapters::relation_repo`
 
 executed by:
 
@@ -12958,14 +12991,24 @@ foreign keys (outgoing):
 - fk: tenant_id, src_id -> private.subjects (NOT NULL)
 
 read by:
-- (no process): `adapters::relation_repo`
 - (no process): `adapters::tests::relation_kernel`
+- process(cargo-xtask): `adapters::relation_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-consolidation-worker): `adapters::relation_repo`
+- process(humaux-gateway): `adapters::relation_repo`
+- process(humaux-maintenance): `adapters::relation_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
+- process(humaux-private-worker): `adapters::relation_repo`
+- process(humaux-retrieval-worker): `adapters::relation_repo`
 
 written by:
-- (no process): `adapters::relation_repo`
 - (no process): `adapters::tests::project_rollup`
+- process(cargo-xtask): `adapters::relation_repo`
+- process(humaux-consolidation-worker): `adapters::relation_repo`
+- process(humaux-gateway): `adapters::relation_repo`
+- process(humaux-maintenance): `adapters::relation_repo`
+- process(humaux-private-worker): `adapters::relation_repo`
+- process(humaux-retrieval-worker): `adapters::relation_repo`
 
 executed by:
 
