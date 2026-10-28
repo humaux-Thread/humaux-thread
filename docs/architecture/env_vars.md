@@ -6003,6 +6003,7 @@ modules:
 - `adapters::tests::contribution_repo`
 - `adapters::tests::contribution_self_principal_authority_0133`
 - `adapters::tests::coord_rls`
+- `adapters::tests::coord_task_project`
 - `adapters::tests::coord_task_run`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::credential_grants`

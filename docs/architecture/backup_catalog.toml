@@ -530,6 +530,11 @@ class = "KNOWLEDGE"
 owner = "M18"
 basis = "M18:156; D1"
 
+["coord.workspace_unfiled_projects"]
+class = "KNOWLEDGE"
+owner = "M18"
+basis = "M18:56; D1 principle"
+
 # ---- ops ----
 
 ["ops.anonymous_public_revocations"]

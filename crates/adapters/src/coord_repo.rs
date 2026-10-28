@@ -1,8 +1,8 @@
 //! `adapters::coord_repo` — M18 task-run lifecycle: submit, claim, heartbeat, complete, fail, `task_of_run`, and the
 //!   `verify_task_run` / `recheck_run_live_in_txn` ports (§30.1 state, §30.2 lease and fencing token).
 //! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(any) w=[coord.task_runs, coord.tasks]]; env=[];
-//!   modules=[adapters::context_repo, adapters::postgres, domain::coordination, domain::error, domain::identity,
-//!   domain::ids]
+//!   modules=[adapters::context_repo, adapters::coord_task_repo, adapters::postgres, domain::coordination,
+//!   domain::error, domain::identity, domain::ids]
 //! Called-by: [adapters::operation_receipt, adapters::remember, gateway::mcp_application, tests]
 //! Invariants: [lease_owner is always AuthorizationScope::principal, never a caller-supplied value; every lease time
 //!   is read and compared on the DB clock (clock_timestamp()), never the application clock; claim, heartbeat,
@@ -13,9 +13,10 @@
 //!   recheck_run_live_in_txn, because the row lock stops competing writers but not the clock (#91); complete and fail
 //!   bump coord.tasks.authorization_epoch by one (ADR-0046 D-C), claim and heartbeat never touch it; complete and
 //!   fail write the closed run's outcome_summary in the same statement that finishes it; a run's task_id never
-//!   changes, so [`task_of_run`] followed by a verified write cannot race; every rejection is an existing ErrorCode
-//!   variant]
-//! Spec: Baseline §30; §30.1; §30.2; §34.0.1; §52; §62; §6.2.1; ADR-0046 D-C; ADR-0078 Q10; ADR-0078 D-D
+//!   changes, so [`task_of_run`] followed by a verified write cannot race; submit hands the INSERT to
+//!   coord_task_repo and places the task in its only workspace's Unfiled project in the same transaction; every
+//!   rejection is an existing ErrorCode variant]
+//! Spec: Baseline §30; §30.1; §30.2; §34.0.1; §52; §62; §6.2.1; ADR-0046 D-C; ADR-0078 Q10; ADR-0078 D-D; ADR-0102 D-A; ADR-0102 D-D
 //!
 //! Runs on [`RuntimeDbPool`] (`role_gateway`, which holds SELECT, INSERT, UPDATE on `coord.*`,
 //! §6.2.1). Each pool-level operation opens its own transaction with the scope's tenant GUCs
@@ -34,7 +35,8 @@
 //! - caller is not the run's `lease_owner`: [`ErrorCode::Forbidden`];
 //! - run finished, lease expired, stale token, task not claimable, or claim against an
 //!   unexpired lease: [`ErrorCode::Conflict`];
-//! - zero TTL, or a blank title, description or summary: [`ErrorCode::InvalidInput`];
+//! - zero TTL, a blank title, description or summary, or a submit scope that does not hold exactly one workspace:
+//!   [`ErrorCode::InvalidInput`];
 //! - PG failure: [`ErrorCode::DependencyUnavailable`]; an unknown `state` label: [`ErrorCode::Internal`].
 
 use std::time::Duration;
@@ -48,6 +50,7 @@ use sqlx::types::Uuid;
 use sqlx::types::time::OffsetDateTime;
 
 use crate::context_repo::set_authorization_local;
+use crate::coord_task_repo;
 use crate::postgres::RuntimeDbPool;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
@@ -120,7 +123,8 @@ async fn begin(
 }
 
 /// Inserts a task in `SUBMITTED` (§30.1) under the scope's tenant, carrying the wire's `description`
-/// (ADR-0078 Q10).
+/// (ADR-0078 Q10), in the Unfiled project of the scope's only workspace (ADR-0102 D-D): a scope with zero or several
+/// workspaces is `INVALID_INPUT`, since a submit names no project. The INSERT is `coord_task_repo`'s (D-A).
 pub async fn submit(
     pool: &RuntimeDbPool,
     scope: &AuthorizationScope,
@@ -131,19 +135,11 @@ pub async fn submit(
         return Err(ErrorCode::InvalidInput);
     }
     let mut txn = begin(pool, scope).await?;
-    let task_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO coord.tasks (tenant_id, title, description, state) VALUES ($1, $2, $3, $4) \
-         RETURNING task_id",
-    )
-    .bind(scope.tenant_id().0)
-    .bind(title)
-    .bind(description)
-    .bind(TaskState::Submitted.as_db_str())
-    .fetch_one(&mut *txn)
-    .await
-    .map_err(db)?;
+    let project = coord_task_repo::unfiled_project_in_txn(&mut txn, scope).await?;
+    let task_id =
+        coord_task_repo::insert_task_in_txn(&mut txn, scope, title, description, project).await?;
     txn.commit().await.map_err(db)?;
-    Ok(TaskId(task_id))
+    Ok(task_id)
 }
 
 /// Opens a lease on `task_id` for the scope's principal (§30.2). Allowed from `SUBMITTED`, or

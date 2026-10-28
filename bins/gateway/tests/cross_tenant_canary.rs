@@ -456,16 +456,17 @@ fn seed_foreign(foreign: &mut Handle) -> Foreign {
             &[&record.evidence_id],
         )
         .expect("owner makes the foreign Evidence TENANT_SHARED");
+    let project = Uuid::now_v7();
+    register_project(foreign, project);
+    // ADR-0102 D-A: a task is born in a project (coord.tasks.project_id is NOT NULL).
     let task: Uuid = foreign
         .admin
         .query_one(
-            "INSERT INTO coord.tasks(tenant_id,title) VALUES($1,'foreign canary task') RETURNING task_id",
-            &[&foreign.tenant_id],
+            "INSERT INTO coord.tasks(tenant_id,title,project_id) VALUES($1,'foreign canary task',$2) RETURNING task_id",
+            &[&foreign.tenant_id, &project],
         )
         .expect("owner seeds the foreign task")
         .get(0);
-    let project = Uuid::now_v7();
-    register_project(foreign, project);
     Foreign {
         memory,
         workspace: foreign.workspace_id,
@@ -1138,8 +1139,8 @@ fn foreign_ids_are_not_found_with_row_level_security_out_of_the_path() {
                 let own_task: Uuid = handle
                     .admin
                     .query_one(
-                        "INSERT INTO coord.tasks(tenant_id,title) VALUES($1,'own canary task') RETURNING task_id",
-                        &[&handle.tenant_id],
+                        "INSERT INTO coord.tasks(tenant_id,title,project_id) VALUES($1,'own canary task',$2) RETURNING task_id",
+                        &[&handle.tenant_id, &own.project],
                     )
                     .expect("owner seeds the caller's task")
                     .get(0);

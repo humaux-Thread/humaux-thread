@@ -4,13 +4,15 @@
 //!   r=[private.project_subject_relations, private.project_task_relations, private.subject_relations]
 //!   w=[private.project_subject_relations, private.project_task_relations, private.subject_relations]]; env=[];
 //!   modules=[domain::error, domain::relation]
-//! Called-by: [tests]
+//! Called-by: [adapters::coord_task_repo, tests]
 //! Invariants: [one implementation for all pairs (the pair selects the table, nothing else differs); a write is
 //!   exactly one INSERT of revision = expected_revision + 1 in the caller's transaction; the tenant is the session's
-//!   humaux.tenant_id, the same value RLS checks]
-//! Spec: Baseline §6.1.4; §52; ADR-0078 D-C
+//!   humaux.tenant_id, the same value RLS checks; a Project-Task CONTAINS revision is written by
+//!   append_contains_revision alone (crate-private, one production call site, in coord_task_repo) and refused by
+//!   append_revision before any SQL]
+//! Spec: Baseline §6.1.4; §52; ADR-0078 D-C; ADR-0102 D-C
 //!
-//! Both functions run in the caller's transaction under its role and RLS: the caller has already installed the
+//! Every function runs in the caller's transaction under its role and RLS: the caller has already installed the
 //! authorization context (`humaux.tenant_id`). Whitelist, contiguity, edge immutability, factual Evidence and
 //! decider membership are enforced once, by the guard trigger (0249, replaced by 0252 and 0253), the authorisation
 //! Evidence by 0253's FK and CHECK; all surface here as [`ErrorCode`]s.
@@ -67,6 +69,20 @@ fn table(pair: RelationPair) -> &'static str {
     }
 }
 
+/// The provenance columns of one revision (§6.1.4 ⑦), grouped so the two writers share one private body without a
+/// second long argument list.
+#[derive(Debug, Clone, Copy)]
+pub struct Provenance<'a> {
+    /// Who decided this revision.
+    pub decided_by: &'a DecidedBy,
+    /// Provenance only, never authority.
+    pub proposed_by: Option<&'a ModelRef>,
+    /// Factual evidence.
+    pub factual_evidence_ids: &'a [Uuid],
+    /// Authorisation evidence, kept apart from the factual evidence.
+    pub authorization_evidence_id: Uuid,
+}
+
 /// §52 mapping for the kernel's statements. A lost race (PK) and a stale-ahead `expected_revision` are both
 /// `CONFLICT`: the caller re-reads the current revision. An unknown, invisible or foreign-tenant endpoint or
 /// Evidence (FK / guard, both 23503), a `principal:` decider that is no live member here (guard, 23503), a
@@ -93,6 +109,10 @@ fn db_error(error: sqlx::Error) -> ErrorCode {
 /// [`DecidedBy::Principal`] must resolve to an ACTIVE user with an ACTIVE membership in the tenant, the tenant
 /// itself ACTIVE (a machine key never decides). Each violation is `INVALID_INPUT`.
 ///
+/// ADR-0102 D-C: a Project-Task `CONTAINS` edge is refused here with `INVALID_INPUT` before any SQL; its one writer is
+/// `coord_task_repo::set_task_project_in_txn` through `append_contains_revision`. `REFERENCES` and every other
+/// kind stay free.
+///
 /// Precondition (§6.1.4, design v0.2 §15.2): the caller has verified that both endpoints of `edge` are visible in
 /// its authorised workspaces before calling. This function checks tenant scope only (`coord.tasks` has no workspace
 /// column).
@@ -107,6 +127,52 @@ pub async fn append_revision(
     proposed_by: Option<&ModelRef>,
     factual_evidence_ids: &[Uuid],
     authorization_evidence_id: Uuid,
+) -> Result<i64, ErrorCode> {
+    if edge.kind == RelationKind::Contains {
+        return Err(ErrorCode::InvalidInput);
+    }
+    let provenance = Provenance {
+        decided_by,
+        proposed_by,
+        factual_evidence_ids,
+        authorization_evidence_id,
+    };
+    write_revision(
+        txn,
+        edge,
+        relation_id,
+        expected_revision,
+        valid,
+        &provenance,
+    )
+    .await
+}
+
+/// ADR-0102 D-A / D-C: the CAS write of a Project-Task `CONTAINS` revision, same contract as [`append_revision`]. Crate
+/// private: `coord_task_repo::set_task_project_in_txn` is its one production caller (xtask `m18_task_project_sole_writer`
+/// asserts `== 1`). Any other kind is `INVALID_INPUT` before any SQL.
+pub(crate) async fn append_contains_revision(
+    txn: &mut Txn<'_>,
+    edge: &RelationEdge,
+    relation_id: RelationId,
+    expected_revision: i64,
+    valid: &Validity,
+    provenance: &Provenance<'_>,
+) -> Result<i64, ErrorCode> {
+    if edge.kind != RelationKind::Contains {
+        return Err(ErrorCode::InvalidInput);
+    }
+    write_revision(txn, edge, relation_id, expected_revision, valid, provenance).await
+}
+
+/// The one INSERT of a revision, shared by both writers so there is no second SQL string for a pair's table.
+async fn write_revision(
+    txn: &mut Txn<'_>,
+    edge: &RelationEdge,
+    relation_id: RelationId,
+    expected_revision: i64,
+    valid: &Validity,
+    provenance: &Provenance<'_>,
 ) -> Result<i64, ErrorCode> {
     if expected_revision < 0 {
         return Err(ErrorCode::InvalidInput);
@@ -135,10 +201,10 @@ pub async fn append_revision(
         .bind(edge.kind.as_str())
         .bind(starts)
         .bind(ends)
-        .bind(decided_by.to_wire())
-        .bind(proposed_by.map(ModelRef::to_wire))
-        .bind(factual_evidence_ids)
-        .bind(authorization_evidence_id)
+        .bind(provenance.decided_by.to_wire())
+        .bind(provenance.proposed_by.map(ModelRef::to_wire))
+        .bind(provenance.factual_evidence_ids)
+        .bind(provenance.authorization_evidence_id)
         .execute(&mut **txn)
         .await
         .map_err(db_error)?;

@@ -4,7 +4,7 @@
 //!   services=[PostgreSQL(owner) w=[control.api_keys, control.audit_events, control.entitlement_snapshots,
 //!   control.memberships, control.operation_receipts, control.private_reasoning_domains, control.quota_windows,
 //!   control.tenants, control.usage_reservations, control.users, control.workspace_memberships,
-//!   control.workspaces, coord.task_runs, coord.tasks, ops.jobs, ops.outbox, ops.retrieval_query_log, ops.selection_snapshot_items,
+//!   control.workspaces, coord.task_runs, coord.tasks, coord.workspace_unfiled_projects, ops.jobs, ops.outbox, ops.retrieval_query_log, ops.selection_snapshot_items,
 //!   ops.selection_snapshots,
 //!   private.context_bindings, private.continuity_facet_evidence_links, private.continuity_facet_memory_links,
 //!   private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.events,
@@ -13,7 +13,7 @@
 //!   x=[control.check_operation_receipt], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)];
 //!   env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres,
 //!   adapters::quota_repo, adapters::tests::support::token_keys, domain::identity, domain::ids, humaux-testkit]
-//! Called-by: [adapters::tests::applicability, adapters::tests::auth_scope_rls, adapters::tests::candidates, adapters::tests::evidence_sources_dedupe, adapters::tests::evidence_task_runs, adapters::tests::forget_confirm, adapters::tests::membership_lifecycle, adapters::tests::memory_attribution, adapters::tests::note_history, adapters::tests::note_put, adapters::tests::note_reads, adapters::tests::note_replace, adapters::tests::note_text_once, adapters::tests::operation_receipts, adapters::tests::read_gate_closure, gateway::mcp_application, gateway::tests::continuity_get, gateway::tests::coordinate_task, gateway::tests::cross_tenant_canary, gateway::tests::mcp_forget, gateway::tests::mcp_gateway, gateway::tests::memory_get_frontier, gateway::tests::read_decoupling, gateway::tests::semantic_recall_wiring, private-worker::tests::m29_attribution_e2e]
+//! Called-by: [adapters::tests::applicability, adapters::tests::auth_scope_rls, adapters::tests::candidates, adapters::tests::coord_task_project, adapters::tests::evidence_sources_dedupe, adapters::tests::evidence_task_runs, adapters::tests::forget_confirm, adapters::tests::membership_lifecycle, adapters::tests::memory_attribution, adapters::tests::note_history, adapters::tests::note_put, adapters::tests::note_reads, adapters::tests::note_replace, adapters::tests::note_text_once, adapters::tests::operation_receipts, adapters::tests::read_gate_closure, gateway::mcp_application, gateway::tests::continuity_get, gateway::tests::coordinate_task, gateway::tests::cross_tenant_canary, gateway::tests::mcp_forget, gateway::tests::mcp_gateway, gateway::tests::memory_get_frontier, gateway::tests::read_decoupling, gateway::tests::semantic_recall_wiring, private-worker::tests::m29_attribution_e2e]
 //! Invariants: [test-only, included by #[path]; runtime writes are real role_gateway logins and the owner connection
 //!   only seeds/cleans the fixture tenant; an isolation setup failure is a fixture error]
 //! Spec: Baseline §25.4; §34.0.1; §79.2; ADR-0035
@@ -379,10 +379,20 @@ impl Drop for Handle {
                         "DELETE FROM private.continuity_facet_evidence_links WHERE tenant_id=$1",
                         "DELETE FROM private.continuity_facet_slots WHERE tenant_id=$1",
                         "DELETE FROM private.continuity_facet_versions WHERE tenant_id=$1",
+                    ] {
+                        txn.execute(statement, &[&self.tenant_id])?;
+                    }
+                    // ADR-0102 D-A / D-D: `coord.tasks.project_id` and the Unfiled markers reference these projects, and
+                    // the tasks go later in this transaction (after the runs and bindings that depend on them), so the
+                    // project delete runs with RI off; no task is left pointing at a project at COMMIT.
+                    txn.batch_execute("SET LOCAL session_replication_role = replica")?;
+                    for statement in [
+                        "DELETE FROM coord.workspace_unfiled_projects WHERE tenant_id=$1",
                         "DELETE FROM private.continuity_projects WHERE tenant_id=$1",
                     ] {
                         txn.execute(statement, &[&self.tenant_id])?;
                     }
+                    txn.batch_execute("SET LOCAL session_replication_role = DEFAULT")?;
                     txn.batch_execute("SET CONSTRAINTS ALL IMMEDIATE")?;
                     txn.batch_execute(
                         "ALTER TABLE private.continuity_facet_memory_links \

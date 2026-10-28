@@ -108,10 +108,11 @@ impl Fx {
         }
     }
 
-    /// One whitelisted edge per pair.
+    /// One whitelisted edge per pair. The Project-Task edge is `REFERENCES`: ADR-0102 D-C reserves `CONTAINS` to
+    /// `coord_task_repo::set_task_project_in_txn`, so the adapter refuses it for any other caller.
     fn edge(&self, pair: RelationPair) -> RelationEdge {
         let (src_id, kind, dst_id) = match pair {
-            RelationPair::ProjectTask => (self.project, RelationKind::Contains, self.task),
+            RelationPair::ProjectTask => (self.project, RelationKind::References, self.task),
             RelationPair::ProjectSubject => (
                 self.project,
                 RelationKind::Targets,
@@ -235,7 +236,8 @@ impl DbIntegrationFixture for Fx {
                             RETURNING workspace_id), \
                       p AS (INSERT INTO private.continuity_projects (project_id, tenant_id, workspace_id, title) \
                             SELECT uuidv7(), $1, workspace_id, 'p' FROM w RETURNING project_id), \
-                      t AS (INSERT INTO coord.tasks (tenant_id, title) VALUES ($1, 't') RETURNING task_id) \
+                      t AS (INSERT INTO coord.tasks (tenant_id, title, project_id) \
+                            SELECT $1, 't', project_id FROM p RETURNING task_id) \
                  SELECT p.project_id, t.task_id FROM p, t",
                 &[&tenant],
             )
@@ -258,7 +260,8 @@ impl DbIntegrationFixture for Fx {
                 "WITH p AS (INSERT INTO private.continuity_projects (project_id, tenant_id, workspace_id, title) \
                             SELECT uuidv7(), tenant_id, workspace_id, 'p2' FROM private.continuity_projects \
                              WHERE project_id = $1 RETURNING project_id), \
-                      t AS (INSERT INTO coord.tasks (tenant_id, title) VALUES ($2, 't2') RETURNING task_id) \
+                      t AS (INSERT INTO coord.tasks (tenant_id, title, project_id) \
+                            SELECT $2, 't2', project_id FROM p RETURNING task_id) \
                  SELECT p.project_id, t.task_id FROM p, t",
                 &[&project, &tenant],
             )
@@ -802,10 +805,31 @@ fn relation_kernel_round_trip_through_the_adapter() {
                 .unwrap();
             assert_eq!((current.revision, current.valid.is_retracted()), (2, true));
 
-            let other_project_kind = RelationEdge {
-                kind: RelationKind::References,
-                ..edge
+            // ADR-0102 D-C: the repository refuses CONTAINS before any SQL, so the Project-Task pair no longer offers two
+            // kinds for one (src, dst) and the guard's kind leg is exercised on a pair that does: PROJECT TARGETS BRAND,
+            // then the same pair as SERVES.
+            let targets = RelationEdge {
+                src_id: project,
+                kind: RelationKind::Targets,
+                dst_id: brand,
             };
+            let kind_relation = RelationId::new();
+            let open = Validity::new(&[(Included(Timestamp::Micros(T0)), Unbounded)]).unwrap();
+            assert_eq!(
+                append_revision(
+                    &mut txn,
+                    &targets,
+                    kind_relation,
+                    0,
+                    &open,
+                    &rule,
+                    None,
+                    &[],
+                    auth
+                )
+                .await,
+                Ok(1)
+            );
             let refused: [(&str, RelationEdge, RelationId, i64, ErrorCode); 9] = [
                 (
                     "stale expected_revision",
@@ -822,10 +846,13 @@ fn relation_kernel_round_trip_through_the_adapter() {
                     ErrorCode::Conflict,
                 ),
                 (
-                    "edge change",
-                    other_project_kind,
-                    relation,
-                    2,
+                    "kind change",
+                    RelationEdge {
+                        kind: RelationKind::Serves,
+                        ..targets
+                    },
+                    kind_relation,
+                    1,
                     ErrorCode::InvalidInput,
                 ),
                 (
