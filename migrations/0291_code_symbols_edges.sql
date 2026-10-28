@@ -25,7 +25,7 @@ CREATE TABLE private.code_symbols (
   -- D-F "optional body by ranged read": the byte range into the stored file content.
   start_byte bigint NOT NULL,
   end_byte bigint NOT NULL,
-  -- D-J history: "a qualified name existed with this content hash".
+  -- D-G history: "a qualified name existed with this content hash".
   content_sha256 bytea NOT NULL CONSTRAINT code_symbols_content_sha256_len CHECK (octet_length(content_sha256) = 32),
   -- D-F search: split camel/snake tokens of name; the tokenizer is the reader/writer's (M16-6/M16-7).
   name_tokens text[] NOT NULL DEFAULT '{}',
