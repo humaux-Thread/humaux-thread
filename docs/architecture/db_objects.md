@@ -598,6 +598,9 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
+foreign keys (outgoing):
+- fk: tenant_id -> control.tenants (NOT NULL)
+
 read by:
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::facet_contract`
@@ -626,6 +629,8 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
+foreign keys (outgoing):
+
 read by:
 - (no process): `adapters::tests::facet_contract`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -653,6 +658,9 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
+
+foreign keys (outgoing):
+- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::facet_contract`
@@ -4673,6 +4681,9 @@ grants (runtime roles):
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
 
+foreign keys (outgoing):
+- fk: tenant_id, subscription_id -> control.subscriptions (NOT NULL)
+
 read by:
 - (no process): `adapters::tests::facet_contract`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -4715,6 +4726,10 @@ grants (runtime roles):
 - role_migration_owner: TRIGGER
 - role_migration_owner: TRUNCATE
 - role_migration_owner: UPDATE
+
+foreign keys (outgoing):
+- fk: plan_version_id -> control.plan_versions (NOT NULL)
+- fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
 - (no process): `adapters::tests::facet_contract`
