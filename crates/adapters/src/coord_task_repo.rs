@@ -7,7 +7,8 @@
 //! Called-by: [adapters::coord_repo, tests]
 //! Invariants: [coord.tasks.project_id is written only here: the INSERT by insert_task_in_txn, the UPDATE by
 //!   set_task_project_in_txn; that UPDATE closes the old CONTAINS edge's valid and opens the new one in the same
-//!   transaction, both at one DB-clock instant read after the task row lock, so the edges never overlap and never leave
+//!   transaction after both projects pass workspace visibility, both at one DB-clock instant read after the task row
+//!   lock, so the edges never overlap and never leave
 //!   a gap; every CONTAINS revision goes through relation_repo::append_contains_revision from one call site (xtask
 //!   m18_task_project_sole_writer); an Unfiled project carries no CONTAINS edge (N09 R3, never a default); provenance
 //!   (decided_by, factual and authorization Evidence) is the caller's, this module mints none; every rejection is an
@@ -24,8 +25,8 @@
 //!
 //! Rejections (§52, no new variant):
 //! - a submit scope that does not hold exactly one workspace: [`ErrorCode::InvalidInput`];
-//! - a target project that is unknown, another tenant's, outside the scope's workspaces or ARCHIVED, and an absent
-//!   task: [`ErrorCode::NotFound`] (0254 ②: one answer for all of them, no existence oracle);
+//! - a source or target project that is unknown, another tenant's, outside the scope's workspaces or ARCHIVED, and an
+//!   absent task: [`ErrorCode::NotFound`] (0254 ②: one answer for all of them, no existence oracle);
 //! - a relation write the kernel refuses (0249, 0253): [`ErrorCode::InvalidInput`] / [`ErrorCode::Conflict`];
 //! - PG failure: [`ErrorCode::DependencyUnavailable`].
 
@@ -327,15 +328,17 @@ async fn open_edge(
 /// 1. `project` must pass `private.declared_project_visible` for the scope's workspaces, else `NOT_FOUND` (an ARCHIVED
 ///    project fails it too, 0254 ②);
 /// 2. the task row is read `FOR UPDATE`; a task already in `project` is `Ok` and nothing is written;
-/// 3. `t` is one `clock_timestamp()` read after the lock: the close's upper bound and the open's lower bound;
-/// 4. every segment of the old edge that reaches `t` ends at `t` (skipped when the old project is an Unfiled project);
-/// 5. the new edge is opened at `t` (skipped when `project` is an Unfiled project: Unfiled carries no CONTAINS);
-/// 6. the column is updated.
+/// 3. the current project must pass the same visibility check, else `NOT_FOUND`; no write precedes either check;
+/// 4. `t` is one `clock_timestamp()` read after the lock: the close's upper bound and the open's lower bound;
+/// 5. every segment of the old edge that reaches `t` ends at `t` (skipped when the old project is an Unfiled project);
+/// 6. the new edge is opened at `t` (skipped when `project` is an Unfiled project: Unfiled carries no CONTAINS);
+/// 7. the column is updated.
 ///
 /// Two concurrent moves of one task take turns on the row lock, and the second one reads the project the first
-/// committed, so a task never has two open CONTAINS edges. Visibility of the old project is not checked: leaving a
-/// project widens nothing.
+/// committed, so a task never has two open CONTAINS edges. The relation_repo.rs:116 precondition (§6.1.4) requires
+/// both endpoints to be visible before a revision is written, including the source whose CONTAINS edge is closed.
 // ponytail: no topology guard until parent_task_id has a writer (ADR-0101 D-B); take TOPOLOGY_GUARD_CLASS then.
+// ponytail: an ARCHIVED source refuses too (declared_project_visible requires ACTIVE, 0254:42); a rescue path for tasks in archived projects needs an owner definer.
 pub async fn set_task_project_in_txn(
     txn: &mut Txn<'_>,
     scope: &AuthorizationScope,
@@ -351,14 +354,7 @@ pub async fn set_task_project_in_txn(
         .iter()
         .map(|workspace| workspace.0)
         .collect();
-    let visible: bool = sqlx::query_scalar("SELECT private.declared_project_visible($1, $2, $3)")
-        .bind(tenant)
-        .bind(project.0)
-        .bind(workspaces)
-        .fetch_one(&mut **txn)
-        .await
-        .map_err(db_error)?;
-    if !visible {
+    if !project_visible(txn, tenant, project.0, &workspaces).await? {
         return Err(ErrorCode::NotFound);
     }
     let current: Uuid = sqlx::query_scalar(
@@ -372,6 +368,9 @@ pub async fn set_task_project_in_txn(
     .ok_or(ErrorCode::NotFound)?;
     if current == project.0 {
         return Ok(());
+    }
+    if !project_visible(txn, tenant, current, &workspaces).await? {
+        return Err(ErrorCode::NotFound);
     }
     let at: i64 =
         sqlx::query_scalar("SELECT (extract(epoch FROM clock_timestamp()) * 1000000)::bigint")
@@ -398,4 +397,20 @@ pub async fn set_task_project_in_txn(
         .await
         .map_err(db_error)?;
     Ok(())
+}
+
+/// §6.1.4: both relation endpoints require the ACTIVE project predicate in the caller's workspace scope (0254).
+async fn project_visible(
+    txn: &mut Txn<'_>,
+    tenant: Uuid,
+    project: Uuid,
+    workspaces: &[Uuid],
+) -> Result<bool, ErrorCode> {
+    sqlx::query_scalar("SELECT private.declared_project_visible($1, $2, $3)")
+        .bind(tenant)
+        .bind(project)
+        .bind(workspaces)
+        .fetch_one(&mut **txn)
+        .await
+        .map_err(db_error)
 }

@@ -32,6 +32,7 @@
 //! | `g_m18_6_e_an_invisible_target_is_not_found_and_writes_nothing` | G-M18-6 (e) | the visibility check moves after a write |
 //! | `g_m18_6_f_concurrent_moves_never_leave_two_open_edges` | G-M18-6 (f) | the task row is read without `FOR UPDATE` |
 //! | `g_m18_6_g_a_backfilled_edge_that_ends_in_the_future_is_cut_at_the_move` | ADR-0102 D-D | the close only ends open segments |
+//! | `g_m18_6_h_an_invisible_source_is_not_found_and_writes_nothing` | G-M18-6 (h) | the door checks only the target's visibility |
 //!
 //! Skip contract (`humaux_testkit`, §79.2): no DSN / unreachable / migrations not applied each print a visible SKIP and
 //! return (a required-DB run turns a skip red).
@@ -47,8 +48,8 @@ use humaux_adapters::memory_repo::MemoryAttribution;
 use humaux_adapters::relation_repo::append_revision;
 use humaux_domain::continuity::ProjectId;
 use humaux_domain::error::ErrorCode;
-use humaux_domain::identity::PrincipalId;
-use humaux_domain::ids::TaskId;
+use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId};
+use humaux_domain::ids::{TaskId, WorkspaceId};
 use humaux_domain::relation::{
     DecidedBy, RelationEdge, RelationId, RelationKind, Timestamp, Validity,
 };
@@ -644,20 +645,32 @@ fn g_m18_6_d_append_revision_refuses_contains() {
     );
 }
 
-/// G-M18-6 (e): a target the scope cannot see (unknown, or in a workspace outside the scope) and an absent task are
+/// G-M18-6 (e): a target the scope cannot see (unknown, archived, or outside the scope) and an absent task are
 /// `NOT_FOUND`, and the committed transaction left the column and the relations untouched; a visible target moves.
 #[test]
 fn g_m18_6_e_an_invisible_target_is_not_found_and_writes_nothing() {
     run_db_fixture::<Fixture, _>(
         "g_m18_6_e_an_invisible_target_is_not_found_and_writes_nothing",
         |mut handle| {
-            let (visible, _, authz) = world(&mut handle);
+            let (visible, archived, authz) = world(&mut handle);
+            assert_eq!(
+                handle
+                    .admin
+                    .execute(
+                        "UPDATE private.continuity_projects SET lifecycle_state = 'ARCHIVED' \
+                     WHERE tenant_id = $1 AND project_id = $2",
+                        &[&handle.tenant_id, &archived],
+                    )
+                    .expect("owner archives the target (0136)"),
+                1
+            );
             let task = submit(&handle);
             let home = unfiled(&mut handle);
             let other_workspace = handle.seed_workspace();
             let elsewhere = project(&mut handle, other_workspace);
             for (label, target) in [
                 ("unknown project", Uuid::now_v7()),
+                ("archived project", archived),
                 ("project of a workspace outside the scope", elsewhere),
             ] {
                 assert_eq!(
@@ -681,6 +694,64 @@ fn g_m18_6_e_an_invisible_target_is_not_found_and_writes_nothing() {
             let column_now = column(&mut handle, task);
             purge_relations(&mut handle);
             assert_eq!(column_now, visible);
+        },
+    );
+}
+
+/// G-M18-6 (h), §6.1.4: closing a source's CONTAINS revision requires visibility of that endpoint too.
+#[test]
+fn g_m18_6_h_an_invisible_source_is_not_found_and_writes_nothing() {
+    run_db_fixture::<Fixture, _>(
+        "g_m18_6_h_an_invisible_source_is_not_found_and_writes_nothing",
+        |mut handle| {
+            let (source, _, authz) = world(&mut handle);
+            let other_workspace = handle.seed_workspace();
+            let target = project(&mut handle, other_workspace);
+            let source_scope = handle.auth.clone();
+            let target_scope = AuthorizationScope::new(
+                source_scope.tenant_id(),
+                source_scope.principal(),
+                source_scope.user_id(),
+                BoundedSet::new([WorkspaceId(other_workspace)]).expect("one workspace"),
+            );
+            let both_scope = AuthorizationScope::new(
+                source_scope.tenant_id(),
+                source_scope.principal(),
+                source_scope.user_id(),
+                BoundedSet::new([
+                    WorkspaceId(handle.workspace_id),
+                    WorkspaceId(other_workspace),
+                ])
+                .expect("two workspaces"),
+            );
+            for filed in [false, true] {
+                handle.auth = source_scope.clone();
+                let task = submit(&handle);
+                if filed {
+                    assert_eq!(move_task(&handle, authz, task, source), Ok(()));
+                }
+                let before = (column(&mut handle, task), relation_rows(&mut handle, task));
+                assert_eq!(before.1, i64::from(filed));
+                let source_edges = edges(&mut handle, before.0, task);
+                handle.auth = target_scope.clone();
+                assert_eq!(
+                    move_task(&handle, authz, task, target),
+                    Err(ErrorCode::NotFound),
+                    "invisible source (filed={filed})"
+                );
+                assert_eq!(
+                    (column(&mut handle, task), relation_rows(&mut handle, task)),
+                    before
+                );
+                assert_eq!(edges(&mut handle, before.0, task), source_edges);
+                handle.auth = both_scope.clone();
+                assert_eq!(move_task(&handle, authz, task, target), Ok(()), "control");
+                assert_eq!(column(&mut handle, task), target);
+                assert_eq!(relation_rows(&mut handle, task), if filed { 3 } else { 1 });
+                assert_eq!(violations(&mut handle), Vec::<String>::new());
+            }
+            handle.auth = source_scope;
+            purge_relations(&mut handle);
         },
     );
 }
