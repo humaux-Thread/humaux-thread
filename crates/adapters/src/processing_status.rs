@@ -5,7 +5,8 @@
 //!   retrieval::envelope, adapters::postgres, adapters::stream_repo]
 //! Called-by: [tests]
 //! Invariants: [summary never closes a ledger; absent checkpoints never become zero readings;
-//!   caller supplies the stream inventory; only authorized workspace keys are accepted]
+//!   caller supplies a REPEATABLE READ READ ONLY snapshot and stream inventory;
+//!   only authorized workspace keys are accepted]
 //! Spec: §15.3; §15.6; §23.1④; §78.1; ADR-0110 D-E
 
 use crate::{
@@ -41,17 +42,31 @@ pub struct DetailedStatus {
     failed: u64,
     waiting_key: u64,
     retry_wait: u64,
+    skipped_by_policy: u64,
 }
 
-/// §15.3: one caller transaction, one PK read per stream; inventory includes row-less family/version keys.
+/// §15.3: requires a caller-owned REPEATABLE READ READ ONLY snapshot, including row-less stream keys.
 pub async fn processing_status(
     txn: &mut Transaction<'_, Postgres>,
     query: &ProcessingStatusQuery<'_>,
     streams: &[StreamKey],
 ) -> Result<Vec<WorkspaceStatus>, ErrorCode> {
-    read(txn, query, streams, false)
-        .await
-        .map_err(|_| ErrorCode::DependencyUnavailable)
+    async {
+        let snapshot = sqlx::query_scalar::<_, bool>(
+            "SELECT current_setting('transaction_isolation') = 'repeatable read'
+                AND current_setting('transaction_read_only') = 'on'",
+        )
+        .fetch_one(&mut **txn)
+        .await?;
+        if !snapshot {
+            return Err(sqlx::Error::Protocol(
+                "processing status requires REPEATABLE READ READ ONLY".into(),
+            ));
+        }
+        read(txn, query, streams, false).await
+    }
+    .await
+    .map_err(|_| ErrorCode::DependencyUnavailable)
 }
 
 /// ADR-0110 D-E: admission precedes all reads; one worker-role REPEATABLE READ READ ONLY snapshot.
@@ -163,13 +178,15 @@ async fn add_detail(
     out.pending += closure.counts().pending();
     let row = sqlx::query("SELECT count(*) FILTER (WHERE state='FAILED') AS failed,
         count(*) FILTER (WHERE state='WAITING_KEY') AS waiting_key,
-        count(*) FILTER (WHERE state='RETRY_WAIT') AS retry_wait FROM projection.stream_log
+        count(*) FILTER (WHERE state='RETRY_WAIT') AS retry_wait,
+        count(*) FILTER (WHERE state='SKIPPED_BY_POLICY') AS skipped_by_policy FROM projection.stream_log
         WHERE tenant_id=$1 AND scope_kind=$2 AND scope_id=$3 AND domain=$4 AND projection_kind=$5 AND projection_version=$6")
         .bind(key.tenant_id.0).bind(&key.scope_kind).bind(key.scope_id).bind(&key.domain)
         .bind(&key.projection_kind).bind(&key.projection_version).fetch_one(&mut **txn).await?;
     out.failed += row.try_get::<i64, _>("failed")? as u64;
     out.waiting_key += row.try_get::<i64, _>("waiting_key")? as u64;
     out.retry_wait += row.try_get::<i64, _>("retry_wait")? as u64;
+    out.skipped_by_policy += row.try_get::<i64, _>("skipped_by_policy")? as u64;
     Ok(())
 }
 
