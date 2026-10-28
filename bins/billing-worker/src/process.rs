@@ -1,7 +1,7 @@
 //! `billing-worker::process` — one durable inbox task (§71.3, M04 D13h).
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json, time, uuid];
 //!   services=[]; env=[];
-//!   modules=[adapters::billing_processor_repo, adapters::entitlement_repo, adapters::postgres, application::billing, billing-worker::normalize, domain::billing, domain::error, domain::ids]
+//!   modules=[adapters::billing_processor_repo, adapters::entitlement_repo, adapters::postgres, application::billing, domain::billing, domain::error, domain::ids]
 //! Called-by: [tests]
 //! Invariants: [ingress authenticates raw bytes; inbox identity checked; fetched state wins; C2 alone writes snapshots]
 //! Spec: Baseline §71.3; §76; §52; §78.1
@@ -18,7 +18,6 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
-
 /// §78.1: provider products map to pinned plan versions supplied by the caller.
 pub struct ProcessorConfig {
     /// §71: no tier names or prices in processor logic.
@@ -81,16 +80,15 @@ async fn apply(
     event: &VerifiedBillingEvent,
     payload: &Value,
 ) -> Result<(), ErrorCode> {
-    let raw = serde_json::to_vec(payload).map_err(|_| ErrorCode::InvalidInput)?;
-    let normalized = crate::normalize::normalize(&raw, None)?;
-    if normalized.id != event.event_id
-        || normalized.event_type != event.event_type
+    // §71.3: subscription processing validates the envelope; money normalization belongs to M04-11b.
+    if event.event_id.is_empty()
+        || event.event_type.is_empty()
+        || payload["id"].as_str() != Some(event.event_id.as_str())
+        || payload["eventType"].as_str() != Some(event.event_type.as_str())
         || payload["object"]["id"].as_str() != event.object_id.as_deref()
+        || payload["created_at"].as_i64().is_none_or(|n| n < 0)
     {
         return Err(ErrorCode::InvalidInput);
-    }
-    if normalized.kind == crate::normalize::EventKind::Ignored {
-        return Ok(());
     }
     // §71.3: refunds/disputes and their payment rows are M04-11b; never consume them prematurely.
     if matches!(
@@ -98,6 +96,9 @@ async fn apply(
         "refund.created" | "dispute.created"
     ) {
         return Err(ErrorCode::InvalidInput);
+    }
+    if !event.event_type.starts_with("subscription.") && event.event_type != "checkout.completed" {
+        return Ok(());
     }
     let object = &payload["object"];
     let tenant = object["metadata"]["tenant_id"]
