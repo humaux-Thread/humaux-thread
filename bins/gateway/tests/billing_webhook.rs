@@ -2,7 +2,7 @@
 //! Depends-on: crates=[axum, humaux-adapters, humaux-domain, humaux-protocol, humaux-testkit, postgres,
 //!   serde_json, sha2, tokio, uuid]; services=[HTTP(loopback), PostgreSQL(any) w=[control.billing_inbox],
 //!   PostgreSQL(role_gateway)]; env=[CI, HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, domain::billing,
-//!   gateway::billing_webhook, gateway::guard, gateway::limiter, humaux-testkit, protocol::edge]
+//!   gateway::admission, gateway::billing_webhook, gateway::guard, gateway::limiter, humaux-testkit, protocol::edge]
 //! Called-by: [cargo-test]
 //! Invariants: [unique fixture payloads are cleaned; missing CI input fails; exact row counts include changed keys]
 //! Spec: §71.3; §79.2; M04 D7; G-M04-10
@@ -10,6 +10,7 @@
 use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_domain::billing::BillingProviderId;
 use humaux_gateway::{
+    admission::{Admission, AdmissionSettings},
     billing_webhook::{self, BillingWebhookConfig},
     guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
     limiter::RatePolicy,
@@ -77,6 +78,7 @@ struct Handle {
     admin: Client,
     address: SocketAddr,
     empty: SocketAddr,
+    admission: Arc<Admission>,
     id: String,
 }
 impl Drop for Handle {
@@ -115,16 +117,31 @@ impl DbIntegrationFixture for Fixture {
             )))
             .expect("runtime pool");
         let guard = Arc::new(GatewayGuard::new(pool, settings()).expect("guard"));
-        let address = rt.block_on(serve(billing_webhook::router(
-            Arc::clone(&guard),
-            providers(),
-        )));
-        let empty = rt.block_on(serve(billing_webhook::router(guard, HashMap::new())));
+        let admission = Arc::new(Admission::new(AdmissionSettings {
+            concurrency: 1,
+            queue_depth: 0,
+            max_wait: Duration::from_millis(50),
+            per_key_limit: 1,
+            body_read_timeout: Duration::from_secs(2),
+            max_request_body_bytes: 2048,
+        }));
+        let composed = |providers| {
+            billing_webhook::compose(
+                axum::Router::new(),
+                axum::Router::new(),
+                Arc::clone(&admission),
+                Arc::clone(&guard),
+                Some(providers),
+            )
+        };
+        let address = rt.block_on(serve(composed(providers())));
+        let empty = rt.block_on(serve(composed(HashMap::new())));
         Ok(Handle {
             rt,
             admin,
             address,
             empty,
+            admission,
             id: Uuid::now_v7().to_string(),
         })
     }
@@ -239,5 +256,60 @@ fn g_m04_10_tampered_and_refusals() {
             );
             assert_eq!(rows(&mut h).len(), 0);
         }
+    });
+}
+
+#[test]
+fn webhook_composition_keeps_admission() {
+    run_db_fixture::<Fixture, _>("M04-P2-438 admission", |mut h| {
+        let payload = body(&h);
+        let headers = format!("creem-signature: {}\r\n", signature(&payload));
+        let ticket =
+            h.rt.block_on(h.admission.enter(0))
+                .expect("occupy admission");
+        let status = h.rt.block_on(http(h.address, "creem", &payload, &headers));
+        assert_eq!(
+            (status, rows(&mut h).len()),
+            (503, 0),
+            "webhook must enter admission"
+        );
+        drop(ticket);
+        assert_eq!(
+            h.rt.block_on(http(h.address, "creem", &payload, &headers)),
+            200
+        );
+        assert_eq!(
+            rows(&mut h),
+            vec![serde_json::from_str::<Value>(&payload).unwrap()]
+        );
+    });
+}
+
+#[test]
+fn webhook_unstorable_signed_payload_is_bad_request() {
+    run_db_fixture::<Fixture, _>("M04-P2-438 jsonb", |mut h| {
+        for extra in [json!({"nested": ["\0"]}), json!({"bad\0key": "ok"})] {
+            let mut payload = json!({"id":h.id, "eventType":"paid"});
+            payload["extra"] = extra;
+            let payload = payload.to_string();
+            let headers = format!("creem-signature: {}\r\n", signature(&payload));
+            let status = h.rt.block_on(http(h.address, "creem", &payload, &headers));
+            assert_eq!(
+                (status, rows(&mut h).len()),
+                (400, 0),
+                "unstorable signed payload"
+            );
+        }
+        let payload =
+            json!({"id":h.id, "eventType":"paid", "extra": [null, true, 1, "\\u0000"]}).to_string();
+        let headers = format!("creem-signature: {}\r\n", signature(&payload));
+        assert_eq!(
+            h.rt.block_on(http(h.address, "creem", &payload, &headers)),
+            200
+        );
+        assert_eq!(
+            rows(&mut h),
+            vec![serde_json::from_str::<Value>(&payload).unwrap()]
+        );
     });
 }
