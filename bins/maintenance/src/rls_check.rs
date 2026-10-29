@@ -5388,6 +5388,34 @@ pub fn check_billing_processor_doors(client: &mut impl GenericClient) -> GateRes
         fail(check, problems.join("; "))
     }
 }
+/// §37 / 0304: one shared publisher fence, exact worker executors (§57.1).
+pub fn check_publish_source_door(client: &mut impl GenericClient) -> GateResult {
+    let check = "§37 publish source door";
+    let function = "private.lock_publish_source(uuid,uuid,uuid)";
+    match client.query_one("SELECT to_regprocedure($1) IS NOT NULL", &[&function]) {
+        Ok(row) if !row.get::<_, bool>(0) => {
+            return not_applicable(check, format!("missing {function}"));
+        }
+        Err(error) => return fail(check, format!("catalog probe failed: {error}")),
+        _ => {}
+    }
+    let mut problems = Vec::new();
+    check_owner_definer_function(
+        client,
+        &mut problems,
+        function,
+        &[
+            "role_private_worker",
+            "role_consolidation_worker",
+            "role_retrieval_worker",
+        ],
+    );
+    if problems.is_empty() {
+        pass(check, "owner definer; exact three publisher executors")
+    } else {
+        fail(check, problems.join("; "))
+    }
+}
 const WRITE_GATE_FN: &str = "projection.stream_checkpoints_workspace_write_gate()";
 
 /// ADR-0060 D-H (migration 0208, card 33b): the operator reasoning-route doors and their read-only
@@ -6043,6 +6071,7 @@ pub fn run(args: &[String]) -> i32 {
             results.push(check_reasoning_route_doors(&mut client));
             results.push(check_entitlement_doors(&mut client));
             results.push(check_billing_processor_doors(&mut client));
+            results.push(check_publish_source_door(&mut client));
             results.push(check_health_reader_boundary(&mut client));
             results.push(check_maintenance_doors(&mut client));
             results.push(check_maintenance_delete_doors(&mut client));

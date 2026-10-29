@@ -460,11 +460,9 @@ pub async fn finish_processing_run(
     provider_request_id: Option<&str>,
 ) -> Result<u64, sqlx::Error> {
     // §37 / ADR-0092 D-C: refuse the entire write transaction, including pending candidates.
-    if sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (SELECT 1 FROM private.processing_runs AS run \
-         JOIN ops.outbox AS ob ON ob.tenant_id = run.tenant_id AND ob.evidence_id = run.evidence_id \
-         JOIN projection.stream_log AS sl ON sl.tenant_id = ob.tenant_id AND sl.commit_seq = ob.commit_seq \
-         WHERE run.processing_run_id = $1 AND sl.state = 'TOMBSTONED')",
+    if !sqlx::query_scalar::<_, bool>(
+        "SELECT private.lock_publish_source(tenant_id, evidence_id, NULL) \
+         FROM private.processing_runs WHERE processing_run_id = $1",
     )
     .bind(processing_run_id)
     .fetch_one(&mut **txn)

@@ -551,12 +551,8 @@ pub enum PublishOutcome {
 /// re-checks below mutually consistent — every `SELECT ... FROM memory_records` in this
 /// transaction observes the same snapshot, so a correction landing between input #3's check
 /// and input #40's check cannot make #40 look fresh relative to a state #3 already moved past.
-/// This does not close the residual commit-window race (a correction landing between this
-/// transaction's snapshot and its `COMMIT`) — `role_consolidation_worker` has no `SELECT ...
-/// FOR SHARE` grant on `private.memory_records` to hold those rows locked for that long
-/// (verified live: `SET ROLE role_consolidation_worker; SELECT ... FOR SHARE` →
-/// `permission denied for table memory_records`), so closing it needs a §6.2.2 role-grant
-/// decision this task does not own; flagged, not silently treated as solved.
+/// §37 / ADR-0092 D-C: 0304 locks the accept door's stream rows through commit; a
+/// concurrent tombstone invalidating this snapshot (40001) becomes STALE_INPUT after rollback.
 ///
 /// `sources` must each be a `(memory_id, evidence_id)` pair already recorded as one of this
 /// run's own `memory_consolidation_inputs` rows — checked explicitly
@@ -597,14 +593,17 @@ async fn resolve_current_authority_or_stale(
         let current = sqlx::query(
             "SELECT updated_at, content, authority_class, confidence, status, superseded_by \
              FROM private.memory_records AS m WHERE memory_id = $1 \
-             AND NOT EXISTS (SELECT 1 FROM private.memory_evidence AS me \
-               JOIN ops.outbox AS ob ON ob.tenant_id = m.tenant_id AND ob.evidence_id = me.evidence_id \
-               JOIN projection.stream_log AS sl ON sl.tenant_id = ob.tenant_id AND sl.commit_seq = ob.commit_seq \
-               WHERE me.memory_id = m.memory_id AND sl.state = 'TOMBSTONED')",
+             AND private.lock_publish_source(m.tenant_id, NULL, m.memory_id)",
         )
         .bind(memory_id)
         .fetch_optional(&mut **txn)
-        .await?;
+        .await;
+        let current = match current {
+            Err(sqlx::Error::Database(ref e)) if e.code().as_deref() == Some("40001") => {
+                return Ok(None);
+            }
+            other => other?,
+        };
 
         let is_stale = match &current {
             None => true, // Should not happen (memory_records rows are never deleted, only
@@ -697,6 +696,9 @@ pub async fn publish_rollup(
     let Some(current_authority) =
         resolve_current_authority_or_stale(&mut txn, &recorded_inputs).await?
     else {
+        txn.rollback().await?;
+        let mut txn = pool.pool().begin().await?;
+        set_tenant_local(&mut txn, tenant_id).await?;
         sqlx::query(
             "UPDATE private.memory_consolidation_runs \
              SET status = 'STALE_INPUT', manifest_hash = $2, finished_at = now() \

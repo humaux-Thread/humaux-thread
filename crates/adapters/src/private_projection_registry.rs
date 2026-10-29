@@ -342,10 +342,7 @@ async fn current_source_matches(
                 status, superseded_by \
          FROM private.memory_records AS m \
          WHERE tenant_id = $1 AND memory_id = $2 \
-         AND NOT EXISTS (SELECT 1 FROM private.memory_evidence AS me \
-           JOIN ops.outbox AS ob ON ob.tenant_id = m.tenant_id AND ob.evidence_id = me.evidence_id \
-           JOIN projection.stream_log AS sl ON sl.tenant_id = ob.tenant_id AND sl.commit_seq = ob.commit_seq \
-           WHERE me.memory_id = m.memory_id AND sl.state = 'TOMBSTONED')",
+         AND private.lock_publish_source(m.tenant_id, NULL, m.memory_id)",
     )
     .bind(registration.family.tenant_id.0)
     .bind(registration.memory_id.0)
