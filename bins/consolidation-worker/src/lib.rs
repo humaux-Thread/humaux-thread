@@ -571,7 +571,6 @@ mod error_log_tests {
         assert_eq!(retry_or_park(true, &mut r, None), Outcome::Dead);
         assert_eq!((r.last_error, r.dead), (Some(ErrorCode::Internal), 1));
     }
-
     #[test]
     fn reasoning_classes_are_never_guessed() {
         use humaux_domain::error::ErrorCode;
