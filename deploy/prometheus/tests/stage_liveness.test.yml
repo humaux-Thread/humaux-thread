@@ -55,3 +55,19 @@ tests:
       - eval_time: 25h
         alertname: MaintenanceStageNoOutput
         exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'stage_state{stage="lost"}'
+        values: '5x10'
+      - series: 'stage_state{stage="dr_evidence"}'
+        values: '2x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: MaintenanceStageCannotRun
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: MaintenanceStageCannotRun
+        exp_alerts:
+          - exp_labels:
+              stage: lost
+              severity: warning

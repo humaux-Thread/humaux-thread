@@ -31,7 +31,7 @@
 //!   HUMAUX_MAINTENANCE_SERVE_SNAPSHOTS_LIMIT,
 //!   HUMAUX_MAINTENANCE_SERVE_TENANTS_PER_RUN, HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS];
 //!   modules=[adapters::confirm_token_repo, adapters::maintenance_repo, adapters::membership_repo, adapters::postgres,
-//!   adapters::provider_budget, adapters::quota_repo, adapters::stream_repo, domain::ids, telemetry::dr,
+//!   adapters::provider_budget, adapters::quota_repo, adapters::stream_repo, domain::error, domain::ids, telemetry::dr,
 //!   telemetry::metrics, maintenance::main, maintenance::resident]
 //! Called-by: [maintenance::main]
 //! Invariants: [HUMAUX_MIGRATOR_PG_DSN in the environment refuses boot before anything else (ADR-0063 D-H); every
@@ -70,10 +70,10 @@ use humaux_adapters::maintenance_repo::{
 use humaux_adapters::membership_repo::AdminAction;
 use humaux_adapters::postgres::MaintenanceDbPool;
 use humaux_adapters::{confirm_token_repo, provider_budget, quota_repo, stream_repo};
-use humaux_domain::ids::TenantId;
+use humaux_domain::{error::ErrorCode, ids::TenantId};
 use humaux_telemetry::dr::{self, DrReading, Limit, Volume};
 use humaux_telemetry::metrics::{
-    Routes, families, render_stage_liveness, stage_finished, stage_started, write_family,
+    Routes, families, render_stage_liveness, stage_recorded, stage_started, write_family,
     write_single_label,
 };
 use serde_json::{Value, json};
@@ -279,11 +279,18 @@ struct Run {
 impl Run {
     // §39: the declared product may be a reading rather than affected rows.
     fn finish(&self, task: Task, now: f64, finished: bool) {
-        stage_finished(
+        stage_recorded(
             task.label(),
             now,
-            finished && self.failed == 0,
-            self.affected > 0 || self.reading_published,
+            (self.failed > 0 || !finished).then_some(ErrorCode::Internal),
+            [
+                self.tenants
+                    + u64::from(matches!(
+                        task,
+                        Task::Partitions | Task::DrEvidence | Task::AuthorityI4
+                    )),
+                self.affected + u64::from(self.reading_published),
+            ],
         );
     }
 
@@ -629,6 +636,12 @@ async fn cycle(
                     Ok(Err(e)) => format!("tenant page: {e}"),
                     _ => format!("the tenant page did not answer within {CYCLE_SECONDS}"),
                 });
+                stage_recorded(
+                    task.label(),
+                    resident::stage_now(),
+                    Some(ErrorCode::DependencyUnavailable),
+                    [0, 0],
+                );
                 runs.push((task, run));
                 continue;
             }
@@ -922,6 +935,11 @@ mod tests {
     #[test]
     fn stage_output_uses_task_product() {
         use super::{DrReading, Run, Task, finish_dr_reading, render_stage_liveness};
+        assert_eq!(Task::ALL.len(), 13);
+        assert_eq!(
+            Task::ALL.map(Task::label).join(","),
+            "lost,ingest_tickets,quota_reservations,quota_renewal,provider_budgets,confirm_tokens,snapshots,jobs,reissue,redrive,partitions,dr_evidence,authority_i4"
+        );
         for task in Task::ALL {
             let mut run = Run::default();
             if task == Task::DrEvidence {
