@@ -728,6 +728,7 @@ fn transient_rate_limit_and_lock_cancel_stay_received() {
             assert_received_without_effects(&mut h, result, &before);
             let dsn = h._db.dsn();
             h.pool =
+                // dep: PostgreSQL(role_maintenance) — real lock cancellation, not a mocked error (§79.2).
                 h.rt.block_on(MaintenanceDbPool::connect(&format!(
                     "{dsn}{}options=-c%20role%3Drole_maintenance%20-c%20lock_timeout%3D50ms",
                     if dsn.contains('?') { '&' } else { '?' }
