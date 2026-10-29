@@ -2,7 +2,7 @@
 //! `testkit::tests::metrics::stage_processed_count` — §39 result witness.
 //! Depends-on: crates=[humaux-domain, humaux-telemetry]; services=[]; env=[]; modules=[domain::error, telemetry::metrics]
 //! Called-by: []
-//! Invariants: [exact latest-attempt value, error retention and zero baseline]
+//! Invariants: [visited units equal the latest attempt count including errors]
 //! Spec: Baseline §39; §41.2; §80.2
 use humaux_domain::error::ErrorCode;
 use humaux_telemetry::metrics::{render_stage_liveness, stage_recorded};
