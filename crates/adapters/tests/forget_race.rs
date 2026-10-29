@@ -1,5 +1,5 @@
 //! `adapters::tests::forget_race` — G-M19-4 commit-time deletion overlay checks.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sqlx]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq] w=[ops.outbox, private.context_bindings, private.events, private.memory_evidence, private.memory_records, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_rollup_sources, private.memory_rollups, private.processing_runs, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_private_worker), PostgreSQL(role_consolidation_worker), PostgreSQL(role_retrieval_worker), PostgreSQL(role_maintenance)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::postgres, adapters::private_projection_registry, adapters::tests::support::operation_receipt_fixture, domain::authority, domain::ids, domain::memory, humaux-testkit, projection::serving, testkit::disposable]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, serde_json, sqlx]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq] w=[ops.outbox, private.context_bindings, private.events, private.memory_evidence, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_rollup_sources, private.memory_rollups, private.processing_runs, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_private_worker), PostgreSQL(role_consolidation_worker), PostgreSQL(role_retrieval_worker), PostgreSQL(role_maintenance)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::postgres, adapters::private_projection_registry, adapters::tests::support::operation_receipt_fixture, domain::authority, domain::ids, domain::memory, humaux-testkit, projection::serving, testkit::disposable]
 //! Called-by: [cargo-test]
 //! Invariants: [load/select precedes deletion; commit checks run as runtime roles; any ticket and any source role can invalidate a derivation; exact durable output sets]
 //! Spec: Baseline §37; §11.7; ADR-0092 D-C; ADR-0079 D-J; G-M19-4
@@ -95,6 +95,7 @@ impl Drop for World {
 impl World {
     fn forget(&mut self) {
         let mut txn = self.h.admin.transaction().unwrap();
+        // dep: PostgreSQL(role_maintenance) — §37 tombstone runtime role
         txn.batch_execute("SET LOCAL ROLE role_maintenance")
             .unwrap();
         assert_eq!(txn.execute("UPDATE projection.stream_log SET state='TOMBSTONED' WHERE tenant_id=$1 AND stream_seq=2", &[&self.h.tenant_id]).unwrap(), 1);
@@ -128,6 +129,7 @@ fn distill_publish(w: &mut World, forgotten: bool) {
     let run = seed_run(w);
     let pool =
         w.h.rt
+            // dep: PostgreSQL(role_private_worker) — §37 commit role
             .block_on(PrivateWorkerDbPool::connect(&role_dsn(
                 "role_private_worker",
             )))
@@ -227,6 +229,7 @@ fn g_m19_4_consolidation_rollup_rechecks_supporting_source() {
         |mut w| {
             let pool =
                 w.h.rt
+                    // dep: PostgreSQL(role_consolidation_worker) — §37 commit role
                     .block_on(ConsolidationDbPool::connect(&role_dsn(
                         "role_consolidation_worker",
                     )))
@@ -323,6 +326,7 @@ fn g_m19_4_projection_publish_rechecks_supporting_source() {
             let control = registration(&mut w, control_id);
             let pool =
                 w.h.rt
+                    // dep: PostgreSQL(role_retrieval_worker) — §37 commit role
                     .block_on(RetrievalWorkerDbPool::connect(&role_dsn(
                         "role_retrieval_worker",
                     )))
