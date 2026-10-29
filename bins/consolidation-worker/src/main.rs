@@ -442,5 +442,18 @@ mod stage_witness {
             out.lines().find(|l| l.starts_with("stage_state{")).unwrap(),
             "stage_state{stage=\"consolidation_dispatch\"} 3"
         );
+        let released = humaux_consolidation_worker::DispatchReport {
+            claimed: 1,
+            stale_input: 1,
+            deferred: 1,
+            ..Default::default()
+        };
+        dispatch_iteration(async { Ok(released) }).await.unwrap();
+        out.clear();
+        render_metrics(&mut out);
+        assert_eq!(
+            out.lines().find(|l| l.starts_with("stage_state{")).unwrap(),
+            "stage_state{stage=\"consolidation_dispatch\"} 2"
+        );
     }
 }

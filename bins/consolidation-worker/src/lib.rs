@@ -325,9 +325,11 @@ pub async fn dispatch_pass<P: PrivateReasoningPort>(
         let lease = jobs::DerivedLease::of(&job, &config.lease_owner);
         // Refresh before the (potentially long) inference hop rather than after it — a heartbeat
         // taken once the work is already done proves nothing about the lease that protected it.
-        if !jobs::heartbeat_derived_consolidation(pool, &lease, config.lease_seconds).await? {
+        if let Some(code) = lease_class(
+            jobs::heartbeat_derived_consolidation(pool, &lease, config.lease_seconds).await,
+        ) {
             report.lost_lease += 1;
-            report.last_error = Some(ErrorCode::Conflict);
+            report.last_error.get_or_insert(code);
             continue;
         }
         let outcome = run_claimed_job(pool, &bind_port, config, &job, &lease).await;
@@ -343,7 +345,7 @@ pub async fn dispatch_pass<P: PrivateReasoningPort>(
             // wrote NOTHING. The worker that now holds the job publishes the one rollup.
             Ok(PublishOutcome::LostLease) => {
                 report.lost_lease += 1;
-                report.last_error = Some(ErrorCode::Conflict);
+                report.last_error.get_or_insert(ErrorCode::Conflict);
                 continue;
             }
             Ok(PublishOutcome::NoOutput) => {
@@ -354,7 +356,7 @@ pub async fn dispatch_pass<P: PrivateReasoningPort>(
             // release, not a completion.
             Ok(PublishOutcome::StaleInput) => {
                 report.stale_input += 1;
-                retry_or_park(config, &job, &mut report)
+                retry_or_park(job.attempt >= config.max_attempts, &mut report, None)
             }
             // Not a failure of this job — the tenant is not provisioned yet. Release it with a
             // backoff and DO NOT spend an attempt: parking it `DEAD` would drop that memory's
@@ -365,12 +367,14 @@ pub async fn dispatch_pass<P: PrivateReasoningPort>(
                     "humaux-consolidation-worker: job {} (tenant {}) not ready: {reason}",
                     job.job_id, job.tenant_id
                 );
-                report.last_error = Some(ErrorCode::DependencyUnavailable);
+                report
+                    .last_error
+                    .get_or_insert(ErrorCode::DependencyUnavailable);
                 report.not_ready += 1;
                 jobs::DerivedWorkOutcome::Retry
             }
             Err(error) => {
-                report.last_error = Some(match error {
+                let class = Some(match error {
                     RunOnceError::Repo(ConsolidateRepoError::HomeStream(code)) => *code,
                     RunOnceError::Repo(
                         ConsolidateRepoError::Db(_) | ConsolidateRepoError::Jobs(_),
@@ -397,12 +401,14 @@ pub async fn dispatch_pass<P: PrivateReasoningPort>(
                     job.tenant_id,
                     error_class_for_log(error)
                 );
-                retry_or_park(config, &job, &mut report)
+                retry_or_park(job.attempt >= config.max_attempts, &mut report, class)
             }
         };
-        if !jobs::settle_derived_consolidation(pool, &lease, settle, config.lease_seconds).await? {
+        if let Some(code) = lease_class(
+            jobs::settle_derived_consolidation(pool, &lease, settle, config.lease_seconds).await,
+        ) {
             report.lost_lease += 1;
-            report.last_error = Some(ErrorCode::Conflict);
+            report.last_error.get_or_insert(code);
         }
     }
     Ok(report)
@@ -413,6 +419,13 @@ pub async fn dispatch_pass<P: PrivateReasoningPort>(
 /// arm's `Display` already says something. `unclassified private reasoning failure` is the honest
 /// answer when the raise site used `PrivateReasoningError::new` rather than `::classified` — it
 /// says "no class", which is not the same as saying nothing.
+fn lease_class(result: Result<bool, jobs::JobsError>) -> Option<ErrorCode> {
+    match result {
+        Ok(true) => None,
+        Ok(false) => Some(ErrorCode::Conflict),
+        Err(_) => Some(ErrorCode::DependencyUnavailable),
+    }
+}
 fn reasoning_class(error: &PrivateReasoningError) -> ErrorCode {
     ErrorCode::ALL
         .into_iter()
@@ -431,11 +444,14 @@ fn error_class_for_log(error: &RunOnceError) -> String {
 }
 
 fn retry_or_park(
-    config: &DispatchConfig,
-    job: &jobs::ClaimedJob,
+    exhausted: bool,
     report: &mut DispatchReport,
+    class: Option<ErrorCode>,
 ) -> jobs::DerivedWorkOutcome {
-    if job.attempt >= config.max_attempts {
+    if let Some(code) = class.or(exhausted.then_some(ErrorCode::Internal)) {
+        report.last_error.get_or_insert(code);
+    }
+    if exhausted {
         report.dead += 1;
         jobs::DerivedWorkOutcome::Dead
     } else {
@@ -541,6 +557,20 @@ impl std::fmt::Display for RunOnceError {
 mod error_log_tests {
     use super::{RunOnceError, error_class_for_log};
     use humaux_application::consolidate::PrivateReasoningError;
+
+    #[test]
+    fn pass_outcome_release_or_park() {
+        use super::{DispatchReport, jobs::DerivedWorkOutcome as Outcome, retry_or_park};
+        use humaux_domain::error::ErrorCode;
+        let mut r = DispatchReport::default();
+        assert_eq!(retry_or_park(false, &mut r, None), Outcome::Retry);
+        assert_eq!(
+            (r.last_error, r.published, r.dead, r.deferred),
+            (None, 0, 0, 1)
+        );
+        assert_eq!(retry_or_park(true, &mut r, None), Outcome::Dead);
+        assert_eq!((r.last_error, r.dead), (Some(ErrorCode::Internal), 1));
+    }
 
     #[test]
     fn reasoning_classes_are_never_guessed() {

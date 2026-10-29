@@ -390,7 +390,10 @@ async fn infer(
             model_call_id: Some(result.model_call_id),
             failure_message: None,
         },
-        Err(error) => failed_envelope(call_id, error.to_string()),
+        Err(error) => failed_envelope(
+            call_id,
+            humaux_adapters::private_inference_rpc::reasoning_failure(&error),
+        ),
     };
     (envelope, route)
 }

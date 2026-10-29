@@ -186,14 +186,19 @@ fn rpc_failure(reason: &str) -> PrivateReasoningError {
     let code = match reason {
         "INVALID_RESPONSE" | "RESPONSE_DIGEST_MISMATCH" => ErrorCode::ProviderPermanent,
         reason if reason.starts_with("TRANSPORT") => ErrorCode::ProviderTransient,
-        _ => ErrorCode::ALL
-            .into_iter()
-            .find(|code| code.as_str() == reason)
-            .unwrap_or(ErrorCode::Internal),
+        _ => ErrorCode::Internal,
     };
     PrivateReasoningError::classified(code.as_str())
 }
 
+fn rpc_reasoning_failure(reason: &str) -> PrivateReasoningError {
+    let label = reason.split(": ").next().unwrap_or(reason);
+    let code = ErrorCode::ALL
+        .into_iter()
+        .find(|code| code.as_str() == label)
+        .unwrap_or(ErrorCode::Internal);
+    PrivateReasoningError::classified(code.as_str())
+}
 #[async_trait::async_trait]
 impl PrivateReasoningPort for UdsInferenceClient<'_> {
     async fn infer(
@@ -232,7 +237,7 @@ impl PrivateReasoningPort for UdsInferenceClient<'_> {
             Err(reason) => return Err(rpc_failure(&reason)),
         };
         if envelope.outcome != "COMPLETED" {
-            return Err(rpc_failure(
+            return Err(rpc_reasoning_failure(
                 envelope.failure_message.as_deref().unwrap_or("UNKNOWN"),
             ));
         }
@@ -275,6 +280,19 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
+
+    #[test]
+    fn rpc_preserves_reasoning_classes() {
+        use super::rpc_reasoning_failure as decode;
+        use humaux_adapters::private_inference_rpc::reasoning_failure as encode;
+        use humaux_application::consolidate::PrivateReasoningError as Error;
+        use humaux_domain::error::ErrorCode;
+        for code in ErrorCode::ALL {
+            let wire = encode(&Error::classified(code.as_str()));
+            assert_eq!(decode(&wire).class(), Some(code.as_str()));
+        }
+        assert_eq!(decode("unknown: redacted").class(), Some("Internal"));
+    }
 
     /// ADR-0066 D-L: a socket served by any uid but the registered private-worker uid is refused before a byte is
     /// written. Fault: dial without the peer-uid check ⇒ the request is written ⇒ red.

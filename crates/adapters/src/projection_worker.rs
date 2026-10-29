@@ -2255,7 +2255,7 @@ async fn claimed_pass(
             false,
         )
         .await;
-        outcome.last_error = Some(ErrorCode::InvalidInput);
+        outcome.last_error.get_or_insert(ErrorCode::InvalidInput);
         if parked.is_ok_and(|written| written) {
             outcome.placement_invalid += 1;
         } else {
@@ -2414,16 +2414,21 @@ async fn run_family(
         // A worker that dies on this ticket every time never reaches the retry branch below;
         // the claim's increment is what still bounds it.
         if ticket.attempts > cfg.max_attempts {
-            tally_exhausted(outcome, settle_exhausted(shared, ticket, fence).await);
+            tally_exhausted(outcome, settle_exhausted(shared, ticket, fence).await, None);
             continue;
         }
         let renewed =
             stream_repo::renew_family_leases(&shared.pool, key, &cfg.lease_owner, cfg.lease_secs)
                 .await;
-        if !renewed.is_ok_and(|seqs| seqs.contains(&ticket.stream_seq)) {
+        let renewal_error = match renewed {
+            Ok(seqs) if seqs.contains(&ticket.stream_seq) => None,
+            Ok(_) => Some(ErrorCode::Conflict),
+            Err(_) => Some(ErrorCode::DependencyUnavailable),
+        };
+        if let Some(code) = renewal_error {
             // The lease is gone (expired, maybe re-claimed): nothing of this family may be
             // written by this worker any more.
-            outcome.last_error = Some(ErrorCode::DependencyUnavailable);
+            outcome.last_error.get_or_insert(code);
             outcome.lost_lease += (tickets.len() - index) as u64;
             break;
         }
@@ -2432,7 +2437,9 @@ async fn run_family(
     // One watermark move per family (j). A failure here is logged: the next pass over this
     // family (or the next write) moves it, and the settled rows above stay settled.
     if let Err(error) = stream_repo::advance_prefix(&shared.pool, key, shared.processor_id).await {
-        outcome.last_error = Some(ErrorCode::DependencyUnavailable);
+        outcome
+            .last_error
+            .get_or_insert(ErrorCode::DependencyUnavailable);
         eprintln!(
             "projection_worker: advance_prefix failed tenant={} scope={}: {error}",
             key.tenant_id.0, key.scope_id
@@ -2457,7 +2464,7 @@ async fn process_and_write(
         attempts: ticket.attempts,
     };
     // A permit the cell registry refused is a Qdrant-side outage of this ticket like any other.
-    let (terminal, class) = match (shared.mint_permit)() {
+    let (terminal, class, item_error) = match (shared.mint_permit)() {
         Some(permit) => {
             let ctx = RowCtx {
                 last_error: Mutex::new(None),
@@ -2475,15 +2482,13 @@ async fn process_and_write(
                 bm25,
             };
             let result = process_row(&ctx, ticket.stream_seq, ticket.commit_seq).await;
-            if let Some(code) = ctx.stage_error(result.0) {
-                outcome.last_error = Some(code);
-            }
-            result
+            (result.0, result.1, ctx.stage_error(result.0))
         }
-        None => {
-            outcome.last_error = Some(ErrorCode::DependencyUnavailable);
-            (RowTerminal::Retry, "qdrant_upsert_failed")
-        }
+        None => (
+            RowTerminal::Retry,
+            "qdrant_upsert_failed",
+            Some(ErrorCode::DependencyUnavailable),
+        ),
     };
     if terminal == RowTerminal::Done {
         // Every dependency answered: the next outage failure is charged again.
@@ -2504,7 +2509,11 @@ async fn process_and_write(
                 "projection_worker: stream_seq={} transient_exhausted last_class={class}",
                 ticket.stream_seq
             );
-            tally_exhausted(outcome, settle_exhausted(shared, ticket, fence).await);
+            tally_exhausted(
+                outcome,
+                settle_exhausted(shared, ticket, fence).await,
+                item_error,
+            );
             return;
         }
         RowTerminal::Retry => stream_repo::release_for_retry(
@@ -2535,13 +2544,10 @@ async fn process_and_write(
         .await
         .ok(),
     };
-    if written.is_none() {
-        outcome.last_error = Some(ErrorCode::DependencyUnavailable);
-    }
     if refund && written == Some(true) {
         outcome.refunded += 1;
     }
-    tally(outcome, written, terminal);
+    let _ = tally(outcome, written, terminal, item_error);
 }
 
 /// Settles `ticket` `FAILED` `transient_exhausted` (ADR-0052 D-E); `Some(false)` = lease lost.
@@ -2566,20 +2572,27 @@ async fn settle_exhausted(
 /// Counts one ticket's written outcome: `Some(true)` under its disposition, `Some(false)` (the
 /// fence matched nothing) as a lost lease, `None` (the write itself failed; the lease expiry
 /// returns the ticket) as a lost lease too — this worker no longer owns what happens to it.
-fn tally_exhausted(outcome: &mut PassOutcome, written: Option<bool>) {
-    outcome.last_error = Some(outcome.last_error.unwrap_or(ErrorCode::Internal));
-    tally(outcome, written, RowTerminal::Failed);
+fn tally_exhausted(outcome: &mut PassOutcome, written: Option<bool>, class: Option<ErrorCode>) {
+    let _ = tally(outcome, written, RowTerminal::Failed, class);
 }
 
-fn tally(outcome: &mut PassOutcome, written: Option<bool>, terminal: RowTerminal) {
+fn tally(
+    outcome: &mut PassOutcome,
+    written: Option<bool>,
+    terminal: RowTerminal,
+    class: Option<ErrorCode>,
+) -> Option<ErrorCode> {
+    let class = match written {
+        None => Some(ErrorCode::DependencyUnavailable),
+        Some(false) => Some(ErrorCode::Conflict),
+        Some(true) => class.or((terminal == RowTerminal::Failed).then_some(ErrorCode::Internal)),
+    };
+    if let Some(code) = class {
+        outcome.last_error.get_or_insert(code);
+    }
     if written != Some(true) {
-        outcome.last_error = Some(if written.is_none() {
-            ErrorCode::DependencyUnavailable
-        } else {
-            ErrorCode::Conflict
-        });
         outcome.lost_lease += 1;
-        return;
+        return class;
     }
     match terminal {
         RowTerminal::Done => outcome.done += 1,
@@ -2588,11 +2601,15 @@ fn tally(outcome: &mut PassOutcome, written: Option<bool>, terminal: RowTerminal
         RowTerminal::Retry => outcome.retried += 1,
         RowTerminal::Pending => outcome.pending += 1,
     }
+    class
 }
 
 #[cfg(test)]
 mod classification_tests {
-    use super::{RowTerminal, code_is_transient, pg_is_transient, terminal_for_missing_memory};
+    use super::{
+        PassOutcome, RowTerminal, code_is_transient, pg_is_transient, tally,
+        terminal_for_missing_memory,
+    };
     use humaux_domain::error::ErrorCode;
 
     #[test]
@@ -2603,12 +2620,25 @@ mod classification_tests {
             (None, ErrorCode::DependencyUnavailable, 0, 1),
         ] {
             let mut report = super::PassOutcome::default();
-            super::tally_exhausted(&mut report, written);
+            super::tally_exhausted(&mut report, written, None);
             assert_eq!(
                 (report.last_error, report.failed, report.lost_lease),
                 (Some(code), failed, lost)
             );
         }
+    }
+
+    #[test]
+    fn item_class_is_independent_and_pending_has_no_output() {
+        let mut r = PassOutcome::default();
+        assert_eq!(tally(&mut r, Some(true), RowTerminal::Pending, None), None);
+        assert_eq!((r.last_error, r.done, r.pending), (None, 0, 1));
+        let _ = tally(&mut r, Some(false), RowTerminal::Done, None);
+        assert_eq!(
+            tally(&mut r, Some(true), RowTerminal::Failed, None),
+            Some(ErrorCode::Internal)
+        );
+        assert_eq!(r.last_error, Some(ErrorCode::Conflict));
     }
 
     /// ADR-0052 D-E, the `ErrorCode` (embedding + secret scanner) and PG halves of the table (the

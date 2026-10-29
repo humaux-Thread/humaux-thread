@@ -23,6 +23,10 @@ use std::time::Duration;
 
 use crate::postgres::{ConsolidationDbPool, PrivateWorkerDbPool};
 
+/// §39 / §11.8: persist and replay the origin class beside the redacted RPC failure.
+pub fn reasoning_failure(error: &humaux_application::consolidate::PrivateReasoningError) -> String {
+    format!("{}: {error}", error.class().unwrap_or("Internal"))
+}
 #[derive(Debug)]
 pub enum PrivateInferenceRpcError {
     Db(sqlx::Error),
