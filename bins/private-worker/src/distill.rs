@@ -117,8 +117,8 @@ async fn seat_iteration(
 }
 
 async fn lease_iteration<T>(
-    work: impl Future<Output = Result<Option<T>, DbError>>,
-) -> Result<Option<T>, DbError> {
+    work: impl Future<Output = Result<Option<T>, jobs::JobsError>>,
+) -> Result<Option<T>, jobs::JobsError> {
     use humaux_telemetry::metrics::{stage_recorded, stage_started};
     stage_started(STAGES[1], stage_now());
     let result = work.await;
