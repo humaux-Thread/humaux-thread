@@ -582,6 +582,26 @@ written by:
 
 executed by:
 
+### `control.billing_append_payment`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0301_billing_payments
+
+grants (runtime roles):
+- role_maintenance: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::billing_processor_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `control.billing_apply_subscription`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
@@ -731,6 +751,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::facet_contract`
+- (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -1600,6 +1621,7 @@ read by:
 written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::entitlement_projector`
+- (no process): `billing-worker::tests::process`
 
 executed by:
 
