@@ -186,8 +186,7 @@ async fn readyz_handler(State(state): State<Arc<RpcState>>) -> Response {
     };
     // §48.1: cancellation of the HTTP request cannot release the lease before session close.
     static PROBE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    let probe = tokio::spawn(async move {
-        let _lease = PROBE.lock().await;
+    let probe = serialized_probe(&PROBE, async move {
         RetrievalWorkerDbPool::probe_fresh(&state.pg_dsn, &settings).await
     })
     .await
@@ -199,6 +198,23 @@ async fn readyz_handler(State(state): State<Arc<RpcState>>) -> Response {
         Ok(()) => (StatusCode::OK, "ready\n").into_response(),
         Err(e) => (StatusCode::SERVICE_UNAVAILABLE, e).into_response(),
     }
+}
+
+// §48.1: only active sessions survive cancellation; queued HTTP requests own no task.
+async fn serialized_probe<F>(
+    lock: &'static tokio::sync::Mutex<()>,
+    probe: F,
+) -> Result<F::Output, tokio::task::JoinError>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let lease = lock.lock().await;
+    tokio::spawn(async move {
+        let _lease = lease;
+        probe.await
+    })
+    .await
 }
 
 enum WorkerRpcError {
@@ -541,5 +557,55 @@ async fn rerank_reply(lane: &RerankLane, wire: RerankRpcRequest) -> RerankRpcRep
             tracing::error!(%error, "retrieval_rerank_rpc: the scoring task did not finish");
             reply(RerankOutcome::Failed, None)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::serialized_probe;
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+
+    // §48.1 / ADR-0037 D1: cancellation keeps one active session, never obsolete waiters.
+    #[tokio::test]
+    async fn readiness_cancellation_drops_queue_and_shields_active_probe() {
+        static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let (events, received) = std::sync::mpsc::channel();
+        let (started, active) = tokio::sync::oneshot::channel();
+        let (finish, finished) = tokio::sync::oneshot::channel();
+        let active_events = events.clone();
+        {
+            let mut request = std::pin::pin!(serialized_probe(&LOCK, async move {
+                started.send(()).expect("active probe started");
+                finished.await.expect("release active probe");
+                active_events.send("active").expect("record closed session");
+            }));
+            assert_eq!(
+                request
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Pending
+            );
+            active.await.expect("active session owns lease");
+        }
+        for _ in 0..3 {
+            let queued_events = events.clone();
+            let mut request = std::pin::pin!(serialized_probe(&LOCK, async move {
+                queued_events.send("obsolete").expect("record queued probe");
+            }));
+            assert_eq!(
+                request
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Pending
+            );
+        }
+        finish.send(()).expect("active task survived cancellation");
+        serialized_probe(&LOCK, async move {
+            events.send("fresh").expect("record fresh probe");
+        })
+        .await
+        .expect("fresh probe completes after active session closes");
+        assert_eq!(received.try_iter().collect::<Vec<_>>(), ["active", "fresh"]);
     }
 }
