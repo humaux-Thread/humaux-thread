@@ -24,6 +24,7 @@
 pub mod dsn;
 pub mod inference_client;
 
+use humaux_adapters::consolidate_repo::retry_stale_input;
 use humaux_adapters::consolidate_repo::{
     self, ConsolidateRepoError, MaterializedInput, PublishOutcome,
 };
@@ -153,7 +154,7 @@ pub async fn run_once_bound<P: PrivateReasoningPort>(
         consolidate_repo::create_run(pool, tenant_id, reasoning_domain_id, workspace_id).await?;
     let port = bind_port(run_id);
 
-    let inputs = consolidate_repo::select_and_materialize_inputs(
+    let inputs = match consolidate_repo::select_and_materialize_inputs(
         pool,
         run_id,
         tenant_id,
@@ -161,7 +162,13 @@ pub async fn run_once_bound<P: PrivateReasoningPort>(
         workspace_id,
         max_inputs,
     )
-    .await?;
+    .await
+    {
+        Ok(inputs) => inputs,
+        Err(error) => {
+            return Ok(retry_stale_input(pool, tenant_id, run_id, None, Err(error)).await?);
+        }
+    };
     let auto_ids: Vec<AutoMutableMemoryId> = inputs.iter().map(|m| m.memory_id).collect();
 
     match next_step(auto_ids.len()) {

@@ -597,13 +597,7 @@ async fn resolve_current_authority_or_stale(
         )
         .bind(memory_id)
         .fetch_optional(&mut **txn)
-        .await;
-        let current = match current {
-            Err(sqlx::Error::Database(ref e)) if e.code().as_deref() == Some("40001") => {
-                return Ok(None);
-            }
-            other => other?,
-        };
+        .await?;
 
         let is_stale = match &current {
             None => true, // Should not happen (memory_records rows are never deleted, only
@@ -678,6 +672,7 @@ pub async fn publish_rollup(
     sources: &[(AutoMutableMemoryId, EvidenceId)],
     fence: Option<&crate::jobs::DerivedLease<'_>>,
 ) -> Result<PublishOutcome, ConsolidateRepoError> {
+    let result = async {
     // dep: PostgreSQL(any) — opens a PostgreSQL transaction
     let mut txn = pool.pool().begin().await?;
     // §11.7-style consistency guard for the re-validation loop below — see doc comment.
@@ -697,19 +692,6 @@ pub async fn publish_rollup(
         resolve_current_authority_or_stale(&mut txn, &recorded_inputs).await?
     else {
         txn.rollback().await?;
-        // dep: PostgreSQL(any) — §37 stale outcome after serialization rollback
-        let mut txn = pool.pool().begin().await?;
-        set_tenant_local(&mut txn, tenant_id).await?;
-        sqlx::query(
-            "UPDATE private.memory_consolidation_runs \
-             SET status = 'STALE_INPUT', manifest_hash = $2, finished_at = now() \
-             WHERE run_id = $1",
-        )
-        .bind(run_id)
-        .bind(manifest_hash)
-        .execute(&mut *txn)
-        .await?;
-        txn.commit().await?;
         return Ok(PublishOutcome::StaleInput);
     };
 
@@ -847,6 +829,33 @@ pub async fn publish_rollup(
 
     txn.commit().await?;
     Ok(PublishOutcome::Published { rollup_id })
+    }.await;
+    retry_stale_input(pool, tenant_id, run_id, manifest_hash, result).await
+}
+
+/// §37 / ADR-0092 D-C: normalize serialization at transaction boundaries, after rollback.
+pub async fn retry_stale_input(
+    pool: &ConsolidationDbPool,
+    tenant_id: Uuid,
+    run_id: Uuid,
+    manifest_hash: Option<&[u8]>,
+    result: Result<PublishOutcome, ConsolidateRepoError>,
+) -> Result<PublishOutcome, ConsolidateRepoError> {
+    match result {
+        Ok(PublishOutcome::StaleInput) => {}
+        Err(
+            ConsolidateRepoError::Db(sqlx::Error::Database(ref e))
+            | ConsolidateRepoError::Jobs(crate::jobs::JobsError::Db(sqlx::Error::Database(ref e))),
+        ) if e.code().as_deref() == Some("40001") => {}
+        other => return other,
+    }
+    // dep: PostgreSQL(any) — §37 persist retry outcome outside the aborted snapshot
+    let mut txn = pool.pool().begin().await?;
+    set_tenant_local(&mut txn, tenant_id).await?;
+    sqlx::query("UPDATE private.memory_consolidation_runs SET status='STALE_INPUT', manifest_hash=$2, finished_at=now() WHERE run_id=$1")
+        .bind(run_id).bind(manifest_hash).execute(&mut *txn).await?;
+    txn.commit().await?;
+    Ok(PublishOutcome::StaleInput)
 }
 
 #[cfg(test)]

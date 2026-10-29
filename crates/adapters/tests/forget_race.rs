@@ -1,9 +1,11 @@
 //! `adapters::tests::forget_race` — G-M19-4 commit-time deletion overlay checks.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sqlx]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq, private.memory_records] w=[control.confirm_tokens, control.deletion_requests, control.deletion_targets, ops.memory_lifecycle_events, ops.outbox, private.context_bindings, private.events, private.memory_evidence, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_rollup_sources, private.memory_rollups, private.processing_runs, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze], PostgreSQL(role_gateway), PostgreSQL(role_private_worker), PostgreSQL(role_consolidation_worker), PostgreSQL(role_retrieval_worker), PostgreSQL(role_maintenance)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::postgres, adapters::private_projection_registry, adapters::tests::support::operation_receipt_fixture, domain::authority, domain::ids, domain::memory, humaux-testkit, projection::serving, testkit::disposable]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sqlx]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq, private.memory_records] w=[control.confirm_tokens, control.deletion_requests, control.deletion_targets, ops.memory_lifecycle_events, ops.outbox, private.context_bindings, private.events, private.memory_evidence, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_rollup_sources, private.memory_rollups, private.processing_runs, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze], PostgreSQL(role_gateway), PostgreSQL(role_private_worker), PostgreSQL(role_consolidation_worker), PostgreSQL(role_retrieval_worker), PostgreSQL(role_maintenance)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::postgres, adapters::private_projection_registry, adapters::read_materialize, adapters::tests::support::operation_receipt_fixture, domain::authority, domain::ids, domain::memory, humaux-testkit, projection::serving, projection::stream, testkit::disposable]
 //! Called-by: [cargo-test]
 //! Invariants: [load/select precedes deletion; commit checks run as runtime roles; any ticket and any source role can invalidate a derivation; exact durable output sets]
 //! Spec: Baseline §37; §11.7; ADR-0092 D-C; ADR-0079 D-J; G-M19-4
 
+use consolidate::{create_run, publish_rollup, retry_stale_input, select_and_materialize_inputs};
+use humaux_adapters::read_materialize::materialize_final_bodies;
 use humaux_adapters::{
     attribution_repo::AttributionLadder,
     consolidate_repo as consolidate, distill_repo as distill,
@@ -374,34 +376,26 @@ fn g_m19_4_projection_publish_rechecks_supporting_source() {
 fn race_registration(w: &mut World, reverse: bool) {
     let memory = w.memory;
     let input = registration(w, memory);
+    let h = &w.h;
     // dep: PostgreSQL(role_retrieval_worker) — §37 actual registration API
     let pool =
-        w.h.rt
-            .block_on(RetrievalWorkerDbPool::connect(&role_dsn(
-                "role_retrieval_worker",
-            )))
-            .unwrap();
-    let result = w.h.rt.block_on(registry::register_private_memory_point(
-        &pool, &w.h.auth, &input,
+        h.rt.block_on(RetrievalWorkerDbPool::connect(&role_dsn(
+            "role_retrieval_worker",
+        )))
+        .unwrap();
+    let result = h.rt.block_on(registry::register_private_memory_point(
+        &pool, &h.auth, &input,
     ));
-    if reverse {
-        assert!(matches!(
-            result,
-            Err(PrivateProjectionRegistryError::SourceNotLive)
-        ));
-    } else {
-        assert_eq!(result.unwrap(), RegistrationOutcome::Inserted);
-    }
+    let expected = match (reverse, result) {
+        (true, Err(PrivateProjectionRegistryError::SourceNotLive)) => BTreeSet::new(),
+        (false, Ok(RegistrationOutcome::Inserted)) => BTreeSet::from([memory]),
+        other => panic!("G-M19-4: registration outcome {other:?}"),
+    };
     assert_eq!(
         w.ids("projection.private_memory_points", "memory_id"),
-        if reverse {
-            BTreeSet::new()
-        } else {
-            BTreeSet::from([memory])
-        }
+        expected
     );
 }
-
 fn race_publish(w: &mut World, site: &str, reverse: bool) {
     if site == "distill" {
         return distill_publish(w, reverse);
@@ -409,58 +403,46 @@ fn race_publish(w: &mut World, site: &str, reverse: bool) {
     if site == "registration" {
         return race_registration(w, reverse);
     }
+    let h = &w.h;
+    let rt = &h.rt;
+    let (tenant, domain, workspace) = (h.tenant_id, h.reasoning_domain_id, Some(h.workspace_id));
     // dep: PostgreSQL(role_consolidation_worker) — §37 actual consolidation API
-    let pool =
-        w.h.rt
-            .block_on(ConsolidationDbPool::connect(&role_dsn(
-                "role_consolidation_worker",
-            )))
-            .unwrap();
-    let run =
-        w.h.rt
-            .block_on(consolidate::create_run(
-                &pool,
-                w.h.tenant_id,
-                w.h.reasoning_domain_id,
-                Some(w.h.workspace_id),
-            ))
-            .unwrap();
-    let inputs =
-        w.h.rt
-            .block_on(consolidate::select_and_materialize_inputs(
-                &pool,
-                run,
-                w.h.tenant_id,
-                w.h.reasoning_domain_id,
-                Some(w.h.workspace_id),
-                10,
-            ))
-            .unwrap();
-    assert_eq!(
-        inputs
+    let pool = rt
+        .block_on(ConsolidationDbPool::connect(&role_dsn(
+            "role_consolidation_worker",
+        )))
+        .unwrap();
+    let run = rt
+        .block_on(create_run(&pool, tenant, domain, workspace))
+        .unwrap();
+    let result = rt.block_on(async {
+        let inputs =
+            select_and_materialize_inputs(&pool, run, tenant, domain, workspace, 10).await?;
+        let ids = inputs
             .iter()
             .map(|i| i.memory_id.into_inner().0)
-            .collect::<BTreeSet<_>>(),
-        BTreeSet::from([w.memory, w.control])
-    );
-    let sources: Vec<_> = inputs
-        .iter()
-        .map(|i| (i.memory_id, i.evidence_id))
-        .collect();
-    let outcome =
-        w.h.rt
-            .block_on(consolidate::publish_rollup(
-                &pool,
-                run,
-                w.h.tenant_id,
-                Some(w.h.workspace_id),
-                serde_json::json!({"rollup":"race"}),
-                AuthorityClass::PrivateKnowledge,
-                None,
-                &sources,
-                None,
-            ))
-            .unwrap();
+            .collect::<BTreeSet<_>>();
+        assert_eq!(ids, BTreeSet::from([w.memory, w.control]));
+        let sources = inputs
+            .iter()
+            .map(|i| (i.memory_id, i.evidence_id))
+            .collect::<Vec<_>>();
+        publish_rollup(
+            &pool,
+            run,
+            tenant,
+            workspace,
+            serde_json::json!({"rollup":"race"}),
+            AuthorityClass::PrivateKnowledge,
+            None,
+            &sources,
+            None,
+        )
+        .await
+    });
+    let outcome = rt
+        .block_on(retry_stale_input(&pool, tenant, run, None, result))
+        .unwrap();
     let expected = if reverse {
         assert_eq!(outcome, consolidate::PublishOutcome::StaleInput);
         BTreeSet::new()
@@ -471,17 +453,10 @@ fn race_publish(w: &mut World, site: &str, reverse: bool) {
         BTreeSet::from([rollup_id])
     };
     assert_eq!(w.ids("private.memory_rollups", "rollup_id"), expected);
-    let status: String =
-        w.h.admin
-            .query_one(
-                "SELECT status FROM private.memory_consolidation_runs WHERE run_id=$1",
-                &[&run],
-            )
-            .unwrap()
-            .get(0);
+    let sql = "SELECT status FROM private.memory_consolidation_runs WHERE run_id=$1";
+    let status: String = w.h.admin.query_one(sql, &[&run]).unwrap().get(0);
     assert_eq!(status, if reverse { "STALE_INPUT" } else { "SUCCEEDED" });
 }
-
 fn wait_blocked(client: &mut postgres::Client, blocker: i32) -> i32 {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
@@ -501,8 +476,7 @@ fn wait_blocked(client: &mut postgres::Client, blocker: i32) -> i32 {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
-
-fn race_accept(w: &mut World) -> (postgres::Client, Uuid, Vec<u8>) {
+fn race_accept(w: &mut World) -> (postgres::Client, Uuid, Uuid, Vec<u8>) {
     use operation_receipt_fixture::SyntheticCredentialScopes;
     let credential = w.h.seed_synthetic_service_credential(
         SyntheticCredentialScopes::RememberWrite,
@@ -530,9 +504,8 @@ fn race_accept(w: &mut World) -> (postgres::Client, Uuid, Vec<u8>) {
     client
         .batch_execute("BEGIN; SET LOCAL statement_timeout='20s'")
         .unwrap();
-    (client, credential.api_key_id, intent)
+    (client, request, credential.api_key_id, intent)
 }
-
 fn race(name: &'static str, site: &str) {
     for reverse in [false, true] {
         run_db_fixture::<Fixture, _>(name, |mut w| race_order(&mut w, site, reverse));
@@ -540,22 +513,14 @@ fn race(name: &'static str, site: &str) {
 }
 fn race_order(w: &mut World, site: &str, reverse: bool) {
     w.concurrent = true;
-    let (mut deletion, principal, intent) = race_accept(w);
-    let request: Uuid =
-        w.h.admin
-            .query_one(
-                "SELECT deletion_request_id FROM control.deletion_requests WHERE tenant_id=$1",
-                &[&w.h.tenant_id],
-            )
-            .unwrap()
-            .get(0);
+    let (mut deletion, request, principal, intent) = race_accept(w);
     let workspace = w.h.workspace_id;
     let accept = move |c: &mut postgres::Client| {
         c.query_one(
             "SELECT control.deletion_request_accept($1,$2,'memory.forget',$2,$3,$4)",
             &[&request, &intent, &workspace, &principal],
         )
-        .unwrap();
+        .map(|_| ())
     };
     // dep: PostgreSQL(owner) — §37 lock-wait witness
     let mut observer = postgres::Client::connect(
@@ -572,54 +537,102 @@ fn race_order(w: &mut World, site: &str, reverse: bool) {
         .unwrap()
         .get(0);
     let key = i64::from(pid);
-    let table = match site {
-        "distill" => "private.processing_runs",
-        "registration" => "projection.private_memory_points",
-        _ => "private.memory_rollups",
+    let (table, event) = match site {
+        "distill" => ("private.processing_runs", "UPDATE"),
+        "registration" => ("projection.private_memory_points", "INSERT"),
+        _ => ("private.memory_rollups", "INSERT"),
     };
-    let function = format!("{}.race_barrier_{pid}", "public");
+    let function = format!("public.race_barrier_{pid}");
     // §37: test-only output barrier; production serialization remains exclusively the stream row lock.
-    let event = if site == "distill" {
-        "UPDATE"
-    } else {
-        "INSERT"
-    };
     w.h.admin.batch_execute(&format!("CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.tenant_id = '{}'::uuid THEN PERFORM pg_advisory_xact_lock({key}); END IF; RETURN NEW; END $$; CREATE TRIGGER race_barrier_{pid} BEFORE {event} ON {table} FOR EACH ROW EXECUTE FUNCTION {function}()", w.h.tenant_id)).unwrap();
     if reverse {
-        accept(&mut deletion);
+        accept(&mut deletion).unwrap();
     } else {
         observer
             .query_one("SELECT pg_advisory_lock($1)", &[&key])
             .unwrap();
     }
-    std::thread::scope(|scope| {
+    let changed = std::thread::scope(|scope| {
         let coordinator = scope.spawn(|| {
             if reverse {
                 wait_blocked(&mut observer, deletion_pid);
                 deletion.batch_execute("COMMIT").unwrap();
+                false
             } else {
                 let publisher_pid = wait_blocked(&mut observer, pid);
-                let d = std::thread::spawn(move || {
-                    accept(&mut deletion);
+                let d = scope.spawn(move || {
+                    let result = accept(&mut deletion);
                     deletion.batch_execute("COMMIT").unwrap();
+                    let error = result
+                        .err()
+                        .map(|e| e.as_db_error().unwrap().message().to_owned());
+                    assert_eq!(
+                        error.as_deref(),
+                        (site == "distill").then_some("deletion_request_accept: manifest_changed")
+                    );
+                    site == "distill"
                 });
                 assert_eq!(wait_blocked(&mut observer, publisher_pid), deletion_pid);
                 observer
                     .query_one("SELECT pg_advisory_unlock($1)", &[&key])
                     .unwrap();
-                d.join().unwrap();
+                d.join().unwrap()
             }
         });
         race_publish(w, site, reverse);
-        coordinator.join().unwrap();
+        coordinator.join().unwrap()
     });
     w.h.admin
         .batch_execute(&format!(
             "DROP TRIGGER race_barrier_{pid} ON {table}; DROP FUNCTION {function}()"
         ))
         .unwrap();
+    race_deleted(w, changed);
+}
+fn race_deleted(w: &mut World, changed: bool) {
+    let workspace = w.h.workspace_id;
+    let mut candidates = w.ids("private.memory_records", "memory_id");
+    candidates.remove(&w.control);
+    if changed {
+        let tombstones: i64 = w.h.admin.query_one("SELECT count(*) FROM projection.stream_log WHERE tenant_id=$1 AND state='TOMBSTONED'", &[&w.h.tenant_id]).unwrap().get(0);
+        assert_eq!(tombstones, 0);
+        let (mut fresh, request, principal, intent) = race_accept(w);
+        let frozen: BTreeSet<Uuid> =
+            w.h.admin
+                .query(
+                    "SELECT id FROM control.deletion_targets WHERE request_id=$1 AND kind='MEMORY'",
+                    &[&request],
+                )
+                .unwrap()
+                .iter()
+                .map(|r| r.get(0))
+                .collect();
+        assert_eq!(frozen, candidates);
+        fresh
+            .query_one(
+                "SELECT control.deletion_request_accept($1,$2,'memory.forget',$2,$3,$4)",
+                &[&request, &intent, &workspace, &principal],
+            )
+            .unwrap();
+        fresh.batch_execute("COMMIT").unwrap();
+    }
     let tombstones: Vec<i64> = w.h.admin.query("SELECT stream_seq FROM projection.stream_log WHERE tenant_id=$1 AND state='TOMBSTONED' ORDER BY stream_seq", &[&w.h.tenant_id]).unwrap().iter().map(|r| r.get(0)).collect();
     assert_eq!(tombstones, vec![1, 2]);
+    let h = &w.h;
+    let tenant = TenantId(h.tenant_id);
+    let family = StreamFamily::new(tenant, "workspace", workspace, DOMAIN, PROJECTION_KIND);
+    let key = family.with_version(PROJECTION_VERSION);
+    let bodies =
+        h.rt.block_on(materialize_final_bodies(
+            &h.runtime,
+            &h.auth,
+            &family,
+            &key,
+            &candidates.into_iter().collect::<Vec<_>>(),
+            &[],
+        ))
+        .unwrap();
+    assert_eq!(bodies.items, vec![]);
 }
 #[test]
 fn registration_fence() {
