@@ -1763,6 +1763,11 @@ fn magic_name_branch(source: &str, start: usize, end: usize) -> bool {
     {
         return true;
     }
+    if (after.starts_with("==") || after.starts_with("!="))
+        && identity(after.split([';', '{', '}']).next().unwrap_or(""))
+    {
+        return true;
+    }
     if after.starts_with("=>")
         && let Some(at) = before.rfind("match ")
     {
@@ -1808,7 +1813,7 @@ fn magic_literal_hits(path: &str, source: &str, plans: &BTreeSet<String>) -> Vec
         let provider = "openai anthropic dashscope minimax cohere bedrock azure-openai"
             .split_whitespace()
             .any(|p| lower == p);
-        let host = ".com .net .ai .internal"
+        let host = ".com .net .org .io .ai .cn .internal .local .test"
             .split_whitespace()
             .any(|suffix| value.ends_with(suffix))
             || value.starts_with("127.0.0.1");
@@ -12670,7 +12675,7 @@ mod tests {
     fn magic_literals_exact_patterns_and_branches() {
         let source = r##"const U: &str = r#"https://api.example.com"#;
 const M: &str = "qwen3-max"; const H: &str = "api.example.com";
-if provider_id == "bespoke" {} if plan == "private-tier" {}
+if provider_id == "bespoke" {} if plan == "private-tier" {} if "reverse" != provider_id {}
 match provider { "another" => 1, _ => 0 }; if plan == "catalogued" {}
 const P: &str = "openai"; const V: &str = "https://api.example.com";"##;
         let plans = BTreeSet::from(["catalogued".into()]);
@@ -12679,7 +12684,7 @@ const P: &str = "openai"; const V: &str = "https://api.example.com";"##;
             .iter()
             .map(|(id, _)| id.split_once("::").unwrap().1)
             .collect();
-        let expected = "https://api.example.com#1 qwen3-max#1 api.example.com#1 bespoke#1 private-tier#1 another#1 openai#1 https://api.example.com#2";
+        let expected = "https://api.example.com#1 qwen3-max#1 api.example.com#1 bespoke#1 private-tier#1 reverse#1 another#1 openai#1 https://api.example.com#2";
         assert_eq!(values, expected.split_whitespace().collect::<Vec<_>>());
         assert_eq!(hits[0].1, "p:line 1: r#\"https://api.example.com\"#");
     }
@@ -12687,7 +12692,7 @@ const P: &str = "openai"; const V: &str = "https://api.example.com";"##;
     /// §78.1: comments and every test item are excluded; production after a test item is still scanned.
     #[test]
     fn magic_literals_test_and_comment_boundaries() {
-        let source = r##"// "https://comment.example.com"
+        let source = r##"// 中文 "https://comment.example.com"
 /* "https://block.example.com" */
 #[cfg(test)] fn t() { let s = r#"{https://test.example.com"#; }
 #[cfg(all(test, unix))] mod tests { const M: &str = "qwen3-max"; }
