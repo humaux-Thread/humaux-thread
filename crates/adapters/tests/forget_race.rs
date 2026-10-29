@@ -583,23 +583,27 @@ fn race_order(w: &mut World, site: &str, reverse: bool) {
             .unwrap();
     }
     std::thread::scope(|scope| {
-        let publisher = scope.spawn(|| race_publish(w, site, reverse));
-        if reverse {
-            wait_blocked(&mut observer, deletion_pid);
-            deletion.batch_execute("COMMIT").unwrap();
-        } else {
-            let publisher_pid = wait_blocked(&mut observer, pid);
-            let d = scope.spawn(move || {
-                accept(&mut deletion);
+        let coordinator = scope.spawn(|| {
+            if reverse {
+                wait_blocked(&mut observer, deletion_pid);
                 deletion.batch_execute("COMMIT").unwrap();
-            });
-            assert_eq!(wait_blocked(&mut observer, publisher_pid), deletion_pid);
-            observer
-                .query_one("SELECT pg_advisory_unlock($1)", &[&key])
-                .unwrap();
-            d.join().unwrap();
-        }
-        publisher.join().unwrap();
+            } else {
+                let publisher_pid = wait_blocked(&mut observer, pid);
+                std::thread::scope(|inner| {
+                    let d = inner.spawn(move || {
+                        accept(&mut deletion);
+                        deletion.batch_execute("COMMIT").unwrap();
+                    });
+                    assert_eq!(wait_blocked(&mut observer, publisher_pid), deletion_pid);
+                    observer
+                        .query_one("SELECT pg_advisory_unlock($1)", &[&key])
+                        .unwrap();
+                    d.join().unwrap();
+                });
+            }
+        });
+        race_publish(w, site, reverse);
+        coordinator.join().unwrap();
     });
     w.h.admin
         .batch_execute(&format!(
