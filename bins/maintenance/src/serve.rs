@@ -1032,15 +1032,17 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn stage_output_uses_task_product() {
+    #[test]
+    fn stage_output_uses_task_product() {
         use super::{DrReading, Run, Task, finish_dr_reading, render_stage_liveness};
         assert_eq!(Task::ALL.len(), 13);
         assert_eq!(
             Task::ALL.map(Task::label).join(","),
             "lost,ingest_tickets,quota_reservations,quota_renewal,provider_budgets,confirm_tokens,snapshots,jobs,reissue,redrive,partitions,dr_evidence,authority_i4"
         );
-        budget_cut_after_one_successful_tenant().await;
+        tokio::runtime::Runtime::new()
+            .expect("test runtime")
+            .block_on(budget_cut_after_one_successful_tenant());
         for task in Task::ALL {
             let mut run = Run::default();
             if task == Task::DrEvidence {
