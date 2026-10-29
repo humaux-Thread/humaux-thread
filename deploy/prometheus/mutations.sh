@@ -92,6 +92,8 @@ rec_mem|alerts.rules.yml|host_memory_available_bytes - 4294967296|host_memory_av
 rec_psi|alerts.rules.yml|0.20 - host_pressure_ratio{resource="cpu",kind="some"}|0.30 - host_pressure_ratio{resource="cpu",kind="some"}|expr:capacity:headroom_psi_cpu_ratio
 rec_disk|alerts.rules.yml|backup_disk_free_bytes{volume="pgdata"} - 8053063680|backup_disk_free_bytes{volume="pgdata"} - 4294967296|expr:capacity:headroom_disk_bytes
 rec_users|alerts.rules.yml|(0.70 - max by (instance) (host_cpu_busy_ratio))|(0.80 - max by (instance) (host_cpu_busy_ratio))|expr:capacity:additional_users
+stage_output|alerts.rules.yml|stage_last_success_timestamp_seconds > stage_last_output_timestamp_seconds|stage_last_run_timestamp_seconds > stage_last_output_timestamp_seconds|MaintenanceStageNoOutput
+stage_policy|alerts.rules.yml|stage=~|stage!~|MaintenanceStageNoOutput
 ROWS
 fi
 # ponytail: `dead` uses `> 2`, not `> 1`: measured, delta() extrapolates a 0→1 step over [15m] at 1m

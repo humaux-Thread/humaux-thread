@@ -16096,6 +16096,9 @@ modules naming it:
 - `testkit::tests::metrics::processing_gap_count`
 - `testkit::tests::metrics::projection_lag_events`
 - `testkit::tests::metrics::restore_drill_last_success_timestamp_seconds`
+- `testkit::tests::metrics::stage_last_output_timestamp_seconds`
+- `testkit::tests::metrics::stage_last_run_timestamp_seconds`
+- `testkit::tests::metrics::stage_last_success_timestamp_seconds`
 - `testkit::tests::metrics::tenants_active_1d`
 - `testkit::tests::metrics::tenants_active_7d`
 - `testkit::tests::metrics::wal_archive_failing`
@@ -18436,6 +18439,13 @@ db-bound (default run): no
 services (computed):
 - PostgreSQL
 - subprocess
+
+default run:
+
+### `bins/maintenance/tests/stage_liveness.rs`
+db-bound (default run): no
+
+services (computed):
 
 default run:
 
