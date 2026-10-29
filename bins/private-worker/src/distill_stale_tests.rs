@@ -1,6 +1,6 @@
-//! §37 / ADR-0092 D-C: forgotten Evidence never reaches a provider or retries.
-//! Depends-on: crates=[humaux-adapters, humaux-testkit, postgres, serde_json]; services=[PostgreSQL(owner) w=[ops.outbox, private.events, projection.stream_checkpoints, projection.stream_log]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, private-worker::distill, private-worker::distill_lane]
-//! Called-by: [cargo-test]
+//! `private-worker::distill_stale_tests` — §37 / ADR-0092 D-C: forgotten Evidence never reaches a provider or retries.
+//! Depends-on: crates=[humaux-adapters, humaux-testkit, serde_json]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq, ops.jobs] w=[ops.outbox, private.events, projection.stream_checkpoints, projection.stream_log]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, adapters::tests::support::operation_receipt_fixture, humaux-testkit, private-worker::distill, private-worker::tests::support::dispatch_fence, private-worker::tests::support::distill_lane]
+//! Called-by: []
 //! Invariants: [real dispatcher; exact provider count and durable job status]
 //! Spec: Baseline §37; ADR-0092 D-C
 
@@ -36,6 +36,7 @@ fn forgotten_evidence_finishes_without_provider_call() {
             h.admin.execute("INSERT INTO projection.stream_log(tenant_id,scope_kind,scope_id,domain,projection_kind,projection_version,stream_seq,commit_seq,state) VALUES($1,'workspace',$2,'private_memory','PRIVATE_MEMORY','v1',1,$3,'TOMBSTONED')", &[&h.tenant_id,&h.workspace_id,&commit]).unwrap();
             h.admin.execute("INSERT INTO ops.outbox(tenant_id,commit_seq,stream_seq,event_type,evidence_id) VALUES($1,$2,1,'EVIDENCE_ACCEPTED',$3)", &[&h.tenant_id,&commit,&evidence]).unwrap();
             let provider = lane::FakeProvider::new(vec![]);
+            // dep: PostgreSQL(role_private_worker) — §37 stale dispatcher witness
             let pool =
                 h.rt.block_on(humaux_adapters::postgres::PrivateWorkerDbPool::connect(
                     &lane::dsn_as_role(&dsn, "role_private_worker"),

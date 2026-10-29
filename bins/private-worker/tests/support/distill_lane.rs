@@ -9,7 +9,7 @@
 //!   ops.reasoning_provider_health_observations]]; env=[]; modules=[adapters::byok, adapters::contribution_reasoner,
 //!   adapters::disclosure, adapters::jobs, adapters::reasoning_route_admission, private-worker::distill,
 //!   private-worker::tests::support::live_minimax, humaux-testkit]
-//! Called-by: [private-worker::tests::distill_hop_e2e, private-worker::tests::m29_attribution_e2e]
+//! Called-by: [humaux-private-worker, private-worker::distill_stale_tests, private-worker::tests::distill_hop_e2e, private-worker::tests::m29_attribution_e2e]
 //! Invariants: [test-only, included by #[path] next to `support/live_minimax.rs`; the provider answers in call order
 //!   and panics past its last reply, so an unexpected extra call is never silent; the lane matches the descriptor
 //!   exactly, as `provider_matches_admission` requires]
