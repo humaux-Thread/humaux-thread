@@ -166,18 +166,20 @@ pub async fn append_payment_in_txn(
     txn: &mut Txn<'_>,
     tenant: TenantId,
     event: &VerifiedBillingEvent,
-    subscription: &str,
+    subscription: &ProviderSubscription,
+    plan_version: Uuid,
     free_plan: Uuid,
     payment: &PaymentFacts<'_>,
 ) -> Result<bool, ErrorCode> {
     // dep: PostgreSQL(role_maintenance) — 0301 owner payment door; no table privileges (§71.3).
     sqlx::query_scalar(
-        "SELECT control.billing_append_payment($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+        "SELECT control.billing_append_payment($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
     )
     .bind(tenant.0)
     .bind(event.provider.wire())
     .bind(&event.event_id)
-    .bind(subscription)
+    .bind(&subscription.reference.0)
+    .bind(plan_version)
     .bind(free_plan)
     .bind(payment.reference)
     .bind(payment.kind.wire())
@@ -185,6 +187,8 @@ pub async fn append_payment_in_txn(
     .bind(payment.currency.wire())
     .bind(payment.period[0])
     .bind(payment.period[1])
+    .bind(subscription.current_period_start)
+    .bind(subscription.current_period_end)
     .bind(payment.occurred_at)
     .fetch_one(&mut **txn)
     .await

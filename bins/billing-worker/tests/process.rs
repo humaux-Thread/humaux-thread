@@ -527,3 +527,30 @@ fn invalid_money_and_historic_refund() {
         );
     });
 }
+/// G-M04-19 / §71.3: a reversal arriving before checkout must survive and project Free.
+#[test]
+fn reversal_before_subscription_delivery() {
+    for (kind, reference, payment_kind, amount) in [
+        ("refund.created", "rf_first", "REFUND", 123),
+        ("dispute.created", "dp_first", "CHARGEBACK", 211),
+    ] {
+        run_db_fixture::<Fixture, _>("reversal_before_subscription_delivery", |mut h| {
+            let payload = money_payload(&h, "reversal_first", kind, reference);
+            insert_payload(&mut h, &payload);
+            assert!(process(&h, "active"));
+            let inbox: Value = h.admin.query_one("SELECT jsonb_build_array(status,error_class) FROM control.billing_inbox WHERE event_id='reversal_first'", &[]).unwrap().get(0);
+            assert_eq!(
+                inbox,
+                json!(["PROCESSED", null]),
+                "G-M04-19: unordered reversal must survive"
+            );
+            assert_eq!(
+                payments(&mut h),
+                json!([[reference, payment_kind, amount, "USD"]])
+            );
+            assert_eq!(snapshot(&mut h), free());
+            let events: Value = h.admin.query_one("SELECT jsonb_agg(jsonb_build_array(source_event_id,to_state) ORDER BY source_event_id) FROM control.subscription_events", &[]).unwrap().get(0);
+            assert_eq!(events, json!([["reversal_first", "CANCELED"]]));
+        });
+    }
+}

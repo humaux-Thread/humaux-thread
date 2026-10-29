@@ -132,14 +132,13 @@ async fn apply(
     if fetched.reference.0 != reference {
         return Err(ErrorCode::InvalidInput);
     }
-    apply_fetched(txn, config, event, tenant, reference, &fetched, &normalized).await
+    apply_fetched(txn, config, event, tenant, &fetched, &normalized).await
 }
 async fn apply_fetched(
     txn: &mut repo::Txn<'_>,
     config: &ProcessorConfig,
     event: &VerifiedBillingEvent,
     tenant: TenantId,
-    reference: &str,
     fetched: &humaux_application::billing::ProviderSubscription,
     normalized: &normalize::NormalizedEvent,
 ) -> Result<(), ErrorCode> {
@@ -162,7 +161,8 @@ async fn apply_fetched(
             txn,
             tenant,
             event,
-            reference,
+            fetched,
+            *plan,
             config.free_plan_version,
             &repo::PaymentFacts {
                 kind,

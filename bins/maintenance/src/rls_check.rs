@@ -5356,7 +5356,7 @@ pub fn check_entitlement_doors(client: &mut impl GenericClient) -> GateResult {
 }
 /// §71.3 / §76, 0300/0301: the exact processor door set (M04-11a, G-M04-23).
 const BILLING_PROCESSOR_DOOR_FUNCTIONS: [&str; 4] = [
-    "control.billing_append_payment(uuid,text,text,text,uuid,text,text,bigint,text,timestamptz,timestamptz,timestamptz)",
+    "control.billing_append_payment(uuid,text,text,text,uuid,uuid,text,text,bigint,text,timestamptz,timestamptz,timestamptz,timestamptz,timestamptz)",
     "control.billing_inbox_claim(integer)",
     "control.billing_inbox_settle(text,text,text,text)",
     "control.billing_apply_subscription(uuid,text,text,text,uuid,uuid,text,timestamptz,timestamptz,timestamptz)",

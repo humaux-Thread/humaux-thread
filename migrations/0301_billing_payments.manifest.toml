@@ -2,7 +2,7 @@
 migration_id = "0301_billing_payments"
 class = "EXPAND_CONTRACT"
 precheck = """
-select to_regprocedure('control.billing_append_payment(uuid,text,text,text,uuid,text,text,bigint,text,timestamptz,timestamptz,timestamptz)') is null
+select to_regprocedure('control.billing_append_payment(uuid,text,text,text,uuid,uuid,text,text,bigint,text,timestamptz,timestamptz,timestamptz,timestamptz,timestamptz)') is null
  and to_regprocedure('control.billing_apply_subscription(uuid,text,text,text,uuid,uuid,text,timestamptz,timestamptz,timestamptz)') is not null
  and to_regclass('control.billing_payments') is not null
  and (select count(*) = 10 from pg_roles where rolname in
@@ -10,7 +10,7 @@ select to_regprocedure('control.billing_append_payment(uuid,text,text,text,uuid,
  'role_retrieval_worker','role_batch_issuer','role_maintenance','role_admin','role_health_reader')) as precheck_ok
 """
 postcheck = """
-with fns as (select * from pg_proc where oid = to_regprocedure('control.billing_append_payment(uuid,text,text,text,uuid,text,text,bigint,text,timestamptz,timestamptz,timestamptz)')),
+with fns as (select * from pg_proc where oid = to_regprocedure('control.billing_append_payment(uuid,text,text,text,uuid,uuid,text,text,bigint,text,timestamptz,timestamptz,timestamptz,timestamptz,timestamptz)')),
 r(role) as (values ('role_gateway'),('role_private_worker'),('role_consolidation_worker'),('role_public_worker'),
  ('role_retrieval_worker'),('role_batch_issuer'),('role_maintenance'),('role_admin'),('role_health_reader'))
 select (select count(*) = 1 from fns where pg_get_userbyid(proowner) = 'role_migration_owner'
