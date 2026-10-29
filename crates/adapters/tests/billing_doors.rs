@@ -3,13 +3,15 @@
 //!   services=[PostgreSQL(owner) r=[control.entitlement_grants, control.subscriptions, control.subscription_events, control.entitlement_snapshots]
 //!   w=[control.tenants, control.plans, control.plan_versions, control.billing_inbox, control.entitlement_grants] x=[control.billing_inbox_settle],
 //!   PostgreSQL(role_maintenance) x=[control.billing_apply_subscription]]; env=[];
-//!   modules=[adapters::billing_repo, adapters::entitlement_repo, adapters::postgres, adapters::tests::support::throwaway_db,
+//!   modules=[adapters::billing_processor_repo, adapters::entitlement_repo, adapters::postgres, adapters::tests::support::throwaway_db,
 //!   application::billing, domain::billing, domain::error, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [isolated migrated database; writes through maintenance doors; owner readback asserts full objects/counts]
 //! Spec: Baseline §71.3; §76; §78.2; §79.2
 
-use humaux_adapters::{billing_repo as repo, entitlement_repo, postgres::MaintenanceDbPool};
+use humaux_adapters::{
+    billing_processor_repo as repo, entitlement_repo, postgres::MaintenanceDbPool,
+};
 use humaux_application::billing::{
     ExternalCustomerRef, ExternalSubscriptionRef, ProviderSubscription, VerifiedBillingEvent,
 };
@@ -95,6 +97,7 @@ fn subscription() -> ProviderSubscription {
     ProviderSubscription {
         reference: ExternalSubscriptionRef("sub_fixture".into()),
         customer: ExternalCustomerRef("cust_fixture".into()),
+        product: "prod_fixture".into(),
         status: ObservedStatus::Active,
         current_period_start: now - Duration::days(1),
         current_period_end: now + Duration::days(30),

@@ -6,7 +6,7 @@
 //! Called-by: [adapters::tests::processing_status, adapters::tests::a2_point_identity, adapters::tests::billing_doors, adapters::tests::billing_repo, adapters::tests::confirm_token_retention, adapters::tests::cost_repo,
 //!   adapters::tests::entitlement_projector, adapters::tests::enumerate_scale, adapters::tests::exact_census_project, adapters::tests::ledger_frontier, adapters::tests::maintenance_doors, adapters::tests::plan_catalog, adapters::tests::project_tree, adapters::tests::projection_lag,
 //!   adapters::tests::ingest_ticket_expiry, adapters::tests::rebuild, adapters::tests::stream_repo,
-//!   gateway::tests::memory_get_frontier, private-worker::tests::derived_dispatch_e2e]
+//!   billing-worker::tests::process, gateway::tests::memory_get_frontier, private-worker::tests::derived_dispatch_e2e]
 //! Invariants: [the database is humaux_thread_<prefix>_<pid>_<n>, created here and dropped WITH (FORCE) by Drop
 //!   even on panic; migrations are applied one database at a time per process (role DDL is cluster-global)]
 //! Spec: Baseline §79.2; ADR-0062 E8

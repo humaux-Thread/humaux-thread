@@ -598,9 +598,9 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::billing_processor_repo`
 - (no process): `adapters::tests::billing_doors`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::billing_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.billing_customers`
@@ -655,12 +655,14 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::facet_contract`
+- (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
+- (no process): `billing-worker::tests::process`
 - (no process): `gateway::tests::billing_webhook`
 - process(humaux-gateway): `adapters::billing_repo`
 
@@ -682,8 +684,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::billing_processor_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::billing_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.billing_inbox_settle`
@@ -702,9 +704,9 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::billing_processor_repo`
 - (no process): `adapters::tests::billing_doors`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::billing_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.billing_payments`
@@ -1590,6 +1592,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -1666,6 +1669,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `adapters::request_guard_repo`
@@ -2819,6 +2823,7 @@ written by:
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
+- (no process): `billing-worker::tests::process`
 
 executed by:
 
@@ -2870,6 +2875,7 @@ written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::plan_catalog`
+- (no process): `billing-worker::tests::process`
 
 executed by:
 
@@ -4773,6 +4779,7 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::facet_contract`
+- (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -4821,6 +4828,7 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::facet_contract`
+- (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -4947,6 +4955,7 @@ grants (runtime roles):
 foreign keys (outgoing):
 
 read by:
+- (no process): `adapters::billing_processor_repo`
 - (no process): `adapters::tests::project_continuity_read_0137_acceptance`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `maintenance::tests::onboarding`
@@ -5043,6 +5052,7 @@ written by:
 - (no process): `adapters::tests::tenant_placements_migration`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `admin::tests::probes`
+- (no process): `billing-worker::tests::process`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
