@@ -1,6 +1,6 @@
 //! `xtask::known_red` — `cargo xtask known-red`: the ledger of gates that are due but still red, every row owned by a module card and forced out when its item passes.
 //! Depends-on: crates=[toml]; services=[]; env=[CARGO_MANIFEST_DIR]; modules=[xtask::architecture_check, xtask::benchset_declaration, xtask::dod_check, xtask::phase]
-//! Called-by: [xtask::main]
+//! Called-by: [xtask::architecture_check, xtask::main]
 //! Invariants: [a failing item without a ledger row is red; a ledger row whose item no longer fails is red (the row must be deleted); a row without a module-card owner is red; --release turns every row without deferred_past_go_live red and lists every deferred row for owner sign-off; an unknown ledger section or key, and an unparsable --phase value, is rejected, never ignored]
 //! Spec: Baseline §78.1; §57.1; §69; §80.1.1; §46
 //!
