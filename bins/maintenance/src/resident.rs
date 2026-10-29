@@ -181,3 +181,10 @@ pub(crate) fn status_document(mode: &str, started: SystemTime) -> Map<String, Va
     doc.insert("degrade".into(), Value::Object(degrade));
     doc
 }
+
+/// §39: wall-clock event time for the maintenance liveness hooks; no scheduler input.
+pub(crate) fn stage_now() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
+}
