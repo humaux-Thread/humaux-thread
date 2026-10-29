@@ -1,6 +1,6 @@
 //! `billing-worker::normalize` — provider envelope boundary (§71.2).
 //! Depends-on: crates=[humaux-domain, serde_json]; services=[]; env=[]; modules=[domain::billing, domain::error, domain::plan]
-//! Called-by: [billing-worker::creem, tests]
+//! Called-by: [billing-worker::creem, billing-worker::process, tests]
 //! Invariants: [no checkout-response money; no status inferred from event type; missing amounts fail closed]
 //! Spec: Baseline §71.2; §71.3; §52; §78.2
 
@@ -40,7 +40,7 @@ pub struct Money {
 /// §71.3: M04-11 writes charged_amount, refund_amount or disputed_amount respectively.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaymentAmount {
-    /// §71.3: CHARGE stores charged_amount.
+    /// §71.3: CHARGE stores gross tax-inclusive amount_paid (lead ruling 2026-10-29).
     Charge {
         /// §71.3: charged cents, never defaulted.
         charged_amount: i64,
@@ -85,7 +85,8 @@ pub fn status(fetched_status: &str) -> Result<ObservedStatus, ErrorCode> {
     ObservedStatus::parse_wire(fetched_status).ok_or(ErrorCode::InvalidInput)
 }
 
-/// §71.3: `fetched_transaction` must be the authoritative transaction for this event;
+/// §71.3: fallback fields must be authoritative for this transaction; checkout periods may come
+/// from the subscription fetched under its lock (lead ruling 2026-10-29);
 /// a checkout creation response is not an admissible input (M04 D13a).
 pub fn normalize(
     raw_body: &[u8],
@@ -120,15 +121,20 @@ pub fn normalize(
             .filter(|value| !value.is_null())
             .map(|value| cents(Some(value)))
             .transpose()?;
-        let period_start = cents(field("period_start"))?;
-        let period_end = cents(field("period_end"))?;
+        let period = if event_type == "checkout.completed" {
+            fetched_transaction.unwrap_or(source)
+        } else {
+            source
+        };
+        let period_start = cents(period.get("period_start").or_else(|| field("period_start")))?;
+        let period_end = cents(period.get("period_end").or_else(|| field("period_end")))?;
         if period_end <= period_start {
             return Err(ErrorCode::InvalidInput);
         }
         Some(Money {
             amount: match payment {
                 PaymentKind::Charge => PaymentAmount::Charge {
-                    charged_amount: cents(field("amount"))?,
+                    charged_amount: cents(field("amount_paid"))?,
                 },
                 PaymentKind::Refund => PaymentAmount::Refund {
                     refund_amount: cents(object.get("refund_amount"))?,

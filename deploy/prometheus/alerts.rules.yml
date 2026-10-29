@@ -301,3 +301,9 @@ groups:
         for: 24h
         labels:
           severity: warning
+      # §39: unavailable dependencies are distinct from successful empty attempts.
+      - alert: MaintenanceStageCannotRun
+        expr: stage_state == 5
+        for: 5m
+        labels:
+          severity: warning

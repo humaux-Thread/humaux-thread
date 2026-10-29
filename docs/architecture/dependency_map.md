@@ -690,6 +690,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.attest_reasoning_route_health`
 - executes `control.audit_event_identity_claim`
 - executes `control.audit_event_identity_release`
+- executes `control.billing_append_payment`
 - executes `control.billing_apply_subscription`
 - executes `control.billing_inbox_claim`
 - executes `control.billing_inbox_settle`
@@ -3645,6 +3646,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.attest_reasoning_route_health`
 - executes `control.audit_event_identity_claim`
 - executes `control.audit_event_identity_release`
+- executes `control.billing_append_payment`
 - executes `control.billing_apply_subscription`
 - executes `control.billing_inbox_claim`
 - executes `control.billing_inbox_settle`
@@ -5474,6 +5476,16 @@ written by:
 
 executed by:
 
+### `control.billing_append_payment`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::billing_processor_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `control.billing_apply_subscription`
 read by:
 
@@ -5536,6 +5548,7 @@ executed by:
 ### `control.billing_payments`
 read by:
 - (no process): `adapters::tests::facet_contract`
+- (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -5890,6 +5903,7 @@ read by:
 written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::entitlement_projector`
+- (no process): `billing-worker::tests::process`
 
 executed by:
 
@@ -14305,6 +14319,7 @@ why: timestamptz column binding
 
 modules naming it:
 - `adapters::affect_repo`
+- `adapters::billing_processor_repo`
 - `adapters::distill_repo`
 - `adapters::maintenance_repo`
 - `adapters::memory_governance_repo`
@@ -16124,6 +16139,7 @@ why: domain ids, errors and value types shared across layers
 modules naming it:
 - `telemetry::degrade`
 - `telemetry::health`
+- `telemetry::metrics`
 - `tests`
 
 ### humaux-telemetry → `humaux-fail-closed-macro` (normal)
@@ -16172,6 +16188,10 @@ modules naming it:
 - `testkit::tests::metrics::processing_gap_count`
 - `testkit::tests::metrics::projection_lag_events`
 - `testkit::tests::metrics::quota_window_horizon_seconds`
+- `testkit::tests::metrics::stage_last_error_class`
+- `testkit::tests::metrics::stage_output_count`
+- `testkit::tests::metrics::stage_processed_count`
+- `testkit::tests::metrics::stage_state`
 - `testkit::tests::pair::cannot_establish_completeness_degraded`
 - `testkit::tests::pair::cannot_establish_completeness_terminal`
 - `testkit::tests::pair::projection_lag_degraded`
@@ -16232,9 +16252,13 @@ modules naming it:
 - `testkit::tests::metrics::processing_gap_count`
 - `testkit::tests::metrics::projection_lag_events`
 - `testkit::tests::metrics::restore_drill_last_success_timestamp_seconds`
+- `testkit::tests::metrics::stage_last_error_class`
 - `testkit::tests::metrics::stage_last_output_timestamp_seconds`
 - `testkit::tests::metrics::stage_last_run_timestamp_seconds`
 - `testkit::tests::metrics::stage_last_success_timestamp_seconds`
+- `testkit::tests::metrics::stage_output_count`
+- `testkit::tests::metrics::stage_processed_count`
+- `testkit::tests::metrics::stage_state`
 - `testkit::tests::metrics::tenants_active_1d`
 - `testkit::tests::metrics::tenants_active_7d`
 - `testkit::tests::metrics::wal_archive_failing`
