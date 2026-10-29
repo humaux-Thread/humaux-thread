@@ -25,7 +25,10 @@ use crate::postgres::{ConsolidationDbPool, PrivateWorkerDbPool};
 
 /// §39 / §11.8: persist and replay the origin class beside the redacted RPC failure.
 pub fn reasoning_failure(error: &humaux_application::consolidate::PrivateReasoningError) -> String {
-    format!("{}: {error}", error.class().unwrap_or("Internal"))
+    let Some(class) = error.class() else {
+        return error.to_string();
+    };
+    format!("{class}: {error}")
 }
 #[derive(Debug)]
 pub enum PrivateInferenceRpcError {

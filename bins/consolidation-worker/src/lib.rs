@@ -414,11 +414,6 @@ pub async fn dispatch_pass<P: PrivateReasoningPort>(
     Ok(report)
 }
 
-/// Loggable description of a failed pass (card 21). The `Reasoning` arm carries a redacted
-/// `Display`, so its static [`PrivateReasoningError::class`] is what goes to the log; every other
-/// arm's `Display` already says something. `unclassified private reasoning failure` is the honest
-/// answer when the raise site used `PrivateReasoningError::new` rather than `::classified` — it
-/// says "no class", which is not the same as saying nothing.
 fn lease_class(result: Result<bool, jobs::JobsError>) -> Option<ErrorCode> {
     match result {
         Ok(true) => None,
@@ -426,6 +421,11 @@ fn lease_class(result: Result<bool, jobs::JobsError>) -> Option<ErrorCode> {
         Err(_) => Some(ErrorCode::DependencyUnavailable),
     }
 }
+/// Loggable description of a failed pass (card 21). The `Reasoning` arm carries a redacted
+/// `Display`, so its static [`PrivateReasoningError::class`] is what goes to the log; every other
+/// arm's `Display` already says something. `unclassified private reasoning failure` is the honest
+/// answer when the raise site used `PrivateReasoningError::new` rather than `::classified` — it
+/// says "no class", which is not the same as saying nothing.
 fn reasoning_class(error: &PrivateReasoningError) -> ErrorCode {
     ErrorCode::ALL
         .into_iter()
