@@ -299,10 +299,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.commit_seq_seq`
 - reads `ops.jobs`
 - reads `ops.outbox`
+- reads `private.ingest_tickets`
 - reads `projection.processing_gaps`
 - reads `projection.rebuild_tickets`
 - reads `projection.tenant_placements`
 - writes `ops.outbox`
+- writes `private.ingest_tickets`
 - writes `projection.stream_checkpoints`
 - writes `projection.stream_log`
 - executes `projection.claim_issued_tickets`
@@ -350,6 +352,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::feature_registry`
+
+#### `contracts::freshness`
 
 #### `contracts::mechanism_registry`
 - reads `public.consensus_ready`
@@ -874,6 +878,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::signals`
 
 #### `telemetry::degrade`
 
@@ -1785,10 +1791,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.commit_seq_seq`
 - reads `ops.jobs`
 - reads `ops.outbox`
+- reads `private.ingest_tickets`
 - reads `projection.processing_gaps`
 - reads `projection.rebuild_tickets`
 - reads `projection.tenant_placements`
 - writes `ops.outbox`
+- writes `private.ingest_tickets`
 - writes `projection.stream_checkpoints`
 - writes `projection.stream_log`
 - executes `projection.claim_issued_tickets`
@@ -1860,6 +1868,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
+
+#### `contracts::freshness`
 
 #### `contracts::retrieval_config`
 
@@ -1992,6 +2002,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `retrieval::request`
 
+#### `retrieval::signals`
+
 #### `telemetry::degrade`
 
 #### `telemetry::metrics`
@@ -2018,11 +2030,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::billing_repo`
 - writes `control.billing_inbox`
-- executes `control.billing_apply_subscription`
-- executes `control.billing_inbox_claim`
-- executes `control.billing_inbox_settle`
 - service `PostgreSQL(role_gateway)`
-- service `PostgreSQL(role_maintenance)`
 
 #### `adapters::byok`
 - env `CARGO_MANIFEST_DIR`
@@ -2366,10 +2374,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.commit_seq_seq`
 - reads `ops.jobs`
 - reads `ops.outbox`
+- reads `private.ingest_tickets`
 - reads `projection.processing_gaps`
 - reads `projection.rebuild_tickets`
 - reads `projection.tenant_placements`
 - writes `ops.outbox`
+- writes `private.ingest_tickets`
 - writes `projection.stream_checkpoints`
 - writes `projection.stream_log`
 - executes `projection.claim_issued_tickets`
@@ -2396,8 +2406,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::archive`
 
 #### `application::auth`
-
-#### `application::billing`
 
 #### `application::confirm`
 
@@ -2431,6 +2439,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
+
+#### `contracts::freshness`
 
 #### `contracts::retrieval_config`
 
@@ -2753,6 +2763,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::request`
 
 #### `retrieval::rerank`
+
+#### `retrieval::signals`
 
 #### `telemetry::admission`
 
@@ -3170,10 +3182,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.commit_seq_seq`
 - reads `ops.jobs`
 - reads `ops.outbox`
+- reads `private.ingest_tickets`
 - reads `projection.processing_gaps`
 - reads `projection.rebuild_tickets`
 - reads `projection.tenant_placements`
 - writes `ops.outbox`
+- writes `private.ingest_tickets`
 - writes `projection.stream_checkpoints`
 - writes `projection.stream_log`
 - executes `projection.claim_issued_tickets`
@@ -3219,6 +3233,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
+
+#### `contracts::freshness`
 
 #### `contracts::retrieval_config`
 
@@ -3774,6 +3790,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_LIMIT`
 - env `HUMAUX_MAINTENANCE_SERVE_CYCLE_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_DR_EVIDENCE_EVERY_SECONDS`
+- env `HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_EVERY_SECONDS`
+- env `HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_LIMIT`
 - env `HUMAUX_MAINTENANCE_SERVE_JOBS_DEAD_RETENTION_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_JOBS_DONE_RETENTION_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_JOBS_EVERY_SECONDS`
@@ -3857,6 +3875,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::signals`
 
 #### `telemetry::degrade`
 
@@ -4235,10 +4255,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.commit_seq_seq`
 - reads `ops.jobs`
 - reads `ops.outbox`
+- reads `private.ingest_tickets`
 - reads `projection.processing_gaps`
 - reads `projection.rebuild_tickets`
 - reads `projection.tenant_placements`
 - writes `ops.outbox`
+- writes `private.ingest_tickets`
 - writes `projection.stream_checkpoints`
 - writes `projection.stream_log`
 - executes `projection.claim_issued_tickets`
@@ -4284,6 +4306,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
+
+#### `contracts::freshness`
 
 #### `contracts::retrieval_config`
 
@@ -4465,6 +4489,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::signals`
 
 #### `telemetry::degrade`
 
@@ -4917,10 +4943,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.commit_seq_seq`
 - reads `ops.jobs`
 - reads `ops.outbox`
+- reads `private.ingest_tickets`
 - reads `projection.processing_gaps`
 - reads `projection.rebuild_tickets`
 - reads `projection.tenant_placements`
 - writes `ops.outbox`
+- writes `private.ingest_tickets`
 - writes `projection.stream_checkpoints`
 - writes `projection.stream_log`
 - executes `projection.claim_issued_tickets`
@@ -4962,6 +4990,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
+
+#### `contracts::freshness`
 
 #### `contracts::retrieval_config`
 
@@ -5176,6 +5206,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::signals`
 
 #### `telemetry::degrade`
 
@@ -5426,9 +5458,9 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::billing_processor_repo`
 - (no process): `adapters::tests::billing_doors`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::billing_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.billing_customers`
@@ -5445,12 +5477,14 @@ executed by:
 ### `control.billing_inbox`
 read by:
 - (no process): `adapters::tests::facet_contract`
+- (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
+- (no process): `billing-worker::tests::process`
 - (no process): `gateway::tests::billing_webhook`
 - process(humaux-gateway): `adapters::billing_repo`
 
@@ -5462,8 +5496,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::billing_processor_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::billing_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.billing_inbox_settle`
@@ -5472,9 +5506,9 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::billing_processor_repo`
 - (no process): `adapters::tests::billing_doors`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::billing_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.billing_payments`
@@ -5821,6 +5855,7 @@ executed by:
 ### `control.entitlement_grants`
 read by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -5846,6 +5881,7 @@ executed by:
 ### `control.entitlement_snapshots`
 read by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `adapters::request_guard_repo`
@@ -6339,6 +6375,7 @@ written by:
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
+- (no process): `billing-worker::tests::process`
 
 executed by:
 
@@ -6350,6 +6387,7 @@ written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::plan_catalog`
+- (no process): `billing-worker::tests::process`
 
 executed by:
 
@@ -6391,6 +6429,7 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::g80_31_handoff`
+- (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -7057,6 +7096,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::facet_contract`
+- (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -7069,6 +7109,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::facet_contract`
+- (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -7105,6 +7146,7 @@ executed by:
 
 ### `control.tenants`
 read by:
+- (no process): `adapters::billing_processor_repo`
 - (no process): `adapters::tests::project_continuity_read_0137_acceptance`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `maintenance::tests::onboarding`
@@ -7146,6 +7188,7 @@ written by:
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
+- (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::jobs_claim`
 - (no process): `adapters::tests::ledger_append_only`
 - (no process): `adapters::tests::ledger_frontier`
@@ -7200,6 +7243,7 @@ written by:
 - (no process): `adapters::tests::tenant_placements_migration`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `admin::tests::probes`
+- (no process): `billing-worker::tests::process`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
@@ -9592,7 +9636,9 @@ written by:
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
+- (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_evidence_grounding`
@@ -9779,10 +9825,13 @@ written by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_sources`
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
+- (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -10000,27 +10049,42 @@ executed by:
 ### `private.ingest_tickets`
 read by:
 - (no process): `adapters::tests::projection_worker`
+- (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::postgres`
+- process(cargo-xtask): `adapters::stream_repo`
 - process(humaux-admin): `adapters::postgres`
 - process(humaux-consolidation-worker): `adapters::postgres`
+- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::postgres`
+- process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::postgres`
+- process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-private-worker): `adapters::postgres`
+- process(humaux-private-worker): `adapters::stream_repo`
 - process(humaux-public-worker): `adapters::postgres`
 - process(humaux-retrieval-worker): `adapters::postgres`
+- process(humaux-retrieval-worker): `adapters::stream_repo`
 
 written by:
 - (no process): `adapters::batch`
+- (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `maintenance::tests::partitions`
+- (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::remember`
+- process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::remember`
+- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::remember`
+- process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::remember`
+- process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::remember`
+- process(humaux-private-worker): `adapters::stream_repo`
 - process(humaux-retrieval-worker): `adapters::remember`
+- process(humaux-retrieval-worker): `adapters::stream_repo`
 
 executed by:
 
@@ -10168,6 +10232,7 @@ read by:
 - (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::evidence_task_runs`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
@@ -10509,6 +10574,7 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -12609,6 +12675,7 @@ executed by:
 - `admin::tests::probes`
 - `billing-worker::fake_creem`
 - `billing-worker::tests::fetch`
+- `billing-worker::tests::process`
 - `consolidation-worker::main`
 - `consolidation-worker::tests::ops_listener`
 - `gateway::admission`
@@ -12820,12 +12887,15 @@ executed by:
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_census_project`
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
+- `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::ledger_frontier`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
@@ -12869,6 +12939,7 @@ executed by:
 - `adapters::tests::tenant_placements_migration`
 - `adapters::tests::visible_index_count`
 - `admin::tests::probes`
+- `billing-worker::tests::process`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -12981,6 +13052,7 @@ executed by:
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
@@ -13057,7 +13129,7 @@ executed by:
 - `retrieval-provider::tests::router_rls_integration`
 
 ### `PostgreSQL(role_maintenance)`
-- `adapters::billing_repo`
+- `adapters::billing_processor_repo`
 - `adapters::entitlement_repo`
 - `adapters::health`
 - `adapters::maintenance_repo`
@@ -13083,6 +13155,7 @@ executed by:
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_repo`
 - `adapters::tests::health_snapshot`
+- `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::memory_in_project`
 - `adapters::tests::plan_catalog`
@@ -13099,6 +13172,7 @@ executed by:
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::visible_index_count`
+- `billing-worker::tests::process`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::service_credentials`
 - `maintenance::backup`
@@ -13472,6 +13546,7 @@ modules naming it:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::batch`
+- `adapters::billing_processor_repo`
 - `adapters::billing_repo`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -13566,8 +13641,10 @@ modules naming it:
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
+- `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_frontier`
 - `adapters::tests::login_challenge`
@@ -13624,6 +13701,7 @@ modules naming it:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::audit_sink`
+- `adapters::billing_processor_repo`
 - `adapters::billing_repo`
 - `adapters::byok`
 - `adapters::candidate_repo`
@@ -13725,6 +13803,7 @@ modules naming it:
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::ledger_frontier`
@@ -13808,6 +13887,7 @@ modules naming it:
 - `adapters::exact_census`
 - `adapters::processing_status`
 - `adapters::read_gate`
+- `adapters::read_materialize`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
 - `adapters::serving_repo`
@@ -13815,6 +13895,7 @@ modules naming it:
 - `adapters::tests::exact_census_project`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_confirm`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::projection_lag`
 - `adapters::tests::recall_envelope_g23`
@@ -13853,7 +13934,7 @@ why: pure application-layer types/logic this adapter wraps in SQL
 
 modules naming it:
 - `adapters::affect_repo`
-- `adapters::billing_repo`
+- `adapters::billing_processor_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::context_repo`
@@ -13937,6 +14018,7 @@ modules naming it:
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::ledger_frontier`
 - `adapters::tests::note_chunk_count_parity`
@@ -14033,6 +14115,7 @@ why: jsonb column binding
 modules naming it:
 - `adapters::affect_repo`
 - `adapters::applicability_repo`
+- `adapters::billing_processor_repo`
 - `adapters::billing_repo`
 - `adapters::byok`
 - `adapters::consolidate_repo`
@@ -14148,6 +14231,7 @@ modules naming it:
 - `adapters::processing_status`
 - `adapters::quota_repo`
 - `adapters::read_gate`
+- `adapters::read_materialize`
 - `adapters::tests::billing_doors`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::oauth_persistence`
@@ -14167,6 +14251,7 @@ modules naming it:
 - `adapters::processing_status`
 - `adapters::project_rollup`
 - `adapters::provisioning`
+- `adapters::read_materialize`
 - `adapters::reasoning_route_onboarding`
 
 ### humaux-adapters → `sha2` (normal)
@@ -14244,7 +14329,7 @@ why: id minting/binding
 modules naming it:
 - `adapters::applicability_repo`
 - `adapters::audit_sink`
-- `adapters::billing_repo`
+- `adapters::billing_processor_repo`
 - `adapters::byok`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -14396,8 +14481,10 @@ modules naming it:
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
+- `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_frontier`
 - `adapters::tests::login_challenge`
@@ -14527,6 +14614,7 @@ modules naming it:
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::hot_path_indexes`
+- `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
 - `adapters::tests::ledger_frontier`
@@ -14611,7 +14699,7 @@ why: id minting/binding
 modules naming it:
 - `adapters::applicability_repo`
 - `adapters::audit_sink`
-- `adapters::billing_repo`
+- `adapters::billing_processor_repo`
 - `adapters::byok`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
@@ -14744,9 +14832,11 @@ modules naming it:
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::hot_path_indexes`
+- `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
 - `adapters::tests::ledger_frontier`
@@ -14855,6 +14945,7 @@ modules naming it:
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
+- `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_frontier`
 - `adapters::tests::login_challenge`
@@ -16176,9 +16267,11 @@ modules naming it:
 - `billing-worker::creem`
 - `billing-worker::fake_creem`
 - `billing-worker::normalize`
+- `billing-worker::process`
 - `billing-worker::signature`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::normalization`
+- `billing-worker::tests::process`
 - `billing-worker::tests::signature`
 - `tests`
 
@@ -16189,8 +16282,10 @@ modules naming it:
 - `billing-worker::creem`
 - `billing-worker::fake_creem`
 - `billing-worker::normalize`
+- `billing-worker::process`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::normalization`
+- `billing-worker::tests::process`
 - `tests`
 
 ### humaux-billing-worker → `hmac` (normal)
@@ -16225,6 +16320,7 @@ why: provider-neutral billing port (§71.2)
 
 modules naming it:
 - `billing-worker::creem`
+- `billing-worker::process`
 - `billing-worker::tests::fetch`
 - `tests`
 
@@ -16235,6 +16331,7 @@ modules naming it:
 - `billing-worker::creem`
 - `billing-worker::fake_creem`
 - `billing-worker::tests::fetch`
+- `billing-worker::tests::process`
 - `tests`
 
 ### humaux-billing-worker → `url` (normal)
@@ -16256,12 +16353,47 @@ why: subscription RFC3339 periods (§71.2)
 
 modules naming it:
 - `billing-worker::creem`
+- `billing-worker::process`
+
+### humaux-billing-worker → `humaux-adapters` (normal)
+why: maintenance-only owner doors and C2 projection (§71.3)
+
+modules naming it:
+- `billing-worker::process`
+- `billing-worker::tests::process`
+- `tests`
+
+### humaux-billing-worker → `uuid` (normal)
+why: configured plan version and opaque tenant IDs (§78.2)
+
+modules naming it:
+- `billing-worker::process`
+- `billing-worker::tests::fetch`
+- `billing-worker::tests::process`
+- `billing-worker::tests::signature`
+- `tests`
+
+### humaux-billing-worker → `humaux-testkit` (dev)
+why: real PostgreSQL isolated fixture (§79.2)
+
+modules naming it:
+- `billing-worker::tests::process`
+- `tests`
+
+### humaux-billing-worker → `postgres` (dev)
+why: independent owner readback of exact DB effects (§79.2)
+
+modules naming it:
+- `billing-worker::tests::process`
+- `tests`
 
 ### humaux-billing-worker → `uuid` (dev)
 why: runtime-only random HMAC test keys (§79.4)
 
 modules naming it:
+- `billing-worker::process`
 - `billing-worker::tests::fetch`
+- `billing-worker::tests::process`
 - `billing-worker::tests::signature`
 - `tests`
 
@@ -16278,6 +16410,7 @@ why: test HTTP double lifecycle (§79.4)
 modules naming it:
 - `billing-worker::fake_creem`
 - `billing-worker::tests::fetch`
+- `billing-worker::tests::process`
 - `tests`
 
 ### humaux-consolidation-worker → `humaux-adapters` (normal)
@@ -17966,6 +18099,15 @@ services (computed):
 
 default run:
 
+### `bins/billing-worker/tests/process.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `bins/billing-worker/tests/signature.rs`
 db-bound (default run): no
 
@@ -19016,6 +19158,15 @@ services (computed):
 default run:
 - PostgreSQL
 
+### `crates/adapters/tests/freshness.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `crates/adapters/tests/g80_31_handoff.rs`
 db-bound (default run): yes
 
@@ -19035,6 +19186,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/hot_path_indexes.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/ingest_ticket_expiry.rs`
 db-bound (default run): yes
 
 services (computed):

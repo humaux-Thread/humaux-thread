@@ -1,17 +1,17 @@
 //! `adapters::read_materialize` — Final PostgreSQL body materialization after authorization and token-ledger
 //!   validation.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sha2, sqlx];
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, sha2, sqlx, time];
 //!   services=[PostgreSQL(role_gateway) r=[ops.outbox, private.events, private.evidence_objects,
 //!   private.evidence_subjects, private.identity_note_materializations, private.memory_evidence,
 //!   private.memory_records, private.memory_subjects, private.memory_text_v, projection.stream_log]]; env=[]; modules=[adapters::affect_repo,
 //!   adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::retrieve, application::affect, domain::affect,
-//!   domain::authority, domain::error, domain::identity, domain::ids, domain::note, domain::subject,
-//!   projection::serving, projection::stream]
+//!   domain::authority, domain::error, domain::memory, domain::identity, domain::ids, domain::note, domain::subject,
+//!   projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::signals]
 //! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::exact_census, adapters::grep_repo, adapters::operation_receipt, adapters::read_gate, adapters::retrieve, gateway::context, gateway::mcp_application, gateway::memory, gateway::recall, tests]
 //! Invariants: [read-only on role_gateway under RLS; an invisible or unknown source is NotFound/Forbidden, never
 //!   partially materialized; a PG error is DependencyUnavailable; the recall/context entry points take no
 //!   [`Lifecycle`] and always run [`Lifecycle::CURRENT`] (ADR-0067 D-J2)]
-//! Spec: ADR-0067 D-J2
+//! Spec: §9; §21.5; §23.3; ADR-0067 D-J2; ADR-0111 D-A/D-C/D-D
 
 use std::collections::{HashMap, HashSet};
 
@@ -21,10 +21,16 @@ use humaux_domain::authority::MemoryId;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::WorkspaceId;
+use humaux_domain::memory::MemoryType;
 use humaux_domain::note::NoteKind;
 use humaux_domain::subject::SubjectId;
 use humaux_projection::serving::StreamFamily;
 use humaux_projection::stream::StreamKey;
+use humaux_retrieval::{
+    completeness::FreshnessClass,
+    envelope::FreshnessBlock,
+    signals::{compute_freshness, summarize_freshness},
+};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use sqlx::types::Uuid;
@@ -69,6 +75,100 @@ pub enum MaterializedItem {
 pub struct MaterializedBodies {
     pub snapshot: MaterializationSnapshot,
     pub items: Vec<MaterializedItem>,
+    /// §21.5 / ADR-0111: annotations for admitted items, independent of their content shape.
+    pub freshness: HashMap<Uuid, ItemFreshness>,
+}
+
+/// §21.5: the sole classifier's annotation, with §23.3 RFC 3339 Evidence time.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ItemFreshness {
+    /// ADR-0111 D-C: independent of completeness and ranking.
+    pub class: FreshnessClass,
+    /// §50: the values file identity used by the classifier.
+    pub policy_id: Option<&'static str>,
+    /// §50: the values file version.
+    pub policy_version: Option<u32>,
+    /// §9: only backing Evidence occurred_at; absent for legacy missing Evidence.
+    pub latest_evidence_at: Option<String>,
+    /// §21.5: age against the transaction's database clock, absent when unknown.
+    pub state_age_seconds: Option<u64>,
+}
+
+impl MaterializedBodies {
+    /// ADR-0111 D-C: summarize only returned items, after any truncation or reranking.
+    pub fn freshness_summary(&self) -> FreshnessBlock {
+        let readings: Vec<_> = self
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MaterializedItem::Memory { memory_id, .. } => self.freshness.get(memory_id),
+                MaterializedItem::TemporaryEvidence { evidence_id, .. }
+                | MaterializedItem::ArtifactUnavailable { evidence_id, .. } => {
+                    self.freshness.get(evidence_id)
+                }
+            })
+            .collect();
+        FreshnessBlock {
+            class: summarize_freshness(readings.iter().map(|reading| reading.class)),
+            latest_evidence_at: readings
+                .iter()
+                .filter_map(|reading| reading.latest_evidence_at.as_ref())
+                .max()
+                .cloned(),
+            state_age_seconds: readings
+                .iter()
+                .filter_map(|reading| reading.state_age_seconds)
+                .max(),
+        }
+    }
+}
+
+fn item_freshness(row: &sqlx::postgres::PgRow) -> Result<ItemFreshness, ErrorCode> {
+    let kind: String = row
+        .try_get("memory_type")
+        .map_err(|_| ErrorCode::Internal)?;
+    let kind = MemoryType::parse_wire(&kind).ok_or(ErrorCode::Internal)?;
+    let evidence: Option<OffsetDateTime> = row
+        .try_get("latest_evidence_at")
+        .map_err(|_| ErrorCode::Internal)?;
+    let now: OffsetDateTime = row
+        .try_get("freshness_now")
+        .map_err(|_| ErrorCode::Internal)?;
+    let signal = compute_freshness(kind, evidence.map(Into::into), now.into(), None, None);
+    Ok(ItemFreshness {
+        class: signal.class,
+        policy_id: Some(signal.policy_id),
+        policy_version: Some(signal.policy_version),
+        latest_evidence_at: evidence
+            .map(|at| {
+                at.format(&time::format_description::well_known::Rfc3339)
+                    .map_err(|_| ErrorCode::Internal)
+            })
+            .transpose()?,
+        state_age_seconds: signal.state_age_seconds,
+    })
+}
+
+// §21.5 / ADR-0111 D-C: non-Memory items have no per-MemoryType policy.
+fn overlay_freshness(row: &sqlx::postgres::PgRow) -> Result<ItemFreshness, ErrorCode> {
+    let evidence: Option<OffsetDateTime> = row
+        .try_get("occurred_at")
+        .map_err(|_| ErrorCode::Internal)?;
+    let now: OffsetDateTime = row
+        .try_get("freshness_now")
+        .map_err(|_| ErrorCode::Internal)?;
+    Ok(ItemFreshness {
+        class: FreshnessClass::Unknown,
+        policy_id: None,
+        policy_version: None,
+        latest_evidence_at: evidence
+            .map(|at| {
+                at.format(&time::format_description::well_known::Rfc3339)
+                    .map_err(|_| ErrorCode::Internal)
+            })
+            .transpose()?,
+        state_age_seconds: evidence.and_then(|at| u64::try_from((now - at).whole_seconds()).ok()),
+    })
 }
 
 fn dedup<T: std::hash::Hash + Eq + Copy>(items: impl IntoIterator<Item = T>) -> Vec<T> {
@@ -413,7 +513,7 @@ async fn load_memories(
     lifecycle: Lifecycle,
     subject_ids: &[SubjectId],
     affect: Option<&AffectFilter>,
-) -> Result<Vec<(Uuid, serde_json::Value)>, ErrorCode> {
+) -> Result<Vec<(Uuid, serde_json::Value, ItemFreshness)>, ErrorCode> {
     let eligible = final_memory_ids_about_in_txn(
         txn,
         authorization,
@@ -428,11 +528,20 @@ async fn load_memories(
     // shape) has no text keys to replace and is returned unchanged; the view resolves none for it either.
     let rows = sqlx::query(
         r#"
-        SELECT m.memory_id, m.content, mt.title, mt.body
+        SELECT m.memory_id, m.content, mt.title, mt.body, m.memory_type,
+               backing.latest_evidence_at, CURRENT_TIMESTAMP AS freshness_now
         FROM private.memory_records AS m
         LEFT JOIN private.memory_text_v AS mt
           ON mt.tenant_id = m.tenant_id
          AND mt.memory_id = m.memory_id
+        -- §9 / ADR-0111: bounded by returned ids; missing Evidence time remains unknown.
+        LEFT JOIN LATERAL (
+            SELECT max(source.occurred_at) AS latest_evidence_at
+            FROM private.memory_evidence AS me
+            JOIN private.evidence_objects AS source
+              ON source.evidence_id = me.evidence_id AND source.tenant_id = m.tenant_id
+            WHERE me.memory_id = m.memory_id
+        ) AS backing ON true
         WHERE m.tenant_id = $1
           AND m.memory_id = ANY($2)
         "#,
@@ -470,20 +579,21 @@ async fn load_memories(
                 }
             }
         }
-        values.insert(memory_id, content);
+        values.insert(memory_id, (content, item_freshness(&row)?));
     }
     eligible
         .into_iter()
         .map(|id| {
             values
                 .remove(&id)
-                .map(|content| (id, content))
+                .map(|(content, freshness)| (id, content, freshness))
                 .ok_or(ErrorCode::Internal)
         })
         .collect::<Result<_, _>>()
 }
 
 struct RecheckedOverlay {
+    freshness: ItemFreshness,
     evidence_id: Uuid,
     stream_seq: i64,
     processing_state: ProcessingState,
@@ -525,6 +635,8 @@ async fn load_overlay(
                eo.visibility_class,
                eo.visibility_user_id,
                eo.visibility_workspace_id,
+               CASE WHEN eo.evidence_kind = 'EVENT' THEN eo.occurred_at END AS occurred_at,
+               CURRENT_TIMESTAMP AS freshness_now,
                event.payload
         FROM projection.stream_log AS sl
         JOIN ops.outbox AS ob
@@ -577,6 +689,7 @@ async fn load_overlay(
         }
         let state: String = row.try_get("state").map_err(|_| ErrorCode::Internal)?;
         out.push(RecheckedOverlay {
+            freshness: overlay_freshness(&row)?,
             evidence_id: row
                 .try_get("evidence_id")
                 .map_err(|_| ErrorCode::Internal)?,
@@ -861,17 +974,25 @@ async fn materialize_final_bodies_gated_in_txn(
     if affect.is_some() {
         overlay.clear();
     }
-    let readable_memory_ids = memories.iter().map(|(id, _)| *id).collect::<HashSet<_>>();
+    let readable_memory_ids = memories
+        .iter()
+        .map(|(id, _, _)| *id)
+        .collect::<HashSet<_>>();
     for item in &mut overlay {
         item.linked_memory_ids
             .retain(|id| readable_memory_ids.contains(id));
     }
+    let mut freshness: HashMap<_, _> = memories
+        .iter()
+        .map(|(id, _, reading)| (*id, reading.clone()))
+        .collect();
     let mut items = memories
         .into_iter()
-        .map(|(memory_id, content)| MaterializedItem::Memory { memory_id, content })
+        .map(|(memory_id, content, _)| MaterializedItem::Memory { memory_id, content })
         .collect::<Vec<_>>();
     for item in overlay {
         let RecheckedOverlay {
+            freshness: reading,
             evidence_id,
             stream_seq,
             processing_state,
@@ -879,6 +1000,7 @@ async fn materialize_final_bodies_gated_in_txn(
             payload,
             linked_memory_ids,
         } = item;
+        freshness.insert(evidence_id, reading);
         match (evidence_kind.as_str(), payload) {
             ("EVENT", Some(payload)) => items.push(MaterializedItem::TemporaryEvidence {
                 evidence_id,
@@ -897,7 +1019,11 @@ async fn materialize_final_bodies_gated_in_txn(
         }
     }
     let snapshot = snapshot(txn).await?;
-    Ok(MaterializedBodies { snapshot, items })
+    Ok(MaterializedBodies {
+        snapshot,
+        items,
+        freshness,
+    })
 }
 
 /// ADR-0067 D-D / D-J: `memory_id → note_kind` and `memory_id → note_id` for the notes among `ids`, under the

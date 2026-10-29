@@ -1,6 +1,6 @@
 //! `domain::memory` — `MemoryType` (§8.5 / §59), the Mandatory facet mapping (§25.4.A) and `EpistemicStatus` (ADR-0124).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::context_repo, adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::projection_worker, adapters::qdrant, application::confirm, application::correct, domain::authority, domain::context, domain::note, domain::policy, private-worker::distill, projection::card, retrieval::signals, tests]
+//! Called-by: [adapters::read_materialize, adapters::context_repo, adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::projection_worker, adapters::qdrant, application::confirm, application::correct, domain::authority, domain::context, domain::note, domain::policy, private-worker::distill, projection::card, retrieval::signals, tests]
 //! Invariants: [EpistemicStatus is a closed four-value set whose `as_db_str` labels are the CHECK of migration 0283 (the §78.2
 //!   contract test in `adapters` pins the two); it certifies no truth and decides no authority]
 //! Spec: Baseline §8.5; §24; §25.2; ADR-0045; ADR-0124

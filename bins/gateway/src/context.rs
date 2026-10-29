@@ -10,7 +10,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use humaux_adapters::{
     context_repo::{MaterializedContext, assemble_materialized},
     postgres::RuntimeDbPool,
-    read_materialize::MaterializedItem,
+    read_materialize::{ItemFreshness, MaterializedItem},
     serving_repo::{FamilyReadState, UnservedLedger, family_read_state},
 };
 use humaux_domain::{
@@ -22,11 +22,11 @@ use humaux_domain::{
 use humaux_projection::{serving::StreamFamily, stream::StreamKey};
 use humaux_retrieval::{
     compiler::ContextOutcome,
-    completeness::{CensusResult, FreshnessClass, LedgerClosure},
+    completeness::{CensusResult, LedgerClosure},
     envelope::{
-        CompletenessBlock, CompletenessInputs, Envelope, FreshnessBlock, LaneStatus,
-        MandatoryReport, PendingEnvelope, PinnedReport, PipelineBlock, ProfileBlock,
-        ProvenanceBlock, ProvenanceValue, build_projection_block, envelope_outcome_block,
+        CompletenessBlock, CompletenessInputs, Envelope, LaneStatus, MandatoryReport,
+        PendingEnvelope, PinnedReport, PipelineBlock, ProfileBlock, ProvenanceBlock,
+        ProvenanceValue, build_projection_block, envelope_outcome_block,
         no_serving_projection_envelope,
     },
     handoff::Handoff,
@@ -173,6 +173,8 @@ impl ContextBootstrap {
 pub struct ContextItem {
     pub memory_id: Uuid,
     pub content: Value,
+    /// §21.5 / ADR-0111 D-C: the same-snapshot per-item policy annotation.
+    pub freshness: ItemFreshness,
     /// Q3/ADR-0024 D-C: `true` on `memory.get` of an archived Memory and on a `memory.enumerate` item selected with
     /// `archive` `only` / `include` (ADR-0067 D-J2). recall/context never emit an archived item, so the field is
     /// skipped when `false` and those wire shapes stay byte-identical.
@@ -320,6 +322,7 @@ fn into_result<T>(
         pipeline: counts,
         grounding,
     } = materialized;
+    let freshness = bodies.freshness_summary();
     let items = bodies
         .items
         .into_iter()
@@ -327,6 +330,11 @@ fn into_result<T>(
             MaterializedItem::Memory { memory_id, content } => Ok(ContextItem {
                 memory_id,
                 content,
+                freshness: bodies
+                    .freshness
+                    .get(&memory_id)
+                    .cloned()
+                    .ok_or(ErrorCode::Internal)?,
                 // context.assemble excludes archived rows at the candidate step (D-C).
                 archived: false,
             }),
@@ -411,11 +419,7 @@ fn into_result<T>(
                 },
                 pipeline: pipeline.clone(),
                 provenance: provenance.clone(),
-                freshness: FreshnessBlock {
-                    class: FreshnessClass::Unknown,
-                    latest_evidence_at: None,
-                    state_age_seconds: None,
-                },
+                freshness,
                 grounding,
                 mandatory,
                 pinned: PinnedReport::Ran {

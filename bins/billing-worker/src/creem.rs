@@ -151,7 +151,11 @@ impl BillingProvider for CreemClient {
     ) -> Result<ProviderSubscription, ErrorCode> {
         let value = self
             .get("v1/subscriptions", "subscription_id", &reference.0)
-            .await?;
+            .await
+            .map_err(|error| match error {
+                ErrorCode::ProviderTransient => ErrorCode::DependencyUnavailable,
+                other => other,
+            })?;
         let date = |key| {
             OffsetDateTime::parse(text(&value, key)?, &Rfc3339).map_err(|_| ErrorCode::InvalidInput)
         };
@@ -168,6 +172,12 @@ impl BillingProvider for CreemClient {
         Ok(ProviderSubscription {
             reference: reference.clone(),
             customer: ExternalCustomerRef(customer.into()),
+            product: value["product"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .map(Ok)
+                .unwrap_or_else(|| text(&value["product"], "id"))?
+                .into(),
             status: normalize::status(text(&value, "status")?)?,
             current_period_start: start,
             current_period_end: end,
