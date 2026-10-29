@@ -460,7 +460,7 @@ pub async fn finish_processing_run(
     provider_request_id: Option<&str>,
 ) -> Result<u64, sqlx::Error> {
     // §37 / ADR-0092 D-C: refuse the entire write transaction, including pending candidates.
-    let stale: bool = sqlx::query_scalar(
+    if sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (SELECT 1 FROM private.processing_runs AS run \
          JOIN ops.outbox AS ob ON ob.tenant_id = run.tenant_id AND ob.evidence_id = run.evidence_id \
          JOIN projection.stream_log AS sl ON sl.tenant_id = ob.tenant_id AND sl.commit_seq = ob.commit_seq \
@@ -468,8 +468,8 @@ pub async fn finish_processing_run(
     )
     .bind(processing_run_id)
     .fetch_one(&mut **txn)
-    .await?;
-    if stale {
+    .await?
+    {
         return Err(sqlx::Error::Protocol("STALE_INPUT".into()));
     }
     let finished = sqlx::query(
