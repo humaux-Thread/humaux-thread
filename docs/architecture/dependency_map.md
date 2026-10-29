@@ -14176,6 +14176,7 @@ modules naming it:
 - `adapters::tests::exact_census_project`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_confirm`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::membership_lifecycle`
