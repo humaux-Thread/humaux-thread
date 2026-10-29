@@ -113,8 +113,13 @@ impl MaterializedBodies {
             latest_evidence_at: readings
                 .iter()
                 .filter_map(|reading| reading.latest_evidence_at.as_ref())
-                .max()
-                .cloned(),
+                .filter_map(|at| {
+                    OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339)
+                        .ok()
+                        .map(|parsed| (parsed, at))
+                })
+                .max_by_key(|(parsed, _)| *parsed)
+                .map(|(_, at)| at.clone()),
             state_age_seconds: readings
                 .iter()
                 .filter_map(|reading| reading.state_age_seconds)
