@@ -100,16 +100,21 @@ fn process_with(
     product: &str,
     fail_once: bool,
 ) -> Result<bool, ErrorCode> {
-    process_fetched(h, fetched_subscription(current, product), fail_once)
+    process_fetched(
+        h,
+        fetched_subscription(current, product),
+        fail_once.then_some(503),
+    )
 }
-fn process_fetched(h: &Handle, subscription: Value, fail_once: bool) -> Result<bool, ErrorCode> {
+fn process_fetched(
+    h: &Handle,
+    subscription: Value,
+    failure_status: Option<u16>,
+) -> Result<bool, ErrorCode> {
     h.rt.block_on(async {
         // dep: HTTP(loopback) — merged Creem-shaped server; no external call (§79.4).
-        let (base, server) = if fail_once {
-            fake_creem::start_with_failure(subscription, json!({}), true).await
-        } else {
-            fake_creem::start(subscription, json!({})).await
-        };
+        let (base, server) =
+            fake_creem::start_with_failure(subscription, json!({}), failure_status).await;
         let secret = Box::leak(Uuid::new_v4().to_string().into_boxed_str());
         let provider = CreemClient::new(
             &base,
@@ -151,7 +156,7 @@ fn concurrent_subscription_observations_are_ordered() {
                 let (base, server) = fake_creem::start_controlled(
                     fetched_subscription("past_due", "prod_fixture"),
                     json!({}),
-                    false,
+                    None,
                     Some(order.clone()),
                 )
                 .await;
@@ -452,7 +457,7 @@ fn money_source_and_charge_replay() {
         insert_payload(&mut h, &payload);
         let mut fetched = fetched_subscription("active", "prod_fixture");
         fetched["current_period_start_date"] = Value::Null;
-        assert_eq!(process_fetched(&h, fetched, false), Ok(true));
+        assert_eq!(process_fetched(&h, fetched, None), Ok(true));
         let failed: Value = h.admin.query_one("SELECT jsonb_build_array(status,error_class) FROM control.billing_inbox WHERE event_id='no_period'", &[]).unwrap().get(0);
         assert_eq!(failed, json!(["FAILED", "INVALID_INPUT"]));
         assert_eq!(effects(&mut h), before);
@@ -667,4 +672,87 @@ fn reversal_before_subscription_delivery() {
             );
         });
     }
+}
+
+/// G-M04-26: late cancellation and current-period reversal affect only their own subscription (§71.3).
+#[test]
+fn late_canceled_preserves_own_subscription_grants() {
+    run_db_fixture::<Fixture, _>(
+        "late_canceled_preserves_own_subscription_grants",
+        |mut h| {
+            let tenant = h.tenant;
+            deliver(&mut h, "old_cancel", "canceled", tenant);
+            assert_eq!(process(&h, "canceled"), true);
+            let mut new = fetched_subscription("active", "prod_fixture");
+            new["id"] = json!("sub_new");
+            deliver(&mut h, "new_active", "active", tenant);
+            h.admin.execute("UPDATE control.billing_inbox SET object_id='sub_new',payload=jsonb_set(payload,'{object,id}',to_jsonb('sub_new'::text)) WHERE event_id='new_active'", &[]).unwrap();
+            assert_eq!(process_fetched(&h, new, None), Ok(true));
+            assert_eq!(snapshot(&mut h), paid());
+            let grants: Value = h.admin.query_one("SELECT jsonb_agg(grant_id ORDER BY grant_id) FROM control.entitlement_grants WHERE source_ref_id=(SELECT subscription_id FROM control.subscriptions WHERE provider_subscription_ref='sub_new') AND revoked_at IS NULL AND valid_until>clock_timestamp()", &[]).unwrap().get(0);
+            assert_eq!(grants.as_array().unwrap().len(), 2);
+            for reversal in [false, true] {
+                if reversal {
+                    let payload = money_payload(&h, "old_refund", "refund.created", "rf_old");
+                    insert_payload(&mut h, &payload);
+                } else {
+                    deliver(&mut h, "old_late", "canceled", tenant);
+                }
+                assert_eq!(process(&h, "canceled"), true);
+                let current: Value = h.admin.query_one("SELECT jsonb_agg(grant_id ORDER BY grant_id) FROM control.entitlement_grants WHERE source_ref_id=(SELECT subscription_id FROM control.subscriptions WHERE provider_subscription_ref='sub_new') AND revoked_at IS NULL AND valid_until>clock_timestamp()", &[]).unwrap().get(0);
+                assert_eq!(current, grants, "G-M04-26: sub_B PLAN grants survive sub_A");
+                assert_eq!(snapshot(&mut h), paid(), "G-M04-26: snapshot stays paid");
+            }
+            let states: Value = h.admin.query_one("SELECT jsonb_agg(jsonb_build_array(provider_subscription_ref,state) ORDER BY provider_subscription_ref) FROM control.subscriptions", &[]).unwrap().get(0);
+            assert_eq!(
+                states,
+                json!([["sub_fixture", "CANCELED"], ["sub_new", "ACTIVE"]])
+            );
+        },
+    );
+}
+/// G-M04-27: rate limits and DB-cancelled advisory waits retain the acknowledged inbox (§71.3).
+#[test]
+fn transient_rate_limit_and_lock_cancel_stay_received() {
+    run_db_fixture::<Fixture, _>(
+        "transient_rate_limit_and_lock_cancel_stay_received",
+        |mut h| {
+            let tenant = h.tenant;
+            deliver(&mut h, "transient", "active", tenant);
+            let before = effects(&mut h);
+            let result = process_fetched(
+                &h,
+                fetched_subscription("active", "prod_fixture"),
+                Some(429),
+            );
+            assert_received_without_effects(&mut h, result, &before);
+            let dsn = h._db.dsn();
+            h.pool =
+                h.rt.block_on(MaintenanceDbPool::connect(&format!(
+                    "{dsn}{}options=-c%20role%3Drole_maintenance%20-c%20lock_timeout%3D50ms",
+                    if dsn.contains('?') { '&' } else { '?' }
+                )))
+                .unwrap();
+            h.admin.batch_execute("BEGIN; SELECT pg_advisory_xact_lock(hashtextextended('billing-subscription:creem:sub_fixture',0))").unwrap();
+            let result = process_with(&h, "active", "prod_fixture", false);
+            h.admin.batch_execute("ROLLBACK").unwrap();
+            assert_received_without_effects(&mut h, result, &before);
+            assert_eq!(process(&h, "active"), true);
+            assert_eq!(snapshot(&mut h), paid());
+        },
+    );
+}
+fn assert_received_without_effects(
+    h: &mut Handle,
+    result: Result<bool, ErrorCode>,
+    before: &Value,
+) {
+    let row: Value = h.admin.query_one("SELECT jsonb_build_array(status,error_class,(SELECT count(*) FROM control.subscription_events)) FROM control.billing_inbox WHERE event_id='transient'", &[]).unwrap().get(0);
+    assert_eq!(
+        row,
+        json!(["RECEIVED", null, 0]),
+        "G-M04-27: transient stays RECEIVED"
+    );
+    assert_eq!(result, Err(ErrorCode::DependencyUnavailable));
+    assert_eq!(&effects(h), before);
 }

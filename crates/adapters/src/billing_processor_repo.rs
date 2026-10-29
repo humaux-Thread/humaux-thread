@@ -2,7 +2,7 @@
 //! Depends-on: crates=[humaux-application, humaux-domain, serde_json, sqlx, time, uuid]; services=[PostgreSQL(role_maintenance) r=[control.tenants] x=[control.billing_inbox_claim, control.billing_inbox_settle, control.billing_apply_subscription, control.billing_append_payment]]; env=[];
 //!   modules=[adapters::postgres, application::billing, domain::billing, domain::error, domain::ids, domain::plan]
 //! Called-by: [billing-worker::process, tests]
-//! Invariants: [no gateway caller; 0300/0301 owner doors; C2 alone writes snapshots]
+//! Invariants: [no gateway caller; 0300/0301/0305 owner doors; C2 alone writes snapshots]
 //! Spec: Baseline §71.3; §76
 use crate::postgres::MaintenanceDbPool;
 use humaux_application::billing::{ProviderSubscription, VerifiedBillingEvent};
@@ -21,6 +21,7 @@ pub type Txn<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
 fn db_error(error: sqlx::Error) -> ErrorCode {
     match error {
         sqlx::Error::Database(ref db) => match db.code().as_deref() {
+            Some("55P03" | "57014" | "40P01") => ErrorCode::DependencyUnavailable,
             Some("42501") => ErrorCode::Forbidden,
             Some("22023" | "22P02" | "23502" | "23514") => ErrorCode::InvalidInput,
             _ => ErrorCode::Internal,
@@ -117,6 +118,7 @@ pub async fn inbox_settle(
         .map_err(db_error)
 }
 
+/// §71.3: caller must hold `lock_subscription` for this reference before the authoritative fetch.
 /// Applies one provider event once; `tenant` must match the transaction GUC. The caller next invokes
 /// `entitlement_repo::recompute_in_txn` before commit (§76 / M04 D13(h)); plan IDs come from configuration (§78.1).
 pub async fn apply_subscription_in_txn(
@@ -161,6 +163,7 @@ pub struct PaymentFacts<'a> {
     /// D13b: event creation time, not processing time.
     pub occurred_at: OffsetDateTime,
 }
+/// §71.3: caller must hold `lock_subscription` for this reference before the authoritative fetch.
 /// §71.3 / §76: false means replay, without effects; caller scopes the tenant and recomputes before commit.
 pub async fn append_payment_in_txn(
     txn: &mut Txn<'_>,
