@@ -95,6 +95,11 @@ impl Drop for World {
 impl World {
     fn forget(&mut self) {
         let mut txn = self.h.admin.transaction().unwrap();
+        txn.query_one(
+            "SELECT set_config('humaux.tenant_id',$1,true)",
+            &[&self.h.tenant_id.to_string()],
+        )
+        .unwrap();
         // dep: PostgreSQL(role_maintenance) — §37 tombstone runtime role
         txn.batch_execute("SET LOCAL ROLE role_maintenance")
             .unwrap();
