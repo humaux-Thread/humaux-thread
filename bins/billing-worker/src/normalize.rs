@@ -1,6 +1,6 @@
 //! `billing-worker::normalize` — provider envelope boundary (§71.2).
 //! Depends-on: crates=[humaux-domain, serde_json]; services=[]; env=[]; modules=[domain::billing, domain::error, domain::plan]
-//! Called-by: [billing-worker::creem, tests]
+//! Called-by: [billing-worker::creem, billing-worker::process, tests]
 //! Invariants: [no checkout-response money; no status inferred from event type; missing amounts fail closed]
 //! Spec: Baseline §71.2; §71.3; §52; §78.2
 
