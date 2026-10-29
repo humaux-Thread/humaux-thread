@@ -6,7 +6,8 @@
 //!   cluster-level DR_EVIDENCE task (ADR-0064 D-K / 10.11 D) runs the same way: one statement over the backup and
 //!   drill receipts with the WAL latch, two in-process `statvfs` reads, and one `telemetry::dr::publish`. The cluster-level
 //!   AUTHORITY_I4 task (ADR-0123 D3, §65) is the report-only §59.1 I4 scan: one statement appends the owner definer's count to
-//!   `ops.repair_findings`, then `authority_i4_violations` is set once.
+//!   `ops.repair_findings`, then `authority_i4_violations` is set once. INGEST_TICKETS calls the M09 owner door
+//!   to expire due ISSUED tickets without shrinking expected (§15.6, ADR-0123 D4).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-telemetry, libc, serde_json, tokio, uuid];
 //!   services=[PostgreSQL(role_maintenance), fs(statvfs of the DR paths)]; env=[CARGO_PKG_VERSION,
 //!   HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS, HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH, HUMAUX_MAINTENANCE_DR_REPO_FS_PATH,
@@ -14,6 +15,7 @@
 //!   HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_EVERY_SECONDS, HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_LIMIT,
 //!   HUMAUX_MAINTENANCE_SERVE_CYCLE_SECONDS, HUMAUX_MAINTENANCE_SERVE_DR_EVIDENCE_EVERY_SECONDS,
+//!   HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_EVERY_SECONDS, HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_LIMIT,
 //!   HUMAUX_MAINTENANCE_SERVE_JOBS_DEAD_RETENTION_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_JOBS_DONE_RETENTION_SECONDS, HUMAUX_MAINTENANCE_SERVE_JOBS_EVERY_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_JOBS_LIMIT, HUMAUX_MAINTENANCE_SERVE_LOST_AFTER_SECONDS,
@@ -70,7 +72,10 @@ use humaux_adapters::postgres::MaintenanceDbPool;
 use humaux_adapters::{confirm_token_repo, provider_budget, quota_repo, stream_repo};
 use humaux_domain::ids::TenantId;
 use humaux_telemetry::dr::{self, DrReading, Limit, Volume};
-use humaux_telemetry::metrics::{Routes, families, write_family, write_single_label};
+use humaux_telemetry::metrics::{
+    Routes, families, render_stage_liveness, stage_finished, stage_started, write_family,
+    write_single_label,
+};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -128,6 +133,7 @@ const SYSTEM_STEP_UP: &str = "none: scheduled task (ADR-0062 D-P)";
 const fn every_key(task: Task) -> &'static str {
     match task {
         Task::Lost => "HUMAUX_MAINTENANCE_SERVE_LOST_EVERY_SECONDS",
+        Task::IngestTickets => "HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_EVERY_SECONDS",
         Task::QuotaReservations => "HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_EVERY_SECONDS",
         Task::QuotaRenewal => "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_EVERY_SECONDS",
         Task::ProviderBudgets => "HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_EVERY_SECONDS",
@@ -149,6 +155,7 @@ const fn every_key(task: Task) -> &'static str {
 const fn limit_key(task: Task) -> Option<&'static str> {
     Some(match task {
         Task::Lost => "HUMAUX_MAINTENANCE_SERVE_LOST_LIMIT",
+        Task::IngestTickets => "HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_LIMIT",
         Task::QuotaReservations => "HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_LIMIT",
         Task::QuotaRenewal => "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LIMIT",
         Task::ProviderBudgets => "HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_LIMIT",
@@ -264,11 +271,22 @@ struct Run {
     ran: bool,
     tenants: u64,
     affected: u64,
+    reading_published: bool,
     failed: u64,
     first_error: Option<String>,
 }
 
 impl Run {
+    // §39: the declared product may be a reading rather than affected rows.
+    fn finish(&self, task: Task, now: f64, finished: bool) {
+        stage_finished(
+            task.label(),
+            now,
+            finished && self.failed == 0,
+            self.affected > 0 || self.reading_published,
+        );
+    }
+
     fn fail(&mut self, error: String) {
         self.failed += 1;
         self.first_error.get_or_insert(error);
@@ -311,6 +329,10 @@ async fn call(
     match task {
         // dep: PostgreSQL(role_maintenance) — projection.stream_log ISSUED -> LOST (adapters::stream_repo::sweep_lost)
         Task::Lost => stream_repo::sweep_lost(pool, tenant, cfg.lost_after, i64::from(limit))
+            .await
+            .map_err(|e| e.to_string()),
+        // dep: PostgreSQL(role_maintenance) — §15.6 owner door retains every ingest ticket in expected
+        Task::IngestTickets => stream_repo::expire_ingest_tickets(pool, tenant, i64::from(limit))
             .await
             .map_err(|e| e.to_string()),
         // dep: PostgreSQL(role_maintenance) — control.reap_quota_reservations (0113 owner definer)
@@ -542,9 +564,15 @@ async fn dr_evidence(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
         }
         Ok(dr_reading(&evidence, free))
     };
-    match done.await {
+    finish_dr_reading(done.await, run);
+}
+
+// §39 / ADR-0064 D-K: only a published reading is the DR stage's output.
+fn finish_dr_reading(done: std::result::Result<DrReading, String>, run: &mut Run) {
+    match done {
         Ok(reading) => {
             dr::publish(&reading);
+            run.reading_published = true;
             count_task_call(Task::DrEvidence, Some(0));
         }
         Err(e) => {
@@ -576,9 +604,11 @@ async fn cycle(
             runs.push((task, run));
             continue;
         }
+        stage_started(task.label(), resident::stage_now());
         run.ran = true;
         cursor.last_run = Some(Instant::now());
         if cluster(task, pool, cfg, &mut run).await {
+            run.finish(task, resident::stage_now(), true);
             runs.push((task, run));
             continue;
         }
@@ -626,6 +656,7 @@ async fn cycle(
             run.tenants += 1;
             cursor.after = Some(tenant);
         }
+        run.finish(task, resident::stage_now(), finished);
         if finished && page.len() < usize::try_from(cfg.tenants_per_run).unwrap_or(usize::MAX) {
             cursor.after = None;
         }
@@ -672,6 +703,7 @@ pub(crate) fn render_metrics() -> String {
         .collect();
     write_family(&mut out, &families::MAINTENANCE_TASK_RUNS_TOTAL, &samples);
     let names = Task::ALL.map(Task::label);
+    render_stage_liveness(&mut out, &names);
     write_single_label(
         &mut out,
         &families::MAINTENANCE_TASK_ROWS_TOTAL,
@@ -887,6 +919,71 @@ pub(crate) async fn sweep_once(args: &Args) -> Result<Output> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stage_output_uses_task_product() {
+        use super::{DrReading, Run, Task, finish_dr_reading, render_stage_liveness};
+        for task in Task::ALL {
+            let mut run = Run::default();
+            if task == Task::DrEvidence {
+                finish_dr_reading(
+                    Ok(DrReading {
+                        backup_last_success: 1.0,
+                        restore_drill_last_success: 2.0,
+                        repo_bytes: 3,
+                        disk_free_bytes: [4, 5],
+                        budget_headroom_bytes: [6, 7],
+                        wal_archive_failing: false,
+                    }),
+                    &mut run,
+                );
+            } else {
+                run.affected = 1;
+            }
+            let assert_state = |success, output| {
+                let mut out = String::new();
+                render_stage_liveness(&mut out, &[task.label()]);
+                let actual: Vec<_> = out
+                    .lines()
+                    .filter(|line| {
+                        line.starts_with("stage_last_output_timestamp_seconds{")
+                            || line.starts_with("stage_last_success_timestamp_seconds{")
+                    })
+                    .collect();
+                let expected = [
+                    format!(
+                        "stage_last_success_timestamp_seconds{{stage=\"{}\"}} {success}",
+                        task.label()
+                    ),
+                    format!(
+                        "stage_last_output_timestamp_seconds{{stage=\"{}\"}} {output}",
+                        task.label()
+                    ),
+                ];
+                assert_eq!(actual.len(), 2);
+                assert_eq!(actual, expected);
+            };
+            run.finish(task, 101.0, true);
+            assert_state(101, 101);
+            let empty = Run::default();
+            empty.finish(task, 102.0, true);
+            assert_state(102, 101);
+            let mut failed = Run::default();
+            finish_dr_reading(Err("unavailable".to_owned()), &mut failed);
+            failed.finish(task, 103.0, true);
+            assert_state(102, 101);
+            let partial = Run {
+                affected: 1,
+                failed: 1,
+                ..Run::default()
+            };
+            partial.finish(task, 104.0, false);
+            assert_state(102, 104);
+            let interrupted = Run::default();
+            interrupted.finish(task, 105.0, false);
+            assert_state(102, 104);
+        }
+    }
+
     use super::{STATVFS_IN_FLIGHT, available_bytes, df_free_bytes, statvfs_free_bytes};
     use std::time::Duration;
 
