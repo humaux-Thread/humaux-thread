@@ -832,7 +832,6 @@ pub async fn publish_rollup(
     }.await;
     retry_stale_input(pool, tenant_id, run_id, manifest_hash, result).await
 }
-
 /// §37 / ADR-0092 D-C: normalize serialization at transaction boundaries, after rollback.
 pub async fn retry_stale_input(
     pool: &ConsolidationDbPool,

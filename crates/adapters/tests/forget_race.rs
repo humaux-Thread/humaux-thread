@@ -457,7 +457,7 @@ fn race_publish(w: &mut World, site: &str, reverse: bool) {
     let status: String = w.h.admin.query_one(sql, &[&run]).unwrap().get(0);
     assert_eq!(status, if reverse { "STALE_INPUT" } else { "SUCCEEDED" });
 }
-fn wait_blocked(client: &mut postgres::Client, blocker: i32) -> i32 {
+fn wait_blocked(client: &mut postgres::Client, blocker: i32) -> Option<i32> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
         let rows = client
@@ -467,12 +467,11 @@ fn wait_blocked(client: &mut postgres::Client, blocker: i32) -> i32 {
             )
             .unwrap();
         if rows.len() == 1 {
-            return rows[0].get(0);
+            return Some(rows[0].get(0));
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "G-M19-4: publisher/accept must wait on the fence"
-        );
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
@@ -555,11 +554,12 @@ fn race_order(w: &mut World, site: &str, reverse: bool) {
     let changed = std::thread::scope(|scope| {
         let coordinator = scope.spawn(|| {
             if reverse {
-                wait_blocked(&mut observer, deletion_pid);
+                let waiting = wait_blocked(&mut observer, deletion_pid);
                 deletion.batch_execute("COMMIT").unwrap();
+                waiting.expect("G-M19-4: publisher must wait for accept");
                 false
             } else {
-                let publisher_pid = wait_blocked(&mut observer, pid);
+                let publisher_pid = wait_blocked(&mut observer, pid).expect("publisher barrier");
                 let d = scope.spawn(move || {
                     let result = accept(&mut deletion);
                     deletion.batch_execute("COMMIT").unwrap();
@@ -572,11 +572,13 @@ fn race_order(w: &mut World, site: &str, reverse: bool) {
                     );
                     site == "distill"
                 });
-                assert_eq!(wait_blocked(&mut observer, publisher_pid), deletion_pid);
+                let waiting = wait_blocked(&mut observer, publisher_pid);
                 observer
                     .query_one("SELECT pg_advisory_unlock($1)", &[&key])
                     .unwrap();
-                d.join().unwrap()
+                let changed = d.join().unwrap();
+                assert_eq!(waiting, Some(deletion_pid), "G-M19-4 fence");
+                changed
             }
         });
         race_publish(w, site, reverse);
