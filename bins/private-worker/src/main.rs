@@ -48,6 +48,8 @@
 //! Metrics families emitted (card 34b, ADR-0061 D-C): `private_distill_runs_total`, `private_distill_outputs_total`
 //! (§42 no-output stage) and `private_reasoning_usage_total` (§35 quota), all unlabeled and seeded at 0.
 
+mod stages;
+
 use std::env;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -96,6 +98,7 @@ const DISTILL_SERVE_METRICS_ADDR: &str = "HUMAUX_PRIVATE_WORKER_DISTILL_SERVE_ME
 /// The §41.2 families this process counts (ADR-0061 D-C, card 34b): the two distill counters and the private
 /// reasoning usage, each read from its adapters emit, and `dns_pin_deferred_total` (ADR-0066 D-P). `/metrics` and `--metrics-families` both call this.
 fn render_metrics(out: &mut String) {
+    humaux_telemetry::metrics::render_stage_liveness(out, &stages::STAGES);
     for (family, value) in [
         (
             &families::PRIVATE_DISTILL_RUNS_TOTAL,

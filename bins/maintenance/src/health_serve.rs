@@ -26,9 +26,10 @@ use std::time::{Duration, Instant, SystemTime};
 use humaux_adapters::disclosure::DisclosureOutcome as DbOutcome;
 use humaux_adapters::health::{HealthSample, read_health_snapshot};
 use humaux_adapters::postgres::MaintenanceDbPool;
+use humaux_domain::error::ErrorCode;
 use humaux_telemetry::health::{self, AgeBucket, DisclosureOutcome, HealthSnapshot};
 use humaux_telemetry::host::{self, HostSampler, HostSources};
-use humaux_telemetry::metrics::Routes;
+use humaux_telemetry::metrics::{Routes, render_stage_liveness, stage_recorded, stage_started};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 
@@ -41,12 +42,52 @@ pub(crate) const METRICS_ADDR: &str = "HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_A
 const SAMPLE_SECONDS: &str = "HUMAUX_MAINTENANCE_HEALTH_SAMPLE_SECONDS";
 const PG_DSN: &str = "HUMAUX_MAINTENANCE_PG_DSN";
 
+const STAGES: [&str; 2] = ["health_host_sampling", "health_db_snapshot"];
+
+fn sample_host(sampler: &mut HostSampler) {
+    stage_started(STAGES[0], resident::stage_now());
+    let reading = sampler.sample();
+    let outputs = reading
+        .pressure_ratio
+        .iter()
+        .flatten()
+        .filter(|v| v.is_some())
+        .count() as u64
+        + u64::from(reading.memory_available_bytes.is_some())
+        + u64::from(reading.cpu_busy_ratio.is_some());
+    // §39: missing host/DB readings mean unavailable dependencies.
+    // ponytail: non-dependency health failures would be mis-classed; upgrade = typed health errors.
+    let error = (outputs == 0).then_some(ErrorCode::DependencyUnavailable);
+    host::publish(&reading);
+    stage_recorded(STAGES[0], resident::stage_now(), error, [5, outputs]);
+}
+
+async fn snapshot_iteration(
+    work: impl std::future::Future<Output = std::result::Result<OffsetDateTime, String>>,
+) -> std::result::Result<OffsetDateTime, String> {
+    stage_started(STAGES[1], resident::stage_now());
+    let result = work.await;
+    // §39: this string-only boundary reads DB state; failures are DependencyUnavailable.
+    // ponytail: a non-dependency health failure would be mis-classed; upgrade = typed health errors.
+    stage_recorded(
+        STAGES[1],
+        resident::stage_now(),
+        result
+            .as_ref()
+            .err()
+            .map(|_| ErrorCode::DependencyUnavailable),
+        [1, u64::from(result.is_ok())],
+    );
+    result
+}
+
 /// `--metrics-families`: the zero-state exposition this process serves (ADR-0061 D-C, read by D-H).
 /// The host families are declared header-only because they may have no sample on a host without
 /// `/proc` (the macOS rehearsal); the checker counts them exported through its absence list (#193).
 pub(crate) fn metrics_families() -> String {
     let mut out = String::new();
     health::render(&mut out);
+    render_stage_liveness(&mut out, &STAGES);
     host::declare_families(&mut out);
     out
 }
@@ -56,6 +97,7 @@ pub(crate) fn metrics_families() -> String {
 fn live_metrics() -> String {
     let mut out = String::new();
     health::render(&mut out);
+    render_stage_liveness(&mut out, &STAGES);
     host::render(&mut out);
     out
 }
@@ -110,7 +152,7 @@ fn snapshot(s: &HealthSample) -> HealthSnapshot {
 }
 
 /// One bounded read; `Ok(as_of)` after it was published.
-async fn sample(
+async fn sample_read(
     pool: &MaintenanceDbPool,
     since: OffsetDateTime,
     interval: Duration,
@@ -139,12 +181,12 @@ pub(crate) async fn serve() -> Result<Output> {
     let started = SystemTime::now();
     // ponytail: five small /proc reads on the runtime thread; they never block on I/O, spawn_blocking if that changes
     let mut host_sampler = HostSampler::new(HostSources::default());
-    host::publish(&host_sampler.sample());
+    sample_host(&mut host_sampler);
     // dep: PostgreSQL(role_maintenance) — the sampler's pool; every statement bounded by the interval
     let pool = MaintenanceDbPool::connect(&with_statement_timeout(&env(PG_DSN)?, interval))
         .await
         .map_err(|e| Failure::Infra(format!("connect {PG_DSN}: {e}")))?;
-    let mut watermark = sample(&pool, OffsetDateTime::now_utc(), interval)
+    let mut watermark = snapshot_iteration(sample_read(&pool, OffsetDateTime::now_utc(), interval))
         .await
         .map_err(|e| Failure::Infra(format!("first health sample: {e}")))?;
     let last = Arc::new(Last::ok());
@@ -167,8 +209,8 @@ pub(crate) async fn serve() -> Result<Output> {
             _ = latch.wait() => break,
             _ = ticker.tick() => {}
         }
-        host::publish(&host_sampler.sample());
-        let outcome = sample(&pool, watermark, interval).await;
+        sample_host(&mut host_sampler);
+        let outcome = snapshot_iteration(sample_read(&pool, watermark, interval)).await;
         samples += 1;
         let mut guard = last.lock().unwrap_or_else(PoisonError::into_inner);
         match outcome {
@@ -223,5 +265,30 @@ mod tests {
                 "a bare {family} declaration leaked into the live scrape\n{live}"
             );
         }
+    }
+    #[tokio::test]
+    async fn stage_iteration_exports_exact_set() {
+        sample_host(&mut HostSampler::new(HostSources::default()));
+        snapshot_iteration(async { Ok(OffsetDateTime::now_utc()) })
+            .await
+            .unwrap();
+        let out = live_metrics();
+        let stages: Vec<_> = out
+            .lines()
+            .filter(|l| l.starts_with("stage_last_success_timestamp_seconds{"))
+            .map(|l| {
+                let (name, value) = l.split_once(' ').unwrap();
+                assert!(value.parse::<f64>().unwrap() > 0.0, "{name}");
+                name
+            })
+            .collect();
+        assert_eq!(stages.len(), 2);
+        assert_eq!(
+            stages,
+            [
+                "stage_last_success_timestamp_seconds{stage=\"health_host_sampling\"}",
+                "stage_last_success_timestamp_seconds{stage=\"health_db_snapshot\"}"
+            ]
+        );
     }
 }

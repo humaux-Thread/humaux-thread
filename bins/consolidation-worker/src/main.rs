@@ -65,6 +65,7 @@ use humaux_adapters::postgres::ConsolidationDbPool;
 use humaux_consolidation_worker::{
     DispatchConfig, dispatch_pass, inference_client::UdsInferenceClient,
 };
+use humaux_domain::error::ErrorCode;
 use humaux_telemetry::metrics::{OpsListener, parse_ops_addr, process_routes, serve_loopback};
 use humaux_telemetry::{ModeFailure, start_line, version_mode};
 use uuid::Uuid;
@@ -88,7 +89,45 @@ const SERVE_METRICS_ADDR: &str = "HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR
 
 /// The §41.2 families this process counts: none yet (ADR-0061 E10). `/metrics` and `--metrics-families` both
 /// call this.
-fn render_metrics(_out: &mut String) {}
+const STAGES: [&str; 1] = ["consolidation_dispatch"];
+
+async fn dispatch_iteration(
+    work: impl std::future::Future<
+        Output = Result<
+            humaux_consolidation_worker::DispatchReport,
+            humaux_consolidation_worker::DispatchError,
+        >,
+    >,
+) -> Result<humaux_consolidation_worker::DispatchReport, humaux_consolidation_worker::DispatchError>
+{
+    use humaux_telemetry::metrics::{stage_recorded, stage_started};
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+    };
+    stage_started(STAGES[0], now());
+    let result = work.await;
+    let (error, counts) = match &result {
+        Ok(r) => (r.last_error, [u64::from(r.claimed), u64::from(r.published)]),
+        Err(e) => (
+            Some(match e {
+                humaux_consolidation_worker::DispatchError::Config(_) => ErrorCode::InvalidInput,
+                humaux_consolidation_worker::DispatchError::Jobs(_) => {
+                    ErrorCode::DependencyUnavailable
+                }
+            }),
+            [0, 0],
+        ),
+    };
+    stage_recorded(STAGES[0], now(), error, counts);
+    result
+}
+
+fn render_metrics(out: &mut String) {
+    humaux_telemetry::metrics::render_stage_liveness(out, &STAGES);
+}
 
 /// Binds `--serve`'s loopback ops listener (ADR-0061 D-B). The handle must live as long as the mode: dropping it
 /// closes the port.
@@ -253,7 +292,7 @@ async fn dispatch_mode(resident: bool) -> Result<(), ModeFailure> {
     let mut shutdown = Shutdown::install().map_err(ModeFailure::runtime)?;
 
     loop {
-        let report = dispatch_pass(
+        let report = dispatch_iteration(dispatch_pass(
             &pool,
             |tenant_id, run_id| {
                 UdsInferenceClient::new(
@@ -267,7 +306,7 @@ async fn dispatch_mode(resident: bool) -> Result<(), ModeFailure> {
                 )
             },
             &config,
-        )
+        ))
         .await;
         match report {
             Ok(report) => println!(
@@ -376,4 +415,33 @@ async fn readyz() -> Result<(), String> {
         "humaux-consolidation-worker: ready db=role_consolidation_worker rpc_peer={socket_path}"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod stage_witness {
+    use super::*;
+    #[tokio::test]
+    async fn stage_iteration_exports_exact_set() {
+        let report = humaux_consolidation_worker::DispatchReport {
+            last_error: Some(ErrorCode::ProviderPermanent),
+            ..Default::default()
+        };
+        dispatch_iteration(async { Ok(report) }).await.unwrap();
+        let mut out = String::new();
+        render_metrics(&mut out);
+        let stages: Vec<_> = out
+            .lines()
+            .filter(|l| l.starts_with("stage_last_run_timestamp_seconds{"))
+            .map(|l| l.split(' ').next().unwrap())
+            .collect();
+        assert_eq!(
+            stages,
+            ["stage_last_run_timestamp_seconds{stage=\"consolidation_dispatch\"}"]
+        );
+        assert_eq!(stages.len(), 1);
+        assert_eq!(
+            out.lines().find(|l| l.starts_with("stage_state{")).unwrap(),
+            "stage_state{stage=\"consolidation_dispatch\"} 3"
+        );
+    }
 }

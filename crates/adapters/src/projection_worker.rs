@@ -311,6 +311,8 @@ pub struct PassConfig {
 /// [`run_claimed_pass`]'s counters — one log line per pass (ADR-0052 D-F).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PassOutcome {
+    /// §39: original terminal class of the latest failure in this pass.
+    pub last_error: Option<ErrorCode>,
     /// Tickets the claim leased.
     pub claimed: u64,
     /// Settled `DONE`.
@@ -340,6 +342,7 @@ pub struct PassOutcome {
 /// [`ProjectionWorkerDeps`]; [`run_claimed_pass`] builds one per family from
 /// [`SharedProjectionDeps`] plus the claimed ticket's key and placement.
 struct RowCtx<'a> {
+    last_error: Mutex<Option<ErrorCode>>,
     pool: &'a RetrievalWorkerDbPool,
     embedder: &'a dyn CardEmbedder,
     scanner: &'a Arc<LocalSecretScanner>,
@@ -359,6 +362,7 @@ struct RowCtx<'a> {
 impl<'a> RowCtx<'a> {
     fn of(deps: &'a ProjectionWorkerDeps, policy: NoteChunkPolicy, bm25: &'a Bm25Probes) -> Self {
         Self {
+            last_error: Mutex::new(None),
             pool: &deps.pool,
             embedder: deps.embedder.as_ref(),
             scanner: &deps.scanner,
@@ -1399,7 +1403,12 @@ async fn seal_and_embed(
     let sealed_cards = run_off_thread(move || seal_all(&scanner, &sources, &cards))
         .await
         .map_err(|_| seal_failure(ErrorCode::DependencyUnavailable))?
-        .map_err(seal_failure)?;
+        .map_err(|code| {
+            *ctx.last_error
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(code);
+            seal_failure(code)
+        })?;
     let memory_ids: Vec<Uuid> = inputs
         .iter()
         .map(|slot| planned[slot.memory].memory.memory_id.0)
@@ -1417,6 +1426,9 @@ async fn seal_and_embed(
         )
         .await
         .map_err(|code| {
+            *ctx.last_error
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(code);
             // Operator signal only: the wire `ErrorCode` variant, never provider text (§7.x).
             eprintln!("projection_worker: commit_seq={commit_seq} embedding_failed code={code:?}");
             if code_is_transient(code) {
@@ -2226,6 +2238,7 @@ async fn claimed_pass(
             false,
         )
         .await;
+        outcome.last_error = Some(ErrorCode::InvalidInput);
         if parked.is_ok_and(|written| written) {
             outcome.placement_invalid += 1;
         } else {
@@ -2397,6 +2410,7 @@ async fn run_family(
         if !renewed.is_ok_and(|seqs| seqs.contains(&ticket.stream_seq)) {
             // The lease is gone (expired, maybe re-claimed): nothing of this family may be
             // written by this worker any more.
+            outcome.last_error = Some(ErrorCode::DependencyUnavailable);
             outcome.lost_lease += (tickets.len() - index) as u64;
             break;
         }
@@ -2405,6 +2419,7 @@ async fn run_family(
     // One watermark move per family (j). A failure here is logged: the next pass over this
     // family (or the next write) moves it, and the settled rows above stay settled.
     if let Err(error) = stream_repo::advance_prefix(&shared.pool, key, shared.processor_id).await {
+        outcome.last_error = Some(ErrorCode::DependencyUnavailable);
         eprintln!(
             "projection_worker: advance_prefix failed tenant={} scope={}: {error}",
             key.tenant_id.0, key.scope_id
@@ -2432,6 +2447,7 @@ async fn process_and_write(
     let (terminal, class) = match (shared.mint_permit)() {
         Some(permit) => {
             let ctx = RowCtx {
+                last_error: Mutex::new(None),
                 pool: &shared.pool,
                 embedder: shared.embedder.as_ref(),
                 scanner: &shared.scanner,
@@ -2445,9 +2461,26 @@ async fn process_and_write(
                 policy,
                 bm25,
             };
-            process_row(&ctx, ticket.stream_seq, ticket.commit_seq).await
+            let result = process_row(&ctx, ticket.stream_seq, ticket.commit_seq).await;
+            if let Some(code) = *ctx
+                .last_error
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+            {
+                outcome.last_error = Some(code);
+            } else if matches!(result.0, RowTerminal::Retry | RowTerminal::Failed) {
+                outcome.last_error = Some(if result.0 == RowTerminal::Retry {
+                    ErrorCode::DependencyUnavailable
+                } else {
+                    ErrorCode::InvalidInput
+                });
+            }
+            result
         }
-        None => (RowTerminal::Retry, "qdrant_upsert_failed"),
+        None => {
+            outcome.last_error = Some(ErrorCode::DependencyUnavailable);
+            (RowTerminal::Retry, "qdrant_upsert_failed")
+        }
     };
     if terminal == RowTerminal::Done {
         // Every dependency answered: the next outage failure is charged again.
@@ -2503,6 +2536,9 @@ async fn process_and_write(
         .await
         .ok(),
     };
+    if written.is_none() {
+        outcome.last_error = Some(ErrorCode::DependencyUnavailable);
+    }
     if refund && written == Some(true) {
         outcome.refunded += 1;
     }

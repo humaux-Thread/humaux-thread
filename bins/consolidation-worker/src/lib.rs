@@ -37,6 +37,7 @@ use humaux_application::consolidate::{
 };
 use humaux_domain::authority::{AuthorityClass, EvidenceId};
 use humaux_domain::consolidate::AutoMutableMemoryId;
+use humaux_domain::error::ErrorCode;
 use uuid::Uuid;
 
 /// What `build_rollup` must hand `consolidate_repo::publish_rollup`.
@@ -259,6 +260,8 @@ impl DispatchConfig {
 /// What one [`dispatch_pass`] did. `claimed == 0` is the "no input" signal `--run-once` exits on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DispatchReport {
+    /// §39: original terminal class of the latest failed job in this pass.
+    pub last_error: Option<ErrorCode>,
     pub claimed: u32,
     pub published: u32,
     pub no_output: u32,
@@ -360,10 +363,20 @@ pub async fn dispatch_pass<P: PrivateReasoningPort>(
                     "humaux-consolidation-worker: job {} (tenant {}) not ready: {reason}",
                     job.job_id, job.tenant_id
                 );
+                report.last_error = Some(ErrorCode::DependencyUnavailable);
                 report.not_ready += 1;
                 jobs::DerivedWorkOutcome::Retry
             }
             Err(error) => {
+                report.last_error = Some(match error {
+                    RunOnceError::Repo(ConsolidateRepoError::HomeStream(code)) => *code,
+                    RunOnceError::Repo(
+                        ConsolidateRepoError::Db(_) | ConsolidateRepoError::Jobs(_),
+                    )
+                    | RunOnceError::NotReady(_) => ErrorCode::DependencyUnavailable,
+                    RunOnceError::Repo(_) => ErrorCode::InvalidInput,
+                    RunOnceError::Reasoning(_) => ErrorCode::ProviderTransient,
+                });
                 // The pass keeps going: one tenant's environmental failure must not stop the
                 // other tenants this cross-tenant pass claimed.
                 //

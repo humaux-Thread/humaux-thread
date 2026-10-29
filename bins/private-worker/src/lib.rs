@@ -23,6 +23,8 @@ pub mod dsn;
 pub mod inference_rpc;
 pub mod route_providers;
 
+mod stages;
+
 use humaux_adapters::{
     byok::ReasoningProviderError,
     contribution_execution_ingress::{

@@ -86,6 +86,63 @@ use sha2::{Digest, Sha256};
 use tokio::time::Instant;
 use uuid::Uuid;
 
+use crate::stages::STAGES;
+
+fn stage_class(class: &str) -> ErrorCode {
+    ErrorCode::ALL
+        .into_iter()
+        .find(|c| c.as_str() == class)
+        .unwrap_or(match class {
+            "TRANSPORT" | "RETRY_WAIT" | EXECUTION_UNCERTAIN => ErrorCode::ProviderTransient,
+            PROVIDER_BUDGET => ErrorCode::CostBudgetExceeded,
+            FAILED_OUTPUT_SCHEMA | INVALID_JOB_PAYLOAD | DOMAIN_MISMATCH => ErrorCode::InvalidInput,
+            "EGRESS_PERMIT_PAYLOAD_MISMATCH" | "ENDPOINT_REJECTED" => ErrorCode::Forbidden,
+            _ => ErrorCode::DependencyUnavailable,
+        })
+}
+
+async fn seat_iteration(
+    work: impl Future<Output = (Result<Settled, DistillError>, u32)>,
+) -> Result<Settled, DistillError> {
+    use humaux_telemetry::metrics::{stage_recorded, stage_started};
+    stage_started(STAGES[0], stage_now());
+    let (result, output) = work.await;
+    let error = match &result {
+        Ok(s) => s.error.or_else(|| s.class.map(stage_class)),
+        Err(DistillError::Config(code)) => Some(*code),
+        Err(e) => Some(stage_class(e.class())),
+    };
+    stage_recorded(STAGES[0], stage_now(), error, [1, u64::from(output)]);
+    result
+}
+
+async fn lease_iteration<T>(
+    work: impl Future<Output = Result<Option<T>, DbError>>,
+) -> Result<Option<T>, DbError> {
+    use humaux_telemetry::metrics::{stage_recorded, stage_started};
+    stage_started(STAGES[1], stage_now());
+    let result = work.await;
+    let error = match &result {
+        Ok(Some(_)) => None,
+        Ok(None) => Some(ErrorCode::Conflict),
+        Err(_) => Some(ErrorCode::DependencyUnavailable),
+    };
+    stage_recorded(
+        STAGES[1],
+        stage_now(),
+        error,
+        [1, u64::from(matches!(result, Ok(Some(_))))],
+    );
+    result
+}
+
+fn stage_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
 /// Deployment-owned inputs of the cross-tenant dispatcher (ADR-0036 / ADR-0058 D-K). No tenant
 /// id and no reasoning domain: both come from each claimed `DERIVED_DISTILL` job. Every value is
 /// a required `HUMAUX_PRIVATE_WORKER_*` key (§78.1: no code default).
@@ -447,6 +504,7 @@ impl JobOutcome {
 
 /// One settled job, for the job line.
 struct Settled {
+    error: Option<ErrorCode>,
     outcome: JobOutcome,
     class: Option<&'static str>,
     next_retry_seconds: Option<f64>,
@@ -457,6 +515,7 @@ struct Settled {
 impl Settled {
     fn new(outcome: JobOutcome, class: Option<&'static str>) -> Self {
         Self {
+            error: None,
             outcome,
             class,
             next_retry_seconds: None,
@@ -695,7 +754,13 @@ async fn run_claimed(
         let period = Duration::from_secs_f64(dispatch.lease_seconds / 3.0);
         loop {
             tokio::time::sleep(period).await;
-            match jobs::renew_distill_lease(dispatcher.pool, &lease, dispatch.lease_seconds).await {
+            match lease_iteration(jobs::renew_distill_lease(
+                dispatcher.pool,
+                &lease,
+                dispatch.lease_seconds,
+            ))
+            .await
+            {
                 Ok(Some(_)) => {}
                 Ok(None) => {
                     lost.set(true);
@@ -711,15 +776,20 @@ async fn run_claimed(
             }
         }
     };
-    let work = work_job(
-        dispatcher,
-        claim,
-        &lease,
-        local_deadline,
-        &mut attempt,
-        &mut route,
-        report,
-    );
+    let work = seat_iteration(async {
+        let before = report.memories;
+        let result = work_job(
+            dispatcher,
+            claim,
+            &lease,
+            local_deadline,
+            &mut attempt,
+            &mut route,
+            report,
+        )
+        .await;
+        (result, report.memories - before)
+    });
     let settled = tokio::select! {
         biased;
         settled = work => settled,
@@ -826,6 +896,7 @@ async fn settle_as(
             DistillFinish::Done | DistillFinish::Dead => None,
         };
         Ok(Settled {
+            error: None,
             outcome,
             class,
             next_retry_seconds,
@@ -1482,7 +1553,7 @@ async fn settle_after_error(
         "humaux-private-worker: distill job={} evidence={} error: {error}",
         claim.job_id, row.evidence_id
     );
-    if calls == 0 {
+    let mut settled = if calls == 0 {
         settle_not_ready(dispatcher, claim, lease, row, error.class()).await
     } else {
         // ponytail: ADR-0058 R8 (c) known limit — a transient DB error in the write leg AFTER a
@@ -1490,7 +1561,12 @@ async fn settle_after_error(
         // (one extra billed call, counted). Upgrade: retry the write leg in place with the parsed
         // reply, inside the claim's hard deadline.
         settle_failed_call(dispatcher, lease, row, attempt, error.class()).await
-    }
+    }?;
+    settled.error = Some(match error {
+        DistillError::Config(code) => *code,
+        other => stage_class(other.class()),
+    });
+    Ok(settled)
 }
 
 /// (c) of the module doc: ONE transaction — the generation-fenced job finish first, then the
@@ -1935,6 +2011,32 @@ mod tests {
             humaux_telemetry::metrics::dns_pin_deferred_total(),
             before,
             "without a configured pin a TRANSPORT retry is no DNS pin deferral (ADR-0066 D-P)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod stage_witness {
+    use super::*;
+    #[tokio::test]
+    async fn stage_iteration_exports_exact_set() {
+        seat_iteration(async { (Ok(Settled::new(JobOutcome::Done, None)), 1) })
+            .await
+            .unwrap();
+        lease_iteration(async { Ok(Some(())) }).await.unwrap();
+        let mut out = String::new();
+        humaux_telemetry::metrics::render_stage_liveness(&mut out, &STAGES);
+        let stages: Vec<_> = out
+            .lines()
+            .filter(|l| l.starts_with("stage_output_count{"))
+            .collect();
+        assert_eq!(stages.len(), 2);
+        assert_eq!(
+            stages,
+            [
+                "stage_output_count{stage=\"distill_seat\"} 1",
+                "stage_output_count{stage=\"distill_lease_renewal\"} 1"
+            ]
         );
     }
 }
