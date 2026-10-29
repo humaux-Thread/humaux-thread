@@ -1,7 +1,7 @@
 //! `adapters::distill_repo` — SQL half of the Distill hop (ADR-0016), through [`PrivateWorkerDbPool`] only: take the
 //!   one `EVIDENCE_ACCEPTED` outbox row of a claimed `DERIVED_DISTILL` job (ADR-0058), load that Evidence, record the
 //!   §16.1.1 processing run, insert the authorized memories, settle the job and its outbox row together.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::confirm_token_repo, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject, humaux-adapters, projection::stream]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, ops.outbox, projection.stream_log, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::confirm_token_repo, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject, humaux-adapters, projection::stream]
 //! Called-by: [adapters::context_repo, gateway::mcp_application, gateway::memory, private-worker::distill, private-worker::main, tests]
 //! Invariants: [memories, run completion, the job settle and the outbox flip commit in ONE transaction whose first
 //!   statement is the job's generation-fenced finish (ADR-0058 D-E), so a superseded worker's inserts roll back; a job
@@ -459,6 +459,19 @@ pub async fn finish_processing_run(
     output_count: i32,
     provider_request_id: Option<&str>,
 ) -> Result<u64, sqlx::Error> {
+    // §37 / ADR-0092 D-C: refuse the entire write transaction, including pending candidates.
+    let stale: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM private.processing_runs AS run \
+         JOIN ops.outbox AS ob ON ob.tenant_id = run.tenant_id AND ob.evidence_id = run.evidence_id \
+         JOIN projection.stream_log AS sl ON sl.tenant_id = ob.tenant_id AND sl.commit_seq = ob.commit_seq \
+         WHERE run.processing_run_id = $1 AND sl.state = 'TOMBSTONED')",
+    )
+    .bind(processing_run_id)
+    .fetch_one(&mut **txn)
+    .await?;
+    if stale {
+        return Err(sqlx::Error::Protocol("STALE_INPUT".into()));
+    }
     let finished = sqlx::query(
         "UPDATE private.processing_runs \
          SET output_digest = $2, output_count = $3, provider_request_id = $4, completed_at = now() \

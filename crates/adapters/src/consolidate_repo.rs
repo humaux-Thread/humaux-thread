@@ -1,5 +1,5 @@
 //! `adapters::consolidate_repo` — §11.6/§11.7 Private Memory Consolidation SQL, through [`ConsolidationDbPool`] only.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sha2, sqlx]; services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.jobs, private.context_bindings, private.events, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_rollup_sources, private.memory_rollups] x=[control.current_reasoning_route_binding]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::jobs, adapters::memory_governance_repo, adapters::memory_repo, adapters::postgres, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::consolidate, domain::authority, domain::consolidate, domain::error, domain::ids, domain::ticket_family, projection::stream]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sha2, sqlx]; services=[PostgreSQL(any) r=[ops.outbox, projection.stream_log] w=[control.private_reasoning_domains, control.tenants, ops.jobs, private.context_bindings, private.events, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_rollup_sources, private.memory_rollups] x=[control.current_reasoning_route_binding]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::jobs, adapters::memory_governance_repo, adapters::memory_repo, adapters::postgres, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::consolidate, domain::authority, domain::consolidate, domain::error, domain::ids, domain::ticket_family, projection::stream]
 //! Called-by: [adapters::consolidation_reasoner, adapters::distill_reasoner, humaux-consolidation-worker, tests]
 //! Invariants: [input selection and materialization happen in ONE REPEATABLE READ READ WRITE transaction (§11.7), so
 //!   no concurrent insert can leak into a run; a lost lease is LostRace and an unknown source UnknownSource, never a
@@ -580,7 +580,7 @@ pub enum PublishOutcome {
 /// The staleness re-check loop, split out of [`publish_rollup`] purely to keep that function
 /// under the workspace's `too_many_lines` lint — see its doc comment for the actual semantics
 /// (§11.7 re-validation, `REPEATABLE READ` consistency). Returns `None` the moment any input is
-/// found stale (matching the original early-return-on-first-stale behavior exactly); `Some` map
+/// found stale under §37 / ADR-0092 D-C or the recorded fingerprint (matching the original early-return-on-first-stale behavior exactly); `Some` map
 /// otherwise, keyed by every recorded input whose current row was found and whose
 /// `authority_class` parsed — used by the §11.9 ceiling check below.
 async fn resolve_current_authority_or_stale(
@@ -596,7 +596,11 @@ async fn resolve_current_authority_or_stale(
 
         let current = sqlx::query(
             "SELECT updated_at, content, authority_class, confidence, status, superseded_by \
-             FROM private.memory_records WHERE memory_id = $1",
+             FROM private.memory_records AS m WHERE memory_id = $1 \
+             AND NOT EXISTS (SELECT 1 FROM private.memory_evidence AS me \
+               JOIN ops.outbox AS ob ON ob.tenant_id = m.tenant_id AND ob.evidence_id = me.evidence_id \
+               JOIN projection.stream_log AS sl ON sl.tenant_id = ob.tenant_id AND sl.commit_seq = ob.commit_seq \
+               WHERE me.memory_id = m.memory_id AND sl.state = 'TOMBSTONED')",
         )
         .bind(memory_id)
         .fetch_optional(&mut **txn)
