@@ -682,7 +682,7 @@ pub async fn publish_rollup(
     set_tenant_local(&mut txn, tenant_id).await?;
 
     let recorded_inputs = sqlx::query(
-        "SELECT memory_id, input_version, source_hash FROM private.memory_consolidation_inputs WHERE run_id = $1",
+        "SELECT memory_id, input_version, source_hash FROM private.memory_consolidation_inputs WHERE run_id = $1 ORDER BY evidence_id, memory_id",
     )
     .bind(run_id)
     .fetch_all(&mut *txn)
@@ -845,7 +845,7 @@ pub async fn retry_stale_input(
         Err(
             ConsolidateRepoError::Db(sqlx::Error::Database(ref e))
             | ConsolidateRepoError::Jobs(crate::jobs::JobsError::Db(sqlx::Error::Database(ref e))),
-        ) if e.code().as_deref() == Some("40001") => {}
+        ) if stale_publish_sqlstate(e.code().as_deref()) => {}
         other => return other,
     }
     // dep: PostgreSQL(any) — §37 persist retry outcome outside the aborted snapshot
@@ -855,6 +855,19 @@ pub async fn retry_stale_input(
         .bind(run_id).bind(manifest_hash).execute(&mut *txn).await?;
     txn.commit().await?;
     Ok(PublishOutcome::StaleInput)
+}
+
+fn stale_publish_sqlstate(code: Option<&str>) -> bool {
+    matches!(code, Some("40001" | "40P01"))
+}
+
+#[cfg(test)]
+#[test]
+fn publish_transaction_sqlstates_are_exact() {
+    assert_eq!(
+        [Some("40001"), Some("40P01"), Some("23505"), None].map(stale_publish_sqlstate),
+        [true, true, false, false]
+    );
 }
 
 #[cfg(test)]

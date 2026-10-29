@@ -309,7 +309,10 @@ pub async fn load_evidence(
                 visibility_user_id, visibility_workspace_id, occurred_at, payload_sha256 \
          FROM private.evidence_objects \
          WHERE evidence_id = $1 AND tenant_id = $2 AND reasoning_domain_id = $3 \
-           AND evidence_kind = 'EVENT'",
+           AND evidence_kind = 'EVENT' \
+           AND NOT EXISTS (SELECT 1 FROM ops.outbox ob JOIN projection.stream_log sl \
+             ON sl.tenant_id = ob.tenant_id AND sl.commit_seq = ob.commit_seq \
+             WHERE ob.tenant_id = $2 AND ob.evidence_id = $1 AND sl.state = 'TOMBSTONED')",
     )
     .bind(evidence_id)
     .bind(tenant_id)
@@ -450,7 +453,7 @@ pub async fn start_processing_run(
 /// Completes a run: `output_digest` + `output_count` + `completed_at` together (0064's
 /// `processing_runs_completed_has_output` CHECK). A failed attempt never calls this — its row
 /// keeps `completed_at IS NULL` as the failure marker (ADR-0016 D4). Returns the runs this call
-/// finished (0 when the run was already complete), which the caller hands to
+/// finished (`Some(0)` when already complete, `None` for stale input under §37), which the caller hands to
 /// [`commit_distill_write`].
 pub async fn finish_processing_run(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -458,7 +461,7 @@ pub async fn finish_processing_run(
     output_digest: &[u8],
     output_count: i32,
     provider_request_id: Option<&str>,
-) -> Result<u64, sqlx::Error> {
+) -> Result<Option<u64>, sqlx::Error> {
     // §37 / ADR-0092 D-C: refuse the entire write transaction, including pending candidates.
     if !sqlx::query_scalar::<_, bool>(
         "SELECT private.lock_publish_source(tenant_id, evidence_id, NULL) \
@@ -468,7 +471,7 @@ pub async fn finish_processing_run(
     .fetch_one(&mut **txn)
     .await?
     {
-        return Err(sqlx::Error::Protocol("STALE_INPUT".into()));
+        return Ok(None);
     }
     let finished = sqlx::query(
         "UPDATE private.processing_runs \
@@ -481,7 +484,7 @@ pub async fn finish_processing_run(
     .bind(provider_request_id)
     .execute(&mut **txn)
     .await?;
-    Ok(finished.rows_affected())
+    Ok(Some(finished.rows_affected()))
 }
 
 /// Commits a distill write transaction, then counts what it made durable: `finished_runs` runs

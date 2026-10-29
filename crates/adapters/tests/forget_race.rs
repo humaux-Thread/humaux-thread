@@ -37,6 +37,7 @@ struct World {
     memory: Uuid,
     control: Uuid,
     concurrent: bool,
+    memory_scope: bool,
 }
 impl DbIntegrationFixture for Fixture {
     type Handle = World;
@@ -76,6 +77,7 @@ impl DbIntegrationFixture for Fixture {
             memory: record.memory_id,
             control: control.memory_id,
             concurrent: false,
+            memory_scope: false,
         })
     }
 }
@@ -201,14 +203,13 @@ fn distill_publish(w: &mut World, forgotten: bool) {
         &mut txn, run, &[1; 32], 1, None,
     ));
     match result {
-        Ok(n) => {
+        Ok(Some(n)) => {
             assert_eq!(n, 1);
             w.h.rt
                 .block_on(distill::commit_distill_write(txn, n, 1))
                 .unwrap();
         }
-        Err(sqlx::Error::Protocol(message)) => {
-            assert_eq!(message, "STALE_INPUT");
+        Ok(None) => {
             w.h.rt.block_on(txn.rollback()).unwrap();
         }
         Err(error) => panic!("unexpected failure: {error}"),
@@ -493,8 +494,16 @@ fn race_accept(w: &mut World) -> (postgres::Client, Uuid, Uuid, Vec<u8>) {
         .unwrap();
     let request: Uuid = client
         .query_one(
-            "SELECT control.deletion_request_freeze($1,'EVIDENCE_CLOSURE',$2)",
-            &[&w.h.tenant_id, &vec![w.source]],
+            "SELECT control.deletion_request_freeze($1,$3,$2)",
+            &[
+                &w.h.tenant_id,
+                &vec![if w.memory_scope { w.memory } else { w.source }],
+                &if w.memory_scope {
+                    "MEMORY"
+                } else {
+                    "EVIDENCE_CLOSURE"
+                },
+            ],
         )
         .unwrap()
         .get(0);
@@ -619,7 +628,7 @@ fn race_deleted(w: &mut World, changed: bool) {
         fresh.batch_execute("COMMIT").unwrap();
     }
     let tombstones: Vec<i64> = w.h.admin.query("SELECT stream_seq FROM projection.stream_log WHERE tenant_id=$1 AND state='TOMBSTONED' ORDER BY stream_seq", &[&w.h.tenant_id]).unwrap().iter().map(|r| r.get(0)).collect();
-    assert_eq!(tombstones, vec![1, 2]);
+    assert_eq!(tombstones, if w.memory_scope { vec![] } else { vec![1, 2] });
     let h = &w.h;
     let tenant = TenantId(h.tenant_id);
     let family = StreamFamily::new(tenant, "workspace", workspace, DOMAIN, PROJECTION_KIND);
@@ -647,4 +656,29 @@ fn consolidation_fence() {
 #[test]
 fn distill_fence() {
     race("distill_fence", "distill");
+}
+
+#[test]
+fn memory_scope_accept_first() {
+    for site in ["registration", "consolidation"] {
+        run_db_fixture::<Fixture, _>("memory_scope_accept_first", |mut w| {
+            w.memory_scope = true;
+            race_order(&mut w, site, true);
+            w.h.admin
+                .query_one(
+                    "SELECT set_config('humaux.tenant_id',$1,false)",
+                    &[&w.h.tenant_id.to_string()],
+                )
+                .unwrap();
+            let live: bool =
+                w.h.admin
+                    .query_one(
+                        "SELECT private.lock_publish_source($1,NULL,$2)",
+                        &[&w.h.tenant_id, &w.memory],
+                    )
+                    .unwrap()
+                    .get(0);
+            assert_eq!(live, false, "MEMORY door must refuse revoked input");
+        });
+    }
 }

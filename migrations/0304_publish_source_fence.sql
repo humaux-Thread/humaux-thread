@@ -4,6 +4,7 @@ RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
 DECLARE
   v_state text;
+  v_memory_live boolean;
   v_live boolean := true;
 BEGIN
   IF p_tenant IS NULL OR p_tenant IS DISTINCT FROM NULLIF(current_setting('humaux.tenant_id', true), '')::uuid
@@ -12,6 +13,10 @@ BEGIN
   END IF;
   PERFORM e.evidence_id FROM private.evidence_objects e WHERE e.tenant_id = p_tenant AND (e.evidence_id = p_evidence OR EXISTS (SELECT 1 FROM private.memory_evidence me WHERE me.memory_id = p_memory AND me.evidence_id = e.evidence_id)) ORDER BY e.evidence_id FOR KEY SHARE OF e;
   PERFORM m.memory_id FROM private.memory_records m WHERE m.tenant_id = p_tenant AND (m.memory_id = p_memory OR EXISTS (SELECT 1 FROM private.memory_evidence me WHERE me.memory_id = m.memory_id AND me.evidence_id = p_evidence)) ORDER BY m.memory_id FOR KEY SHARE OF m;
+  IF p_memory IS NOT NULL THEN
+    SELECT m.status = 'active' AND m.superseded_by IS NULL INTO v_memory_live FROM private.memory_records m WHERE m.tenant_id = p_tenant AND m.memory_id = p_memory FOR SHARE OF m;
+    v_live := coalesce(v_memory_live, false);
+  END IF;
   FOR v_state IN
     SELECT sl.state FROM projection.stream_log sl
     WHERE sl.tenant_id = p_tenant AND EXISTS (

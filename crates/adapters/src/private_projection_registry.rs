@@ -337,12 +337,20 @@ async fn current_source_matches(
     txn: &mut Txn<'_>,
     registration: &PrivateMemoryPointRegistration,
 ) -> Result<(), PrivateProjectionRegistryError> {
+    // §37: READ COMMITTED must acquire its source snapshot after the fence wait.
+    if !sqlx::query_scalar::<_, bool>("SELECT private.lock_publish_source($1, NULL, $2)")
+        .bind(registration.family.tenant_id.0)
+        .bind(registration.memory_id.0)
+        .fetch_one(&mut **txn)
+        .await?
+    {
+        return Err(PrivateProjectionRegistryError::SourceNotLive);
+    }
     let row = sqlx::query(
         "SELECT updated_at, sha256(convert_to(content::text,'UTF8')) AS body_sha256, \
                 status, superseded_by \
          FROM private.memory_records AS m \
-         WHERE tenant_id = $1 AND memory_id = $2 \
-         AND private.lock_publish_source(m.tenant_id, NULL, m.memory_id)",
+         WHERE tenant_id = $1 AND memory_id = $2",
     )
     .bind(registration.family.tenant_id.0)
     .bind(registration.memory_id.0)
