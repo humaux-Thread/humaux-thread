@@ -107,11 +107,14 @@ async fn apply(
         .map(TenantId)
         .ok_or(ErrorCode::NotFound)?;
     repo::scope_tenant(txn, tenant).await?;
-    let subscription = if event.event_type == "checkout.completed"
-        || matches!(
-            normalized.kind,
-            EventKind::Payment(PaymentKind::Refund | PaymentKind::Chargeback)
-        ) {
+    let subscription = if matches!(
+        normalized.kind,
+        EventKind::Payment(PaymentKind::Refund | PaymentKind::Chargeback)
+    ) {
+        object
+            .get("subscription")
+            .unwrap_or(&object["transaction"]["subscription"])
+    } else if event.event_type == "checkout.completed" {
         &object["subscription"]
     } else {
         object

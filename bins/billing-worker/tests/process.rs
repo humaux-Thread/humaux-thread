@@ -389,7 +389,7 @@ fn past_due_projects_entire_free_template() {
 }
 
 fn money_payload(h: &Handle, id: &str, kind: &str, reference: &str) -> Value {
-    let transaction = json!({"id":"txn_charge","transaction":"txn_charge","amount":500,"amount_due":999,"currency":"USD","period_start":1577836800000_i64,"period_end":4070908800000_i64});
+    let transaction = json!({"id":"txn_charge","transaction":"txn_charge","subscription":"sub_fixture","amount":500,"amount_due":999,"currency":"USD","period_start":1577836800000_i64,"period_end":4070908800000_i64});
     json!({"id":id,"eventType":kind,"created_at":1700000000000_i64,"object":{
         "id":reference,"subscription":"sub_fixture","metadata":{"tenant_id":h.tenant},
         "order":transaction,"last_transaction":transaction,"transaction":transaction,
@@ -448,7 +448,11 @@ fn partial_refund_and_dispute_downgrade() {
             ("refund_2", "refund.created", "rf_2"),
             ("dispute_1", "dispute.created", "dp_1"),
         ] {
-            let payload = money_payload(&h, id, kind, reference);
+            let mut payload = money_payload(&h, id, kind, reference);
+            payload["object"]
+                .as_object_mut()
+                .unwrap()
+                .remove("subscription");
             insert_payload(&mut h, &payload);
             assert!(process(&h, "active"));
             assert_eq!(
