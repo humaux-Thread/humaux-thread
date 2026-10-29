@@ -372,8 +372,7 @@ impl<'a> RowCtx<'a> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .or(match terminal {
-                RowTerminal::Retry => Some(ErrorCode::DependencyUnavailable),
-                RowTerminal::Failed => Some(ErrorCode::InvalidInput),
+                RowTerminal::Retry | RowTerminal::Failed => Some(ErrorCode::Internal),
                 _ => None,
             })
     }
