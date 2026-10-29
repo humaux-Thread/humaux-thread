@@ -6229,6 +6229,7 @@ modules:
 - `adapters::tests::facet_contract`
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
+- `adapters::tests::forget_race`
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
