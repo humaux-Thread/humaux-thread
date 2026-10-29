@@ -2634,10 +2634,8 @@ mod classification_tests {
         assert_eq!(tally(&mut r, Some(true), RowTerminal::Pending, None), None);
         assert_eq!((r.last_error, r.done, r.pending), (None, 0, 1));
         let _ = tally(&mut r, Some(false), RowTerminal::Done, None);
-        assert_eq!(
-            tally(&mut r, Some(true), RowTerminal::Failed, None),
-            Some(ErrorCode::Internal)
-        );
+        let class = tally(&mut r, Some(true), RowTerminal::Failed, None);
+        assert_eq!(class, Some(ErrorCode::Internal));
         assert_eq!(r.last_error, Some(ErrorCode::Conflict));
     }
     /// ADR-0052 D-E, the `ErrorCode` (embedding + secret scanner) and PG halves of the table (the
