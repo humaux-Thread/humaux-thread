@@ -5876,6 +5876,7 @@ read by:
 written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::entitlement_projector`
+- (no process): `billing-worker::tests::process`
 
 executed by:
 
