@@ -35,8 +35,15 @@ use humaux_testkit::{ExternalDep, skip_or_fail};
 const BIN: &str = env!("CARGO_BIN_EXE_humaux-retrieval-worker");
 const SERVE_RPC_KEY: &str = "HUMAUX_RETRIEVAL_WORKER_SERVE_RPC_METRICS_ADDR";
 const SERVE_KEY: &str = "HUMAUX_RETRIEVAL_WORKER_SERVE_METRICS_ADDR";
-/// §41.2: the four families this process counts.
-const FAMILIES: [&str; 4] = [
+/// §39 / §41.2: stage gauges followed by the four provider families.
+const FAMILIES: [&str; 11] = [
+    "stage_last_run_timestamp_seconds",
+    "stage_last_success_timestamp_seconds",
+    "stage_last_output_timestamp_seconds",
+    "stage_last_error_class",
+    "stage_processed_count",
+    "stage_output_count",
+    "stage_state",
     "retrieval_provider_requests_total",
     "retrieval_provider_latency_seconds",
     "retrieval_provider_tokens_total",
@@ -281,7 +288,7 @@ fn metrics_families_prints_the_four_provider_families_without_env() {
     let out = run(&["--metrics-families"], &[]);
     assert!(out.status.success(), "{}", text(&out));
     let body = String::from_utf8_lossy(&out.stdout);
-    let (types, requests) = families_and_samples(&body, FAMILIES[0]);
+    let (types, requests) = families_and_samples(&body, "retrieval_provider_requests_total");
     assert_eq!(types, FAMILIES, "{body}");
     assert_eq!(requests, 96, "{body}");
 }
@@ -410,7 +417,7 @@ fn both_modes_serve_the_four_provider_families_on_their_own_ports() {
         (&mut listener, rpc, "serve-rpc"),
     ] {
         let body = wait_metrics(child, addr, mode);
-        let (types, requests) = families_and_samples(&body, FAMILIES[0]);
+        let (types, requests) = families_and_samples(&body, "retrieval_provider_requests_total");
         assert_eq!(types, FAMILIES, "{mode}: {body}");
         assert_eq!(requests, 96, "{mode}: {body}");
         let (code, status) = get(addr, "/status").expect("/status answers");

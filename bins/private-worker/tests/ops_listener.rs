@@ -142,7 +142,8 @@ fn assert_families_at(body: &str, value: &str, what: &str) {
         );
     }
     let samples = body.lines().filter(|l| !l.starts_with('#')).count();
-    assert_eq!(samples, FAMILIES.len(), "{what}: {body}");
+    // §39 / ADR-0061: seven seeded gauges for each of the two closed stages.
+    assert_eq!(samples, FAMILIES.len() + 7 * 2, "{what}: {body}");
 }
 
 /// T-W4 (private half, card 34b): `--metrics-families` with an empty environment prints every private-plane
