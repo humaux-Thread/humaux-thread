@@ -682,7 +682,7 @@ fn late_canceled_preserves_own_subscription_grants() {
         |mut h| {
             let tenant = h.tenant;
             deliver(&mut h, "old_cancel", "canceled", tenant);
-            assert_eq!(process(&h, "canceled"), true);
+            assert!(process(&h, "canceled"));
             let mut new = fetched_subscription("active", "prod_fixture");
             new["id"] = json!("sub_new");
             deliver(&mut h, "new_active", "active", tenant);
@@ -698,7 +698,7 @@ fn late_canceled_preserves_own_subscription_grants() {
                 } else {
                     deliver(&mut h, "old_late", "canceled", tenant);
                 }
-                assert_eq!(process(&h, "canceled"), true);
+                assert!(process(&h, "canceled"));
                 let current: Value = h.admin.query_one("SELECT jsonb_agg(grant_id ORDER BY grant_id) FROM control.entitlement_grants WHERE source_ref_id=(SELECT subscription_id FROM control.subscriptions WHERE provider_subscription_ref='sub_new') AND revoked_at IS NULL AND valid_until>clock_timestamp()", &[]).unwrap().get(0);
                 assert_eq!(current, grants, "G-M04-26: sub_B PLAN grants survive sub_A");
                 assert_eq!(snapshot(&mut h), paid(), "G-M04-26: snapshot stays paid");
@@ -737,7 +737,7 @@ fn transient_rate_limit_and_lock_cancel_stay_received() {
             let result = process_with(&h, "active", "prod_fixture", false);
             h.admin.batch_execute("ROLLBACK").unwrap();
             assert_received_without_effects(&mut h, result, &before);
-            assert_eq!(process(&h, "active"), true);
+            assert!(process(&h, "active"));
             assert_eq!(snapshot(&mut h), paid());
         },
     );
