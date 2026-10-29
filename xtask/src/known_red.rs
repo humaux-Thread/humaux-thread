@@ -1384,7 +1384,7 @@ mod tests {
     #[test]
     fn magic_literal_rows_use_the_shrink_only_judgment() {
         let raw = include_str!("../known_red.toml");
-        let raw = raw[raw.find("[[magic_literals]]").unwrap()..].to_string();
+        let raw = raw[raw.find("\n[[magic_literals]]").unwrap()..].to_string();
         let hits = || {
             parse_ledger(&raw).0["magic_literals"]
                 .iter()
