@@ -2,7 +2,7 @@
 //!   page every task walks, two of the three owner purge doors (snapshots, terminal jobs; the
 //!   confirm-token door lives with its table in `confirm_token_repo::sweep_expired`), the Q-drain reissue door
 //!   (D-N) and the schema-failed distill auto re-drive with its §77 row (D-P). The per-tenant sweeps it drives besides
-//!   live with their tables (`stream_repo::sweep_lost`, `quota_repo::reap_expired`, `quota_repo::renew_period`
+//!   live with their tables (`stream_repo::sweep_lost`, `stream_repo::expire_ingest_tickets` (§15.6), `quota_repo::reap_expired`, `quota_repo::renew_period`
 //!   (ADR-0072), `provider_budget::reap_expired_provider_budgets`). It also owns the closed D-C task enum and the two D-S counters
 //!   (`maintenance_task_runs_total{task,outcome}`, `maintenance_task_rows_total{task}`, one emit each in
 //!   [`count_task_call`]), which `humaux-maintenance --serve` renders (ADR-0061 D-C). For §48.1 (ADR-0063) it owns
@@ -230,6 +230,8 @@ pub async fn auto_redrive_schema_failed(
 pub enum MaintenanceTask {
     /// `stream_repo::sweep_lost` (D-L).
     Lost,
+    /// `stream_repo::expire_ingest_tickets` (§15.6, ADR-0123 D4); preserves the denominator.
+    IngestTickets,
     /// `quota_repo::reap_expired`.
     QuotaReservations,
     /// `quota_repo::renew_period` (ADR-0072 D-C).
@@ -256,8 +258,9 @@ pub enum MaintenanceTask {
 
 impl MaintenanceTask {
     /// Every task, in D-C cycle order (the counters' slot order).
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Lost,
+        Self::IngestTickets,
         Self::QuotaReservations,
         Self::QuotaRenewal,
         Self::ProviderBudgets,
@@ -275,6 +278,7 @@ impl MaintenanceTask {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Lost => "lost",
+            Self::IngestTickets => "ingest_tickets",
             Self::QuotaReservations => "quota_reservations",
             Self::QuotaRenewal => "quota_renewal",
             Self::ProviderBudgets => "provider_budgets",
@@ -1865,4 +1869,35 @@ pub async fn insert_drill_receipt(
     .bind(r.repo_intact)
     .fetch_one(pool.pool())
     .await
+}
+
+#[cfg(test)]
+mod task_contract {
+    use super::MaintenanceTask;
+
+    #[test]
+    fn closed_task_labels_and_counter_slots() {
+        assert_eq!(MaintenanceTask::ALL.len(), 13);
+        assert_eq!(
+            MaintenanceTask::ALL.map(MaintenanceTask::label),
+            [
+                "lost",
+                "ingest_tickets",
+                "quota_reservations",
+                "quota_renewal",
+                "provider_budgets",
+                "confirm_tokens",
+                "snapshots",
+                "jobs",
+                "reissue",
+                "redrive",
+                "partitions",
+                "dr_evidence",
+                "authority_i4",
+            ]
+        );
+        for (slot, task) in MaintenanceTask::ALL.into_iter().enumerate() {
+            assert_eq!(task.slot(), slot);
+        }
+    }
 }

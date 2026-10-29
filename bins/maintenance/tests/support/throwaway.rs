@@ -334,9 +334,10 @@ pub fn forge_proposal(c: &mut Client, registry_id: &str, revision: i32, proposed
     tx.commit().expect("commit");
 }
 
-/// The nine per-tenant D-C tasks by key stem (each has `_EVERY_SECONDS` and `_LIMIT`, ADR-0062 D-C, ADR-0072 D-C).
-pub const SERVE_TASKS: [&str; 9] = [
+/// The ten per-tenant tasks by key stem (each has `_EVERY_SECONDS` and `_LIMIT`, ADR-0062 D-C, ADR-0123 D4).
+pub const SERVE_TASKS: [&str; 10] = [
     "LOST",
+    "INGEST_TICKETS",
     "QUOTA_RESERVATIONS",
     "QUOTA_RENEWAL",
     "PROVIDER_BUDGETS",
