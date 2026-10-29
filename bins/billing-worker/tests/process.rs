@@ -1,7 +1,7 @@
 //! `billing-worker::tests::process` — real PG + fake Creem processor gates (§71.3).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-egress, humaux-testkit, postgres, serde_json, tokio, uuid];
-//!   services=[HTTP(loopback), PostgreSQL(owner) r=[control.subscriptions, control.subscription_events, control.entitlement_grants, control.entitlement_snapshots, control.billing_inbox, control.billing_payments] w=[control.tenants, control.plans, control.plan_versions, control.billing_inbox], PostgreSQL(role_maintenance)]; env=[];
-//!   modules=[adapters::postgres, adapters::tests::support::throwaway_db, billing-worker::creem, billing-worker::process, billing-worker::fake_creem, billing-worker::mode, domain::egress, domain::error, domain::ids, infra-egress::http, humaux-testkit]
+//!   services=[HTTP(loopback), PostgreSQL(owner) r=[control.subscriptions, control.subscription_events, control.entitlement_grants, control.entitlement_snapshots, control.billing_inbox, control.billing_payments] w=[control.tenants, control.plans, control.plan_versions, control.billing_inbox, control.entitlement_grants], PostgreSQL(role_maintenance)]; env=[];
+//!   modules=[adapters::postgres, adapters::entitlement_repo, adapters::tests::support::throwaway_db, billing-worker::creem, billing-worker::process, billing-worker::fake_creem, billing-worker::mode, domain::egress, domain::error, domain::ids, infra-egress::http, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [real maintenance identity; complete snapshot and effect counts; no mock PostgreSQL]
 //! Spec: Baseline §71.3; §76; §79.2
@@ -9,7 +9,7 @@
 mod fake_creem;
 #[path = "../../../crates/adapters/tests/support/throwaway_db.rs"]
 mod throwaway_db;
-use humaux_adapters::postgres::MaintenanceDbPool;
+use humaux_adapters::{entitlement_repo, postgres::MaintenanceDbPool};
 use humaux_billing_worker::{
     creem::CreemClient,
     mode::BillingMode,
@@ -620,11 +620,10 @@ fn reversal_before_subscription_delivery() {
     ] {
         run_db_fixture::<Fixture, _>("reversal_before_subscription_delivery", |mut h| {
             let tenant = h.tenant;
-            let grant = money_payload(&h, "paid_grant", "subscription.active", "sub_prior");
-            insert_payload(&mut h, &grant);
-            let mut fetched = fetched_subscription("active", "prod_fixture");
-            fetched["id"] = json!("sub_prior");
-            assert_eq!(process_fetched(&h, fetched, false), Ok(true));
+            let plan = h.config.plans["prod_fixture"];
+            h.admin.execute("INSERT INTO control.entitlement_grants(tenant_id,source,source_ref_id,feature,value,valid_from,priority) SELECT $1,'PLAN',$2,e.key,e.value,clock_timestamp(),0 FROM jsonb_each($3::jsonb) e", &[&tenant,&plan,&paid()]).unwrap();
+            let recompute = entitlement_repo::recompute(&h.pool, TenantId(tenant));
+            h.rt.block_on(recompute).unwrap();
             assert_eq!(snapshot(&mut h), paid());
             let count: i64 = h.admin.query_one("SELECT count(*) FROM control.subscriptions WHERE provider_subscription_ref='sub_fixture'", &[]).unwrap().get(0);
             assert_eq!(count, 0);
@@ -643,10 +642,7 @@ fn reversal_before_subscription_delivery() {
             );
             assert_eq!(snapshot(&mut h), free());
             let events: Value = h.admin.query_one("SELECT jsonb_agg(jsonb_build_array(source_event_id,to_state) ORDER BY source_event_id) FROM control.subscription_events", &[]).unwrap().get(0);
-            assert_eq!(
-                events,
-                json!([["paid_grant", "ACTIVE"], ["reversal_first", "CANCELED"]])
-            );
+            assert_eq!(events, json!([["reversal_first", "CANCELED"]]));
             for (id, arrival) in [
                 ("delayed_paid", "paid"),
                 ("resent_paid", "paid"),

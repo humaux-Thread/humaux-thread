@@ -22,9 +22,10 @@ BEGIN
   -- §76: lock order matches 0300 (event, quota, subscription), including concurrent reversals.
   PERFORM pg_advisory_xact_lock(hashtextextended('billing-event:' || p_provider || ':' || p_event_id, 0));
   PERFORM pg_advisory_xact_lock(hashtextextended('quota-window:' || p_tenant::text || ':mcp.billable_operations.per_period', 0));
-  -- §71.3: historical reversals must obey the same tenant boundary as current-period applications.
-  IF EXISTS (SELECT 1 FROM control.subscriptions WHERE provider = p_provider
-      AND provider_subscription_ref = p_subscription_ref AND tenant_id <> p_tenant) THEN
+  -- §71.3: FORCE RLS requires positive scoped ownership for historical reversals.
+  IF p_kind IN ('REFUND', 'CHARGEBACK') AND (p_current_start <> p_period_start OR p_current_end <> p_period_end)
+     AND NOT EXISTS (SELECT 1 FROM control.subscriptions WHERE provider = p_provider
+      AND provider_subscription_ref = p_subscription_ref AND tenant_id = p_tenant) THEN
     RAISE EXCEPTION 'subscription tenant mismatch' USING ERRCODE = '42501';
   END IF;
   INSERT INTO control.billing_payments
