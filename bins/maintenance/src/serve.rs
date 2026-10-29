@@ -619,8 +619,34 @@ fn finish_dr_reading(done: std::result::Result<DrReading, (ErrorCode, String)>, 
     }
 }
 
-/// ADR-0062 D-B: one cycle. Due tasks run from `first` in D-C order; each processes one tenant page; calls stop
-/// once the cycle budget is spent or the latch is set, leaving the unvisited tenants under the cursor.
+// §39 / ADR-0062 D-B: retain the skipped suffix for the next due run.
+async fn run_page(
+    task: Task,
+    page: &[Uuid],
+    cursor: &mut Cursor,
+    run: &mut Run,
+    mut call: impl AsyncFnMut(Uuid) -> std::result::Result<u64, (ErrorCode, String)>,
+    spent: impl Fn() -> bool,
+) -> bool {
+    for &tenant in page {
+        let done = call(tenant).await;
+        // ADR-0062 D-S: one count per tenant door call, after it committed or failed.
+        count_task_call(task, done.as_ref().ok().copied());
+        match done {
+            Ok(n) => run.affected += n,
+            Err(e) => run.fail(e),
+        }
+        run.tenants += 1;
+        cursor.after = Some(tenant);
+        // ponytail: overrun ≤ one tenant call past the cycle budget, per-call deadline if it matters
+        if spent() {
+            return false;
+        }
+    }
+    true
+}
+
+/// ADR-0062 D-B: due tasks run from `first`; unvisited tenants remain under the cursor.
 async fn cycle(
     pool: &MaintenanceDbPool,
     cfg: &Config,
@@ -676,31 +702,26 @@ async fn cycle(
                 continue;
             }
         };
-        let mut finished = true;
-        for &tenant in &page {
-            if spent() {
-                finished = false;
-                break;
-            }
-            let done =
-                match tokio::time::timeout(cfg.cycle, call(task, pool, tenant, limit, cfg, audit))
-                    .await
-                {
-                    Ok(Ok(n)) => Ok(n),
-                    Ok(Err((code, e))) => Err((code, format!("tenant {tenant}: {e}"))),
-                    Err(_) => Err(dependency_error(format!(
-                        "tenant {tenant}: no answer within {CYCLE_SECONDS}"
-                    ))),
-                };
-            // ADR-0062 D-S: one count per tenant door call, after it committed or failed.
-            count_task_call(task, done.as_ref().ok().copied());
-            match done {
-                Ok(n) => run.affected += n,
-                Err(e) => run.fail(e),
-            }
-            run.tenants += 1;
-            cursor.after = Some(tenant);
-        }
+        let finished = run_page(
+            task,
+            &page,
+            cursor,
+            &mut run,
+            async |tenant| match tokio::time::timeout(
+                cfg.cycle,
+                call(task, pool, tenant, limit, cfg, audit),
+            )
+            .await
+            {
+                Ok(Ok(n)) => Ok(n),
+                Ok(Err((code, e))) => Err((code, format!("tenant {tenant}: {e}"))),
+                Err(_) => Err(dependency_error(format!(
+                    "tenant {tenant}: no answer within {CYCLE_SECONDS}"
+                ))),
+            },
+            spent,
+        )
+        .await;
         run.finish(task, resident::stage_now(), finished);
         if finished && page.len() < usize::try_from(cfg.tenants_per_run).unwrap_or(usize::MAX) {
             cursor.after = None;
@@ -964,16 +985,28 @@ pub(crate) async fn sweep_once(args: &Args) -> Result<Output> {
 
 #[cfg(test)]
 mod tests {
-    // §39 / ADR-0062 D-B: a cut after one successful tenant derives state solely from its output.
-    fn budget_cut_after_one_successful_tenant() {
-        use super::{Run, Task, render_stage_liveness};
+    // §39 / ADR-0062 D-B: a spent budget still advances the returned page without inventing an error.
+    async fn budget_cut_after_one_successful_tenant() {
+        use super::{Cursor, Run, Task, Uuid, render_stage_liveness, run_page};
         for (affected, state) in [(1, 1), (0, 2)] {
-            let cut = Run {
-                tenants: 1,
-                affected,
-                ..Run::default()
-            };
-            cut.finish(Task::Lost, 100.0, false);
+            let page = [Uuid::from_u128(1), Uuid::from_u128(2)];
+            let (mut cursor, mut cut, mut called) = (Cursor::default(), Run::default(), Vec::new());
+            let finished = run_page(
+                Task::Lost,
+                &page,
+                &mut cursor,
+                &mut cut,
+                async |tenant| {
+                    called.push(tenant);
+                    Ok(affected)
+                },
+                || true,
+            )
+            .await;
+            assert_eq!(called, [page[0]]);
+            assert_eq!(cursor.after, Some(page[0]));
+            assert_eq!((finished, cut.tenants, cut.failed), (false, 1, 0));
+            cut.finish(Task::Lost, 100.0, finished);
             assert_eq!(cut.last_error, None);
             let mut out = String::new();
             render_stage_liveness(&mut out, &[Task::Lost.label()]);
@@ -999,15 +1032,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stage_output_uses_task_product() {
+    #[tokio::test]
+    async fn stage_output_uses_task_product() {
         use super::{DrReading, Run, Task, finish_dr_reading, render_stage_liveness};
         assert_eq!(Task::ALL.len(), 13);
         assert_eq!(
             Task::ALL.map(Task::label).join(","),
             "lost,ingest_tickets,quota_reservations,quota_renewal,provider_budgets,confirm_tokens,snapshots,jobs,reissue,redrive,partitions,dr_evidence,authority_i4"
         );
-        budget_cut_after_one_successful_tenant();
+        budget_cut_after_one_successful_tenant().await;
         for task in Task::ALL {
             let mut run = Run::default();
             if task == Task::DrEvidence {
