@@ -27,8 +27,24 @@ use crate::dod_check::GateStatus;
 const LEDGER_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/known_red.toml");
 /// Name used in messages (what a reader opens).
 const LEDGER_FILE: &str = "xtask/known_red.toml";
-/// §78.1 / M01 D7: lower with each removed row (M24 G-M24-7 frozen-ceiling precedent).
-const MAGIC_LITERAL_CEILING: usize = 12;
+/// §78.1 / M01 D7: remove resolved ids only; a replacement violation cannot inherit a removed row.
+const MAGIC_LITERAL_IDS: [&str; 12] = [
+    "crates/retrieval-provider/src/adapters.rs::https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings#1",
+    "crates/retrieval-provider/src/adapters.rs::dashscope#1",
+    "crates/retrieval-provider/src/adapters.rs::dashscope#2",
+    "crates/retrieval-provider/src/adapters.rs::dashscope#3",
+    "crates/retrieval-provider/src/metrics.rs::dashscope#1",
+    "crates/infra-egress/src/http.rs::127.0.0.1#1",
+    "crates/infra-egress/src/http.rs::localhost#1",
+    "crates/infra-egress/src/http.rs::[::1]#1",
+    "crates/adapters/src/rebuild.rs::127.0.0.1#1",
+    "crates/adapters/src/rebuild.rs::127.0.0.1/32#1",
+    "crates/application/src/oauth.rs::127.0.0.1#1",
+    "crates/application/src/oauth.rs::localhost#1",
+];
+/// §78.1: ledger identities must equal the frozen Rust set even when every row matches a hit.
+const MAGIC_LITERAL_SET_RED: &str =
+    "[magic_literals]: row-id set differs from frozen Rust pin; only remove resolved ids (§78.1)";
 /// Sections this build evaluates. A section nobody evaluates would never go red, so the parser rejects any
 /// other name instead of ignoring it.
 const SECTIONS: [&str; 6] = [
@@ -258,11 +274,11 @@ fn judge(section: &str, items: &[Item], rows: &[Row], release: bool) -> Report {
         ledgered: rows.len(),
         ..Report::default()
     };
-    if section == "magic_literals" && rows.len() != MAGIC_LITERAL_CEILING {
-        rep.reds.push(format!(
-            "[magic_literals]: frozen ceiling {MAGIC_LITERAL_CEILING}, rows {}; remove growth or lower the ceiling with removed rows (§78.1)",
-            rows.len()
-        ));
+    if section == "magic_literals"
+        && rows.iter().map(|r| r.id.as_str()).collect::<BTreeSet<_>>()
+            != BTreeSet::from(MAGIC_LITERAL_IDS)
+    {
+        rep.reds.push(MAGIC_LITERAL_SET_RED.into());
     }
     for it in by_id.values() {
         match it.status {
@@ -1078,12 +1094,7 @@ mod tests {
             false,
             &none,
         );
-        assert_eq!(
-            out.reds,
-            vec![
-                "[magic_literals]: frozen ceiling 12, rows 0; remove growth or lower the ceiling with removed rows (§78.1)"
-            ]
-        );
+        assert_eq!(out.reds, vec![MAGIC_LITERAL_SET_RED]);
         assert!(
             !asked.borrow().iter().any(|s| s == LINT_ALLOWS),
             "{:?}",
@@ -1111,12 +1122,7 @@ mod tests {
         let raw = "[[dod]]\nid = \"A\"\nowner = \"M11\"\nreason = \"r\"\n\
                    [[dod]]\nid = \"B\"\nowner = \"M24\"\nreason = \"r\"\ndeferred_past_go_live = \"d\"\n";
         let out = check(raw, 9, false, &items_for);
-        assert_eq!(
-            out.reds,
-            vec![
-                "[magic_literals]: frozen ceiling 12, rows 0; remove growth or lower the ceiling with removed rows (§78.1)"
-            ]
-        );
+        assert_eq!(out.reds, vec![MAGIC_LITERAL_SET_RED]);
         assert_eq!((out.rows, out.deferred), (2, 1));
         let release = check(raw, 9, true, &items_for);
         assert_eq!(release.reds.len(), 2, "{:?}", release.reds);
@@ -1366,18 +1372,8 @@ mod tests {
     /// §78.1: unknown keys, missing owners, duplicate rows, new hits and stale rows remain red.
     #[test]
     fn magic_literal_rows_use_the_shrink_only_judgment() {
-        let raw: String = (0..12)
-            .map(|n| {
-                format!(
-                    "[[magic_literals]]\nid = 'p::url#{n}'\nowner = 'M11'\nreason = 'existing'\n"
-                )
-            })
-            .collect();
-        let hits = || {
-            (0..12)
-                .map(|n| (format!("p::url#{n}"), "p:line 1".into()))
-                .collect()
-        };
+        let raw = magic_rows(&MAGIC_LITERAL_IDS);
+        let hits = || magic_hits(&MAGIC_LITERAL_IDS);
         assert_eq!(magic_literal_reds(&raw, hits()), Vec::<String>::new());
         assert_eq!(magic_literal_reds("", hits()).len(), 13);
         assert_eq!(magic_literal_reds(&raw, vec![]).len(), 12);
@@ -1389,33 +1385,45 @@ mod tests {
             magic_literal_reds(&format!("{raw}count = 1\n"), hits()).len(),
             1
         );
-        assert_eq!(magic_literal_reds(&format!("{raw}{raw}"), hits()).len(), 13);
+        assert_eq!(magic_literal_reds(&format!("{raw}{raw}"), hits()).len(), 12);
         assert_eq!(
             SECTIONS.iter().filter(|s| **s == "magic_literals").count(),
             1
         );
     }
 
-    /// §78.1: matching hits and rows cannot grow or shrink without changing the frozen Rust pin.
+    /// §78.1: every fixture uses the exact ids evaluated by the production pin.
+    fn magic_rows(ids: &[&str]) -> String {
+        ids.iter()
+            .map(|id| {
+                format!("[[magic_literals]]\nid = '{id}'\nowner = 'M11'\nreason = 'existing'\n")
+            })
+            .collect()
+    }
+
+    /// §78.1: matching rows cannot waive a changed identity set.
+    fn magic_hits(ids: &[&str]) -> Vec<(String, String)> {
+        ids.iter()
+            .map(|id| ((*id).into(), "p:line 1".into()))
+            .collect()
+    }
+
+    /// §78.1: additions, removals and equal-count swaps require a change to the Rust identity pin.
     #[test]
-    fn magic_literal_ceiling_is_independent_of_matching_rows() {
-        for (count, expected) in [(11, 1), (12, 0), (13, 1)] {
-            let raw: String = (0..count).map(|n| format!(
-                "[[magic_literals]]\nid = 'p::url#{n}'\nowner = 'M11'\nreason = 'existing'\n"
-            )).collect();
-            let hits = (0..count)
-                .map(|n| (format!("p::url#{n}"), "p:line 1".into()))
-                .collect();
-            let reds = magic_literal_reds(&raw, hits);
-            assert_eq!(reds.len(), expected, "{reds:?}");
-            if expected == 1 {
-                assert_eq!(
-                    reds,
-                    vec![format!(
-                        "[magic_literals]: frozen ceiling 12, rows {count}; remove growth or lower the ceiling with removed rows (§78.1)"
-                    )]
-                );
-            }
+    fn magic_literal_set_is_independent_of_matching_rows() {
+        let mut added = MAGIC_LITERAL_IDS.to_vec();
+        added.push("p::new#1");
+        let mut swapped = MAGIC_LITERAL_IDS.to_vec();
+        swapped[0] = "p::new#1";
+        for ids in [
+            &MAGIC_LITERAL_IDS[..11],
+            added.as_slice(),
+            swapped.as_slice(),
+        ] {
+            assert_eq!(
+                magic_literal_reds(&magic_rows(ids), magic_hits(ids)),
+                vec![MAGIC_LITERAL_SET_RED.to_string()]
+            );
         }
     }
 

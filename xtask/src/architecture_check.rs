@@ -1752,7 +1752,7 @@ fn magic_production(source: &str) -> String {
 /// §78.1: literal comparisons and match arms on plan/provider identities, including names absent from the catalogue.
 fn magic_name_branch(source: &str, start: usize, end: usize) -> bool {
     let before = &source[..start];
-    let after = source[end..].trim_start();
+    let after = source[end..].trim_start_matches(|c: char| c.is_whitespace() || c == ')');
     let left = before.rsplit([';', '{', '}']).next().unwrap_or("");
     let left = left.trim_end();
     let identity = |s: &str| {
@@ -1773,7 +1773,10 @@ fn magic_name_branch(source: &str, start: usize, end: usize) -> bool {
         || after
             .strip_prefix("if")
             .is_some_and(|tail| tail.starts_with(char::is_whitespace) || tail.starts_with('(')))
-        && let Some(at) = before.rfind("match ")
+        && let Some((at, _)) = before.rmatch_indices("match").find(|(at, _)| {
+            before[at + 5..].starts_with(char::is_whitespace)
+                && !before[..*at].ends_with(|c: char| c.is_alphanumeric() || c == '_')
+        })
     {
         let header = before[at..].split('{').next().unwrap_or("");
         return identity(header)
@@ -1783,7 +1786,7 @@ fn magic_name_branch(source: &str, start: usize, end: usize) -> bool {
 }
 
 /// §78.1: mechanical URL/host/model/provider patterns; G-M04-1 exclusively owns catalogue keys and numeric quotas.
-// ponytail: text patterns cannot resolve macros, aliases or arbitrary model names; upgrade to token/semantic analysis
+// ponytail: text patterns cannot resolve macros, named constants, aliases or arbitrary model names; use token/semantic analysis
 // if review finds such escapes. TTL/threshold numbers require ConfigEntry/config-check (M01 D7), not numeric grep.
 fn magic_literal_hits(path: &str, source: &str, plans: &BTreeSet<String>) -> Vec<(String, String)> {
     let source = magic_production(source);
@@ -12703,7 +12706,10 @@ const P: &str = "openai"; const V: &str = "https://api.example.com";"##;
             "catalogued" if on => 4,
             _ => 0,
         }; match plan { "private" if on => 1, "e" | "f" => 2, _ => 0 };
-        match other { "ignored" if on => 1, _ => 0 };"#;
+        match other { "ignored" if on => 1, _ => 0 };
+        match
+            provider
+        { ("g" | "h") if on => 1, ("i") => 2, ("j") if on => 3, ("k" | "l") => 4, _ => 0 };"#;
         let hits = magic_literal_hits("p", source, &BTreeSet::from(["catalogued".into()]));
         assert_eq!(
             hits.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
@@ -12715,7 +12721,13 @@ const P: &str = "openai"; const V: &str = "https://api.example.com";"##;
                 "p::d#1",
                 "p::private#1",
                 "p::e#1",
-                "p::f#1"
+                "p::f#1",
+                "p::g#1",
+                "p::h#1",
+                "p::i#1",
+                "p::j#1",
+                "p::k#1",
+                "p::l#1"
             ]
         );
     }
@@ -12779,7 +12791,7 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         fs::create_dir_all(tmp.join("xtask")).unwrap();
         fs::write(tmp.join(LINT_BASELINE_FILE), "").unwrap();
         assert_eq!(m01_7_magic_literal_ratchet(&tmp), Verdict::Fail(vec![
-            "[magic_literals]: frozen ceiling 12, rows 0; remove growth or lower the ceiling with removed rows (§78.1)".into()
+            "[magic_literals]: row-id set differs from frozen Rust pin; only remove resolved ids (§78.1)".into()
         ]));
         fs::remove_dir_all(tmp).unwrap();
     }
