@@ -620,9 +620,14 @@ fn reversal_before_subscription_delivery() {
     ] {
         run_db_fixture::<Fixture, _>("reversal_before_subscription_delivery", |mut h| {
             let tenant = h.tenant;
-            deliver(&mut h, "paid_grant", "active", tenant);
-            assert!(process(&h, "active"));
+            let grant = money_payload(&h, "paid_grant", "subscription.active", "sub_prior");
+            insert_payload(&mut h, &grant);
+            let mut fetched = fetched_subscription("active", "prod_fixture");
+            fetched["id"] = json!("sub_prior");
+            assert_eq!(process_fetched(&h, fetched, false), Ok(true));
             assert_eq!(snapshot(&mut h), paid());
+            let count: i64 = h.admin.query_one("SELECT count(*) FROM control.subscriptions WHERE provider_subscription_ref='sub_fixture'", &[]).unwrap().get(0);
+            assert_eq!(count, 0);
             let payload = money_payload(&h, "reversal_first", kind, reference);
             insert_payload(&mut h, &payload);
             assert!(process(&h, "active"));
