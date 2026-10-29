@@ -3,7 +3,7 @@
 //!   provider capability and the only INSERT on `memory_records`/`memory_evidence` (no RPC needed, contrast
 //!   ADR-0015's Consolidate hop). Dispatch is ADR-0058's: one `DERIVED_DISTILL` job = one Evidence, claimed through
 //!   the four provider slots, worked by at most IN_FLIGHT seats of one task.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-telemetry, serde_json, sha2, tokio, uuid]; services=[PostgreSQL(role_private_worker)]; env=[HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::byok, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::distill_repo, adapters::jobs, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, domain::authority, domain::dataclass, domain::error, domain::evidence, domain::ids, domain::memory, domain::policy, humaux-private-worker, projection::fingerprint, telemetry::metrics]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-telemetry, serde_json, sha2, tokio, uuid]; services=[PostgreSQL(role_private_worker)]; env=[HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::byok, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::distill_repo, adapters::jobs, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, domain::authority, domain::dataclass, domain::error, domain::evidence, domain::ids, domain::memory, domain::policy, humaux-private-worker, private-worker::stages, projection::fingerprint, telemetry::metrics]
 //! Called-by: [private-worker::main, tests]
 //! Invariants: [a candidate over the §10.1 origin-bound ceiling is rejected, never downgraded; one job = one Evidence
 //!   and a job only takes its own Evidence's outbox row; at most IN_FLIGHT seats per process and four bound slots
@@ -85,6 +85,63 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::time::Instant;
 use uuid::Uuid;
+
+use crate::stages::STAGES;
+
+fn stage_class(class: &str) -> ErrorCode {
+    ErrorCode::ALL
+        .into_iter()
+        .find(|c| c.as_str() == class)
+        .unwrap_or(match class {
+            "TRANSPORT" | "RETRY_WAIT" | EXECUTION_UNCERTAIN => ErrorCode::ProviderTransient,
+            PROVIDER_BUDGET => ErrorCode::CostBudgetExceeded,
+            FAILED_OUTPUT_SCHEMA | INVALID_JOB_PAYLOAD | DOMAIN_MISMATCH => ErrorCode::InvalidInput,
+            "EGRESS_PERMIT_PAYLOAD_MISMATCH" | "ENDPOINT_REJECTED" => ErrorCode::Forbidden,
+            _ => ErrorCode::DependencyUnavailable,
+        })
+}
+
+async fn seat_iteration(
+    work: impl Future<Output = (Result<Settled, DistillError>, u32)>,
+) -> Result<Settled, DistillError> {
+    use humaux_telemetry::metrics::{stage_recorded, stage_started};
+    stage_started(STAGES[0], stage_now());
+    let (result, output) = work.await;
+    let error = match &result {
+        Ok(s) => s.error.or_else(|| s.class.map(stage_class)),
+        Err(DistillError::Config(code)) => Some(*code),
+        Err(e) => Some(stage_class(e.class())),
+    };
+    stage_recorded(STAGES[0], stage_now(), error, [1, u64::from(output)]);
+    result
+}
+
+async fn lease_iteration<T>(
+    work: impl Future<Output = Result<Option<T>, jobs::JobsError>>,
+) -> Result<Option<T>, jobs::JobsError> {
+    use humaux_telemetry::metrics::{stage_recorded, stage_started};
+    stage_started(STAGES[1], stage_now());
+    let result = work.await;
+    let error = match &result {
+        Ok(Some(_)) => None,
+        Ok(None) => Some(ErrorCode::Conflict),
+        Err(_) => Some(ErrorCode::DependencyUnavailable),
+    };
+    stage_recorded(
+        STAGES[1],
+        stage_now(),
+        error,
+        [1, u64::from(matches!(result, Ok(Some(_))))],
+    );
+    result
+}
+
+fn stage_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
 
 /// Deployment-owned inputs of the cross-tenant dispatcher (ADR-0036 / ADR-0058 D-K). No tenant
 /// id and no reasoning domain: both come from each claimed `DERIVED_DISTILL` job. Every value is
@@ -447,6 +504,7 @@ impl JobOutcome {
 
 /// One settled job, for the job line.
 struct Settled {
+    error: Option<ErrorCode>,
     outcome: JobOutcome,
     class: Option<&'static str>,
     next_retry_seconds: Option<f64>,
@@ -457,6 +515,7 @@ struct Settled {
 impl Settled {
     fn new(outcome: JobOutcome, class: Option<&'static str>) -> Self {
         Self {
+            error: matches!(outcome, JobOutcome::LeaseLost).then_some(ErrorCode::Conflict),
             outcome,
             class,
             next_retry_seconds: None,
@@ -661,17 +720,8 @@ async fn idle(poll: Duration, shutdown: &AtomicBool) {
     }
 }
 
-/// One claimed job: its work and its own heartbeat, polled together (ADR-0058 D-J), then the job
-/// line. A lost lease does not drop the work: it runs to its end (bounded by the HTTP cutoff) so
-/// the call is still ledgered, and its settle is refused by the generation fence.
-async fn run_claimed(
-    dispatcher: &Dispatcher<'_>,
-    claim: &DistillClaim,
-    local_deadline: Instant,
-    report: &mut DistillDispatchReport,
-) {
-    let dispatch = dispatcher.dispatch;
-    let lease = DistillLease::of(claim, &dispatch.lease_owner);
+// §39: keep the seat's recording wrapper within the §78.3 function-size gate.
+fn log_reclaimed(claim: &DistillClaim, max_attempts: i32) {
     if claim.last_error_class.as_deref() == Some(EXECUTION_UNCERTAIN) {
         // Main-line ruling E1: one line per T6 re-queue, naming the call whose outcome stayed
         // unknown — the resend is never silent.
@@ -684,9 +734,23 @@ async fn run_claimed(
                 .dispatch_model_call_id
                 .map_or_else(|| "-".to_owned(), |id| id.to_string()),
             claim.attempt,
-            dispatch.max_attempts,
+            max_attempts,
         );
     }
+}
+
+/// One claimed job: its work and its own heartbeat, polled together (ADR-0058 D-J), then the job
+/// line. A lost lease does not drop the work: it runs to its end (bounded by the HTTP cutoff) so
+/// the call is still ledgered, and its settle is refused by the generation fence.
+async fn run_claimed(
+    dispatcher: &Dispatcher<'_>,
+    claim: &DistillClaim,
+    local_deadline: Instant,
+    report: &mut DistillDispatchReport,
+) {
+    let dispatch = dispatcher.dispatch;
+    let lease = DistillLease::of(claim, &dispatch.lease_owner);
+    log_reclaimed(claim, dispatch.max_attempts);
     let lost = Cell::new(false);
     let mut attempt = claim.attempt;
     // ADR-0060 D-M: the admitted route's fields once the read leg admitted one.
@@ -695,7 +759,13 @@ async fn run_claimed(
         let period = Duration::from_secs_f64(dispatch.lease_seconds / 3.0);
         loop {
             tokio::time::sleep(period).await;
-            match jobs::renew_distill_lease(dispatcher.pool, &lease, dispatch.lease_seconds).await {
+            match lease_iteration(jobs::renew_distill_lease(
+                dispatcher.pool,
+                &lease,
+                dispatch.lease_seconds,
+            ))
+            .await
+            {
                 Ok(Some(_)) => {}
                 Ok(None) => {
                     lost.set(true);
@@ -711,15 +781,20 @@ async fn run_claimed(
             }
         }
     };
-    let work = work_job(
-        dispatcher,
-        claim,
-        &lease,
-        local_deadline,
-        &mut attempt,
-        &mut route,
-        report,
-    );
+    let work = seat_iteration(async {
+        let before = report.memories;
+        let result = work_job(
+            dispatcher,
+            claim,
+            &lease,
+            local_deadline,
+            &mut attempt,
+            &mut route,
+            report,
+        )
+        .await;
+        (result, report.memories - before)
+    });
     let settled = tokio::select! {
         biased;
         settled = work => settled,
@@ -826,6 +901,7 @@ async fn settle_as(
             DistillFinish::Done | DistillFinish::Dead => None,
         };
         Ok(Settled {
+            error: None,
             outcome,
             class,
             next_retry_seconds,
@@ -1482,7 +1558,7 @@ async fn settle_after_error(
         "humaux-private-worker: distill job={} evidence={} error: {error}",
         claim.job_id, row.evidence_id
     );
-    if calls == 0 {
+    let mut settled = if calls == 0 {
         settle_not_ready(dispatcher, claim, lease, row, error.class()).await
     } else {
         // ponytail: ADR-0058 R8 (c) known limit — a transient DB error in the write leg AFTER a
@@ -1490,7 +1566,12 @@ async fn settle_after_error(
         // (one extra billed call, counted). Upgrade: retry the write leg in place with the parsed
         // reply, inside the claim's hard deadline.
         settle_failed_call(dispatcher, lease, row, attempt, error.class()).await
-    }
+    }?;
+    settled.error = Some(match error {
+        DistillError::Config(code) => *code,
+        other => stage_class(other.class()),
+    });
+    Ok(settled)
 }
 
 /// (c) of the module doc: ONE transaction — the generation-fenced job finish first, then the
@@ -1935,6 +2016,49 @@ mod tests {
             humaux_telemetry::metrics::dns_pin_deferred_total(),
             before,
             "without a configured pin a TRANSPORT retry is no DNS pin deferral (ADR-0066 D-P)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod stage_witness {
+    use super::*;
+    #[tokio::test]
+    async fn stage_iteration_exports_exact_set() {
+        seat_iteration(async { (Ok(Settled::new(JobOutcome::LeaseLost, None)), 0) })
+            .await
+            .unwrap();
+        let mut lost = String::new();
+        humaux_telemetry::metrics::render_stage_liveness(&mut lost, &STAGES);
+        assert_eq!(
+            lost.lines()
+                .filter(|l| l.starts_with("stage_last_success_timestamp_seconds{")
+                    || l.starts_with("stage_last_error_class{"))
+                .collect::<Vec<_>>(),
+            [
+                "stage_last_success_timestamp_seconds{stage=\"distill_seat\"} 0",
+                "stage_last_success_timestamp_seconds{stage=\"distill_lease_renewal\"} 0",
+                "stage_last_error_class{stage=\"distill_seat\"} 17",
+                "stage_last_error_class{stage=\"distill_lease_renewal\"} 0",
+            ]
+        );
+        seat_iteration(async { (Ok(Settled::new(JobOutcome::Done, None)), 1) })
+            .await
+            .unwrap();
+        lease_iteration(async { Ok(Some(())) }).await.unwrap();
+        let mut out = String::new();
+        humaux_telemetry::metrics::render_stage_liveness(&mut out, &STAGES);
+        let stages: Vec<_> = out
+            .lines()
+            .filter(|l| l.starts_with("stage_output_count{"))
+            .collect();
+        assert_eq!(stages.len(), 2);
+        assert_eq!(
+            stages,
+            [
+                "stage_output_count{stage=\"distill_seat\"} 1",
+                "stage_output_count{stage=\"distill_lease_renewal\"} 1"
+            ]
         );
     }
 }

@@ -120,9 +120,32 @@ const SERVE_RPC_METRICS_ADDR: &str = "HUMAUX_RETRIEVAL_WORKER_SERVE_RPC_METRICS_
 /// §78.1 / ADR-0061 D-B: `--serve`'s own ops listener address (loopback only, no default).
 const SERVE_METRICS_ADDR: &str = "HUMAUX_RETRIEVAL_WORKER_SERVE_METRICS_ADDR";
 
+const STAGES: [&str; 1] = ["retrieval_projection"];
+
+async fn projection_iteration(
+    work: impl std::future::Future<Output = Result<PassOutcome, ErrorCode>>,
+) -> Result<PassOutcome, ErrorCode> {
+    use humaux_telemetry::metrics::{stage_recorded, stage_started};
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+    };
+    stage_started(STAGES[0], now());
+    let result = work.await;
+    let (error, counts) = match &result {
+        Ok(r) => (r.last_error, [r.claimed, r.done]),
+        Err(e) => (Some(*e), [0, 0]),
+    };
+    stage_recorded(STAGES[0], now(), error, counts);
+    result
+}
+
 /// The four §41.2 `retrieval_provider_*` families this process counts (ADR-0061 D-C), each seeded over its
 /// closed label product by the `snapshot_*` functions. `/metrics` and `--metrics-families` both call this.
 fn render_metrics(out: &mut String) {
+    humaux_telemetry::metrics::render_stage_liveness(out, &STAGES);
     let counter = |out: &mut String, family, rows: Vec<(Vec<&'static str>, u64)>| {
         let samples: Vec<_> = rows
             .iter()
@@ -501,7 +524,7 @@ async fn projection_mode(resident: bool) -> Result<(), Outcome> {
             }
         }
         if let Some(deps) = &shared {
-            match run_claimed_pass(deps, &pass).await {
+            match projection_iteration(run_claimed_pass(deps, &pass)).await {
                 Ok(outcome) => println!("humaux-retrieval-worker: {}", pass_line(&outcome)),
                 Err(error) if resident => {
                     eprintln!("humaux-retrieval-worker: projection pass failed: {error}")
@@ -1119,6 +1142,35 @@ mod config_tests {
         assert_eq!(
             PROJECTION_FAMILY.collection_name(),
             family.collection_name()
+        );
+    }
+}
+
+#[cfg(test)]
+mod stage_witness {
+    use super::*;
+    #[tokio::test]
+    async fn stage_iteration_exports_exact_set() {
+        let report = PassOutcome {
+            last_error: Some(ErrorCode::ProviderPermanent),
+            ..Default::default()
+        };
+        projection_iteration(async { Ok(report) }).await.unwrap();
+        let mut out = String::new();
+        render_metrics(&mut out);
+        let stages: Vec<_> = out
+            .lines()
+            .filter(|l| l.starts_with("stage_last_run_timestamp_seconds{"))
+            .map(|l| l.split(' ').next().unwrap())
+            .collect();
+        assert_eq!(
+            stages,
+            ["stage_last_run_timestamp_seconds{stage=\"retrieval_projection\"}"]
+        );
+        assert_eq!(stages.len(), 1);
+        assert_eq!(
+            out.lines().find(|l| l.starts_with("stage_state{")).unwrap(),
+            "stage_state{stage=\"retrieval_projection\"} 3"
         );
     }
 }

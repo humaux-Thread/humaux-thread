@@ -88,12 +88,29 @@ fn boot_env(pg_port: u16, ops: SocketAddr) -> Vec<(&'static str, String)> {
     .into()
 }
 
-/// T-W4 (consolidation half, E10): `--metrics-families` with an empty environment prints zero families, exit 0.
+// §39 / ADR-0061: the dispatch stage is seeded before any database work.
+fn assert_stage_families(body: &str) {
+    let samples: Vec<_> = body.lines().filter(|l| !l.starts_with('#')).collect();
+    assert_eq!(
+        samples,
+        [
+            "stage_last_run_timestamp_seconds{stage=\"consolidation_dispatch\"} 0",
+            "stage_last_success_timestamp_seconds{stage=\"consolidation_dispatch\"} 0",
+            "stage_last_output_timestamp_seconds{stage=\"consolidation_dispatch\"} 0",
+            "stage_last_error_class{stage=\"consolidation_dispatch\"} 0",
+            "stage_processed_count{stage=\"consolidation_dispatch\"} 0",
+            "stage_output_count{stage=\"consolidation_dispatch\"} 0",
+            "stage_state{stage=\"consolidation_dispatch\"} 0",
+        ]
+    );
+}
+
+/// T-W4 (consolidation half, E10): §39 stage families are seeded without env, exit 0.
 #[test]
 fn metrics_families_prints_zero_families_without_env() {
     let out = run(&["--metrics-families"], &[]);
     assert!(out.status.success(), "{out:?}");
-    assert!(out.stdout.is_empty(), "{out:?}");
+    assert_stage_families(&String::from_utf8_lossy(&out.stdout));
 }
 
 /// T-W1: `--serve` refuses to boot without its key and names it; a non-loopback address or port 0 is refused
@@ -139,7 +156,7 @@ fn serve_opens_its_listener_before_the_database_and_run_once_none() {
     let status = get(ops, "/status");
     let _ = child.kill();
     let _ = child.wait();
-    assert!(!body.contains("# TYPE"), "{body}");
+    assert_stage_families(&body);
     let (code, status) = status.expect("/status answers");
     assert_eq!(code, 200, "{status}");
     assert!(
