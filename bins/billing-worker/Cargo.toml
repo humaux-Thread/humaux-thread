@@ -50,4 +50,4 @@ uuid = { version = "1.25.0", features = ["v4"] }
 # why: test-only loopback Creem routes (§79.4); used-by: [billing-worker::fake_creem, tests]
 axum = "0.8"
 # why: test HTTP double lifecycle (§79.4); used-by: [billing-worker::fake_creem, tests]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
