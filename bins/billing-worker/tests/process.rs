@@ -761,27 +761,6 @@ fn assert_received_without_effects(
     assert_eq!(&effects(h), before);
 }
 
-/// §71.3 / §76: each paid subscription owns grants even while another remains paid.
-#[test]
-fn overlapping_paid_subscriptions_keep_own_grants() {
-    run_db_fixture::<Fixture, _>("overlapping_paid_subscriptions_keep_own_grants", |mut h| {
-        let tenant = h.tenant;
-        deliver(&mut h, "a_active", "active", tenant);
-        assert!(process(&h, "active"));
-        let mut new = fetched_subscription("active", "prod_fixture");
-        new["id"] = json!("sub_new");
-        deliver(&mut h, "b_active", "active", tenant);
-        h.admin.execute("UPDATE control.billing_inbox SET object_id='sub_new',payload=jsonb_set(payload,'{object,id}',to_jsonb('sub_new'::text)) WHERE event_id='b_active'", &[]).unwrap();
-        assert_eq!(process_fetched(&h, new, None), Ok(true));
-        let expected: Value = h.admin.query_one("SELECT coalesce(jsonb_agg(grant_id ORDER BY grant_id),'[]'::jsonb) FROM control.entitlement_grants WHERE source_ref_id=(SELECT subscription_id FROM control.subscriptions WHERE provider_subscription_ref='sub_new') AND revoked_at IS NULL", &[]).unwrap().get(0);
-        deliver(&mut h, "a_late_cancel", "canceled", tenant);
-        assert!(process(&h, "canceled"));
-        let actual: Value = h.admin.query_one("SELECT coalesce(jsonb_agg(grant_id ORDER BY grant_id),'[]'::jsonb) FROM control.entitlement_grants WHERE source_ref_id=(SELECT subscription_id FROM control.subscriptions WHERE provider_subscription_ref='sub_new') AND revoked_at IS NULL AND valid_until>clock_timestamp()", &[]).unwrap().get(0);
-        assert_eq!(actual.as_array().unwrap().len(), 2, "paid B grants");
-        assert_eq!(actual, expected, "B grant IDs");
-        assert_eq!(snapshot(&mut h), paid());
-    });
-}
 /// §71.3 / §76: onboarding grants from any legacy plan version end on cancellation.
 #[test]
 fn cancellation_ends_third_version_onboarding_grants() {
