@@ -2640,7 +2640,6 @@ mod classification_tests {
         );
         assert_eq!(r.last_error, Some(ErrorCode::Conflict));
     }
-
     /// ADR-0052 D-E, the `ErrorCode` (embedding + secret scanner) and PG halves of the table (the
     /// Qdrant half is pinned in `qdrant.rs`). `Forbidden` is the scanner's gitleaks finding: the
     /// 2026-09-29 rehearsal retried one to `transient_exhausted` before this row existed. Fault

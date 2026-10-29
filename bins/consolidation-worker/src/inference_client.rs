@@ -293,7 +293,6 @@ mod tests {
         }
         assert_eq!(decode("unknown: redacted").class(), Some("INTERNAL"));
     }
-
     /// ADR-0066 D-L: a socket served by any uid but the registered private-worker uid is refused before a byte is
     /// written. Fault: dial without the peer-uid check ⇒ the request is written ⇒ red.
     #[tokio::test]
