@@ -34,7 +34,7 @@ fn forgotten_evidence_finishes_without_provider_call() {
                 .unwrap()
                 .get(0);
             h.admin.execute("INSERT INTO projection.stream_checkpoints(tenant_id,scope_kind,scope_id,domain,projection_kind,projection_version) VALUES($1,'workspace',$2,'private_memory','PRIVATE_MEMORY','v1')", &[&h.tenant_id,&h.workspace_id]).unwrap();
-            h.admin.execute("INSERT INTO projection.stream_log(tenant_id,scope_kind,scope_id,domain,projection_kind,projection_version,stream_seq,commit_seq,state) VALUES($1,'workspace',$2,'private_memory','PRIVATE_MEMORY','v1',1,$3,'TOMBSTONED')", &[&h.tenant_id,&h.workspace_id,&commit]).unwrap();
+            h.admin.execute("INSERT INTO projection.stream_log(tenant_id,scope_kind,scope_id,domain,projection_kind,projection_version,stream_seq,commit_seq,state,settled_at) VALUES($1,'workspace',$2,'private_memory','PRIVATE_MEMORY','v1',1,$3,'TOMBSTONED',now())", &[&h.tenant_id,&h.workspace_id,&commit]).unwrap();
             h.admin.execute("INSERT INTO ops.outbox(tenant_id,commit_seq,stream_seq,event_type,evidence_id) VALUES($1,$2,1,'EVIDENCE_ACCEPTED',$3)", &[&h.tenant_id,&commit,&evidence]).unwrap();
             let provider = lane::FakeProvider::new(vec![]);
             // dep: PostgreSQL(role_private_worker) — §37 stale dispatcher witness
