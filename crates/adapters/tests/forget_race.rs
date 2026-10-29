@@ -579,7 +579,12 @@ fn race_order(w: &mut World, site: &str, reverse: bool) {
     };
     let function = format!("{}.race_barrier_{pid}", "public");
     // §37: test-only output barrier; production serialization remains exclusively the stream row lock.
-    w.h.admin.batch_execute(&format!("CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.tenant_id = '{}'::uuid THEN PERFORM pg_advisory_xact_lock({key}); END IF; RETURN NEW; END $$; CREATE TRIGGER race_barrier_{pid} BEFORE INSERT OR UPDATE ON {table} FOR EACH ROW EXECUTE FUNCTION {function}()", w.h.tenant_id)).unwrap();
+    let event = if site == "distill" {
+        "UPDATE"
+    } else {
+        "INSERT"
+    };
+    w.h.admin.batch_execute(&format!("CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.tenant_id = '{}'::uuid THEN PERFORM pg_advisory_xact_lock({key}); END IF; RETURN NEW; END $$; CREATE TRIGGER race_barrier_{pid} BEFORE {event} ON {table} FOR EACH ROW EXECUTE FUNCTION {function}()", w.h.tenant_id)).unwrap();
     if reverse {
         accept(&mut deletion);
     } else {

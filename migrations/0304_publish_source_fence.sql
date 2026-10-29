@@ -10,6 +10,8 @@ BEGIN
      OR (p_evidence IS NULL) = (p_memory IS NULL) THEN
     RAISE EXCEPTION 'invalid publish scope' USING ERRCODE = '42501';
   END IF;
+  PERFORM e.evidence_id FROM private.evidence_objects e WHERE e.tenant_id = p_tenant AND (e.evidence_id = p_evidence OR EXISTS (SELECT 1 FROM private.memory_evidence me WHERE me.memory_id = p_memory AND me.evidence_id = e.evidence_id)) ORDER BY e.evidence_id FOR KEY SHARE OF e;
+  PERFORM m.memory_id FROM private.memory_records m WHERE m.tenant_id = p_tenant AND (m.memory_id = p_memory OR EXISTS (SELECT 1 FROM private.memory_evidence me WHERE me.memory_id = m.memory_id AND me.evidence_id = p_evidence)) ORDER BY m.memory_id FOR KEY SHARE OF m;
   FOR v_state IN
     SELECT sl.state FROM projection.stream_log sl
     WHERE sl.tenant_id = p_tenant AND EXISTS (
