@@ -371,40 +371,43 @@ fn g_m19_4_projection_publish_rechecks_supporting_source() {
     );
 }
 
+fn race_registration(w: &mut World, reverse: bool) {
+    let memory = w.memory;
+    let input = registration(w, memory);
+    // dep: PostgreSQL(role_retrieval_worker) — §37 actual registration API
+    let pool =
+        w.h.rt
+            .block_on(RetrievalWorkerDbPool::connect(&role_dsn(
+                "role_retrieval_worker",
+            )))
+            .unwrap();
+    let result = w.h.rt.block_on(registry::register_private_memory_point(
+        &pool, &w.h.auth, &input,
+    ));
+    if reverse {
+        assert!(matches!(
+            result,
+            Err(PrivateProjectionRegistryError::SourceNotLive)
+        ));
+    } else {
+        assert_eq!(result.unwrap(), RegistrationOutcome::Inserted);
+    }
+    assert_eq!(
+        w.ids("projection.private_memory_points", "memory_id"),
+        if reverse {
+            BTreeSet::new()
+        } else {
+            BTreeSet::from([memory])
+        }
+    );
+}
+
 fn race_publish(w: &mut World, site: &str, reverse: bool) {
     if site == "distill" {
         return distill_publish(w, reverse);
     }
     if site == "registration" {
-        let memory = w.memory;
-        let input = registration(w, memory);
-        // dep: PostgreSQL(role_retrieval_worker) — §37 actual registration API
-        let pool =
-            w.h.rt
-                .block_on(RetrievalWorkerDbPool::connect(&role_dsn(
-                    "role_retrieval_worker",
-                )))
-                .unwrap();
-        let result = w.h.rt.block_on(registry::register_private_memory_point(
-            &pool, &w.h.auth, &input,
-        ));
-        if reverse {
-            assert!(matches!(
-                result,
-                Err(PrivateProjectionRegistryError::SourceNotLive)
-            ));
-        } else {
-            assert_eq!(result.unwrap(), RegistrationOutcome::Inserted);
-        }
-        assert_eq!(
-            w.ids("projection.private_memory_points", "memory_id"),
-            if reverse {
-                BTreeSet::new()
-            } else {
-                BTreeSet::from([memory])
-            }
-        );
-        return;
+        return race_registration(w, reverse);
     }
     // dep: PostgreSQL(role_consolidation_worker) — §37 actual consolidation API
     let pool =
@@ -547,7 +550,7 @@ fn race_order(w: &mut World, site: &str, reverse: bool) {
             .unwrap()
             .get(0);
     let workspace = w.h.workspace_id;
-    let accept = |c: &mut postgres::Client| {
+    let accept = move |c: &mut postgres::Client| {
         c.query_one(
             "SELECT control.deletion_request_accept($1,$2,'memory.forget',$2,$3,$4)",
             &[&request, &intent, &workspace, &principal],
@@ -591,17 +594,15 @@ fn race_order(w: &mut World, site: &str, reverse: bool) {
                 deletion.batch_execute("COMMIT").unwrap();
             } else {
                 let publisher_pid = wait_blocked(&mut observer, pid);
-                std::thread::scope(|inner| {
-                    let d = inner.spawn(move || {
-                        accept(&mut deletion);
-                        deletion.batch_execute("COMMIT").unwrap();
-                    });
-                    assert_eq!(wait_blocked(&mut observer, publisher_pid), deletion_pid);
-                    observer
-                        .query_one("SELECT pg_advisory_unlock($1)", &[&key])
-                        .unwrap();
-                    d.join().unwrap();
+                let d = std::thread::spawn(move || {
+                    accept(&mut deletion);
+                    deletion.batch_execute("COMMIT").unwrap();
                 });
+                assert_eq!(wait_blocked(&mut observer, publisher_pid), deletion_pid);
+                observer
+                    .query_one("SELECT pg_advisory_unlock($1)", &[&key])
+                    .unwrap();
+                d.join().unwrap();
             }
         });
         race_publish(w, site, reverse);
