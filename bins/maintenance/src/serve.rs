@@ -278,13 +278,13 @@ struct Run {
 }
 
 impl Run {
-    // §39: the declared product may be a reading rather than affected rows.
-    fn finish(&self, task: Task, now: f64, finished: bool) {
+    // §39 / ADR-0062 D-B: planned cycle stops add no error; only recorded failures set a class.
+    fn finish(&self, task: Task, now: f64, _finished: bool) {
         stage_recorded(
             task.label(),
             now,
             self.last_error
-                .or_else(|| (self.failed > 0 || !finished).then_some(ErrorCode::Internal)),
+                .or_else(|| (self.failed > 0).then_some(ErrorCode::Internal)),
             [
                 self.tenants
                     + u64::from(matches!(
@@ -964,6 +964,41 @@ pub(crate) async fn sweep_once(args: &Args) -> Result<Output> {
 
 #[cfg(test)]
 mod tests {
+    // §39 / ADR-0062 D-B: a cut after one successful tenant derives state solely from its output.
+    fn budget_cut_after_one_successful_tenant() {
+        use super::{Run, Task, render_stage_liveness};
+        for (affected, state) in [(1, 1), (0, 2)] {
+            let cut = Run {
+                tenants: 1,
+                affected,
+                ..Run::default()
+            };
+            cut.finish(Task::Lost, 100.0, false);
+            assert_eq!(cut.last_error, None);
+            let mut out = String::new();
+            render_stage_liveness(&mut out, &[Task::Lost.label()]);
+            let actual: Vec<_> = out
+                .lines()
+                .filter(|line| {
+                    line.starts_with("stage_last_error_class{")
+                        || line.starts_with("stage_processed_count{")
+                        || line.starts_with("stage_output_count{")
+                        || line.starts_with("stage_state{")
+                })
+                .collect();
+            assert_eq!(actual.len(), 4);
+            assert_eq!(
+                actual,
+                [
+                    "stage_last_error_class{stage=\"lost\"} 0".to_owned(),
+                    "stage_processed_count{stage=\"lost\"} 1".to_owned(),
+                    format!("stage_output_count{{stage=\"lost\"}} {affected}"),
+                    format!("stage_state{{stage=\"lost\"}} {state}"),
+                ]
+            );
+        }
+    }
+
     #[test]
     fn stage_output_uses_task_product() {
         use super::{DrReading, Run, Task, finish_dr_reading, render_stage_liveness};
@@ -972,6 +1007,7 @@ mod tests {
             Task::ALL.map(Task::label).join(","),
             "lost,ingest_tickets,quota_reservations,quota_renewal,provider_budgets,confirm_tokens,snapshots,jobs,reissue,redrive,partitions,dr_evidence,authority_i4"
         );
+        budget_cut_after_one_successful_tenant();
         for task in Task::ALL {
             let mut run = Run::default();
             if task == Task::DrEvidence {
@@ -1051,7 +1087,7 @@ mod tests {
             assert_state(102, 104);
             let interrupted = Run::default();
             interrupted.finish(task, 105.0, false);
-            assert_state(102, 104);
+            assert_state(105, 104);
         }
     }
 
