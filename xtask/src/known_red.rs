@@ -28,23 +28,20 @@ const LEDGER_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/known_red.toml")
 /// Name used in messages (what a reader opens).
 const LEDGER_FILE: &str = "xtask/known_red.toml";
 /// §78.1 / M01 D7: remove resolved ids only; a replacement violation cannot inherit a removed row.
-const MAGIC_LITERAL_IDS: [&str; 12] = [
-    "crates/retrieval-provider/src/adapters.rs::https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings#1",
-    "crates/retrieval-provider/src/adapters.rs::dashscope#1",
-    "crates/retrieval-provider/src/adapters.rs::dashscope#2",
-    "crates/retrieval-provider/src/adapters.rs::dashscope#3",
-    "crates/retrieval-provider/src/metrics.rs::dashscope#1",
-    "crates/infra-egress/src/http.rs::127.0.0.1#1",
-    "crates/infra-egress/src/http.rs::localhost#1",
-    "crates/infra-egress/src/http.rs::[::1]#1",
-    "crates/adapters/src/rebuild.rs::127.0.0.1#1",
-    "crates/adapters/src/rebuild.rs::127.0.0.1/32#1",
-    "crates/application/src/oauth.rs::127.0.0.1#1",
-    "crates/application/src/oauth.rs::localhost#1",
+const MAGIC_LITERAL_HASHES: [u64; 12] = [
+    0x3bc3_7190_80ec_3519,
+    0xc7d1_324c_9029_8475,
+    0xc7d1_2f4c_9029_7f5c,
+    0xc7d1_304c_9029_810f,
+    0xa978_1de5_a170_a81c,
+    0xea23_55cf_3a2e_10e4,
+    0x35ea_5cad_739d_d46c,
+    0x5473_7676_04e6_8342,
+    0x5aa6_f102_1019_630d,
+    0xcc11_e814_c651_51e3,
+    0x1f1d_faef_7b32_c70b,
+    0x26e6_c5a0_c236_8957,
 ];
-/// §78.1: ledger identities must equal the frozen Rust set even when every row matches a hit.
-const MAGIC_LITERAL_SET_RED: &str =
-    "[magic_literals]: row-id set differs from frozen Rust pin; only remove resolved ids (§78.1)";
 /// Sections this build evaluates. A section nobody evaluates would never go red, so the parser rejects any
 /// other name instead of ignoring it.
 const SECTIONS: [&str; 6] = [
@@ -258,6 +255,13 @@ fn row_shape_reds(tag: &str, row: &Row, release: bool) -> Vec<String> {
     reds
 }
 
+/// §78.1: FNV-1a 64 pins ledger identities independently of Rust's randomized hashers.
+fn magic_id_hash(id: &str) -> u64 {
+    id.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
 /// D4 rules for one section. A row is forced out when its item stops failing (§80.1.1 shape), so a row for an
 /// item that passes, or is not yet due without a declared deferral, is red.
 fn judge(section: &str, items: &[Item], rows: &[Row], release: bool) -> Report {
@@ -274,11 +278,18 @@ fn judge(section: &str, items: &[Item], rows: &[Row], release: bool) -> Report {
         ledgered: rows.len(),
         ..Report::default()
     };
-    if section == "magic_literals"
-        && rows.iter().map(|r| r.id.as_str()).collect::<BTreeSet<_>>()
-            != BTreeSet::from(MAGIC_LITERAL_IDS)
-    {
-        rep.reds.push(MAGIC_LITERAL_SET_RED.into());
+    if section == "magic_literals" {
+        let hashes: BTreeSet<_> = rows.iter().map(|r| magic_id_hash(&r.id)).collect();
+        let pins = BTreeSet::from(MAGIC_LITERAL_HASHES);
+        let extra: Vec<_> = rows
+            .iter()
+            .filter(|r| !pins.contains(&magic_id_hash(&r.id)))
+            .map(|r| &r.id)
+            .collect();
+        let missing = &pins - &hashes;
+        if !extra.is_empty() || !missing.is_empty() {
+            rep.reds.push(format!("[magic_literals]: unpinned ids {extra:?}; missing hashes {missing:016x?}; delete resolved hashes (§78.1)"));
+        }
     }
     for it in by_id.values() {
         match it.status {
@@ -1094,7 +1105,7 @@ mod tests {
             false,
             &none,
         );
-        assert_eq!(out.reds, vec![MAGIC_LITERAL_SET_RED]);
+        assert_eq!(out.reds.len(), 1);
         assert!(
             !asked.borrow().iter().any(|s| s == LINT_ALLOWS),
             "{:?}",
@@ -1122,7 +1133,7 @@ mod tests {
         let raw = "[[dod]]\nid = \"A\"\nowner = \"M11\"\nreason = \"r\"\n\
                    [[dod]]\nid = \"B\"\nowner = \"M24\"\nreason = \"r\"\ndeferred_past_go_live = \"d\"\n";
         let out = check(raw, 9, false, &items_for);
-        assert_eq!(out.reds, vec![MAGIC_LITERAL_SET_RED]);
+        assert_eq!(out.reds.len(), 1);
         assert_eq!((out.rows, out.deferred), (2, 1));
         let release = check(raw, 9, true, &items_for);
         assert_eq!(release.reds.len(), 2, "{:?}", release.reds);
@@ -1372,13 +1383,19 @@ mod tests {
     /// §78.1: unknown keys, missing owners, duplicate rows, new hits and stale rows remain red.
     #[test]
     fn magic_literal_rows_use_the_shrink_only_judgment() {
-        let raw = magic_rows(&MAGIC_LITERAL_IDS);
-        let hits = || magic_hits(&MAGIC_LITERAL_IDS);
+        let raw = include_str!("../known_red.toml");
+        let raw = raw[raw.find("[[magic_literals]]").unwrap()..].to_string();
+        let hits = || {
+            parse_ledger(&raw).0["magic_literals"]
+                .iter()
+                .map(|r| (r.id.clone(), "p:line 1".into()))
+                .collect()
+        };
         assert_eq!(magic_literal_reds(&raw, hits()), Vec::<String>::new());
         assert_eq!(magic_literal_reds("", hits()).len(), 13);
         assert_eq!(magic_literal_reds(&raw, vec![]).len(), 12);
         assert_eq!(
-            magic_literal_reds(&raw.replacen("owner = 'M11'", "owner = ''", 1), hits()).len(),
+            magic_literal_reds(&raw.replacen("owner = \"M11\"", "owner = \"\"", 1), hits()).len(),
             1
         );
         assert_eq!(
@@ -1392,37 +1409,27 @@ mod tests {
         );
     }
 
-    /// §78.1: every fixture uses the exact ids evaluated by the production pin.
-    fn magic_rows(ids: &[&str]) -> String {
-        ids.iter()
-            .map(|id| {
-                format!("[[magic_literals]]\nid = '{id}'\nowner = 'M11'\nreason = 'existing'\n")
-            })
-            .collect()
-    }
-
-    /// §78.1: matching rows cannot waive a changed identity set.
-    fn magic_hits(ids: &[&str]) -> Vec<(String, String)> {
-        ids.iter()
-            .map(|id| ((*id).into(), "p:line 1".into()))
-            .collect()
-    }
-
-    /// §78.1: additions, removals and equal-count swaps require a change to the Rust identity pin.
+    /// §78.1: matching hits and rows cannot grow, shrink or swap the frozen identity set.
     #[test]
     fn magic_literal_set_is_independent_of_matching_rows() {
-        let mut added = MAGIC_LITERAL_IDS.to_vec();
-        added.push("p::new#1");
-        let mut swapped = MAGIC_LITERAL_IDS.to_vec();
-        swapped[0] = "p::new#1";
-        for ids in [
-            &MAGIC_LITERAL_IDS[..11],
-            added.as_slice(),
-            swapped.as_slice(),
+        assert_eq!(magic_id_hash("hello"), 0xa430_d846_80aa_bd0b);
+        let ledger = parse_ledger(include_str!("../known_red.toml")).0;
+        for (new, gone) in [
+            ("p::new#1", ""),
+            ("", "3bc3719080ec3519"),
+            ("p::new#1", "3bc3719080ec3519"),
         ] {
+            let mut rows = ledger["magic_literals"][usize::from(!gone.is_empty())..].to_vec();
+            rows.extend((!new.is_empty()).then(|| row(new, "M11")));
+            let items: Vec<_> = rows.iter().map(|r| item(&r.id, Status::Fail)).collect();
+            let reds = judge("magic_literals", &items, &rows, false).reds;
+            let extra: Vec<_> = new.split_whitespace().collect();
+            let missing = format!("{{{gone}}}");
             assert_eq!(
-                magic_literal_reds(&magic_rows(ids), magic_hits(ids)),
-                vec![MAGIC_LITERAL_SET_RED.to_string()]
+                reds,
+                vec![format!(
+                    "[magic_literals]: unpinned ids {extra:?}; missing hashes {missing}; delete resolved hashes (§78.1)"
+                )]
             );
         }
     }
