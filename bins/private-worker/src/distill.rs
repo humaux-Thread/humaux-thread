@@ -515,7 +515,7 @@ struct Settled {
 impl Settled {
     fn new(outcome: JobOutcome, class: Option<&'static str>) -> Self {
         Self {
-            error: None,
+            error: matches!(outcome, JobOutcome::LeaseLost).then_some(ErrorCode::Conflict),
             outcome,
             class,
             next_retry_seconds: None,
@@ -2025,6 +2025,23 @@ mod stage_witness {
     use super::*;
     #[tokio::test]
     async fn stage_iteration_exports_exact_set() {
+        seat_iteration(async { (Ok(Settled::new(JobOutcome::LeaseLost, None)), 0) })
+            .await
+            .unwrap();
+        let mut lost = String::new();
+        humaux_telemetry::metrics::render_stage_liveness(&mut lost, &STAGES);
+        assert_eq!(
+            lost.lines()
+                .filter(|l| l.starts_with("stage_last_success_timestamp_seconds{")
+                    || l.starts_with("stage_last_error_class{"))
+                .collect::<Vec<_>>(),
+            [
+                "stage_last_success_timestamp_seconds{stage=\"distill_seat\"} 0",
+                "stage_last_success_timestamp_seconds{stage=\"distill_lease_renewal\"} 0",
+                "stage_last_error_class{stage=\"distill_seat\"} 17",
+                "stage_last_error_class{stage=\"distill_lease_renewal\"} 0",
+            ]
+        );
         seat_iteration(async { (Ok(Settled::new(JobOutcome::Done, None)), 1) })
             .await
             .unwrap();

@@ -327,6 +327,7 @@ pub async fn dispatch_pass<P: PrivateReasoningPort>(
         // taken once the work is already done proves nothing about the lease that protected it.
         if !jobs::heartbeat_derived_consolidation(pool, &lease, config.lease_seconds).await? {
             report.lost_lease += 1;
+            report.last_error = Some(ErrorCode::Conflict);
             continue;
         }
         let outcome = run_claimed_job(pool, &bind_port, config, &job, &lease).await;
@@ -342,6 +343,7 @@ pub async fn dispatch_pass<P: PrivateReasoningPort>(
             // wrote NOTHING. The worker that now holds the job publishes the one rollup.
             Ok(PublishOutcome::LostLease) => {
                 report.lost_lease += 1;
+                report.last_error = Some(ErrorCode::Conflict);
                 continue;
             }
             Ok(PublishOutcome::NoOutput) => {
@@ -375,10 +377,7 @@ pub async fn dispatch_pass<P: PrivateReasoningPort>(
                     )
                     | RunOnceError::NotReady(_) => ErrorCode::DependencyUnavailable,
                     RunOnceError::Repo(_) => ErrorCode::InvalidInput,
-                    RunOnceError::Reasoning(error) => ErrorCode::ALL
-                        .into_iter()
-                        .find(|code| Some(code.as_str()) == error.class())
-                        .unwrap_or(ErrorCode::ProviderTransient),
+                    RunOnceError::Reasoning(error) => reasoning_class(error),
                 });
                 // The pass keeps going: one tenant's environmental failure must not stop the
                 // other tenants this cross-tenant pass claimed.
@@ -403,6 +402,7 @@ pub async fn dispatch_pass<P: PrivateReasoningPort>(
         };
         if !jobs::settle_derived_consolidation(pool, &lease, settle, config.lease_seconds).await? {
             report.lost_lease += 1;
+            report.last_error = Some(ErrorCode::Conflict);
         }
     }
     Ok(report)
@@ -413,6 +413,13 @@ pub async fn dispatch_pass<P: PrivateReasoningPort>(
 /// arm's `Display` already says something. `unclassified private reasoning failure` is the honest
 /// answer when the raise site used `PrivateReasoningError::new` rather than `::classified` — it
 /// says "no class", which is not the same as saying nothing.
+fn reasoning_class(error: &PrivateReasoningError) -> ErrorCode {
+    ErrorCode::ALL
+        .into_iter()
+        .find(|code| Some(code.as_str()) == error.class())
+        .unwrap_or(ErrorCode::Internal)
+}
+
 fn error_class_for_log(error: &RunOnceError) -> String {
     match error {
         RunOnceError::Reasoning(e) => e
@@ -534,6 +541,21 @@ impl std::fmt::Display for RunOnceError {
 mod error_log_tests {
     use super::{RunOnceError, error_class_for_log};
     use humaux_application::consolidate::PrivateReasoningError;
+
+    #[test]
+    fn reasoning_classes_are_never_guessed() {
+        use humaux_domain::error::ErrorCode;
+        for code in ErrorCode::ALL {
+            assert_eq!(
+                super::reasoning_class(&PrivateReasoningError::classified(code.as_str())),
+                code
+            );
+        }
+        assert_eq!(
+            super::reasoning_class(&PrivateReasoningError::new("unknown")),
+            ErrorCode::Internal
+        );
+    }
 
     /// Card 21 (folded card-16 debt). The `Reasoning` arm's `Display` is redacted by
     /// construction, so logging `{error}` threw away the only thing an operator can act on.

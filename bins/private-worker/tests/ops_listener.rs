@@ -141,6 +141,27 @@ fn assert_families_at(body: &str, value: &str, what: &str) {
             "{what}: {family} {value} missing in\n{body}"
         );
     }
+    let stage_samples: Vec<_> = body
+        .lines()
+        .filter(|l| l.starts_with("stage_"))
+        .map(str::to_owned)
+        .collect();
+    let expected: Vec<_> = [
+        "stage_last_run_timestamp_seconds",
+        "stage_last_success_timestamp_seconds",
+        "stage_last_output_timestamp_seconds",
+        "stage_last_error_class",
+        "stage_processed_count",
+        "stage_output_count",
+        "stage_state",
+    ]
+    .into_iter()
+    .flat_map(|family| {
+        ["distill_seat", "distill_lease_renewal"]
+            .map(|stage| format!("{family}{{stage=\"{stage}\"}} 0"))
+    })
+    .collect();
+    assert_eq!(stage_samples, expected, "{what}");
     let samples = body.lines().filter(|l| !l.starts_with('#')).count();
     // §39 / ADR-0061: seven seeded gauges for each of the two closed stages.
     assert_eq!(samples, FAMILIES.len() + 7 * 2, "{what}: {body}");

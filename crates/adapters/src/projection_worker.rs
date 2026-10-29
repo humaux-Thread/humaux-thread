@@ -2414,11 +2414,7 @@ async fn run_family(
         // A worker that dies on this ticket every time never reaches the retry branch below;
         // the claim's increment is what still bounds it.
         if ticket.attempts > cfg.max_attempts {
-            tally(
-                outcome,
-                settle_exhausted(shared, ticket, fence).await,
-                RowTerminal::Failed,
-            );
+            tally_exhausted(outcome, settle_exhausted(shared, ticket, fence).await);
             continue;
         }
         let renewed =
@@ -2508,11 +2504,7 @@ async fn process_and_write(
                 "projection_worker: stream_seq={} transient_exhausted last_class={class}",
                 ticket.stream_seq
             );
-            tally(
-                outcome,
-                settle_exhausted(shared, ticket, fence).await,
-                RowTerminal::Failed,
-            );
+            tally_exhausted(outcome, settle_exhausted(shared, ticket, fence).await);
             return;
         }
         RowTerminal::Retry => stream_repo::release_for_retry(
@@ -2574,8 +2566,18 @@ async fn settle_exhausted(
 /// Counts one ticket's written outcome: `Some(true)` under its disposition, `Some(false)` (the
 /// fence matched nothing) as a lost lease, `None` (the write itself failed; the lease expiry
 /// returns the ticket) as a lost lease too — this worker no longer owns what happens to it.
+fn tally_exhausted(outcome: &mut PassOutcome, written: Option<bool>) {
+    outcome.last_error = Some(outcome.last_error.unwrap_or(ErrorCode::Internal));
+    tally(outcome, written, RowTerminal::Failed);
+}
+
 fn tally(outcome: &mut PassOutcome, written: Option<bool>, terminal: RowTerminal) {
     if written != Some(true) {
+        outcome.last_error = Some(if written.is_none() {
+            ErrorCode::DependencyUnavailable
+        } else {
+            ErrorCode::Conflict
+        });
         outcome.lost_lease += 1;
         return;
     }
@@ -2592,6 +2594,22 @@ fn tally(outcome: &mut PassOutcome, written: Option<bool>, terminal: RowTerminal
 mod classification_tests {
     use super::{RowTerminal, code_is_transient, pg_is_transient, terminal_for_missing_memory};
     use humaux_domain::error::ErrorCode;
+
+    #[test]
+    fn exhausted_ticket_never_reports_success() {
+        for (written, code, failed, lost) in [
+            (Some(true), ErrorCode::Internal, 1, 0),
+            (Some(false), ErrorCode::Conflict, 0, 1),
+            (None, ErrorCode::DependencyUnavailable, 0, 1),
+        ] {
+            let mut report = super::PassOutcome::default();
+            super::tally_exhausted(&mut report, written);
+            assert_eq!(
+                (report.last_error, report.failed, report.lost_lease),
+                (Some(code), failed, lost)
+            );
+        }
+    }
 
     /// ADR-0052 D-E, the `ErrorCode` (embedding + secret scanner) and PG halves of the table (the
     /// Qdrant half is pinned in `qdrant.rs`). `Forbidden` is the scanner's gitleaks finding: the

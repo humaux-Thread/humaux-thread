@@ -269,6 +269,16 @@ fn terminate(mut child: Child, addr: SocketAddr, what: &str) {
 
 /// `# TYPE` family names and the number of sample lines of `family` (its `_bucket` lines for a histogram).
 fn families_and_samples(body: &str, family: &str) -> (Vec<String>, usize) {
+    let stages: Vec<_> = body
+        .lines()
+        .filter(|l| l.starts_with("stage_"))
+        .map(str::to_owned)
+        .collect();
+    let expected: Vec<_> = FAMILIES[..7]
+        .iter()
+        .map(|family| format!("{family}{{stage=\"retrieval_projection\"}} 0"))
+        .collect();
+    assert_eq!(stages, expected);
     let types = body
         .lines()
         .filter_map(|l| l.strip_prefix("# TYPE "))
