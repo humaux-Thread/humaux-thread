@@ -1,7 +1,7 @@
 //! `adapters::distill_repo` — SQL half of the Distill hop (ADR-0016), through [`PrivateWorkerDbPool`] only: take the
 //!   one `EVIDENCE_ACCEPTED` outbox row of a claimed `DERIVED_DISTILL` job (ADR-0058), load that Evidence, record the
 //!   §16.1.1 processing run, insert the authorized memories, settle the job and its outbox row together.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::confirm_token_repo, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject, humaux-adapters, projection::stream]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, ops.outbox, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations, projection.stream_log] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding, private.lock_publish_source]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::confirm_token_repo, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject, humaux-adapters, projection::stream]
 //! Called-by: [adapters::context_repo, gateway::mcp_application, gateway::memory, private-worker::distill, private-worker::main, tests]
 //! Invariants: [memories, run completion, the job settle and the outbox flip commit in ONE transaction whose first
 //!   statement is the job's generation-fenced finish (ADR-0058 D-E), so a superseded worker's inserts roll back; a job
@@ -309,7 +309,10 @@ pub async fn load_evidence(
                 visibility_user_id, visibility_workspace_id, occurred_at, payload_sha256 \
          FROM private.evidence_objects \
          WHERE evidence_id = $1 AND tenant_id = $2 AND reasoning_domain_id = $3 \
-           AND evidence_kind = 'EVENT'",
+           AND evidence_kind = 'EVENT' \
+           AND NOT EXISTS (SELECT 1 FROM ops.outbox ob JOIN projection.stream_log sl \
+             ON sl.tenant_id = ob.tenant_id AND sl.commit_seq = ob.commit_seq \
+             WHERE ob.tenant_id = $2 AND ob.evidence_id = $1 AND sl.state = 'TOMBSTONED')",
     )
     .bind(evidence_id)
     .bind(tenant_id)
@@ -450,7 +453,7 @@ pub async fn start_processing_run(
 /// Completes a run: `output_digest` + `output_count` + `completed_at` together (0064's
 /// `processing_runs_completed_has_output` CHECK). A failed attempt never calls this — its row
 /// keeps `completed_at IS NULL` as the failure marker (ADR-0016 D4). Returns the runs this call
-/// finished (0 when the run was already complete), which the caller hands to
+/// finished (`Some(0)` when already complete, `None` for stale input under §37), which the caller hands to
 /// [`commit_distill_write`].
 pub async fn finish_processing_run(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -458,7 +461,18 @@ pub async fn finish_processing_run(
     output_digest: &[u8],
     output_count: i32,
     provider_request_id: Option<&str>,
-) -> Result<u64, sqlx::Error> {
+) -> Result<Option<u64>, sqlx::Error> {
+    // §37 / ADR-0092 D-C: refuse the entire write transaction, including pending candidates.
+    if !sqlx::query_scalar::<_, bool>(
+        "SELECT private.lock_publish_source(tenant_id, evidence_id, NULL) \
+         FROM private.processing_runs WHERE processing_run_id = $1",
+    )
+    .bind(processing_run_id)
+    .fetch_one(&mut **txn)
+    .await?
+    {
+        return Ok(None);
+    }
     let finished = sqlx::query(
         "UPDATE private.processing_runs \
          SET output_digest = $2, output_count = $3, provider_request_id = $4, completed_at = now() \
@@ -470,7 +484,7 @@ pub async fn finish_processing_run(
     .bind(provider_request_id)
     .execute(&mut **txn)
     .await?;
-    Ok(finished.rows_affected())
+    Ok(Some(finished.rows_affected()))
 }
 
 /// Commits a distill write transaction, then counts what it made durable: `finished_runs` runs

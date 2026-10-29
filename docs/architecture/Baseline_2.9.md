@@ -9714,6 +9714,8 @@ ADR-0092 把删除请求统一成一条流水线：一个请求一行（`MEMORY`
 
 确认事务提交时先把闭包里**每一个** outbox seq 置为 tombstone（第 1 步，全部 event_type，ADR-0079 D-J），追加 `FORGOTTEN` 生命周期事件（只记 id），overlay 从这一刻起隐藏全部目标；晚到的 distill / consolidation / rollup / projection publish 在自己的提交事务里复核输入，命中即 `STALE_INPUT`，不另设 fence 表。物理删行只走 ADR-0092 的一扇 owner SECURITY DEFINER 窄门：EXECUTE 只给 `role_maintenance`，只删该请求冻结的目标集，按外键顺序执行；runtime role 的 DELETE 禁令不变（§6.2.1、§37.2）。
 
+- M19-3b / migration 0304: `private.lock_publish_source` is the owner-definer recheck shared by distill, consolidation and registration; it holds SHARE locks on the accept door's stream rows through commit (§37 / ADR-0092 D-C).
+
 恢复不得复活已删除数据：删除完成时写一条内容无关的 erasure ledger（request id、scope、目标 id 的 sha256 集、完成时刻），在任何早于该时刻的备份仍可能被恢复期间保留。每份备份清单带一份副本；恢复流程在开放服务之前重放 ledger，恢复演练必须断言这一点（ADR-0092 的 Gates 表）。M23 v2 在导出卷上加一份 erasure journal 覆盖上一个已验证导出之后的删除，M19-9 写它。
 
 保留登记按 ADR-0063 的机器执行，但 §37 开头清单里的用户知识（events、evidence、memories、messages）的保留值是 keep-forever（owner）：永不按年龄删除；operational 表按 ADR-0063 的每表全租户策略，值由 owner 用 `retention approve` 批准，且没有 PITR-coverage hold 不得 drop。容量压缩按「计划 → 通知 → 邮件已接受 → 等待期 → 执行」：计划列动作、字节估算与保证，通知发给已验证地址，只有投递商明确接受且等待期已过才执行；动作只允许不丢当前知识的项（改编码、退役被替换/归档/已遗忘记忆的向量点、删可重建的派生产物），永不删 Evidence 或当前 Memory；磁盘压力只阻断新的写入。
