@@ -35,34 +35,6 @@ use crate::retrieval_embedding_client::GatewayRetrievalEmbeddingClient;
 pub const READINESS_REFRESH_KEY: &str = "HUMAUX_GATEWAY_READINESS_REFRESH_SECONDS";
 /// §78.1 / ADR-0061 D-B: the loopback ops listener serving `/metrics` and `/status`.
 pub const METRICS_ADDR_KEY: &str = "HUMAUX_GATEWAY_METRICS_ADDR";
-pub(crate) const STAGES: [&str; 2] = ["gateway_singleton_heartbeat", "gateway_readiness_refresh"];
-
-async fn readiness_iteration(
-    work: impl std::future::Future<Output = ReadinessSnapshot>,
-) -> ReadinessSnapshot {
-    use humaux_telemetry::metrics::{stage_recorded, stage_started};
-    stage_started(STAGES[1], unix(SystemTime::now()) as f64);
-    let next = work.await;
-    let checks = [&next.pg, &next.retrieval_rpc, &next.qdrant];
-    let error = checks
-        .iter()
-        .any(|c| c.state == DepState::Fail)
-        .then_some(humaux_domain::error::ErrorCode::DependencyUnavailable);
-    stage_recorded(
-        STAGES[1],
-        unix(SystemTime::now()) as f64,
-        error,
-        [
-            checks
-                .iter()
-                .filter(|c| c.state != DepState::NotApplicable)
-                .count() as u64,
-            1,
-        ],
-    );
-    next
-}
-
 const SOCKET_KEY: &str = "HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH";
 
 /// One dependency's state (§57.1 three states).
@@ -215,10 +187,6 @@ pub struct ReadinessProbe {
 impl ReadinessProbe {
     /// Runs the three checks concurrently, each bounded by `deadline`.
     pub async fn check(&self, deadline: Duration) -> ReadinessSnapshot {
-        readiness_iteration(self.check_dependencies(deadline)).await
-    }
-
-    async fn check_dependencies(&self, deadline: Duration) -> ReadinessSnapshot {
         let bounded = |name: &'static str| {
             move |r: Result<Result<(), String>, tokio::time::error::Elapsed>| {
                 r.unwrap_or_else(|_| {
@@ -399,7 +367,6 @@ pub fn render_metrics(guard: &GuardMetrics) -> String {
     humaux_telemetry::degrade::render(&mut out);
     humaux_retrieval::completeness::render_metrics(&mut out);
     guard.render(&mut out);
-    humaux_telemetry::metrics::render_stage_liveness(&mut out, &STAGES);
     out
 }
 
@@ -522,13 +489,6 @@ mod tests {
                 "cache_evictions_total",
                 "cache_bytes",
                 "cache_singleflight_waiters",
-                "stage_last_run_timestamp_seconds",
-                "stage_last_success_timestamp_seconds",
-                "stage_last_output_timestamp_seconds",
-                "stage_last_error_class",
-                "stage_processed_count",
-                "stage_output_count",
-                "stage_state",
             ]
         );
         for family in families {
@@ -537,35 +497,5 @@ mod tests {
                 "{family} has no sample"
             );
         }
-    }
-    #[tokio::test]
-    async fn stage_iteration_exports_exact_set() {
-        crate::bootstrap::session_heartbeat(Duration::from_secs(1), async { Ok(()) })
-            .await
-            .unwrap();
-        let check = || DepCheck::new(DepState::Pass, None);
-        readiness_iteration(async {
-            ReadinessSnapshot {
-                pg: check(),
-                retrieval_rpc: check(),
-                qdrant: check(),
-                taken_at: SystemTime::now(),
-                taken: Instant::now(),
-            }
-        })
-        .await;
-        let out = render_metrics(&GuardMetrics::default());
-        let stages: Vec<_> = out
-            .lines()
-            .filter(|l| l.starts_with("stage_output_count{"))
-            .collect();
-        assert_eq!(stages.len(), 2);
-        assert_eq!(
-            stages,
-            [
-                "stage_output_count{stage=\"gateway_singleton_heartbeat\"} 1",
-                "stage_output_count{stage=\"gateway_readiness_refresh\"} 1"
-            ]
-        );
     }
 }

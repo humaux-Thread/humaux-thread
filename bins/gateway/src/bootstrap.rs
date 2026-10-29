@@ -365,24 +365,13 @@ pub struct GatewayRuntime {
 }
 
 // §67.2 / ADR-0100: a stalled original session is lost; never reconnect or continue serving.
-pub(crate) async fn session_heartbeat(
+async fn session_heartbeat(
     timeout: Duration,
     check: impl std::future::Future<Output = Result<(), humaux_domain::error::ErrorCode>>,
 ) -> Result<(), humaux_domain::error::ErrorCode> {
-    use humaux_telemetry::metrics::{stage_recorded, stage_started};
-    let now = || {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64()
-    };
-    let stage = crate::status::STAGES[0];
-    stage_started(stage, now());
-    let result = tokio::time::timeout(timeout, check)
+    tokio::time::timeout(timeout, check)
         .await
-        .unwrap_or(Err(humaux_domain::error::ErrorCode::DependencyUnavailable));
-    stage_recorded(stage, now(), result.err(), [1, u64::from(result.is_ok())]);
-    result
+        .map_err(|_| humaux_domain::error::ErrorCode::DependencyUnavailable)?
 }
 
 impl GatewayRuntime {
