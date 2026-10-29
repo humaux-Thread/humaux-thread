@@ -1753,13 +1753,13 @@ fn magic_production(source: &str) -> String {
 fn magic_name_branch(source: &str, start: usize, end: usize) -> bool {
     let before = &source[..start];
     let after = source[end..].trim_start();
-    let context = before.rsplit([';', '{', '}']).next().unwrap_or("");
+    let left = before.rsplit([';', '{', '}']).next().unwrap_or("");
+    let left = left.trim_end();
     let identity = |s: &str| {
         s.split(|c: char| !c.is_alphanumeric() && c != '_')
             .any(|word| word.contains("plan") || word.contains("provider"))
     };
-    if identity(context)
-        && (context.contains("==") || context.contains("!=") || context.contains("matches!"))
+    if identity(left) && (left.ends_with("==") || left.ends_with("!=") || left.contains("matches!"))
     {
         return true;
     }
