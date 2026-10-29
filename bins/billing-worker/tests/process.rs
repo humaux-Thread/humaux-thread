@@ -1,6 +1,6 @@
 //! `billing-worker::tests::process` — real PG + fake Creem processor gates (§71.3).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-egress, humaux-testkit, postgres, serde_json, tokio, uuid];
-//!   services=[HTTP(loopback), PostgreSQL(owner) r=[control.subscriptions, control.subscription_events, control.entitlement_grants, control.entitlement_snapshots, control.billing_inbox] w=[control.tenants, control.plans, control.plan_versions, control.billing_inbox], PostgreSQL(role_maintenance)]; env=[];
+//!   services=[HTTP(loopback), PostgreSQL(owner) r=[control.subscriptions, control.subscription_events, control.entitlement_grants, control.entitlement_snapshots, control.billing_inbox, control.billing_payments] w=[control.tenants, control.plans, control.plan_versions, control.billing_inbox], PostgreSQL(role_maintenance)]; env=[];
 //!   modules=[adapters::postgres, adapters::tests::support::throwaway_db, billing-worker::creem, billing-worker::process, billing-worker::fake_creem, billing-worker::mode, domain::egress, domain::error, domain::ids, infra-egress::http, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [real maintenance identity; complete snapshot and effect counts; no mock PostgreSQL]
@@ -86,8 +86,8 @@ fn free() -> Value {
     json!({"feature.byok":false})
 }
 fn deliver(h: &mut Handle, id: &str, arrival: &str, tenant: Uuid) {
-    let payload = json!({"id":id,"eventType":format!("subscription.{arrival}"),"created_at":1000,"object":{"id":"sub_fixture","status":arrival,"product":"prod_fixture","metadata":{"tenant_id":tenant},"current_period_start_date":"2020-01-01T00:00:00Z","current_period_end_date":"2099-01-01T00:00:00Z","last_transaction":{"id":"txn_fixture"}}});
-    // dep: PostgreSQL(owner) — authenticated ingress; sparse payment IDs must process before M04-11b money normalization (§71.3).
+    let payload = json!({"id":id,"eventType":format!("subscription.{arrival}"),"created_at":1000,"object":{"id":"sub_fixture","status":arrival,"product":"prod_fixture","metadata":{"tenant_id":tenant},"current_period_start_date":"2020-01-01T00:00:00Z","current_period_end_date":"2099-01-01T00:00:00Z","last_transaction":{"id":"txn_fixture","amount":500,"currency":"USD","period_start":1577836800000_i64,"period_end":4070908800000_i64}}});
+    // dep: PostgreSQL(owner) — authenticated ingress with provider payment facts (§71.3).
     let stored = h.admin.execute("INSERT INTO control.billing_inbox(provider,event_id,event_type,object_id,payload) VALUES ('creem',$1,$2,'sub_fixture',$3) ON CONFLICT DO NOTHING", &[&id,&payload["eventType"].as_str().unwrap(),&payload]).unwrap();
     assert_eq!(stored, 1);
 }
@@ -385,5 +385,141 @@ fn past_due_projects_entire_free_template() {
             .unwrap()
             .get(0);
         assert_eq!(count, 6);
+    });
+}
+
+fn money_payload(h: &Handle, id: &str, kind: &str, reference: &str) -> Value {
+    let transaction = json!({"id":"txn_charge","transaction":"txn_charge","amount":500,"amount_due":999,"currency":"USD","period_start":1577836800000_i64,"period_end":4070908800000_i64});
+    json!({"id":id,"eventType":kind,"created_at":1700000000000_i64,"object":{
+        "id":reference,"subscription":"sub_fixture","metadata":{"tenant_id":h.tenant},
+        "order":transaction,"last_transaction":transaction,"transaction":transaction,
+        "refund_amount":123,"amount":211,"currency":"USD"}})
+}
+fn insert_payload(h: &mut Handle, payload: &Value) {
+    assert_eq!(h.admin.execute("INSERT INTO control.billing_inbox(provider,event_id,event_type,object_id,payload) VALUES ('creem',$1,$2,$3,$4)", &[&payload["id"].as_str().unwrap(),&payload["eventType"].as_str().unwrap(),&payload["object"]["id"].as_str().unwrap(),payload]).unwrap(), 1);
+}
+fn payments(h: &mut Handle) -> Value {
+    h.admin.query_one("SELECT coalesce(jsonb_agg(jsonb_build_array(provider_txn_ref,kind,amount_cents,currency) ORDER BY kind,provider_txn_ref),'[]'::jsonb) FROM control.billing_payments", &[]).unwrap().get(0)
+}
+/// G-M04-18: settled webhook cents win over the checkout response's amount_due (§71.3, D13a).
+#[test]
+fn money_source_and_charge_replay() {
+    run_db_fixture::<Fixture, _>("money_source_and_charge_replay", |mut h| {
+        let payload = money_payload(
+            &h,
+            "checkout_paid",
+            "checkout.completed",
+            "checkout_fixture",
+        );
+        insert_payload(&mut h, &payload);
+        assert!(process(&h, "active"));
+        assert_eq!(
+            payments(&mut h),
+            json!([["txn_charge", "CHARGE", 500, "USD"]]),
+            "G-M04-18: settled amount wins over checkout amount_due=999"
+        );
+        assert_eq!(snapshot(&mut h), paid());
+        let before = effects(&mut h);
+        h.admin.execute("UPDATE control.billing_inbox SET status='RECEIVED',processed_at=NULL WHERE event_id='checkout_paid'", &[]).unwrap();
+        assert!(process(&h, "active"));
+        assert_eq!(effects(&mut h), before);
+        let mut renewal = money_payload(&h, "renewal_paid", "subscription.paid", "sub_fixture");
+        renewal["object"]["last_transaction"]["id"] = json!("txn_renewal");
+        insert_payload(&mut h, &renewal);
+        assert!(process(&h, "active"));
+        assert_eq!(
+            payments(&mut h),
+            json!([
+                ["txn_charge", "CHARGE", 500, "USD"],
+                ["txn_renewal", "CHARGE", 500, "USD"]
+            ])
+        );
+    });
+}
+/// G-M04-19: each reversal has its own key and amount; partial refund downgrades the entire snapshot (§76).
+#[test]
+fn partial_refund_and_dispute_downgrade() {
+    run_db_fixture::<Fixture, _>("partial_refund_and_dispute_downgrade", |mut h| {
+        let tenant = h.tenant;
+        deliver(&mut h, "initial", "active", tenant);
+        assert!(process(&h, "active"));
+        for (id, kind, reference) in [
+            ("refund_1", "refund.created", "rf_1"),
+            ("refund_2", "refund.created", "rf_2"),
+            ("dispute_1", "dispute.created", "dp_1"),
+        ] {
+            let payload = money_payload(&h, id, kind, reference);
+            insert_payload(&mut h, &payload);
+            assert!(process(&h, "active"));
+            assert_eq!(
+                snapshot(&mut h),
+                free(),
+                "G-M04-19: reversal downgrades immediately"
+            );
+            let before = effects(&mut h);
+            h.admin.execute("UPDATE control.billing_inbox SET status='RECEIVED',processed_at=NULL WHERE event_id=$1", &[&id]).unwrap();
+            assert!(process(&h, "active"));
+            assert_eq!(effects(&mut h), before);
+        }
+        assert_eq!(
+            payments(&mut h),
+            json!([
+                ["dp_1", "CHARGEBACK", 211, "USD"],
+                ["rf_1", "REFUND", 123, "USD"],
+                ["rf_2", "REFUND", 123, "USD"]
+            ]),
+            "G-M04-19: exact partial refunds, no full-charge substitution"
+        );
+        let rows: Value = h.admin.query_one("SELECT jsonb_agg(jsonb_build_array(event_id,status,error_class) ORDER BY event_id) FROM control.billing_inbox", &[]).unwrap().get(0);
+        assert_eq!(
+            rows,
+            json!([
+                ["dispute_1", "PROCESSED", null],
+                ["initial", "PROCESSED", null],
+                ["refund_1", "PROCESSED", null],
+                ["refund_2", "PROCESSED", null]
+            ])
+        );
+    });
+}
+/// §71.3: malformed money fails terminally without partial grants or payments; historic reversals are ledger-only.
+#[test]
+fn invalid_money_and_historic_refund() {
+    run_db_fixture::<Fixture, _>("invalid_money_and_historic_refund", |mut h| {
+        let tenant = h.tenant;
+        deliver(&mut h, "initial", "active", tenant);
+        assert!(process(&h, "active"));
+        let before = effects(&mut h);
+        for (id, amount, currency) in [
+            ("negative", json!(-1), "USD"),
+            ("currency", json!(500), "EUR"),
+            ("missing", Value::Null, "USD"),
+        ] {
+            let mut payload = money_payload(&h, id, "checkout.completed", id);
+            payload["object"]["order"]["amount"] = amount;
+            payload["object"]["order"]["currency"] = json!(currency);
+            insert_payload(&mut h, &payload);
+            assert!(process(&h, "active"));
+        }
+        assert_eq!(effects(&mut h), before);
+        assert_eq!(payments(&mut h), json!([]));
+        let mut payload = money_payload(&h, "historic", "refund.created", "rf_old");
+        payload["object"]["transaction"]["period_end"] = json!(1609459200000_i64);
+        insert_payload(&mut h, &payload);
+        assert!(process(&h, "active"));
+        assert_eq!(effects(&mut h), before);
+        assert_eq!(snapshot(&mut h), paid());
+        assert_eq!(payments(&mut h), json!([["rf_old", "REFUND", 123, "USD"]]));
+        let rows: Value = h.admin.query_one("SELECT jsonb_agg(jsonb_build_array(event_id,status,error_class) ORDER BY event_id) FROM control.billing_inbox", &[]).unwrap().get(0);
+        assert_eq!(
+            rows,
+            json!([
+                ["currency", "FAILED", "INVALID_INPUT"],
+                ["historic", "PROCESSED", null],
+                ["initial", "PROCESSED", null],
+                ["missing", "FAILED", "INVALID_INPUT"],
+                ["negative", "FAILED", "INVALID_INPUT"]
+            ])
+        );
     });
 }

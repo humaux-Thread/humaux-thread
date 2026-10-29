@@ -1,16 +1,17 @@
 //! `billing-worker::process` — one durable inbox task (§71.3, M04 D13h).
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json, time, uuid];
 //!   services=[]; env=[];
-//!   modules=[adapters::billing_processor_repo, adapters::entitlement_repo, adapters::postgres, application::billing, domain::billing, domain::error, domain::ids]
+//!   modules=[adapters::billing_processor_repo, adapters::entitlement_repo, adapters::postgres, application::billing, billing-worker::normalize, domain::billing, domain::error, domain::ids]
 //! Called-by: [tests]
 //! Invariants: [ingress authenticates raw bytes; inbox identity checked; fetched state wins; C2 alone writes snapshots]
 //! Spec: Baseline §71.3; §76; §52; §78.1
+use crate::normalize::{self, EventKind, PaymentAmount};
 use humaux_adapters::{
     billing_processor_repo as repo, entitlement_repo, postgres::MaintenanceDbPool,
 };
 use humaux_application::billing::{BillingProvider, ExternalSubscriptionRef, VerifiedBillingEvent};
 use humaux_domain::{
-    billing::{BillingFacts, InboxStatus, ObservedStatus, project_state},
+    billing::{BillingFacts, InboxStatus, ObservedStatus, PaymentKind, project_state},
     error::ErrorCode,
     ids::TenantId,
 };
@@ -81,7 +82,7 @@ async fn apply(
     event: &VerifiedBillingEvent,
     payload: &Value,
 ) -> Result<(), ErrorCode> {
-    // §71.3: subscription processing validates the envelope; money normalization belongs to M04-11b.
+    // §71.3: inbox columns must agree with the authenticated envelope.
     if event.event_id.is_empty()
         || event.event_type.is_empty()
         || payload["id"].as_str() != Some(event.event_id.as_str())
@@ -91,16 +92,12 @@ async fn apply(
     {
         return Err(ErrorCode::InvalidInput);
     }
-    // §71.3: refunds/disputes settle FAILED/INVALID_INPUT today. M04-11b must handle these and
-    // one-time-pack events before any test-mode run (M04-16); the worker is not deployed before then.
-    if matches!(
-        event.event_type.as_str(),
-        "refund.created" | "dispute.created"
-    ) {
+    let normalized = normalize::normalize(
+        &serde_json::to_vec(payload).map_err(|_| ErrorCode::InvalidInput)?,
+        None,
+    )?;
+    if normalized.kind == EventKind::Ignored {
         return Err(ErrorCode::InvalidInput);
-    }
-    if !event.event_type.starts_with("subscription.") && event.event_type != "checkout.completed" {
-        return Ok(());
     }
     let object = &payload["object"];
     let tenant = object["metadata"]["tenant_id"]
@@ -110,7 +107,11 @@ async fn apply(
         .map(TenantId)
         .ok_or(ErrorCode::NotFound)?;
     repo::scope_tenant(txn, tenant).await?;
-    let subscription = if event.event_type == "checkout.completed" {
+    let subscription = if event.event_type == "checkout.completed"
+        || matches!(
+            normalized.kind,
+            EventKind::Payment(PaymentKind::Refund | PaymentKind::Chargeback)
+        ) {
         &object["subscription"]
     } else {
         object
@@ -128,10 +129,63 @@ async fn apply(
     if fetched.reference.0 != reference {
         return Err(ErrorCode::InvalidInput);
     }
+    apply_fetched(txn, config, event, tenant, reference, &fetched, &normalized).await
+}
+async fn apply_fetched(
+    txn: &mut repo::Txn<'_>,
+    config: &ProcessorConfig,
+    event: &VerifiedBillingEvent,
+    tenant: TenantId,
+    reference: &str,
+    fetched: &humaux_application::billing::ProviderSubscription,
+    normalized: &normalize::NormalizedEvent,
+) -> Result<(), ErrorCode> {
     let plan = config
         .plans
         .get(&fetched.product)
         .ok_or(ErrorCode::NotFound)?;
+    let payment_changed = if let EventKind::Payment(kind) = normalized.kind {
+        let money = normalized.money.as_ref().ok_or(ErrorCode::InvalidInput)?;
+        let amount = match money.amount {
+            PaymentAmount::Charge { charged_amount } => charged_amount,
+            PaymentAmount::Refund { refund_amount, .. } => refund_amount,
+            PaymentAmount::Chargeback { disputed_amount } => disputed_amount,
+        };
+        let millis = |n| {
+            OffsetDateTime::from_unix_timestamp_nanos(i128::from(n) * 1_000_000)
+                .map_err(|_| ErrorCode::InvalidInput)
+        };
+        repo::append_payment_in_txn(
+            txn,
+            tenant,
+            event,
+            reference,
+            config.free_plan_version,
+            &repo::PaymentFacts {
+                kind,
+                reference: normalized
+                    .provider_txn_ref
+                    .as_deref()
+                    .ok_or(ErrorCode::InvalidInput)?,
+                amount,
+                currency: money.currency,
+                period: [millis(money.period_start)?, millis(money.period_end)?],
+                occurred_at: millis(normalized.created_at)?,
+            },
+        )
+        .await?
+    } else {
+        false
+    };
+    if matches!(
+        normalized.kind,
+        EventKind::Payment(PaymentKind::Refund | PaymentKind::Chargeback)
+    ) {
+        if payment_changed {
+            entitlement_repo::recompute_in_txn(txn, tenant).await?;
+        }
+        return Ok(());
+    }
     // D13h supersedes the domain's historical grace clock; the door revokes PAST_DUE immediately.
     let state = if matches!(
         fetched.status,
@@ -153,12 +207,13 @@ async fn apply(
         txn,
         tenant,
         event,
-        &fetched,
+        fetched,
         *plan,
         config.free_plan_version,
         state,
     )
     .await?
+        || payment_changed
     {
         entitlement_repo::recompute_in_txn(txn, tenant).await?;
     }

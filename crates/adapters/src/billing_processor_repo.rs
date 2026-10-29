@@ -1,18 +1,20 @@
 //! `adapters::billing_processor_repo` — maintenance-only 0300 doors (§71.3).
-//! Depends-on: crates=[humaux-application, humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(role_maintenance) r=[control.tenants] x=[control.billing_inbox_claim, control.billing_inbox_settle, control.billing_apply_subscription]]; env=[];
-//!   modules=[adapters::postgres, application::billing, domain::billing, domain::error, domain::ids]
+//! Depends-on: crates=[humaux-application, humaux-domain, serde_json, sqlx, time, uuid]; services=[PostgreSQL(role_maintenance) r=[control.tenants] x=[control.billing_inbox_claim, control.billing_inbox_settle, control.billing_apply_subscription, control.billing_append_payment]]; env=[];
+//!   modules=[adapters::postgres, application::billing, domain::billing, domain::error, domain::ids, domain::plan]
 //! Called-by: [billing-worker::process, tests]
-//! Invariants: [no gateway caller; unchanged 0300 doors; C2 alone writes snapshots]
+//! Invariants: [no gateway caller; 0300/0301 owner doors; C2 alone writes snapshots]
 //! Spec: Baseline §71.3; §76
 use crate::postgres::MaintenanceDbPool;
 use humaux_application::billing::{ProviderSubscription, VerifiedBillingEvent};
 use humaux_domain::{
-    billing::{BillingProviderId, InboxStatus, SubscriptionState},
+    billing::{BillingProviderId, InboxStatus, PaymentKind, SubscriptionState},
     error::ErrorCode,
     ids::TenantId,
+    plan::Currency,
 };
 use serde_json::Value;
 use sqlx::{Acquire, Row};
+use time::OffsetDateTime;
 use uuid::Uuid;
 /// §71.3: caller-owned processor transaction; database access remains in this adapter.
 pub type Txn<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
@@ -139,6 +141,51 @@ pub async fn apply_subscription_in_txn(
     .bind(state.wire())
     .bind(subscription.current_period_start)
     .bind(subscription.current_period_end)
+    .fetch_one(&mut **txn)
+    .await
+    .map_err(db_error)
+}
+
+/// §71.3: verified provider facts only; amounts are unsigned cents and refs identify each movement kind.
+pub struct PaymentFacts<'a> {
+    /// D13b: movement direction, independent of subscription state.
+    pub kind: PaymentKind,
+    /// §71.3: transaction, refund or dispute id (never the original charge id for reversals).
+    pub reference: &'a str,
+    /// D13a/b: charged, refunded or disputed cents respectively.
+    pub amount: i64,
+    /// §78.2: the closed USD-only currency set.
+    pub currency: Currency,
+    /// §71.3: provider period boundaries.
+    pub period: [OffsetDateTime; 2],
+    /// D13b: event creation time, not processing time.
+    pub occurred_at: OffsetDateTime,
+}
+/// §71.3 / §76: false means replay, without effects; caller scopes the tenant and recomputes before commit.
+pub async fn append_payment_in_txn(
+    txn: &mut Txn<'_>,
+    tenant: TenantId,
+    event: &VerifiedBillingEvent,
+    subscription: &str,
+    free_plan: Uuid,
+    payment: &PaymentFacts<'_>,
+) -> Result<bool, ErrorCode> {
+    // dep: PostgreSQL(role_maintenance) — 0301 owner payment door; no table privileges (§71.3).
+    sqlx::query_scalar(
+        "SELECT control.billing_append_payment($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+    )
+    .bind(tenant.0)
+    .bind(event.provider.wire())
+    .bind(&event.event_id)
+    .bind(subscription)
+    .bind(free_plan)
+    .bind(payment.reference)
+    .bind(payment.kind.wire())
+    .bind(payment.amount)
+    .bind(payment.currency.wire())
+    .bind(payment.period[0])
+    .bind(payment.period[1])
+    .bind(payment.occurred_at)
     .fetch_one(&mut **txn)
     .await
     .map_err(db_error)
