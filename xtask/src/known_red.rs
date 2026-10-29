@@ -27,6 +27,8 @@ use crate::dod_check::GateStatus;
 const LEDGER_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/known_red.toml");
 /// Name used in messages (what a reader opens).
 const LEDGER_FILE: &str = "xtask/known_red.toml";
+/// §78.1 / M01 D7: lower with each removed row (M24 G-M24-7 frozen-ceiling precedent).
+const MAGIC_LITERAL_CEILING: usize = 12;
 /// Sections this build evaluates. A section nobody evaluates would never go red, so the parser rejects any
 /// other name instead of ignoring it.
 const SECTIONS: [&str; 6] = [
@@ -256,6 +258,12 @@ fn judge(section: &str, items: &[Item], rows: &[Row], release: bool) -> Report {
         ledgered: rows.len(),
         ..Report::default()
     };
+    if section == "magic_literals" && rows.len() != MAGIC_LITERAL_CEILING {
+        rep.reds.push(format!(
+            "[magic_literals]: frozen ceiling {MAGIC_LITERAL_CEILING}, rows {}; remove growth or lower the ceiling with removed rows (§78.1)",
+            rows.len()
+        ));
+    }
     for it in by_id.values() {
         match it.status {
             Status::Pass => rep.pass += 1,
@@ -945,7 +953,7 @@ mod tests {
             false,
             &none,
         );
-        assert_eq!(out.reds.len(), 1, "{:?}", out.reds);
+        assert_eq!(out.reds.len(), 2, "{:?}", out.reds);
         assert!(
             out.reds[0].contains("[dods]: unknown ledger section"),
             "{:?}",
@@ -964,7 +972,7 @@ mod tests {
             }
         };
         let out = check("", 9, false, &broken);
-        assert_eq!(out.reds.len(), 1, "{:?}", out.reds);
+        assert_eq!(out.reds.len(), 2, "{:?}", out.reds);
         assert!(
             out.reds[0].contains("[benchset]: cannot evaluate: spec unreadable"),
             "{:?}",
@@ -1055,8 +1063,7 @@ mod tests {
         assert!(rep.reds.iter().any(|r| r.contains("listed twice")));
     }
 
-    /// The baseline section never reaches the item evaluators: a ledger with only `[[lint_allows]]` rows is green
-    /// through `check` even when the fake evaluator fails every item section it is asked about.
+    /// §78.4: lint rows bypass item evaluators; absent magic rows still fail the independent §78.1 ceiling.
     #[test]
     fn a_lint_allows_section_does_not_go_through_the_item_evaluators() {
         let asked = std::cell::RefCell::new(Vec::new());
@@ -1071,7 +1078,12 @@ mod tests {
             false,
             &none,
         );
-        assert!(out.reds.is_empty(), "{:?}", out.reds);
+        assert_eq!(
+            out.reds,
+            vec![
+                "[magic_literals]: frozen ceiling 12, rows 0; remove growth or lower the ceiling with removed rows (§78.1)"
+            ]
+        );
         assert!(
             !asked.borrow().iter().any(|s| s == LINT_ALLOWS),
             "{:?}",
@@ -1087,7 +1099,7 @@ mod tests {
         assert_eq!(out.rows, 2);
     }
 
-    /// Unchanged ledger through `check`: green, and the totals the log prints count rows and deferrals.
+    /// §80.1.1: totals count rows and deferrals independently of the missing §78.1 baseline.
     #[test]
     fn check_counts_rows_and_deferrals() {
         let items_for = |section: &str, _: u32| -> Result<Vec<Item>, String> {
@@ -1099,10 +1111,15 @@ mod tests {
         let raw = "[[dod]]\nid = \"A\"\nowner = \"M11\"\nreason = \"r\"\n\
                    [[dod]]\nid = \"B\"\nowner = \"M24\"\nreason = \"r\"\ndeferred_past_go_live = \"d\"\n";
         let out = check(raw, 9, false, &items_for);
-        assert!(out.reds.is_empty(), "{:?}", out.reds);
+        assert_eq!(
+            out.reds,
+            vec![
+                "[magic_literals]: frozen ceiling 12, rows 0; remove growth or lower the ceiling with removed rows (§78.1)"
+            ]
+        );
         assert_eq!((out.rows, out.deferred), (2, 1));
         let release = check(raw, 9, true, &items_for);
-        assert_eq!(release.reds.len(), 1, "{:?}", release.reds);
+        assert_eq!(release.reds.len(), 2, "{:?}", release.reds);
         assert!(
             release.reds[0].contains("[dod] A: --release"),
             "{:?}",
@@ -1346,27 +1363,60 @@ mod tests {
         assert_eq!(covered.ledgered_lines.len(), 1);
     }
 
-    /// §78.1: unknown keys, missing owners, duplicate rows, new hits and removed hits remain red.
+    /// §78.1: unknown keys, missing owners, duplicate rows, new hits and stale rows remain red.
     #[test]
     fn magic_literal_rows_use_the_shrink_only_judgment() {
-        let raw = "[[magic_literals]]\nid = 'p::url#1'\nowner = 'M11'\nreason = 'existing'\n";
-        let hits = || vec![("p::url#1".into(), "p:line 1".into())];
-        assert_eq!(magic_literal_reds(raw, hits()), Vec::<String>::new());
-        assert_eq!(magic_literal_reds("", hits()).len(), 1);
-        assert_eq!(magic_literal_reds(raw, vec![]).len(), 1);
+        let raw: String = (0..12)
+            .map(|n| {
+                format!(
+                    "[[magic_literals]]\nid = 'p::url#{n}'\nowner = 'M11'\nreason = 'existing'\n"
+                )
+            })
+            .collect();
+        let hits = || {
+            (0..12)
+                .map(|n| (format!("p::url#{n}"), "p:line 1".into()))
+                .collect()
+        };
+        assert_eq!(magic_literal_reds(&raw, hits()), Vec::<String>::new());
+        assert_eq!(magic_literal_reds("", hits()).len(), 13);
+        assert_eq!(magic_literal_reds(&raw, vec![]).len(), 12);
         assert_eq!(
-            magic_literal_reds(&raw.replace("owner = 'M11'", "owner = ''"), hits()).len(),
+            magic_literal_reds(&raw.replacen("owner = 'M11'", "owner = ''", 1), hits()).len(),
             1
         );
         assert_eq!(
             magic_literal_reds(&format!("{raw}count = 1\n"), hits()).len(),
             1
         );
-        assert_eq!(magic_literal_reds(&format!("{raw}{raw}"), hits()).len(), 1);
+        assert_eq!(magic_literal_reds(&format!("{raw}{raw}"), hits()).len(), 13);
         assert_eq!(
             SECTIONS.iter().filter(|s| **s == "magic_literals").count(),
             1
         );
+    }
+
+    /// §78.1: matching hits and rows cannot grow or shrink without changing the frozen Rust pin.
+    #[test]
+    fn magic_literal_ceiling_is_independent_of_matching_rows() {
+        for (count, expected) in [(11, 1), (12, 0), (13, 1)] {
+            let raw: String = (0..count).map(|n| format!(
+                "[[magic_literals]]\nid = 'p::url#{n}'\nowner = 'M11'\nreason = 'existing'\n"
+            )).collect();
+            let hits = (0..count)
+                .map(|n| (format!("p::url#{n}"), "p:line 1".into()))
+                .collect();
+            let reds = magic_literal_reds(&raw, hits);
+            assert_eq!(reds.len(), expected, "{reds:?}");
+            if expected == 1 {
+                assert_eq!(
+                    reds,
+                    vec![format!(
+                        "[magic_literals]: frozen ceiling 12, rows {count}; remove growth or lower the ceiling with removed rows (§78.1)"
+                    )]
+                );
+            }
+        }
     }
 
     /// The committed ledger is well formed: it parses clean and every row has a module-card owner and a reason.

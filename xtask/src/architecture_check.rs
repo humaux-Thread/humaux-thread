@@ -1768,7 +1768,11 @@ fn magic_name_branch(source: &str, start: usize, end: usize) -> bool {
     {
         return true;
     }
-    if after.starts_with("=>")
+    if (after.starts_with("=>")
+        || after.starts_with('|')
+        || after
+            .strip_prefix("if")
+            .is_some_and(|tail| tail.starts_with(char::is_whitespace) || tail.starts_with('(')))
         && let Some(at) = before.rfind("match ")
     {
         let header = before[at..].split('{').next().unwrap_or("");
@@ -12689,6 +12693,33 @@ const P: &str = "openai"; const V: &str = "https://api.example.com";"##;
         assert_eq!(hits[0].1, "p:line 1: r#\"https://api.example.com\"#");
     }
 
+    /// §78.1: every alternated/guarded identity pattern is a hit, excluding catalogue keys as before.
+    #[test]
+    fn magic_literals_guarded_and_alternated_arms() {
+        let source = r#"match provider {
+            "bespoke" if on => 1,
+            "a" | "b" => 2,
+            "c" | "d" if on => 3,
+            "catalogued" if on => 4,
+            _ => 0,
+        }; match plan { "private" if on => 1, "e" | "f" => 2, _ => 0 };
+        match other { "ignored" if on => 1, _ => 0 };"#;
+        let hits = magic_literal_hits("p", source, &BTreeSet::from(["catalogued".into()]));
+        assert_eq!(
+            hits.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec![
+                "p::bespoke#1",
+                "p::a#1",
+                "p::b#1",
+                "p::c#1",
+                "p::d#1",
+                "p::private#1",
+                "p::e#1",
+                "p::f#1"
+            ]
+        );
+    }
+
     /// §78.1: comments and every test item are excluded; production after a test item is still scanned.
     #[test]
     fn magic_literals_test_and_comment_boundaries() {
@@ -12747,7 +12778,9 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         assert!(matches!(gate(), Verdict::Fail(_)));
         fs::create_dir_all(tmp.join("xtask")).unwrap();
         fs::write(tmp.join(LINT_BASELINE_FILE), "").unwrap();
-        assert_eq!(m01_7_magic_literal_ratchet(&tmp), Verdict::Pass);
+        assert_eq!(m01_7_magic_literal_ratchet(&tmp), Verdict::Fail(vec![
+            "[magic_literals]: frozen ceiling 12, rows 0; remove growth or lower the ceiling with removed rows (§78.1)".into()
+        ]));
         fs::remove_dir_all(tmp).unwrap();
     }
 
