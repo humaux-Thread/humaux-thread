@@ -697,6 +697,7 @@ pub async fn publish_rollup(
         resolve_current_authority_or_stale(&mut txn, &recorded_inputs).await?
     else {
         txn.rollback().await?;
+        // dep: PostgreSQL(any) — §37 stale outcome after serialization rollback
         let mut txn = pool.pool().begin().await?;
         set_tenant_local(&mut txn, tenant_id).await?;
         sqlx::query(

@@ -1,5 +1,5 @@
 //! `adapters::tests::forget_race` — G-M19-4 commit-time deletion overlay checks.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, serde_json, sqlx]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq, private.memory_records] w=[control.confirm_tokens, control.deletion_requests, control.deletion_targets, ops.memory_lifecycle_events, ops.outbox, private.context_bindings, private.events, private.memory_evidence, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_rollup_sources, private.memory_rollups, private.processing_runs, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze], PostgreSQL(role_private_worker), PostgreSQL(role_consolidation_worker), PostgreSQL(role_retrieval_worker), PostgreSQL(role_maintenance)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::postgres, adapters::private_projection_registry, adapters::tests::support::operation_receipt_fixture, domain::authority, domain::ids, domain::memory, humaux-testkit, projection::serving, testkit::disposable]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sqlx]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq, private.memory_records] w=[control.confirm_tokens, control.deletion_requests, control.deletion_targets, ops.memory_lifecycle_events, ops.outbox, private.context_bindings, private.events, private.memory_evidence, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_rollup_sources, private.memory_rollups, private.processing_runs, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze], PostgreSQL(role_gateway), PostgreSQL(role_private_worker), PostgreSQL(role_consolidation_worker), PostgreSQL(role_retrieval_worker), PostgreSQL(role_maintenance)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::postgres, adapters::private_projection_registry, adapters::tests::support::operation_receipt_fixture, domain::authority, domain::ids, domain::memory, humaux-testkit, projection::serving, testkit::disposable]
 //! Called-by: [cargo-test]
 //! Invariants: [load/select precedes deletion; commit checks run as runtime roles; any ticket and any source role can invalidate a derivation; exact durable output sets]
 //! Spec: Baseline §37; §11.7; ADR-0092 D-C; ADR-0079 D-J; G-M19-4
@@ -507,6 +507,7 @@ fn race_accept(w: &mut World) -> (postgres::Client, Uuid, Vec<u8>) {
         "race-only",
         &[7; 32],
     );
+    // dep: PostgreSQL(role_gateway) — §37 deletion accept door
     let mut client = postgres::Client::connect(&role_dsn("role_gateway"), postgres::NoTls).unwrap();
     client
         .query_one(
@@ -553,6 +554,7 @@ fn race_order(w: &mut World, site: &str, reverse: bool) {
         )
         .unwrap();
     };
+    // dep: PostgreSQL(owner) — §37 lock-wait witness
     let mut observer = postgres::Client::connect(
         &std::env::var("HUMAUX_TEST_PG_DSN").unwrap(),
         postgres::NoTls,
