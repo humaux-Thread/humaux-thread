@@ -580,12 +580,12 @@ mod tests {
                 finished.await.expect("release active probe");
                 active_events.send("active").expect("record closed session");
             }));
-            assert_eq!(
+            assert!(matches!(
                 request
                     .as_mut()
                     .poll(&mut Context::from_waker(Waker::noop())),
                 Poll::Pending
-            );
+            ));
             active.await.expect("active session owns lease");
         }
         for _ in 0..3 {
@@ -593,12 +593,13 @@ mod tests {
             let mut request = std::pin::pin!(serialized_probe(&LOCK, async move {
                 queued_events.send("obsolete").expect("record queued probe");
             }));
-            assert_eq!(
+            assert!(matches!(
                 request
                     .as_mut()
                     .poll(&mut Context::from_waker(Waker::noop())),
                 Poll::Pending
-            );
+            ));
+            tokio::task::yield_now().await;
         }
         finish.send(()).expect("active task survived cancellation");
         serialized_probe(&LOCK, async move {
