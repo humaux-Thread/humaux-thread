@@ -86,7 +86,7 @@ fn free() -> Value {
     json!({"feature.byok":false})
 }
 fn deliver(h: &mut Handle, id: &str, arrival: &str, tenant: Uuid) {
-    let payload = json!({"id":id,"eventType":format!("subscription.{arrival}"),"created_at":1000,"object":{"id":"sub_fixture","status":arrival,"product":"prod_fixture","metadata":{"tenant_id":tenant},"current_period_start_date":"2020-01-01T00:00:00Z","current_period_end_date":"2099-01-01T00:00:00Z","last_transaction":{"id":"txn_fixture","amount":500,"currency":"USD","period_start":1577836800000_i64,"period_end":4070908800000_i64}}});
+    let payload = json!({"id":id,"eventType":format!("subscription.{arrival}"),"created_at":1000,"object":{"id":"sub_fixture","status":arrival,"product":"prod_fixture","metadata":{"tenant_id":tenant},"current_period_start_date":"2020-01-01T00:00:00Z","current_period_end_date":"2099-01-01T00:00:00Z","last_transaction":{"id":"txn_fixture","amount":500,"amount_paid":500,"currency":"USD","period_start":1577836800000_i64,"period_end":4070908800000_i64}}});
     // dep: PostgreSQL(owner) — authenticated ingress with provider payment facts (§71.3).
     let stored = h.admin.execute("INSERT INTO control.billing_inbox(provider,event_id,event_type,object_id,payload) VALUES ('creem',$1,$2,'sub_fixture',$3) ON CONFLICT DO NOTHING", &[&id,&payload["eventType"].as_str().unwrap(),&payload]).unwrap();
     assert_eq!(stored, 1);
@@ -389,11 +389,17 @@ fn past_due_projects_entire_free_template() {
 }
 
 fn money_payload(h: &Handle, id: &str, kind: &str, reference: &str) -> Value {
-    let transaction = json!({"id":"txn_charge","transaction":"txn_charge","subscription":"sub_fixture","amount":500,"amount_due":999,"currency":"USD","period_start":1577836800000_i64,"period_end":4070908800000_i64});
-    json!({"id":id,"eventType":kind,"created_at":1700000000000_i64,"object":{
-        "id":reference,"subscription":"sub_fixture","metadata":{"tenant_id":h.tenant},
+    let transaction = json!({"id":"txn_charge","transaction":"txn_charge","subscription":"sub_fixture","amount":1000,"amount_due":1210,"amount_paid":1210,"tax_amount":210,"currency":"USD","period_start":1577836800000_i64,"period_end":4070908800000_i64});
+    let metadata = json!({"tenant_id":h.tenant});
+    let reversal = matches!(kind, "refund.created" | "dispute.created");
+    let mut payload = json!({"id":id,"eventType":kind,"created_at":1700000000000_i64,"object":{
+        "id":reference,"subscription":{"id":"sub_fixture","metadata":metadata},
         "order":transaction,"last_transaction":transaction,"transaction":transaction,
-        "refund_amount":123,"amount":211,"currency":"USD"}})
+        "refund_amount":123,"amount":211,"currency":"USD"}});
+    if !reversal {
+        payload["object"]["metadata"] = metadata;
+    }
+    payload
 }
 fn insert_payload(h: &mut Handle, payload: &Value) {
     assert_eq!(h.admin.execute("INSERT INTO control.billing_inbox(provider,event_id,event_type,object_id,payload) VALUES ('creem',$1,$2,$3,$4)", &[&payload["id"].as_str().unwrap(),&payload["eventType"].as_str().unwrap(),&payload["object"]["id"].as_str().unwrap(),payload]).unwrap(), 1);
@@ -401,22 +407,30 @@ fn insert_payload(h: &mut Handle, payload: &Value) {
 fn payments(h: &mut Handle) -> Value {
     h.admin.query_one("SELECT coalesce(jsonb_agg(jsonb_build_array(provider_txn_ref,kind,amount_cents,currency) ORDER BY kind,provider_txn_ref),'[]'::jsonb) FROM control.billing_payments", &[]).unwrap().get(0)
 }
-/// G-M04-18: settled webhook cents win over the checkout response's amount_due (§71.3, D13a).
+/// G-M04-18: gross tax-inclusive webhook amount_paid is stored (§71.3, lead ruling 2026-10-29).
 #[test]
 fn money_source_and_charge_replay() {
     run_db_fixture::<Fixture, _>("money_source_and_charge_replay", |mut h| {
-        let payload = money_payload(
+        let mut payload = money_payload(
             &h,
             "checkout_paid",
             "checkout.completed",
             "checkout_fixture",
         );
+        payload["object"]["order"]
+            .as_object_mut()
+            .unwrap()
+            .remove("period_start");
+        payload["object"]["order"]
+            .as_object_mut()
+            .unwrap()
+            .remove("period_end");
         insert_payload(&mut h, &payload);
         assert!(process(&h, "active"));
         assert_eq!(
             payments(&mut h),
-            json!([["txn_charge", "CHARGE", 500, "USD"]]),
-            "G-M04-18: settled amount wins over checkout amount_due=999"
+            json!([["txn_charge", "CHARGE", 1210, "USD"]]),
+            "G-M04-18: gross amount_paid=1210, not pre-tax amount=1000"
         );
         assert_eq!(snapshot(&mut h), paid());
         let before = effects(&mut h);
@@ -430,8 +444,20 @@ fn money_source_and_charge_replay() {
         assert_eq!(
             payments(&mut h),
             json!([
-                ["txn_charge", "CHARGE", 500, "USD"],
-                ["txn_renewal", "CHARGE", 500, "USD"]
+                ["txn_charge", "CHARGE", 1210, "USD"],
+                ["txn_renewal", "CHARGE", 1210, "USD"]
+            ])
+        );
+        let mut refund = money_payload(&h, "full_refund", "refund.created", "rf_full");
+        refund["object"]["refund_amount"] = json!(1210);
+        insert_payload(&mut h, &refund);
+        assert!(process(&h, "active"));
+        assert_eq!(
+            payments(&mut h),
+            json!([
+                ["txn_charge", "CHARGE", 1210, "USD"],
+                ["txn_renewal", "CHARGE", 1210, "USD"],
+                ["rf_full", "REFUND", 1210, "USD"]
             ])
         );
     });
@@ -443,12 +469,14 @@ fn partial_refund_and_dispute_downgrade() {
         let tenant = h.tenant;
         deliver(&mut h, "initial", "active", tenant);
         assert!(process(&h, "active"));
+        assert_eq!(snapshot(&mut h), paid());
         for (id, kind, reference) in [
             ("refund_1", "refund.created", "rf_1"),
             ("refund_2", "refund.created", "rf_2"),
             ("dispute_1", "dispute.created", "dp_1"),
         ] {
             let mut payload = money_payload(&h, id, kind, reference);
+            payload["object"]["checkout"] = json!({"metadata":{"tenant_id":h.tenant}});
             payload["object"]
                 .as_object_mut()
                 .unwrap()
@@ -500,7 +528,7 @@ fn invalid_money_and_historic_refund() {
             ("missing", Value::Null, "USD"),
         ] {
             let mut payload = money_payload(&h, id, "checkout.completed", id);
-            payload["object"]["order"]["amount"] = amount;
+            payload["object"]["order"]["amount_paid"] = amount;
             payload["object"]["order"]["currency"] = json!(currency);
             insert_payload(&mut h, &payload);
             assert!(process(&h, "active"));
@@ -535,6 +563,10 @@ fn reversal_before_subscription_delivery() {
         ("dispute.created", "dp_first", "CHARGEBACK", 211),
     ] {
         run_db_fixture::<Fixture, _>("reversal_before_subscription_delivery", |mut h| {
+            let tenant = h.tenant;
+            deliver(&mut h, "paid_grant", "active", tenant);
+            assert!(process(&h, "active"));
+            assert_eq!(snapshot(&mut h), paid());
             let payload = money_payload(&h, "reversal_first", kind, reference);
             insert_payload(&mut h, &payload);
             assert!(process(&h, "active"));
@@ -550,7 +582,32 @@ fn reversal_before_subscription_delivery() {
             );
             assert_eq!(snapshot(&mut h), free());
             let events: Value = h.admin.query_one("SELECT jsonb_agg(jsonb_build_array(source_event_id,to_state) ORDER BY source_event_id) FROM control.subscription_events", &[]).unwrap().get(0);
-            assert_eq!(events, json!([["reversal_first", "CANCELED"]]));
+            assert_eq!(
+                events,
+                json!([["paid_grant", "ACTIVE"], ["reversal_first", "CANCELED"]])
+            );
+            for (id, arrival) in [
+                ("delayed_paid", "paid"),
+                ("resent_paid", "paid"),
+                ("updated", "update"),
+            ] {
+                deliver(&mut h, id, arrival, tenant);
+                assert!(process(&h, "active"));
+                assert_eq!(
+                    snapshot(&mut h),
+                    free(),
+                    "recorded reversal survives {arrival}"
+                );
+                let state: String = h.admin.query_one("SELECT state FROM control.subscriptions WHERE provider_subscription_ref='sub_fixture'", &[]).unwrap().get(0);
+                assert_eq!(state, "CANCELED");
+            }
+            assert_eq!(
+                payments(&mut h),
+                json!([
+                    [reference, payment_kind, amount, "USD"],
+                    ["txn_fixture", "CHARGE", 500, "USD"]
+                ])
+            );
         });
     }
 }

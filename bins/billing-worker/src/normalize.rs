@@ -40,7 +40,7 @@ pub struct Money {
 /// §71.3: M04-11 writes charged_amount, refund_amount or disputed_amount respectively.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaymentAmount {
-    /// §71.3: CHARGE stores charged_amount.
+    /// §71.3: CHARGE stores gross tax-inclusive amount_paid (lead ruling 2026-10-29).
     Charge {
         /// §71.3: charged cents, never defaulted.
         charged_amount: i64,
@@ -85,7 +85,8 @@ pub fn status(fetched_status: &str) -> Result<ObservedStatus, ErrorCode> {
     ObservedStatus::parse_wire(fetched_status).ok_or(ErrorCode::InvalidInput)
 }
 
-/// §71.3: `fetched_transaction` must be the authoritative transaction for this event;
+/// §71.3: fallback fields must be authoritative for this transaction; checkout periods may come
+/// from the subscription fetched under its lock (lead ruling 2026-10-29);
 /// a checkout creation response is not an admissible input (M04 D13a).
 pub fn normalize(
     raw_body: &[u8],
@@ -128,7 +129,7 @@ pub fn normalize(
         Some(Money {
             amount: match payment {
                 PaymentKind::Charge => PaymentAmount::Charge {
-                    charged_amount: cents(field("amount"))?,
+                    charged_amount: cents(field("amount_paid"))?,
                 },
                 PaymentKind::Refund => PaymentAmount::Refund {
                     refund_amount: cents(object.get("refund_amount"))?,

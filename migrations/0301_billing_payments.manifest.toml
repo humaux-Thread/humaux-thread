@@ -10,14 +10,14 @@ select to_regprocedure('control.billing_append_payment(uuid,text,text,text,uuid,
  'role_retrieval_worker','role_batch_issuer','role_maintenance','role_admin','role_health_reader')) as precheck_ok
 """
 postcheck = """
-with fns as (select * from pg_proc where oid = to_regprocedure('control.billing_append_payment(uuid,text,text,text,uuid,uuid,text,text,bigint,text,timestamptz,timestamptz,timestamptz,timestamptz,timestamptz)')),
+with fns as (select * from pg_proc where oid in (to_regprocedure('control.billing_apply_subscription(uuid,text,text,text,uuid,uuid,text,timestamptz,timestamptz,timestamptz)'), to_regprocedure('control.billing_append_payment(uuid,text,text,text,uuid,uuid,text,text,bigint,text,timestamptz,timestamptz,timestamptz,timestamptz,timestamptz)'))),
 r(role) as (values ('role_gateway'),('role_private_worker'),('role_consolidation_worker'),('role_public_worker'),
  ('role_retrieval_worker'),('role_batch_issuer'),('role_maintenance'),('role_admin'),('role_health_reader'))
-select (select count(*) = 1 from fns where pg_get_userbyid(proowner) = 'role_migration_owner'
+select (select count(*) = 2 from fns where pg_get_userbyid(proowner) = 'role_migration_owner'
  and prosecdef and 'search_path=pg_catalog' = any(coalesce(proconfig,'{}')))
  and not exists (select 1 from fns cross join r where has_function_privilege(r.role, fns.oid, 'EXECUTE') <> (r.role = 'role_maintenance'))
  and not exists (select 1 from fns, lateral aclexplode(coalesce(proacl,acldefault('f',proowner))) x
  where x.privilege_type = 'EXECUTE' and x.grantee not in (proowner, 'role_maintenance'::regrole)) as postcheck_ok
 """
 rollback_or_forward_fix = "forward-fix only: replace the payment door; preserve append-only payment facts."
-backup_restore_requirement = "none: one function, no table privilege or existing row changes."
+backup_restore_requirement = "none: two functions, no table privilege or existing row changes."
