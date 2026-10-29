@@ -271,7 +271,6 @@ impl PrivateReasoningPort for UdsInferenceClient<'_> {
 #[cfg(test)]
 mod tests {
     use super::post_infer;
-    use humaux_domain::error::ErrorCode;
     use humaux_infra_cell::uds::{bind_guarded, own_uid};
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;

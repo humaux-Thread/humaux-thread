@@ -16452,6 +16452,7 @@ modules naming it:
 why: humaux-domain dependency
 
 modules naming it:
+- `consolidation-worker::inference_client`
 - `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::run_once_e2e`
