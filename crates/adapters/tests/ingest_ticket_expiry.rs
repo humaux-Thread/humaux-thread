@@ -5,7 +5,7 @@
 //!   modules=[adapters::postgres, adapters::stream_repo, adapters::tests::support::throwaway_db, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [each test owns a migrated throwaway DB; missing CI input fails through run_db_fixture;
-//!   six retained ticket identities cover expiry, state, tenant, locking, ordering and the bounded batch]
+//!   seven retained ticket identities cover expiry, state, tenant, locking, ordering and the bounded batch]
 //! Spec: Baseline §6.2.2; §15.6; §79.2; ADR-0123 D4
 
 use humaux_adapters::{postgres::MaintenanceDbPool, stream_repo::expire_ingest_tickets};
@@ -83,11 +83,12 @@ fn seed(admin: &mut Client, tenant: Uuid, other: Uuid) {
              now() - interval '1 day', now() + make_interval(secs => v.seconds), v.state, \
              CASE WHEN v.state = 'REDEEMED' THEN event.event_id END \
          FROM (VALUES ('a', -10800, 'ISSUED'), ('b', -7200, 'ISSUED'), ('c', 3600, 'ISSUED'), \
-             ('d', -3600, 'REDEEMED'), ('e', -3600, 'EXPIRED'), ('f', -3600, 'ISSUED')) \
+             ('d', -3600, 'REDEEMED'), ('e', -3600, 'EXPIRED'), ('f', -3600, 'ISSUED'), \
+             ('g', -1800, 'ISSUED')) \
              AS v(label, seconds, state) CROSS JOIN event",
         &[&tenant, &other, &Uuid::new_v4()],
-    ).expect("seed six tickets");
-    assert_eq!(n, 6);
+    ).expect("seed seven tickets");
+    assert_eq!(n, 7);
 }
 
 fn states(admin: &mut Client) -> Vec<(String, String, bool)> {
@@ -137,6 +138,7 @@ fn g_m21_4_expiry_preserves_the_exact_ticket_set() {
                 ("d", "REDEEMED", true),
                 ("e", "EXPIRED", false),
                 ("f", "ISSUED", false),
+                ("g", "ISSUED", false),
             ]
             .map(|(id, state, redeemed)| (id.to_owned(), state.to_owned(), redeemed))
         );
@@ -145,6 +147,25 @@ fn g_m21_4_expiry_preserves_the_exact_ticket_set() {
                 .expect("oldest expires"),
             1
         );
+        let mut remaining = states(&mut h.admin);
+        let expected_remaining = [
+            ("a", "EXPIRED", false),
+            ("b", "EXPIRED", false),
+            ("c", "ISSUED", false),
+            ("d", "REDEEMED", true),
+            ("e", "EXPIRED", false),
+            ("f", "ISSUED", false),
+            ("g", "ISSUED", false),
+        ]
+        .map(|(id, state, redeemed)| (id.to_owned(), state.to_owned(), redeemed));
+        assert_eq!(remaining, expected_remaining);
+        assert_eq!(
+            h.rt.block_on(expire_ingest_tickets(&h.maintenance, tenant, 1))
+                .expect("remaining eligible ticket expires"),
+            1
+        );
+        remaining[6].1 = "EXPIRED".into();
+        assert_eq!(states(&mut h.admin), remaining);
         assert_eq!(
             h.rt.block_on(expire_ingest_tickets(&h.maintenance, tenant, 50))
                 .expect("idempotent"),
@@ -157,6 +178,7 @@ fn g_m21_4_expiry_preserves_the_exact_ticket_set() {
             ("d", "REDEEMED", true),
             ("e", "EXPIRED", false),
             ("f", "ISSUED", false),
+            ("g", "EXPIRED", false),
         ]
         .map(|(id, state, redeemed)| (id.to_owned(), state.to_owned(), redeemed));
         assert_eq!(states(&mut h.admin), expected);

@@ -120,7 +120,8 @@ async fn apply(
         .or_else(|| subscription["id"].as_str())
         .filter(|id| !id.is_empty())
         .ok_or(ErrorCode::InvalidInput)?;
-    // ponytail: no per-subscription ordering yet, M04-11a3 adds lock-before-fetch
+    // §71.3: another event cannot fetch until this observation and its projection commit.
+    repo::lock_subscription(txn, event.provider, reference).await?;
     let fetched = provider
         .fetch_subscription(&ExternalSubscriptionRef(reference.into()))
         .await?;

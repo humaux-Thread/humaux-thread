@@ -54,6 +54,24 @@ pub async fn scope_tenant(txn: &mut Txn<'_>, tenant: TenantId) -> Result<(), Err
             .map_err(|_| ErrorCode::DependencyUnavailable)?;
     exists.then_some(()).ok_or(ErrorCode::NotFound)
 }
+
+/// §71.3: serialize authoritative fetch through outer commit across events of one provider subscription.
+pub async fn lock_subscription(
+    txn: &mut Txn<'_>,
+    provider: BillingProviderId,
+    reference: &str,
+) -> Result<(), ErrorCode> {
+    // dep: PostgreSQL(role_maintenance) — transaction-scoped ordering; no table privileges (§71.3).
+    sqlx::query("SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1,0))")
+        .bind(format!(
+            "billing-subscription:{}:{reference}",
+            provider.wire()
+        ))
+        .execute(&mut **txn)
+        .await
+        .map_err(db_error)?;
+    Ok(())
+}
 /// Claims oldest RECEIVED rows without waiting for another processor's locks (0300, §71.3).
 pub async fn inbox_claim(
     txn: &mut Txn<'_>,
