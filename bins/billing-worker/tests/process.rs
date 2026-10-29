@@ -20,7 +20,12 @@ use humaux_infra_egress::http::HttpEgressConfig;
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use postgres::{Client, NoTls};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+use std::time::Duration;
+use tokio::sync::Notify;
 use uuid::Uuid;
 struct Fixture;
 struct Handle {
@@ -96,7 +101,7 @@ fn process_with(
     fail_once: bool,
 ) -> Result<bool, ErrorCode> {
     h.rt.block_on(async {
-        let subscription = json!({"id":"sub_fixture","customer":"cust_fixture","product":{"id":product},"status":current,"current_period_start_date":"2020-01-01T00:00:00Z","current_period_end_date":"2099-01-01T00:00:00Z"});
+        let subscription = fetched_subscription(current, product);
         // dep: HTTP(loopback) — merged Creem-shaped server; no external call (§79.4).
         let (base, server) = if fail_once {
             fake_creem::start_with_failure(subscription, json!({}), true).await
@@ -104,13 +109,123 @@ fn process_with(
             fake_creem::start(subscription, json!({})).await
         };
         let secret = Box::leak(Uuid::new_v4().to_string().into_boxed_str());
-        let provider = CreemClient::new(&base, &BillingMode::parse(Some("fake"), None).unwrap(), TenantId(h.tenant), ProcessorId(Uuid::new_v4()), HttpEgressConfig::default(), Arc::new(fake_creem::FixtureCredential(fake_creem::TEST_KEY)), Arc::new(fake_creem::FixtureCredential(secret))).unwrap();
+        let provider = CreemClient::new(
+            &base,
+            &BillingMode::parse(Some("fake"), None).unwrap(),
+            TenantId(h.tenant),
+            ProcessorId(Uuid::new_v4()),
+            HttpEgressConfig::default(),
+            Arc::new(fake_creem::FixtureCredential(fake_creem::TEST_KEY)),
+            Arc::new(fake_creem::FixtureCredential(secret)),
+        )
+        .unwrap();
         // §71.3: the signature contract remains the merged ingress boundary, not JSON reserialization.
         assert_eq!(fake_creem::sign(b"{}", secret.as_bytes()).len(), 64);
         let result = process_one(&h.pool, &provider, &h.config).await;
         server.abort();
         result
     })
+}
+fn fetched_subscription(current: &str, product: &str) -> Value {
+    json!({"id":"sub_fixture","customer":"cust_fixture","product":{"id":product},"status":current,"current_period_start_date":"2020-01-01T00:00:00Z","current_period_end_date":"2099-01-01T00:00:00Z"})
+}
+
+/// G-M04-25: an older response committed last cannot overwrite a newer authoritative observation (§71.3).
+#[test]
+fn concurrent_subscription_observations_are_ordered() {
+    run_db_fixture::<Fixture, _>(
+        "concurrent_subscription_observations_are_ordered",
+        |mut h| {
+            let tenant = h.tenant;
+            deliver(&mut h, "ordering_1", "past_due", tenant);
+            deliver(&mut h, "ordering_2", "active", tenant);
+            h.rt.block_on(async {
+                let order = Arc::new(fake_creem::FetchOrder {
+                    newer: fetched_subscription("active", "prod_fixture"),
+                    fetches: AtomicUsize::new(0),
+                    release_first: Notify::new(),
+                });
+                // dep: HTTP(loopback) — the first fetch is older, independent of arrival payload (§71.3).
+                let (base, server) = fake_creem::start_controlled(
+                    fetched_subscription("past_due", "prod_fixture"),
+                    json!({}),
+                    false,
+                    Some(order.clone()),
+                )
+                .await;
+                let provider = CreemClient::new(
+                    &base,
+                    &BillingMode::parse(Some("fake"), None).unwrap(),
+                    TenantId(tenant),
+                    ProcessorId(Uuid::new_v4()),
+                    HttpEgressConfig::default(),
+                    Arc::new(fake_creem::FixtureCredential(fake_creem::TEST_KEY)),
+                    Arc::new(fake_creem::FixtureCredential(fake_creem::TEST_KEY)),
+                )
+                .unwrap();
+                let newer_done = AtomicBool::new(false);
+                let older = process_one(&h.pool, &provider, &h.config);
+                let newer = async {
+                    while order.fetches.load(Ordering::SeqCst) == 0 {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    let result = process_one(&h.pool, &provider, &h.config).await;
+                    newer_done.store(true, Ordering::SeqCst);
+                    result
+                };
+                let release = release_older(&mut h.admin, &order, &newer_done);
+                let results = tokio::time::timeout(Duration::from_secs(20), async {
+                    tokio::join!(older, newer, release)
+                })
+                .await;
+                server.abort();
+                let (older, newer, ()) = results.expect("G-M04-25: both workers must finish");
+                assert_eq!((older, newer), (Ok(true), Ok(true)));
+                assert_eq!(order.fetches.load(Ordering::SeqCst), 2);
+            });
+            let rows = h
+                .admin
+                .query("SELECT state FROM control.subscriptions", &[])
+                .unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(
+                rows[0].get::<_, String>(0),
+                "ACTIVE",
+                "G-M04-25: newer fetch must win"
+            );
+            assert_eq!(snapshot(&mut h), paid());
+            let events: Value = h.admin.query_one("SELECT jsonb_agg(jsonb_build_array(source_event_id,to_state) ORDER BY source_event_id) FROM control.subscription_events", &[]).unwrap().get(0);
+            assert_eq!(
+                events,
+                json!([["ordering_1", "PAST_DUE"], ["ordering_2", "ACTIVE"]])
+            );
+            let inbox: Value = h.admin.query_one("SELECT jsonb_agg(jsonb_build_array(event_id,status,error_class) ORDER BY event_id) FROM control.billing_inbox", &[]).unwrap().get(0);
+            assert_eq!(
+                inbox,
+                json!([
+                    ["ordering_1", "PROCESSED", null],
+                    ["ordering_2", "PROCESSED", null]
+                ])
+            );
+        },
+    );
+}
+async fn release_older(
+    admin: &mut Client,
+    order: &fake_creem::FetchOrder,
+    newer_done: &AtomicBool,
+) {
+    loop {
+        // §71.3: a lock waiter permits serial progress; without it, force the newer worker to commit first.
+        let waiters: i64 = tokio::task::block_in_place(|| {
+            admin.query_one("SELECT count(*) FROM pg_catalog.pg_locks WHERE locktype='advisory' AND NOT granted AND database=(SELECT oid FROM pg_catalog.pg_database WHERE datname=current_database())", &[]).unwrap().get(0)
+        });
+        if waiters == 1 || newer_done.load(Ordering::SeqCst) {
+            order.release_first.notify_one();
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 /// §71.3: an unordered body cannot replace the fetched product's pinned plan.
 #[test]
