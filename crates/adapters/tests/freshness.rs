@@ -1,6 +1,6 @@
 //! `adapters::tests::freshness` — G-M13-4 Evidence-time wiring through the shared final materializer.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit,
-//!   sqlx]; services=[PostgreSQL(owner) w=[private.evidence_objects, private.events,
+//!   serde_json, sqlx]; services=[PostgreSQL(owner) w=[private.evidence_objects, private.events,
 //!   private.memory_records] r=[private.memory_evidence], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::read_materialize, adapters::tests::support::operation_receipt_fixture,
 //!   domain::ids, humaux-testkit, projection::serving, retrieval::completeness]
@@ -9,7 +9,10 @@
 //!   the classifier is M13-4a's, never a second policy]
 //! Spec: §9; §21.5; §23.3; §57.1; ADR-0111 D-A/D-D
 
-use humaux_adapters::read_materialize::{MaterializedBodies, materialize_final_bodies};
+use humaux_adapters::read_materialize::{
+    ItemFreshness, MaterializationSnapshot, MaterializedBodies, MaterializedItem,
+    materialize_final_bodies,
+};
 use humaux_domain::ids::TenantId;
 use humaux_projection::serving::StreamFamily;
 use humaux_retrieval::completeness::FreshnessClass;
@@ -181,4 +184,68 @@ fn g_m13_4_reads_reembed_and_reimport_never_launder_evidence_time() {
         selected.items.clear();
         assert_eq!(selected.freshness_summary().class, FreshnessClass::Unknown);
     });
+}
+
+/// §9 / §23.3: the envelope compares instants, preserving the selected Evidence's wire time.
+#[test]
+fn m13_p2_475_summary_compares_timestamp_instants() {
+    let cases = [
+        (
+            [Some("2026-01-01T00:00:00Z"), Some("2026-01-01T00:00:00.5Z")],
+            Some("2026-01-01T00:00:00.5Z"),
+        ),
+        (
+            [
+                Some("2026-01-01T01:00:00+01:00"),
+                Some("2026-01-01T00:00:00.5Z"),
+            ],
+            Some("2026-01-01T00:00:00.5Z"),
+        ),
+        (
+            [None, Some("2026-01-01T00:00:00Z")],
+            Some("2026-01-01T00:00:00Z"),
+        ),
+        ([None, None], None),
+    ];
+    for (times, expected) in cases {
+        let ids = [Uuid::from_u128(1), Uuid::from_u128(2)];
+        let mut bodies = MaterializedBodies {
+            snapshot: MaterializationSnapshot {
+                context_snapshot_seq: 0,
+                snapshot_token_sha256: String::new(),
+            },
+            items: ids
+                .into_iter()
+                .map(|memory_id| MaterializedItem::Memory {
+                    memory_id,
+                    content: serde_json::json!({}),
+                })
+                .collect(),
+            freshness: ids
+                .into_iter()
+                .zip(times)
+                .map(|(id, at)| {
+                    (
+                        id,
+                        ItemFreshness {
+                            class: FreshnessClass::Fresh,
+                            policy_id: None,
+                            policy_version: None,
+                            latest_evidence_at: at.map(str::to_owned),
+                            state_age_seconds: None,
+                        },
+                    )
+                })
+                .collect(),
+        };
+        assert_eq!(bodies.items.len(), 2);
+        assert_eq!(bodies.freshness.len(), 2);
+        assert_eq!(
+            bodies.freshness_summary().latest_evidence_at.as_deref(),
+            expected
+        );
+        assert_eq!(bodies.freshness_summary().class, FreshnessClass::Fresh);
+        bodies.items.clear();
+        assert_eq!(bodies.freshness_summary().latest_evidence_at, None);
+    }
 }
