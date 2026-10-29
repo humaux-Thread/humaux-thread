@@ -6346,6 +6346,7 @@ modules:
 - `maintenance::tests::roles_hygiene`
 - `maintenance::tests::support::throwaway`
 - `maintenance::throwaway`
+- `private-worker::distill_stale_tests`
 - `private-worker::tests::contribution_execution_runner`
 - `private-worker::tests::derived_dispatch_e2e`
 - `private-worker::tests::distill_hop_e2e`

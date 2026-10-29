@@ -59,6 +59,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_affects`
 - reads `private.evidence_objects`
 - reads `private.identity_note_materializations`
+- reads `projection.stream_log`
 - writes `ops.outbox`
 - writes `private.distill_candidates`
 - writes `private.processing_runs`
@@ -1587,6 +1588,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_affects`
 - reads `private.evidence_objects`
 - reads `private.identity_note_materializations`
+- reads `projection.stream_log`
 - writes `ops.outbox`
 - writes `private.distill_candidates`
 - writes `private.processing_runs`
@@ -2107,6 +2109,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_affects`
 - reads `private.evidence_objects`
 - reads `private.identity_note_materializations`
+- reads `projection.stream_log`
 - writes `ops.outbox`
 - writes `private.distill_candidates`
 - writes `private.processing_runs`
@@ -2846,6 +2849,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_affects`
 - reads `private.evidence_objects`
 - reads `private.identity_note_materializations`
+- reads `projection.stream_log`
 - writes `ops.outbox`
 - writes `private.distill_candidates`
 - writes `private.processing_runs`
@@ -4063,6 +4067,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_affects`
 - reads `private.evidence_objects`
 - reads `private.identity_note_materializations`
+- reads `projection.stream_log`
 - writes `ops.outbox`
 - writes `private.distill_candidates`
 - writes `private.processing_runs`
@@ -4721,6 +4726,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_affects`
 - reads `private.evidence_objects`
 - reads `private.identity_note_materializations`
+- reads `projection.stream_log`
 - writes `ops.outbox`
 - writes `private.distill_candidates`
 - writes `private.processing_runs`
@@ -7923,6 +7929,7 @@ read by:
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::onboarding`
+- (no process): `private-worker::distill_stale_tests`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::stream_repo`
@@ -8270,6 +8277,7 @@ read by:
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::phase9_assessed_contract`
+- (no process): `private-worker::distill_stale_tests`
 - (no process): `private-worker::tests::start_manual_contribution_command_0131`
 - (no process): `private-worker::tests::support::dispatch_fence`
 - process(cargo-xtask): `adapters::distill_repo`
@@ -8630,6 +8638,7 @@ written by:
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::measure`
 - (no process): `maintenance::tests::onboarding`
+- (no process): `private-worker::distill_stale_tests`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::distill_repo`
@@ -9721,6 +9730,7 @@ written by:
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `maintenance::tests::partitions`
+- (no process): `private-worker::distill_stale_tests`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::remember`
@@ -10176,6 +10186,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::forget_race`
 - process(cargo-xtask): `adapters::distill_repo`
 - process(cargo-xtask): `adapters::private_projection_registry`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -11799,6 +11810,7 @@ written by:
 - (no process): `maintenance::tests::measure`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::rebuild_cli`
+- (no process): `private-worker::distill_stale_tests`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::serving_repo`
 - process(cargo-xtask): `adapters::stream_repo`
@@ -11842,6 +11854,7 @@ read by:
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::measure`
 - process(cargo-xtask): `adapters::context_repo`
+- process(cargo-xtask): `adapters::distill_repo`
 - process(cargo-xtask): `adapters::exact_census`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::note_repo`
@@ -11854,6 +11867,7 @@ read by:
 - process(cargo-xtask): `xtask::soak`
 - process(humaux-admin): `adapters::postgres`
 - process(humaux-consolidation-worker): `adapters::context_repo`
+- process(humaux-consolidation-worker): `adapters::distill_repo`
 - process(humaux-consolidation-worker): `adapters::exact_census`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::note_repo`
@@ -11863,6 +11877,7 @@ read by:
 - process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::continuity_read`
+- process(humaux-gateway): `adapters::distill_repo`
 - process(humaux-gateway): `adapters::exact_census`
 - process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::memory_governance_repo`
@@ -11873,6 +11888,7 @@ read by:
 - process(humaux-gateway): `adapters::remember`
 - process(humaux-gateway): `adapters::retrieve`
 - process(humaux-maintenance): `adapters::context_repo`
+- process(humaux-maintenance): `adapters::distill_repo`
 - process(humaux-maintenance): `adapters::exact_census`
 - process(humaux-maintenance): `adapters::maintenance_repo`
 - process(humaux-maintenance): `adapters::memory_governance_repo`
@@ -11886,6 +11902,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::switch_visible`
 - process(humaux-private-worker): `adapters::context_repo`
+- process(humaux-private-worker): `adapters::distill_repo`
 - process(humaux-private-worker): `adapters::exact_census`
 - process(humaux-private-worker): `adapters::memory_governance_repo`
 - process(humaux-private-worker): `adapters::note_repo`
@@ -11895,6 +11912,7 @@ read by:
 - process(humaux-private-worker): `adapters::retrieve`
 - process(humaux-public-worker): `adapters::postgres`
 - process(humaux-retrieval-worker): `adapters::context_repo`
+- process(humaux-retrieval-worker): `adapters::distill_repo`
 - process(humaux-retrieval-worker): `adapters::exact_census`
 - process(humaux-retrieval-worker): `adapters::memory_governance_repo`
 - process(humaux-retrieval-worker): `adapters::note_repo`
@@ -11940,6 +11958,7 @@ written by:
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::serve`
+- (no process): `private-worker::distill_stale_tests`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `xtask::architecture_check`
@@ -13052,6 +13071,7 @@ executed by:
 - `maintenance::tests::roles_hygiene`
 - `maintenance::tests::serve`
 - `maintenance::tests::support::throwaway`
+- `private-worker::distill_stale_tests`
 - `private-worker::tests::contribution_execution_runner`
 - `private-worker::tests::derived_dispatch_e2e`
 - `private-worker::tests::distill_hop_e2e`
@@ -13335,6 +13355,7 @@ executed by:
 - `humaux-private-worker`
 - `maintenance::tests::drill`
 - `private-worker::distill`
+- `private-worker::distill_stale_tests`
 - `private-worker::inference_rpc`
 - `private-worker::main`
 - `private-worker::route_providers`
@@ -17548,6 +17569,7 @@ why: humaux-adapters dependency
 modules naming it:
 - `humaux-private-worker`
 - `private-worker::distill`
+- `private-worker::distill_stale_tests`
 - `private-worker::inference_rpc`
 - `private-worker::main`
 - `private-worker::route_providers`
@@ -17634,6 +17656,7 @@ why: serde_json dependency
 modules naming it:
 - `humaux-private-worker`
 - `private-worker::distill`
+- `private-worker::distill_stale_tests`
 - `private-worker::route_providers`
 - `private-worker::tests::contribution_execution_runner`
 - `private-worker::tests::derived_dispatch_e2e`
@@ -17744,6 +17767,7 @@ modules naming it:
 why: humaux-testkit dependency
 
 modules naming it:
+- `private-worker::distill_stale_tests`
 - `private-worker::tests::contribution_execution_runner`
 - `private-worker::tests::derived_dispatch_e2e`
 - `private-worker::tests::distill_hop_e2e`
