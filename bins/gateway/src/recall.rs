@@ -26,7 +26,7 @@ use humaux_adapters::{
         QdrantTransportError, RetrievalFamily, ha_profile_for, query_dense,
         query_dense_groups_bounded, query_sparse_groups,
     },
-    read_materialize::MaterializedItem,
+    read_materialize::{ItemFreshness, MaterializedItem},
     retrieval_query_log::QueryLogCounts,
     retrieve::{
         GatedTexts, IndexFace, MaterializedPrivateReadServing, PointSlots, QueryHmac,
@@ -67,12 +67,12 @@ use humaux_protocol::{
     mcp_catalog::CanonicalCatalog,
 };
 use humaux_retrieval::{
-    completeness::{CensusResult, FreshnessClass, LedgerClosure},
+    completeness::{CensusResult, LedgerClosure},
     envelope::{
-        CompletenessBlock, CompletenessInputs, Envelope, FreshnessBlock, LaneStatus,
-        MandatoryReport, PendingEnvelope, PinnedReport, PipelineBlock, ProfileBlock,
-        ProvenanceBlock, ProvenanceValue, build_projection_block, dense_lane_outcome_block,
-        dense_lane_substitution, no_serving_projection_envelope, sparse_lane_unavailable,
+        CompletenessBlock, CompletenessInputs, Envelope, LaneStatus, MandatoryReport,
+        PendingEnvelope, PinnedReport, PipelineBlock, ProfileBlock, ProvenanceBlock,
+        ProvenanceValue, build_projection_block, dense_lane_outcome_block, dense_lane_substitution,
+        no_serving_projection_envelope, sparse_lane_unavailable,
     },
     planner::QueryClass,
     rerank::{Executor, RerankFailure, degradations, not_run, settle, unavailable},
@@ -1360,7 +1360,8 @@ fn accepted_output(
     sparse: SparseLeg,
     mut clock: StageClock,
 ) -> Result<(PendingEnvelope<ToolOutput>, QueryLogCounts), ErrorCode> {
-    let items = render_items(materialized.bodies.items);
+    let freshness = materialized.bodies.freshness_summary();
+    let items = render_items(materialized.bodies.items, &materialized.bodies.freshness)?;
     let returned = u32::try_from(items.len()).map_err(|_| ErrorCode::Internal)?;
     let candidate_count = u32::try_from(candidate_count).map_err(|_| ErrorCode::Internal)?;
     let projection =
@@ -1473,11 +1474,7 @@ fn accepted_output(
                 },
                 pipeline: pipeline.clone(),
                 provenance: provenance.clone(),
-                freshness: FreshnessBlock {
-                    class: FreshnessClass::Unknown,
-                    latest_evidence_at: None,
-                    state_age_seconds: None,
-                },
+                freshness,
                 grounding: materialized.grounding,
                 mandatory: MandatoryReport::NotRun,
                 pinned: PinnedReport::NotRun,
@@ -1514,41 +1511,47 @@ fn accepted_output(
     Ok((pending, counts))
 }
 
-fn render_items(items: Vec<MaterializedItem>) -> Vec<Value> {
+fn render_items(
+    items: Vec<MaterializedItem>,
+    freshness: &HashMap<Uuid, ItemFreshness>,
+) -> Result<Vec<Value>, ErrorCode> {
     items
         .into_iter()
         .map(|item| match item {
-            MaterializedItem::Memory { memory_id, content } => json!({
+            MaterializedItem::Memory { memory_id, content } => Ok(json!({
                 "kind": "memory",
                 "memory_id": memory_id,
                 "content": content,
-            }),
+                "freshness": freshness.get(&memory_id).ok_or(ErrorCode::Internal)?,
+            })),
             MaterializedItem::TemporaryEvidence {
                 evidence_id,
                 stream_seq,
                 processing_state,
                 payload,
                 linked_memory_ids,
-            } => json!({
+            } => Ok(json!({
                 "kind": "temporary_evidence",
+                "freshness": freshness.get(&evidence_id).ok_or(ErrorCode::Internal)?,
                 "evidence_id": evidence_id,
                 "stream_seq": stream_seq,
                 "processing_state": processing_state.as_db_str(),
                 "payload": payload,
                 "linked_memory_ids": linked_memory_ids,
-            }),
+            })),
             MaterializedItem::ArtifactUnavailable {
                 evidence_id,
                 stream_seq,
                 processing_state,
                 linked_memory_ids,
-            } => json!({
+            } => Ok(json!({
                 "kind": "artifact_unavailable",
+                "freshness": freshness.get(&evidence_id).ok_or(ErrorCode::Internal)?,
                 "evidence_id": evidence_id,
                 "stream_seq": stream_seq,
                 "processing_state": processing_state.as_db_str(),
                 "linked_memory_ids": linked_memory_ids,
-            }),
+            })),
         })
         .collect()
 }
@@ -1564,6 +1567,61 @@ mod tests {
     use std::sync::{Mutex, atomic::AtomicUsize, atomic::Ordering};
 
     use crate::rerank_client::RerankPort;
+
+    /// ADR-0111 D-C: unclassified Evidence prevents a fresh-only envelope claim.
+    #[test]
+    fn fresh_memory_with_temporary_evidence_has_unknown_summary() {
+        use humaux_adapters::read_materialize::{MaterializationSnapshot, MaterializedBodies};
+        use humaux_retrieval::completeness::FreshnessClass;
+        let memory_id = Uuid::from_u128(1);
+        let evidence_id = Uuid::from_u128(2);
+        let unknown = ItemFreshness {
+            class: FreshnessClass::Unknown,
+            policy_id: None,
+            policy_version: None,
+            latest_evidence_at: None,
+            state_age_seconds: None,
+        };
+        let mut fresh = unknown.clone();
+        fresh.class = FreshnessClass::Fresh;
+        fresh.policy_id = Some("evidence-per-type");
+        fresh.policy_version = Some(1);
+        let bodies = MaterializedBodies {
+            snapshot: MaterializationSnapshot {
+                context_snapshot_seq: 0,
+                snapshot_token_sha256: String::new(),
+            },
+            items: vec![
+                MaterializedItem::Memory {
+                    memory_id,
+                    content: json!({}),
+                },
+                MaterializedItem::TemporaryEvidence {
+                    evidence_id,
+                    stream_seq: 1,
+                    processing_state: ProcessingState::Processing,
+                    payload: json!({}),
+                    linked_memory_ids: vec![],
+                },
+            ],
+            freshness: HashMap::from([(memory_id, fresh), (evidence_id, unknown.clone())]),
+        };
+        assert_eq!(
+            bodies.freshness_summary().class,
+            FreshnessClass::Unknown,
+            "ADR-0111 D-C: temporary Evidence must participate in the summary"
+        );
+        let rendered = render_items(bodies.items, &bodies.freshness).expect("recall items");
+        assert_eq!(rendered.len(), 2);
+        CanonicalCatalog::load()
+            .expect("catalog")
+            .validate_output(ToolName::Recall, &json!({"items": rendered}))
+            .expect("closed recall item schema");
+        assert_eq!(
+            rendered[1]["freshness"],
+            serde_json::to_value(unknown).expect("annotation")
+        );
+    }
 
     fn clock_after(laps: &[Stage]) -> Value {
         let mut clock = StageClock::start();
