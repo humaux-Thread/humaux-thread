@@ -2,7 +2,7 @@
 //! Depends-on: crates=[toml]; services=[]; env=[CARGO_MANIFEST_DIR]; modules=[xtask::architecture_check, xtask::benchset_declaration, xtask::dod_check, xtask::phase]
 //! Called-by: [xtask::main]
 //! Invariants: [a failing item without a ledger row is red; a ledger row whose item no longer fails is red (the row must be deleted); a row without a module-card owner is red; --release turns every row without deferred_past_go_live red and lists every deferred row for owner sign-off; an unknown ledger section or key, and an unparsable --phase value, is rejected, never ignored]
-//! Spec: Baseline §57.1; §69; §80.1.1; §46
+//! Spec: Baseline §78.1; §57.1; §69; §80.1.1; §46
 //!
 //! §57.1 rule 2: `not_applicable` is only for an object that is not yet due, and it names the missing object. A
 //! due gate that is red is therefore a row in `xtask/known_red.toml` with the module card that fixes it, never an
@@ -13,7 +13,8 @@
 //! `benchset` (G80-16 verdicts per benchmark set, reused from `benchset_declaration`) and `due_items`
 //! (the §57.1 rule 3 list, judged against the `PHASE` file); `crate_boundary` (G-M01-3 violations from
 //! `architecture_check`, M01 D5) is the fourth. M01 cards add their sections to [`SECTIONS`] together with an
-//! evaluator. `lint_allows` is the fifth and is not a "due but red" item: it pins the exact `#[allow(...)]`
+//! evaluator. `magic_literals` uses the G-M01-11 evaluator and item ratchet (§78.1 / M01 D7).
+//! `lint_allows` is the fifth and is not a "due but red" item: it pins the exact `#[allow(...)]`
 //! count per §78.4 lint (M01 D6 / G-M01-8), and `cargo xtask architecture-check` is what compares the pin with
 //! the tree — this module reads the rows so a malformed baseline is red here too, and names each one in the log.
 
@@ -28,11 +29,12 @@ const LEDGER_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/known_red.toml")
 const LEDGER_FILE: &str = "xtask/known_red.toml";
 /// Sections this build evaluates. A section nobody evaluates would never go red, so the parser rejects any
 /// other name instead of ignoring it.
-const SECTIONS: [&str; 5] = [
+const SECTIONS: [&str; 6] = [
     "dod",
     "benchset",
     "due_items",
     "crate_boundary",
+    "magic_literals",
     "lint_allows",
 ];
 /// The one baseline section: `[[lint_allows]]` rows are not item verdicts, so they have their own keys.
@@ -518,6 +520,18 @@ fn boundary_items(violations: Vec<(String, String)>) -> Vec<Item> {
         .collect()
 }
 
+/// §78.1 / M01 D7: use the same strict parser and shrink-only judgment as `known-red`.
+pub fn magic_literal_reds(raw: &str, hits: Vec<(String, String)>) -> Vec<String> {
+    let (ledger, mut reds) = parse_ledger(raw);
+    let rows = ledger.get("magic_literals").map_or(&[][..], Vec::as_slice);
+    let report = judge("magic_literals", &boundary_items(hits), rows, false);
+    for line in &report.ledgered_lines {
+        println!("known-red: ledgered [magic_literals] {line}");
+    }
+    reds.extend(report.reds);
+    reds
+}
+
 fn section_items(section: &str, phase: u32) -> Result<Vec<Item>, String> {
     match section {
         "dod" => dod_items(phase),
@@ -526,6 +540,10 @@ fn section_items(section: &str, phase: u32) -> Result<Vec<Item>, String> {
         "crate_boundary" => {
             crate::architecture_check::crate_boundary_violations().map(boundary_items)
         }
+        "magic_literals" => crate::architecture_check::magic_literal_violations_at(
+            &crate::architecture_check::workspace_root(),
+        )
+        .map(boundary_items),
         other => Err(format!("no evaluator is wired for section `{other}`")),
     }
 }
@@ -1326,6 +1344,29 @@ mod tests {
         let covered = judge("crate_boundary", &items, &rows, false);
         assert!(covered.reds.is_empty(), "{:?}", covered.reds);
         assert_eq!(covered.ledgered_lines.len(), 1);
+    }
+
+    /// §78.1: unknown keys, missing owners, duplicate rows, new hits and removed hits remain red.
+    #[test]
+    fn magic_literal_rows_use_the_shrink_only_judgment() {
+        let raw = "[[magic_literals]]\nid = 'p::url#1'\nowner = 'M11'\nreason = 'existing'\n";
+        let hits = || vec![("p::url#1".into(), "p:line 1".into())];
+        assert_eq!(magic_literal_reds(raw, hits()), Vec::<String>::new());
+        assert_eq!(magic_literal_reds("", hits()).len(), 1);
+        assert_eq!(magic_literal_reds(raw, vec![]).len(), 1);
+        assert_eq!(
+            magic_literal_reds(&raw.replace("owner = 'M11'", "owner = ''"), hits()).len(),
+            1
+        );
+        assert_eq!(
+            magic_literal_reds(&format!("{raw}count = 1\n"), hits()).len(),
+            1
+        );
+        assert_eq!(magic_literal_reds(&format!("{raw}{raw}"), hits()).len(), 1);
+        assert_eq!(
+            SECTIONS.iter().filter(|s| **s == "magic_literals").count(),
+            1
+        );
     }
 
     /// The committed ledger is well formed: it parses clean and every row has a module-card owner and a reason.

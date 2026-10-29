@@ -1,8 +1,8 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.curation_candidate_targets, private.curation_candidates, private.memory_projects, private.memory_projects_live, private.nodes, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.subjects, public.entities] w=[coord.tasks, private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.i4_authority_scan, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::serial_lane]
+//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.curation_candidate_targets, private.curation_candidates, private.memory_projects, private.memory_projects_live, private.nodes, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.subjects, public.entities] w=[coord.tasks, private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.i4_authority_scan, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::known_red, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main, xtask::vocab_check]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails; G-M23-3 / G-M23-3b read docs/architecture/db_objects.md and backup_catalog.toml and fail, never not_applicable, on a missing file or an inventory without foreign-key blocks; G-M23-3b also fails unless every D5_RESTORE_DEPENDENCIES entry is a KNOWLEDGE catalog row (M23 D5)]
-//! Spec: Baseline §53.3; §55.1; §59.1; §65; §78.3; §78; §78.4; §52.4; §22.1; §23.1④; ADR-0110 D-B; ADR-0110 D-C; ADR-0121 D-A; ADR-0123 D3
+//! Spec: Baseline §53.3; §55.1; §59.1; §65; §78.3; §78; §78.1; §78.4; §52.4; §22.1; §23.1④; ADR-0110 D-B; ADR-0110 D-C; ADR-0121 D-A; ADR-0123 D3
 //! dep-map: allow table-undeclared — the G-M23-3 / G-M23-3b fixtures name schema objects in strings
 //!
 //! xtask `architecture-check` — the CI gate family for §53.3 (Outcome fallback rule +
@@ -1703,6 +1703,179 @@ pub fn crate_boundary_violations() -> Result<Vec<(String, String)>, String> {
         .into_iter()
         .map(|v| (v.id, v.detail))
         .collect())
+}
+
+/// §78.1 / M01 D7: only runtime crate source; bootstrap, registry and network configuration live elsewhere.
+fn magic_scan_path(path: &str) -> bool {
+    path.starts_with("crates/")
+        && path.contains("/src/")
+        && !door_is_test_tree(path)
+        && !matches!(path.split('/').nth(1), Some("contracts" | "infra-network"))
+}
+
+/// §78.1: blank test items using code-only brace positions, preserving literal contents and line numbers elsewhere.
+fn magic_production(source: &str) -> String {
+    let code: String = mask_comments_and_literals(source)
+        .chars()
+        .zip(source.chars())
+        .map(|(masked, original)| {
+            if masked == ' ' {
+                " ".repeat(original.len_utf8())
+            } else {
+                masked.to_string()
+            }
+        })
+        .collect();
+    let mut spans = Vec::new();
+    let mut at = 0;
+    while let Some(rel) = code[at..].find("#[cfg(") {
+        let start = at + rel;
+        at = start + 6;
+        if !(code[start..].starts_with("#[cfg(test)]")
+            || code[start..].starts_with("#[cfg(all(test,"))
+        {
+            continue;
+        }
+        let tail = &code[start..];
+        let end = match (tail.find(';'), tail.find('{')) {
+            (Some(s), Some(b)) if s < b => start + s + 1,
+            (_, Some(b)) => matching_brace_end(&code, start + b).unwrap_or(code.len()),
+            (Some(s), None) => start + s + 1,
+            _ => code.len(),
+        };
+        spans.push((start, end));
+        at = end;
+    }
+    code_without_comments(&blank_spans(source, &spans))
+}
+
+/// §78.1: literal comparisons and match arms on plan/provider identities, including names absent from the catalogue.
+fn magic_name_branch(source: &str, start: usize, end: usize) -> bool {
+    let before = &source[..start];
+    let after = source[end..].trim_start();
+    let context = before.rsplit([';', '{', '}']).next().unwrap_or("");
+    let identity = |s: &str| {
+        s.split(|c: char| !c.is_alphanumeric() && c != '_')
+            .any(|word| word.contains("plan") || word.contains("provider"))
+    };
+    if identity(context)
+        && (context.contains("==") || context.contains("!=") || context.contains("matches!"))
+    {
+        return true;
+    }
+    if after.starts_with("=>")
+        && let Some(at) = before.rfind("match ")
+    {
+        let header = before[at..].split('{').next().unwrap_or("");
+        return identity(header)
+            && matching_brace_end(source, at + header.len()).is_some_and(|close| end < close);
+    }
+    false
+}
+
+/// §78.1: mechanical URL/host/model/provider patterns; G-M04-1 exclusively owns catalogue keys and numeric quotas.
+// ponytail: text patterns cannot resolve macros, aliases or arbitrary model names; upgrade to token/semantic analysis
+// if review finds such escapes. TTL/threshold numbers require ConfigEntry/config-check (M01 D7), not numeric grep.
+fn magic_literal_hits(path: &str, source: &str, plans: &BTreeSet<String>) -> Vec<(String, String)> {
+    let source = magic_production(source);
+    let bytes = source.as_bytes();
+    let mut at = 0;
+    let mut counts = BTreeMap::new();
+    let mut hits = Vec::new();
+    while at < bytes.len() {
+        let start = at;
+        let end = match bytes[at] {
+            b'r' => raw_string_end(bytes, at),
+            b'"' => Some(string_end(bytes, at + 1)),
+            b'\'' => {
+                at = char_literal_end(&source, at);
+                continue;
+            }
+            _ => None,
+        };
+        let Some(end) = end else {
+            at += 1;
+            continue;
+        };
+        at = end;
+        let token = &source[start..end];
+        let value = token.split_once('"').unwrap().1.rsplit_once('"').unwrap().0;
+        let lower = value.to_ascii_lowercase();
+        let model =
+            "gpt- claude- gemini- qwen deepseek text-embedding- bge- gte- jina- mistral- llama-"
+                .split_whitespace()
+                .any(|p| lower.starts_with(p));
+        let provider = "openai anthropic dashscope minimax cohere bedrock azure-openai"
+            .split_whitespace()
+            .any(|p| lower == p);
+        let host = ".com .net .ai .internal"
+            .split_whitespace()
+            .any(|suffix| value.ends_with(suffix))
+            || value.starts_with("127.0.0.1");
+        if plans.contains(value)
+            || !(model
+                || provider
+                || host
+                || value
+                    .strip_prefix("https://")
+                    .or_else(|| value.strip_prefix("http://"))
+                    .is_some_and(|host| !host.is_empty())
+                || value == "localhost"
+                || value == "[::1]"
+                || magic_name_branch(&source, start, end))
+        {
+            continue;
+        }
+        let count = counts.entry(value.to_owned()).or_insert(0);
+        *count += 1;
+        let line = source[..start].bytes().filter(|b| *b == b'\n').count() + 1;
+        hits.push((
+            format!("{path}::{value}#{count}"),
+            format!("{path}:line {line}: {token}"),
+        ));
+    }
+    hits
+}
+
+/// G-M01-11 (§78.1): strict input reads; a missing catalogue/source tree is a failure, never not_applicable.
+pub fn magic_literal_violations_at(root: &Path) -> Result<Vec<(String, String)>, String> {
+    let catalogue = fs::read_to_string(root.join(M04_CATALOGUE_FILE))
+        .map_err(|e| format!("{M04_CATALOGUE_FILE}: {e}"))?;
+    let plans = m04_catalogue_plan_keys(&catalogue)?;
+    if plans.is_empty() {
+        return Err(format!("{M04_CATALOGUE_FILE}: no plan keys"));
+    }
+    let paths =
+        m03_2_code_files(root, &root.join("crates")).map_err(|e| format!("crates/: {e}"))?;
+    let mut scanned = 0;
+    let mut hits = Vec::new();
+    for path in paths {
+        let disp = display(root, &path);
+        if path.extension().is_none_or(|ext| ext != "rs") || !magic_scan_path(&disp) {
+            continue;
+        }
+        let source = fs::read_to_string(&path).map_err(|e| format!("{disp}: {e}"))?;
+        scanned += 1;
+        hits.extend(magic_literal_hits(&disp, &source, &plans));
+    }
+    if scanned == 0 {
+        return Err("crates/: no runtime Rust source scanned".into());
+    }
+    Ok(hits)
+}
+
+/// G-M01-11 (§78.1); red record: red/m01-7-magic-literals-r1 adds a retrieval URL (PR body holds CI receipt).
+fn m01_7_magic_literal_ratchet(root: &Path) -> Verdict {
+    let reds = magic_literal_violations_at(root).and_then(|hits| {
+        let raw = fs::read_to_string(root.join(LINT_BASELINE_FILE))
+            .map_err(|e| format!("{LINT_BASELINE_FILE}: {e}"))?;
+        Ok(crate::known_red::magic_literal_reds(&raw, hits))
+    });
+    match reds {
+        Ok(reds) if reds.is_empty() => Verdict::Pass,
+        Ok(reds) => Verdict::Fail(reds),
+        Err(error) => Verdict::Fail(vec![error]),
+    }
 }
 
 // ============================================================================
@@ -12251,6 +12424,10 @@ pub fn run(_args: &[String]) -> i32 {
             m01_6_lint_allow_ratchet(&root),
         ),
         (
+            "M01 D7 / G-M01-11 (§78.1 magic literals and plan/provider branches; shrink-only ledger)",
+            m01_7_magic_literal_ratchet(&root),
+        ),
+        (
             "§78 boundary lint (no env::var outside config/bootstrap)",
             env_var_scan(&root),
         ),
@@ -12486,6 +12663,87 @@ mod tests {
     /// A rendered compose document (`docker compose config --format json`) with the given `services` object body.
     fn np_json(services: &str) -> String {
         format!("{{\"name\":\"np\",\"services\":{{{services}}}}}")
+    }
+
+    /// §78.1: exact mechanical and branch coverage, with G-M04-1 catalogue keys excluded.
+    #[test]
+    fn magic_literals_exact_patterns_and_branches() {
+        let source = r##"const U: &str = r#"https://api.example.com"#;
+const M: &str = "qwen3-max"; const H: &str = "api.example.com";
+if provider_id == "bespoke" {} if plan == "private-tier" {}
+match provider { "another" => 1, _ => 0 }; if plan == "catalogued" {}
+const P: &str = "openai"; const V: &str = "https://api.example.com";"##;
+        let plans = BTreeSet::from(["catalogued".into()]);
+        let hits = magic_literal_hits("p", source, &plans);
+        let values: Vec<_> = hits
+            .iter()
+            .map(|(id, _)| id.split_once("::").unwrap().1)
+            .collect();
+        let expected = "https://api.example.com#1 qwen3-max#1 api.example.com#1 bespoke#1 private-tier#1 another#1 openai#1 https://api.example.com#2";
+        assert_eq!(values, expected.split_whitespace().collect::<Vec<_>>());
+        assert_eq!(hits[0].1, "p:line 1: r#\"https://api.example.com\"#");
+    }
+
+    /// §78.1: comments and every test item are excluded; production after a test item is still scanned.
+    #[test]
+    fn magic_literals_test_and_comment_boundaries() {
+        let source = r##"// "https://comment.example.com"
+/* "https://block.example.com" */
+#[cfg(test)] fn t() { let s = r#"{https://test.example.com"#; }
+#[cfg(all(test, unix))] mod tests { const M: &str = "qwen3-max"; }
+const U: &str = "https://real.example.com"; // "https://tail.example.com"
+"##;
+        assert_eq!(
+            magic_literal_hits("p", source, &BTreeSet::new()),
+            vec![(
+                "p::https://real.example.com#1".into(),
+                "p:line 5: \"https://real.example.com\"".into()
+            )]
+        );
+        let paths = [
+            "crates/contracts/src/lib.rs",
+            "crates/infra-network/src/http.rs",
+            "bins/gateway/src/main.rs",
+            "config/a.rs",
+            "crates/retrieval/tests/a.rs",
+            "crates/retrieval/src/lib.rs",
+        ];
+        assert_eq!(
+            paths.map(magic_scan_path),
+            [false, false, false, false, false, true]
+        );
+    }
+
+    /// G-M01-11: exercise the actual gate; the injected retrieval URL fails this assertion on targeted CI.
+    #[test]
+    fn magic_literals_repository_gate() {
+        assert_eq!(m01_7_magic_literal_ratchet(&real_root()), Verdict::Pass);
+        assert_eq!(
+            own_source_count("m01_7_magic_literal_", "ratchet(&root),"),
+            1
+        );
+    }
+
+    /// §57.1: delivered gate inputs are mandatory, never an empty successful scan.
+    #[test]
+    fn magic_literals_missing_inputs_fail() {
+        let tmp = fresh_tmp("magic-inputs");
+        let gate = || m01_7_magic_literal_ratchet(&tmp);
+        fs::create_dir_all(tmp.join("deploy/plans")).unwrap();
+        assert!(matches!(gate(), Verdict::Fail(_)));
+        fs::write(
+            tmp.join(M04_CATALOGUE_FILE),
+            r#"{"plan_versions":[{"plan_key":"catalogued"}]}"#,
+        )
+        .unwrap();
+        assert!(matches!(gate(), Verdict::Fail(_)));
+        fs::create_dir_all(tmp.join("crates/retrieval/src")).unwrap();
+        fs::write(tmp.join("crates/retrieval/src/lib.rs"), "fn empty() {}").unwrap();
+        assert!(matches!(gate(), Verdict::Fail(_)));
+        fs::create_dir_all(tmp.join("xtask")).unwrap();
+        fs::write(tmp.join(LINT_BASELINE_FILE), "").unwrap();
+        assert_eq!(m01_7_magic_literal_ratchet(&tmp), Verdict::Pass);
+        fs::remove_dir_all(tmp).unwrap();
     }
 
     /// The problems over one rendered compose document at the production path.
