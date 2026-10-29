@@ -34,7 +34,17 @@ async-trait = "0.1"
 # why: subscription RFC3339 periods (§71.2); used-by: [billing-worker::creem]
 time = { version = "0.3", features = ["parsing"] }
 
+# why: maintenance-only owner doors and C2 projection (§71.3); used-by: [billing-worker::process]
+humaux-adapters = { path = "../../crates/adapters" }
+# why: configured plan version and opaque tenant IDs (§78.2); used-by: [billing-worker::process]
+uuid = { version = "1.25.0" }
+
 [dev-dependencies]
+# why: real PostgreSQL isolated fixture (§79.2); used-by: [billing-worker::tests::process]
+humaux-testkit = { path = "../../crates/testkit" }
+# why: independent owner readback of exact DB effects (§79.2); used-by: [billing-worker::tests::process]
+postgres = { version = "0.19", features = ["with-uuid-1", "with-serde_json-1"] }
+
 # why: runtime-only random HMAC test keys (§79.4); used-by: [billing-worker::tests::signature, tests]
 uuid = { version = "1.25.0", features = ["v4"] }
 # why: test-only loopback Creem routes (§79.4); used-by: [billing-worker::fake_creem, tests]

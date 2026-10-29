@@ -3552,6 +3552,34 @@ modules:
 - `maintenance::tests::serve`
 - `maintenance::tests::support::throwaway`
 
+### `HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_EVERY_SECONDS`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(humaux-maintenance)
+
+modules:
+- `maintenance::serve`
+- `maintenance::tests::serve`
+
+### `HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_LIMIT`
+- witness: literal
+- registry: raw
+
+kind:
+- runtime
+
+processes:
+- process(humaux-maintenance)
+
+modules:
+- `maintenance::serve`
+- `maintenance::tests::serve`
+
 ### `HUMAUX_MAINTENANCE_SERVE_JOBS_DEAD_RETENTION_SECONDS`
 - witness: literal
 - registry: raw
@@ -6231,9 +6259,11 @@ modules:
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_race`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::hot_path_indexes`
+- `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
 - `adapters::tests::ledger_frontier`

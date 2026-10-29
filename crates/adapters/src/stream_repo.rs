@@ -7,7 +7,8 @@
 //!   services=[PostgreSQL(any)
 //!   r=[ops.commit_seq_seq, ops.jobs, ops.outbox, projection.processing_gaps, projection.rebuild_tickets,
 //!   projection.tenant_placements] w=[ops.outbox, projection.stream_checkpoints, projection.stream_log]
-//!   x=[projection.retire_failed_ticket, projection.stream_point_ledger], PostgreSQL(role_maintenance),
+//!   x=[projection.retire_failed_ticket, projection.stream_point_ledger], PostgreSQL(role_maintenance)
+//!   r=[private.ingest_tickets] w=[private.ingest_tickets],
 //!   PostgreSQL(role_retrieval_worker) x=[projection.claim_issued_tickets, projection.unplaced_issued_tickets]];
 //!   env=[HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::placement_repo, adapters::postgres, adapters::qdrant, adapters::retrieve, domain::dataclass, domain::egress, domain::identity,
@@ -28,8 +29,9 @@
 //!   (ADR-0064 D-N(g)); issue_ticket_in_txn and next_commit_seq hold the workspace's only Rust-side `stream_log`
 //!   INSERT and `ops.commit_seq_seq` allocation (architecture-check G-M09-1; the SQL-side issuers in migrations are
 //!   outside it, ADR-0075 D-C), the ticket door runs on the caller's transaction in §60's statement order and never
-//!   commits]
-//! Spec: Baseline §6.2.0; §11; §15.1; §15.2; §15.3; §23.1②; §23.3; §60; ADR-0052; ADR-0057; ADR-0062; ADR-0064; ADR-0075
+//!   commits;
+//!   ingest-ticket expiry is the M09-owned §15.6 door: tenant-scoped, bounded, ISSUED only, and never deletes rows]
+//! Spec: Baseline §6.2.0; §6.2.2; §11; §15.1; §15.2; §15.3; §15.6; §23.1②; §23.3; §60; ADR-0052; ADR-0057; ADR-0062; ADR-0064; ADR-0075
 //!
 //! The consistency arithmetic itself lives in
 //! `humaux_projection::stream` (no IO, unit-tested there); this module only fetches the
@@ -661,6 +663,41 @@ pub async fn retire_failed(
     txn.commit().await?;
 
     Ok(retired)
+}
+
+/// §15.6 / ADR-0123 D4: expire at most `limit` unredeemed ingest tickets of one tenant, oldest expiry first.
+/// The DB clock and each ticket's stored `expires_at` decide expiry; rows remain in `expected` forever.
+/// §6.2.2 already grants this UPDATE to maintenance, so no definer or elevated role is needed.
+pub async fn expire_ingest_tickets(
+    pool: &MaintenanceDbPool,
+    tenant_id: Uuid,
+    limit: i64,
+) -> Result<u64, sqlx::Error> {
+    if limit <= 0 {
+        return Err(sqlx::Error::Protocol(
+            "ingest expiry limit must be positive".into(),
+        ));
+    }
+    // dep: PostgreSQL(role_maintenance) — §15.6 tenant-scoped state transition, never a purge
+    let mut txn = pool.pool().begin().await?;
+    set_tenant_local(&mut txn, tenant_id).await?;
+    let result = sqlx::query(
+        "WITH victims AS ( \
+             SELECT ticket_id FROM private.ingest_tickets \
+              WHERE tenant_id = $1 AND state = 'ISSUED' \
+                AND expires_at < now() \
+              ORDER BY expires_at, ticket_id LIMIT $2 FOR UPDATE SKIP LOCKED \
+         ) \
+         UPDATE private.ingest_tickets t SET state = 'EXPIRED' \
+          FROM victims v WHERE t.ticket_id = v.ticket_id \
+            AND t.tenant_id = $1 AND t.state = 'ISSUED'",
+    )
+    .bind(tenant_id)
+    .bind(limit)
+    .execute(&mut *txn)
+    .await?;
+    txn.commit().await?;
+    Ok(result.rows_affected())
 }
 
 /// §15.2 `ISSUED -> LOST` patrol for one tenant: an orphaned ticket (no matching in-flight

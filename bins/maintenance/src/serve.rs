@@ -6,7 +6,8 @@
 //!   cluster-level DR_EVIDENCE task (ADR-0064 D-K / 10.11 D) runs the same way: one statement over the backup and
 //!   drill receipts with the WAL latch, two in-process `statvfs` reads, and one `telemetry::dr::publish`. The cluster-level
 //!   AUTHORITY_I4 task (ADR-0123 D3, §65) is the report-only §59.1 I4 scan: one statement appends the owner definer's count to
-//!   `ops.repair_findings`, then `authority_i4_violations` is set once.
+//!   `ops.repair_findings`, then `authority_i4_violations` is set once. INGEST_TICKETS calls the M09 owner door
+//!   to expire due ISSUED tickets without shrinking expected (§15.6, ADR-0123 D4).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-telemetry, libc, serde_json, tokio, uuid];
 //!   services=[PostgreSQL(role_maintenance), fs(statvfs of the DR paths)]; env=[CARGO_PKG_VERSION,
 //!   HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS, HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH, HUMAUX_MAINTENANCE_DR_REPO_FS_PATH,
@@ -14,6 +15,7 @@
 //!   HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_EVERY_SECONDS, HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_LIMIT,
 //!   HUMAUX_MAINTENANCE_SERVE_CYCLE_SECONDS, HUMAUX_MAINTENANCE_SERVE_DR_EVIDENCE_EVERY_SECONDS,
+//!   HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_EVERY_SECONDS, HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_LIMIT,
 //!   HUMAUX_MAINTENANCE_SERVE_JOBS_DEAD_RETENTION_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_JOBS_DONE_RETENTION_SECONDS, HUMAUX_MAINTENANCE_SERVE_JOBS_EVERY_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_JOBS_LIMIT, HUMAUX_MAINTENANCE_SERVE_LOST_AFTER_SECONDS,
@@ -131,6 +133,7 @@ const SYSTEM_STEP_UP: &str = "none: scheduled task (ADR-0062 D-P)";
 const fn every_key(task: Task) -> &'static str {
     match task {
         Task::Lost => "HUMAUX_MAINTENANCE_SERVE_LOST_EVERY_SECONDS",
+        Task::IngestTickets => "HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_EVERY_SECONDS",
         Task::QuotaReservations => "HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_EVERY_SECONDS",
         Task::QuotaRenewal => "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_EVERY_SECONDS",
         Task::ProviderBudgets => "HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_EVERY_SECONDS",
@@ -152,6 +155,7 @@ const fn every_key(task: Task) -> &'static str {
 const fn limit_key(task: Task) -> Option<&'static str> {
     Some(match task {
         Task::Lost => "HUMAUX_MAINTENANCE_SERVE_LOST_LIMIT",
+        Task::IngestTickets => "HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_LIMIT",
         Task::QuotaReservations => "HUMAUX_MAINTENANCE_SERVE_QUOTA_RESERVATIONS_LIMIT",
         Task::QuotaRenewal => "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LIMIT",
         Task::ProviderBudgets => "HUMAUX_MAINTENANCE_SERVE_PROVIDER_BUDGETS_LIMIT",
@@ -325,6 +329,10 @@ async fn call(
     match task {
         // dep: PostgreSQL(role_maintenance) — projection.stream_log ISSUED -> LOST (adapters::stream_repo::sweep_lost)
         Task::Lost => stream_repo::sweep_lost(pool, tenant, cfg.lost_after, i64::from(limit))
+            .await
+            .map_err(|e| e.to_string()),
+        // dep: PostgreSQL(role_maintenance) — §15.6 owner door retains every ingest ticket in expected
+        Task::IngestTickets => stream_repo::expire_ingest_tickets(pool, tenant, i64::from(limit))
             .await
             .map_err(|e| e.to_string()),
         // dep: PostgreSQL(role_maintenance) — control.reap_quota_reservations (0113 owner definer)

@@ -2,7 +2,7 @@
 //!   core talks to a billing provider, so no provider type enters the core (module design M04 D7).
 //! Depends-on: crates=[async-trait, humaux-domain, time, uuid]; services=[]; env=[];
 //!   modules=[domain::billing, domain::error]
-//! Called-by: [adapters::billing_repo, billing-worker::creem, tests]
+//! Called-by: [adapters::billing_processor_repo, billing-worker::creem, billing-worker::process, tests]
 //! Invariants: [the port and its DTOs hold no provider type and no HTTP type: the application crate takes no `http`
 //!   dependency, so headers cross as `&[(&str, &str)]`; every method fails with `ErrorCode` and nothing else (the
 //!   two-error-enum rule of §52 overrides the §71.2 sketch's `BillingError`); the trait stays object-safe, so a worker
@@ -69,6 +69,8 @@ pub struct ProviderSubscription {
     pub reference: ExternalSubscriptionRef,
     /// The provider's identifier of its customer.
     pub customer: ExternalCustomerRef,
+    /// §71.3: the fetched provider product pins the plan; webhook product state may be stale.
+    pub product: String,
     /// The provider-neutral status, the input of `domain::billing::project_state`.
     pub status: ObservedStatus,
     /// The start of the current paid period.

@@ -1,7 +1,7 @@
 //! `retrieval::envelope` — §23 Recall Result Envelope.
 //! Depends-on: crates=[humaux-domain, humaux-telemetry, serde, serde_json]; services=[];
 //!   env=[]; modules=[domain::context, domain::error, domain::grounding, retrieval::compiler, retrieval::completeness, retrieval::planner, retrieval::request, telemetry::degrade]
-//! Called-by: [adapters::processing_status, adapters::context_repo, adapters::read_gate, adapters::retrieve, gateway::context, gateway::memory, gateway::recall, retrieval::completeness, retrieval::rerank, retrieval::signals, tests]
+//! Called-by: [adapters::read_materialize, adapters::processing_status, adapters::context_repo, adapters::read_gate, adapters::retrieve, gateway::context, gateway::memory, gateway::recall, retrieval::completeness, retrieval::rerank, retrieval::signals, tests]
 //! Invariants: [A2 compares the Qdrant point count with the ledger's ProjectionReads points, never with ticket
 //!   counts (ADR-0057 D-A); build_projection_block is the only place completeness_ratio / current are computed
 //!   and the only producer of PROJECTION_INVISIBLE_LOSS / PROJECTION_LAG, composed loss-then-lag (ADR-0057 D-E);
