@@ -291,7 +291,7 @@ mod tests {
             let wire = encode(&Error::classified(code.as_str()));
             assert_eq!(decode(&wire).class(), Some(code.as_str()));
         }
-        assert_eq!(decode("unknown: redacted").class(), Some("Internal"));
+        assert_eq!(decode("unknown: redacted").class(), Some("INTERNAL"));
     }
 
     /// ADR-0066 D-L: a socket served by any uid but the registered private-worker uid is refused before a byte is
