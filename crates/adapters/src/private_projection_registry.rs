@@ -2,13 +2,13 @@
 //!   stored vector each binding was projected from, and the embedding label's fingerprint binding.
 //! Depends-on: crates=[humaux-domain, humaux-projection, sha2, sqlx]; services=[PostgreSQL(any)
 //!   r=[private.memory_records] w=[projection.embedding_fingerprints, projection.memory_vectors,
-//!   projection.private_memory_points], PostgreSQL(role_gateway),
+//!   projection.private_memory_points] x=[private.lock_publish_source], PostgreSQL(role_gateway),
 //!   PostgreSQL(role_retrieval_worker)]; env=[];
 //!   modules=[adapters::placement_repo, adapters::postgres, domain::authority, domain::identity, domain::ids,
 //!   projection::card, projection::embedding_fingerprint, projection::note_chunks, projection::serving]
 //! Called-by: [adapters::projection_worker, adapters::retrieve, retrieval-worker::main, tests]
 //! Invariants: [sole private point-id resolver: binds a Qdrant point id to a Memory in PostgreSQL and re-checks the
-//!   source fence; no Qdrant IO here; cross-tenant/workspace, collisions and lost races are typed errors, never a
+//!   source fence and §37 deletion overlay in the registration transaction; no Qdrant IO here; cross-tenant/workspace, collisions and lost races are typed errors, never a
 //!   guessed binding; a registration that carries a vector writes it in the SAME transaction as the registry row
 //!   (ADR-0064 D-B), so a fingerprinted registry row always has its vector row (0232 FK); every retirement purges
 //!   the vector bytes the last live binding held, by UPDATE (ADR-0064 D-D); one embedding label is bound to one
@@ -337,10 +337,19 @@ async fn current_source_matches(
     txn: &mut Txn<'_>,
     registration: &PrivateMemoryPointRegistration,
 ) -> Result<(), PrivateProjectionRegistryError> {
+    // §37: READ COMMITTED must acquire its source snapshot after the fence wait.
+    if !sqlx::query_scalar::<_, bool>("SELECT private.lock_publish_source($1, NULL, $2)")
+        .bind(registration.family.tenant_id.0)
+        .bind(registration.memory_id.0)
+        .fetch_one(&mut **txn)
+        .await?
+    {
+        return Err(PrivateProjectionRegistryError::SourceNotLive);
+    }
     let row = sqlx::query(
         "SELECT updated_at, sha256(convert_to(content::text,'UTF8')) AS body_sha256, \
                 status, superseded_by \
-         FROM private.memory_records \
+         FROM private.memory_records AS m \
          WHERE tenant_id = $1 AND memory_id = $2",
     )
     .bind(registration.family.tenant_id.0)

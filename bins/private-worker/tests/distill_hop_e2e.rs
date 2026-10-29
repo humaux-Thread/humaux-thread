@@ -296,6 +296,16 @@ fn seed_evidence(f: &mut Fixture, text: &str) -> (Uuid, i64, i64) {
 
 /// [`seed_evidence`] with another `origin_class` (the DB CHECK literal).
 fn seed_evidence_as(f: &mut Fixture, text: &str, origin_class: &str) -> (Uuid, i64, i64) {
+    seed_evidence_in_state(f, text, origin_class, "ISSUED")
+}
+
+// §37 / ADR-0092 D-C: a forgotten fixture starts terminal before its first dispatcher claim.
+fn seed_evidence_in_state(
+    f: &mut Fixture,
+    text: &str,
+    origin_class: &str,
+    state: &str,
+) -> (Uuid, i64, i64) {
     let payload = serde_json::json!({ "text": text });
     // `gateway::remember` hashes the request's raw JSON bytes without normalizing them
     // (`raw_json_bytes_are_hashed_without_normalization`); a pretty-printed body is what a
@@ -363,8 +373,8 @@ fn seed_evidence_as(f: &mut Fixture, text: &str, origin_class: &str) -> (Uuid, i
         .get(0);
     txn.execute(
         "INSERT INTO projection.stream_log \
-           (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version, stream_seq, commit_seq) \
-         VALUES ($1, 'workspace', $2, $3, $4, $5, $6, $7)",
+           (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version, stream_seq, commit_seq, state, settled_at) \
+         VALUES ($1, 'workspace', $2, $3, $4, $5, $6, $7, $8, CASE WHEN $8 = 'TOMBSTONED' THEN now() END)",
         &[
             &f.tenant_id,
             &f.workspace_id,
@@ -373,6 +383,7 @@ fn seed_evidence_as(f: &mut Fixture, text: &str, origin_class: &str) -> (Uuid, i
             &STREAM_PROJECTION_VERSION,
             &stream_seq,
             &commit_seq,
+            &state,
         ],
     )
     .expect("insert stream_log ticket");
@@ -2616,4 +2627,49 @@ fn d12_a_tool_channel_reply_in_content_is_parsed_and_accepted_once() {
         .expect("the distilled memory's epistemic status")
         .get(0);
     assert_eq!(epistemic, "INTERPRETATION");
+}
+
+/// §37 / ADR-0092 D-C: forgotten Evidence is terminal without provider admission or retry.
+#[test]
+fn forgotten_evidence_finishes_without_provider_call() {
+    let Some(mut f) = setup_db("forgotten_evidence_finishes_without_provider_call") else {
+        return;
+    };
+    seed_evidence_in_state(
+        &mut f,
+        "forgotten fixture",
+        "AuthenticatedAgent",
+        "TOMBSTONED",
+    );
+    let provider = FakeProvider::new(vec![]);
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    let report = run_pass(&rt, &f, &provider, "stale-worker");
+    assert_eq!(provider.calls(), 0);
+    assert_eq!(
+        (report.claimed, report.completed, report.deferred),
+        (1, 1, 0)
+    );
+    let states: Vec<String> = f
+        .admin
+        .query(
+            "SELECT status FROM ops.jobs WHERE tenant_id=$1 AND job_type='DERIVED_DISTILL'",
+            &[&f.tenant_id],
+        )
+        .expect("durable job states")
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    assert_eq!(states, vec!["DONE"], "stale job must finish, never RETRY");
+    let tenant = f.tenant_id;
+    // dep: PostgreSQL(owner) — §79.2 verifies the fixture purge after its handle drops.
+    let mut admin = Client::connect(&f.dsn, NoTls).expect("cleanup readback");
+    drop(f);
+    let remaining: i64 = admin
+        .query_one(
+            "SELECT count(*) FROM control.tenants WHERE tenant_id=$1",
+            &[&tenant],
+        )
+        .expect("fixture cleanup")
+        .get(0);
+    assert_eq!(remaining, 0, "routing fixture cleanup must leave no tenant");
 }

@@ -277,6 +277,8 @@ impl DistillDispatchReport {
 /// Why a dispatcher run stopped early.
 #[derive(Debug)]
 pub enum DistillError {
+    /// §37 / ADR-0092 D-C: forgotten input, terminal without another provider call.
+    StaleInput,
     Db(DbError),
     Reasoning(PrivateReasoningError),
     Config(ErrorCode),
@@ -286,6 +288,7 @@ impl DistillError {
     /// Static class for `last_error_class` and the job line — never DB or provider text.
     fn class(&self) -> &'static str {
         match self {
+            Self::StaleInput => "STALE_INPUT",
             Self::Db(_) => "WORKER_DB_ERROR",
             Self::Reasoning(error) => error.class().unwrap_or("UNCLASSIFIED_REASONING_ERROR"),
             Self::Config(_) => "WORKER_CONFIG_ERROR",
@@ -296,6 +299,7 @@ impl DistillError {
 impl std::fmt::Display for DistillError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::StaleInput => f.write_str("stale distill input"),
             Self::Db(error) => write!(f, "distill database error: {error}"),
             Self::Reasoning(error) => write!(f, "distill reasoning error: {error}"),
             Self::Config(code) => write!(f, "distill configuration rejected: {code:?}"),
@@ -982,7 +986,7 @@ async fn read_leg(
     .await?
     else {
         txn.rollback().await?;
-        return Ok(ReadLeg::Unavailable);
+        return Err(DistillError::StaleInput);
     };
     // ADR-0067 D-B: before the processing run, the prompt, the budget and any provider reservation.
     if distill_repo::evidence_has_identity_contract(&mut txn, tenant_id, evidence_id).await? {
@@ -1450,7 +1454,8 @@ async fn call_loop(
             0,
             Some(&inferred.disclosure_id.to_string()),
         )
-        .await?;
+        .await?
+        .ok_or(DistillError::StaleInput)?;
         // ADR-0061 card 34b: §41.2 run counted only once this commit lands.
         distill_repo::commit_distill_write(abandoned_txn, finished_runs, 0).await?;
         empty_retries += 1;
@@ -1482,7 +1487,9 @@ async fn settle_after_error(
         "humaux-private-worker: distill job={} evidence={} error: {error}",
         claim.job_id, row.evidence_id
     );
-    if calls == 0 {
+    if matches!(error, DistillError::StaleInput) {
+        settle_stale_input(dispatcher, lease, row).await
+    } else if calls == 0 {
         settle_not_ready(dispatcher, claim, lease, row, error.class()).await
     } else {
         // ponytail: ADR-0058 R8 (c) known limit — a transient DB error in the write leg AFTER a
@@ -1491,6 +1498,24 @@ async fn settle_after_error(
         // reply, inside the claim's hard deadline.
         settle_failed_call(dispatcher, lease, row, attempt, error.class()).await
     }
+}
+
+// §37: stale input is terminal; retrying could re-egress forgotten Evidence.
+async fn settle_stale_input(
+    dispatcher: &Dispatcher<'_>,
+    lease: &DistillLease<'_>,
+    row: &ClaimedEvidence,
+) -> Result<Settled, DistillError> {
+    settle_as(
+        dispatcher,
+        lease,
+        Some((row, OutboxSettle::Done)),
+        DistillFinish::Done,
+        Some("STALE_INPUT"),
+        0.0,
+        JobOutcome::Done,
+    )
+    .await
 }
 
 /// (c) of the module doc: ONE transaction — the generation-fenced job finish first, then the
@@ -1538,6 +1563,7 @@ async fn write_leg(
             })
         }
         Ok(None) => Ok(Settled::new(JobOutcome::LeaseLost, None)),
+        Err(DistillError::StaleInput) => settle_stale_input(dispatcher, lease, row).await,
         Err(error) => {
             eprintln!(
                 "humaux-private-worker: distill job={} write failed: {error}",
@@ -1681,7 +1707,8 @@ async fn write_txn(
         inserted,
         Some(&inferred.disclosure_id.to_string()),
     )
-    .await?;
+    .await?
+    .ok_or(DistillError::StaleInput)?;
     if !distill_repo::settle_outbox_in_txn(
         &mut txn,
         row.outbox_id,
