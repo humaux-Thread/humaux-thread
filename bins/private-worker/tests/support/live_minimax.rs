@@ -2,7 +2,7 @@
 //!   key lookup, DNS pins, descriptor and the real `OpenAiCompatibleProvider` over the egress transport.
 //! Depends-on: crates=[async-trait, humaux-adapters, serde_json]; services=[MiniMax]; env=[HUMAUX_MINIMAX_DNS_PINS,
 //!   MINIMAX_API_KEY]; modules=[adapters::byok, adapters::byok::ssrf, private-worker::tests::support::live_provider]
-//! Called-by: [humaux-private-worker, private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e,
+//! Called-by: [private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e,
 //!   private-worker::tests::m29_attribution_e2e, private-worker::tests::support::distill_lane]
 //! Invariants: [the key never reaches a println, a panic message or a child's argv (only a child's environment); the
 //!   DNS pins are the one dial-time resolver, as in production (ADR-0039 D0)]

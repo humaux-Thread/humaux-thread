@@ -2,7 +2,7 @@
 //!   claim on the shared dev database: foreign tenants are made invisible to the claim, leftover slots are healed.
 //! Depends-on: crates=[postgres]; services=[PostgreSQL(owner) r=[ops.distill_tenant_scheduler, ops.jobs]
 //!   w=[ops.provider_slots]]; env=[]; modules=[]
-//! Called-by: [private-worker::distill_stale_tests, private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e,
+//! Called-by: [private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e,
 //!   private-worker::tests::m29_attribution_e2e]
 //! Invariants: [the fence holds FOR UPDATE on every scheduler row that existed before the test, and the claim takes
 //!   tenants FOR UPDATE OF t SKIP LOCKED, so a test only ever serves the tenants it creates; a slot bound to a live

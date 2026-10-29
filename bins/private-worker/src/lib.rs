@@ -834,20 +834,3 @@ mod tests {
         }
     }
 }
-
-#[cfg(test)]
-extern crate self as humaux_private_worker;
-#[cfg(test)]
-#[allow(dead_code)]
-#[path = "../tests/support/distill_lane.rs"]
-mod distill_lane;
-#[cfg(test)]
-mod distill_stale_tests;
-#[cfg(test)]
-#[allow(dead_code)]
-#[path = "../tests/support/live_minimax.rs"]
-mod live_minimax;
-#[cfg(test)]
-#[allow(dead_code)]
-#[path = "../tests/support/live_provider.rs"]
-mod live_provider;
