@@ -274,6 +274,7 @@ struct Run {
     reading_published: bool,
     failed: u64,
     first_error: Option<String>,
+    last_error: Option<ErrorCode>,
 }
 
 impl Run {
@@ -282,7 +283,8 @@ impl Run {
         stage_recorded(
             task.label(),
             now,
-            (self.failed > 0 || !finished).then_some(ErrorCode::Internal),
+            self.last_error
+                .or_else(|| (self.failed > 0 || !finished).then_some(ErrorCode::Internal)),
             [
                 self.tenants
                     + u64::from(matches!(
@@ -294,10 +296,20 @@ impl Run {
         );
     }
 
-    fn fail(&mut self, error: String) {
+    fn fail(&mut self, (code, error): (ErrorCode, String)) {
         self.failed += 1;
+        self.last_error = Some(code);
         self.first_error.get_or_insert(error);
     }
+}
+
+// §39 / §52: infrastructure failures retain a dependency class alongside the diagnostic.
+fn dependency_error(error: impl std::fmt::Display) -> (ErrorCode, String) {
+    (ErrorCode::DependencyUnavailable, error.to_string())
+}
+
+fn task_error(error: ErrorCode) -> (ErrorCode, String) {
+    (error, error.to_string())
 }
 
 /// In-memory rotation state (ADR-0062 L13: a restart begins a new rotation and runs every task once).
@@ -321,7 +333,7 @@ async fn call(
     limit: i32,
     cfg: &Config,
     audit: &AdminAction<'_>,
-) -> std::result::Result<u64, String> {
+) -> std::result::Result<u64, (ErrorCode, String)> {
     // §72.2.1 / 0245: the system tenant (nil id) can hold no reservation: both producers refuse
     // it (quota_repo::validate_auth, provider_budget::validate_request), and so do both reapers and the renewal door
     // (0245 refuses the nil tenant): nothing to call.
@@ -337,16 +349,16 @@ async fn call(
         // dep: PostgreSQL(role_maintenance) — projection.stream_log ISSUED -> LOST (adapters::stream_repo::sweep_lost)
         Task::Lost => stream_repo::sweep_lost(pool, tenant, cfg.lost_after, i64::from(limit))
             .await
-            .map_err(|e| e.to_string()),
+            .map_err(dependency_error),
         // dep: PostgreSQL(role_maintenance) — §15.6 owner door retains every ingest ticket in expected
         Task::IngestTickets => stream_repo::expire_ingest_tickets(pool, tenant, i64::from(limit))
             .await
-            .map_err(|e| e.to_string()),
+            .map_err(dependency_error),
         // dep: PostgreSQL(role_maintenance) — control.reap_quota_reservations (0113 owner definer)
         Task::QuotaReservations => quota_repo::reap_expired(pool, TenantId(tenant), limit)
             .await
             .map(|n| n.unsigned_abs())
-            .map_err(|e| e.to_string()),
+            .map_err(task_error),
         // dep: PostgreSQL(role_maintenance) — control.renew_quota_period (0245 owner definer)
         Task::QuotaRenewal => quota_repo::renew_period(
             pool,
@@ -357,36 +369,36 @@ async fn call(
         )
         .await
         .map(|renewal| u64::from(renewal.staged.unsigned_abs()))
-        .map_err(|e| e.to_string()),
+        .map_err(task_error),
         // dep: PostgreSQL(role_maintenance) — ops.reap_expired_retrieval_provider_budget (0117 owner definer)
         Task::ProviderBudgets => {
             provider_budget::reap_expired_provider_budgets(pool, TenantId(tenant), limit)
                 .await
                 .map(|n| u64::from(n.unsigned_abs()))
-                .map_err(|e| e.to_string())
+                .map_err(task_error)
         }
         // dep: PostgreSQL(role_maintenance) — control.sweep_confirm_tokens (0218 owner purge door)
         Task::ConfirmTokens => {
             confirm_token_repo::sweep_expired(pool, tenant, cfg.confirm_retention, limit)
                 .await
                 .map(i64::unsigned_abs)
-                .map_err(|e| e.to_string())
+                .map_err(task_error)
         }
         // dep: PostgreSQL(role_maintenance) — ops.purge_expired_selection_snapshots (0218 owner purge door)
         Task::Snapshots => maintenance_repo::purge_expired_selection_snapshots(pool, tenant, limit)
             .await
             .map(i64::unsigned_abs)
-            .map_err(|e| e.to_string()),
+            .map_err(dependency_error),
         Task::Jobs => maintenance_repo::purge_terminal_jobs(pool, tenant, cfg.jobs, limit)
             .await
             .map(i64::unsigned_abs)
-            .map_err(|e| e.to_string()),
+            .map_err(dependency_error),
         // dep: PostgreSQL(role_maintenance) — projection.reissue_unsettled_tickets (0220 owner definer)
         Task::Reissue => {
             maintenance_repo::reissue_unsettled_tickets(pool, tenant, cfg.reissue_cooldown, limit)
                 .await
                 .map(i64::unsigned_abs)
-                .map_err(|e| e.to_string())
+                .map_err(dependency_error)
         }
         // dep: PostgreSQL(role_maintenance) — ops.auto_redrive_schema_failed (0221 owner definer) + §77 row
         Task::Redrive => maintenance_repo::auto_redrive_schema_failed(
@@ -398,11 +410,19 @@ async fn call(
         )
         .await
         .map(i64::unsigned_abs)
-        .map_err(|e| e.to_string()),
+        .map_err(|e| {
+            let code = match e.exit_code() {
+                2 => ErrorCode::InvalidInput,
+                3 => ErrorCode::Forbidden,
+                _ => ErrorCode::DependencyUnavailable,
+            };
+            (code, e.to_string())
+        }),
         // Cluster-level: [`cluster`] runs these once per run, never per tenant.
-        Task::Partitions | Task::DrEvidence | Task::AuthorityI4 => {
-            Err(format!("{} has no tenant call", task.label()))
-        }
+        Task::Partitions | Task::DrEvidence | Task::AuthorityI4 => Err((
+            ErrorCode::Internal,
+            format!("{} has no tenant call", task.label()),
+        )),
     }
 }
 
@@ -413,8 +433,10 @@ async fn partitions(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
     let done =
         match tokio::time::timeout(cfg.cycle, maintenance_repo::propose_partitions(pool)).await {
             Ok(Ok(done)) => Ok(done),
-            Ok(Err(e)) => Err(format!("partitions: {e}")),
-            Err(_) => Err(format!("partitions: no answer within {CYCLE_SECONDS}")),
+            Ok(Err(e)) => Err(dependency_error(format!("partitions: {e}"))),
+            Err(_) => Err(dependency_error(format!(
+                "partitions: no answer within {CYCLE_SECONDS}"
+            ))),
         };
     match done {
         Ok(done) => {
@@ -438,8 +460,10 @@ async fn authority_i4(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
     let done =
         match tokio::time::timeout(cfg.cycle, maintenance_repo::scan_authority_i4(pool)).await {
             Ok(Ok(scan)) => Ok(scan),
-            Ok(Err(e)) => Err(format!("authority_i4: {e}")),
-            Err(_) => Err(format!("authority_i4: no answer within {CYCLE_SECONDS}")),
+            Ok(Err(e)) => Err(dependency_error(format!("authority_i4: {e}"))),
+            Err(_) => Err(dependency_error(format!(
+                "authority_i4: no answer within {CYCLE_SECONDS}"
+            ))),
         };
     match done {
         Ok(scan) => {
@@ -562,12 +586,18 @@ async fn dr_evidence(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
                 .await
             {
                 Ok(Ok(e)) => e,
-                Ok(Err(e)) => return Err(format!("dr_evidence: {e}")),
-                Err(_) => return Err(format!("dr_evidence: no answer within {CYCLE_SECONDS}")),
+                Ok(Err(e)) => return Err(dependency_error(format!("dr_evidence: {e}"))),
+                Err(_) => {
+                    return Err(dependency_error(format!(
+                        "dr_evidence: no answer within {CYCLE_SECONDS}"
+                    )));
+                }
             };
         let mut free = [0; Volume::ALL.len()];
         for (slot, path) in free.iter_mut().zip(&cfg.dr_paths) {
-            *slot = df_free_bytes(path, cfg.cycle).await?;
+            *slot = df_free_bytes(path, cfg.cycle)
+                .await
+                .map_err(dependency_error)?;
         }
         Ok(dr_reading(&evidence, free))
     };
@@ -575,7 +605,7 @@ async fn dr_evidence(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
 }
 
 // §39 / ADR-0064 D-K: only a published reading is the DR stage's output.
-fn finish_dr_reading(done: std::result::Result<DrReading, String>, run: &mut Run) {
+fn finish_dr_reading(done: std::result::Result<DrReading, (ErrorCode, String)>, run: &mut Run) {
     match done {
         Ok(reading) => {
             dr::publish(&reading);
@@ -632,10 +662,10 @@ async fn cycle(
                 // ADR-0062 D-S: a run whose page cannot be read counts as one failed call, so an unreachable
                 // database shows on the counter, not only as 503.
                 count_task_call(task, None);
-                run.fail(match failed {
+                run.fail(dependency_error(match failed {
                     Ok(Err(e)) => format!("tenant page: {e}"),
                     _ => format!("the tenant page did not answer within {CYCLE_SECONDS}"),
-                });
+                }));
                 stage_recorded(
                     task.label(),
                     resident::stage_now(),
@@ -657,8 +687,10 @@ async fn cycle(
                     .await
                 {
                     Ok(Ok(n)) => Ok(n),
-                    Ok(Err(e)) => Err(format!("tenant {tenant}: {e}")),
-                    Err(_) => Err(format!("tenant {tenant}: no answer within {CYCLE_SECONDS}")),
+                    Ok(Err((code, e))) => Err((code, format!("tenant {tenant}: {e}"))),
+                    Err(_) => Err(dependency_error(format!(
+                        "tenant {tenant}: no answer within {CYCLE_SECONDS}"
+                    ))),
                 };
             // ADR-0062 D-S: one count per tenant door call, after it committed or failed.
             count_task_call(task, done.as_ref().ok().copied());
@@ -986,9 +1018,30 @@ mod tests {
             empty.finish(task, 102.0, true);
             assert_state(102, 101);
             let mut failed = Run::default();
-            finish_dr_reading(Err("unavailable".to_owned()), &mut failed);
+            let error = super::task_error(super::ErrorCode::DependencyUnavailable);
+            if task == Task::DrEvidence {
+                finish_dr_reading(Err(error), &mut failed);
+            } else {
+                failed.fail(error);
+            }
             failed.finish(task, 103.0, true);
             assert_state(102, 101);
+            let mut outage = String::new();
+            render_stage_liveness(&mut outage, &[task.label()]);
+            let actual: Vec<_> = outage
+                .lines()
+                .filter(|l| {
+                    l.starts_with("stage_state{") || l.starts_with("stage_last_error_class{")
+                })
+                .collect();
+            assert_eq!(actual.len(), 2);
+            assert_eq!(
+                actual,
+                [
+                    format!("stage_last_error_class{{stage=\"{}\"}} 14", task.label()),
+                    format!("stage_state{{stage=\"{}\"}} 5", task.label()),
+                ]
+            );
             let partial = Run {
                 affected: 1,
                 failed: 1,

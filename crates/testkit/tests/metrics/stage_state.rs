@@ -21,11 +21,10 @@ fn stage_state() {
     assert_eq!(cases.len(), 6);
     for (stage, expected) in cases {
         stage_declared(stage, expected != 4, expected != 5);
-        if (1..=3).contains(&expected) || expected == 5 {
+        if (1..=3).contains(&expected) {
             stage_started(stage, 10.0);
             let error = match expected {
                 3 => Some(ErrorCode::Internal),
-                5 => Some(ErrorCode::DependencyUnavailable),
                 _ => None,
             };
             stage_recorded(stage, 11.0, error, [3, u64::from(expected == 1)]);
