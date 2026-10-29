@@ -2098,6 +2098,7 @@ mod tests {
     use super::*;
 
     // §57.1: flags from a separate shell command cannot satisfy a deploy-check input.
+    // ponytail: no heredoc tracking; use a shell AST if runbooks introduce heredocs (§57.1).
     fn env_commands(command: &str) -> Vec<Vec<String>> {
         let mut parts = Vec::new();
         let mut args = Vec::new();
@@ -2205,6 +2206,7 @@ mod tests {
     }
 
     // §48.1: every deployed binary, including new source files, is pinned; no missing input skips.
+    // ponytail: literal call-form matching; use a Rust AST if pool call syntax expands (§48.1).
     fn pool_sites(root: &Path, directory: &Path, sites: &mut BTreeMap<String, usize>) {
         for entry in std::fs::read_dir(directory).expect("deployed binary sources") {
             let path = entry.expect("source entry").path();
