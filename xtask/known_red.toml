@@ -6,6 +6,7 @@
 # `deferred_past_go_live = "<why>"` marks a row that stays red at go-live on purpose; `--release` is red for
 # every row without it and lists every deferred row for owner sign-off.
 # Sections: [[dod]], [[benchset]], [[due_items]], [[crate_boundary]] (G-M01-3; id = "<package> -> <dependency> (<kind>)", kind normal|dev|build), [[lint_allows]] (G-M01-8; lint = a §78.4 lint, count = its exact workspace allow count); any other section or key is rejected.
+# [[magic_literals]] (G-M01-11) uses item row keys; id = path::literal#occurrence, line-independent.
 # Row keys: id (required), owner (module card, M<nn>[-<card>], required), reason (required), deferred_past_go_live.
 # [[lint_allows]] row keys: lint, count, owner, reason — the row is the pinned expected value, not a waiver.
 #
@@ -289,3 +290,65 @@ count = 49
 owner = "M01-6"
 reason = "48 allows, each on a function clippy flagged with clippy.toml's threshold of 5, measured in two stages: 7 from the targeted clippy rounds (runs 39954828293/39957055872/39965486805/39968731760, retrieving the crates cargo had reached before it stopped at the first failing one) and 41 from the complete workspace sweep of run 39973585345, which ran clippy as the workspace rustc wrapper at warn level so every target of all 25 members was linted in one log (76 blocks in 41 functions, all now carrying #[allow(clippy::excessive_nesting)] with a ponytail reason); M01-6 refactors nothing and the count may only shrink; +1 = crates/adapters/tests/oauth_persistence.rs concurrent_double_consume_has_exactly_one_winner, merged from #259 (M02-8) after the sweep (PR CI 39994974812)"
 
+
+# --- magic_literals (§78.1 / M01 D7; existing hits only, shrink-only) ---
+
+[[magic_literals]]
+id = "crates/retrieval-provider/src/adapters.rs::https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings#1"
+owner = "M11"
+reason = "existing provider endpoint; registry migration belongs to provider owner"
+
+[[magic_literals]]
+id = "crates/retrieval-provider/src/adapters.rs::dashscope#1"
+owner = "M11"
+reason = "existing provider identity; provider owner"
+
+[[magic_literals]]
+id = "crates/retrieval-provider/src/adapters.rs::dashscope#2"
+owner = "M11"
+reason = "existing provider identity; provider owner"
+
+[[magic_literals]]
+id = "crates/retrieval-provider/src/adapters.rs::dashscope#3"
+owner = "M11"
+reason = "existing provider identity; provider owner"
+
+[[magic_literals]]
+id = "crates/retrieval-provider/src/metrics.rs::dashscope#1"
+owner = "M11"
+reason = "closed provider metric label (§53.2); provider owner"
+
+[[magic_literals]]
+id = "crates/infra-egress/src/http.rs::127.0.0.1#1"
+owner = "M05"
+reason = "loopback scheme guard (§7.4); protocol constant"
+
+[[magic_literals]]
+id = "crates/infra-egress/src/http.rs::localhost#1"
+owner = "M05"
+reason = "loopback scheme guard (§7.4); protocol constant"
+
+[[magic_literals]]
+id = "crates/infra-egress/src/http.rs::[::1]#1"
+owner = "M05"
+reason = "loopback scheme guard (§7.4); protocol constant"
+
+[[magic_literals]]
+id = "crates/adapters/src/rebuild.rs::127.0.0.1#1"
+owner = "M23"
+reason = "existing disposable restore drill host; owner M23"
+
+[[magic_literals]]
+id = "crates/adapters/src/rebuild.rs::127.0.0.1/32#1"
+owner = "M23"
+reason = "existing disposable restore drill CIDR; owner M23"
+
+[[magic_literals]]
+id = "crates/application/src/oauth.rs::127.0.0.1#1"
+owner = "M02"
+reason = "OAuth loopback redirect constraint; protocol constant"
+
+[[magic_literals]]
+id = "crates/application/src/oauth.rs::localhost#1"
+owner = "M02"
+reason = "OAuth loopback redirect constraint; protocol constant"
