@@ -720,17 +720,8 @@ async fn idle(poll: Duration, shutdown: &AtomicBool) {
     }
 }
 
-/// One claimed job: its work and its own heartbeat, polled together (ADR-0058 D-J), then the job
-/// line. A lost lease does not drop the work: it runs to its end (bounded by the HTTP cutoff) so
-/// the call is still ledgered, and its settle is refused by the generation fence.
-async fn run_claimed(
-    dispatcher: &Dispatcher<'_>,
-    claim: &DistillClaim,
-    local_deadline: Instant,
-    report: &mut DistillDispatchReport,
-) {
-    let dispatch = dispatcher.dispatch;
-    let lease = DistillLease::of(claim, &dispatch.lease_owner);
+// §39: keep the seat's recording wrapper within the §78.3 function-size gate.
+fn log_reclaimed(claim: &DistillClaim, max_attempts: i32) {
     if claim.last_error_class.as_deref() == Some(EXECUTION_UNCERTAIN) {
         // Main-line ruling E1: one line per T6 re-queue, naming the call whose outcome stayed
         // unknown — the resend is never silent.
@@ -743,9 +734,23 @@ async fn run_claimed(
                 .dispatch_model_call_id
                 .map_or_else(|| "-".to_owned(), |id| id.to_string()),
             claim.attempt,
-            dispatch.max_attempts,
+            max_attempts,
         );
     }
+}
+
+/// One claimed job: its work and its own heartbeat, polled together (ADR-0058 D-J), then the job
+/// line. A lost lease does not drop the work: it runs to its end (bounded by the HTTP cutoff) so
+/// the call is still ledgered, and its settle is refused by the generation fence.
+async fn run_claimed(
+    dispatcher: &Dispatcher<'_>,
+    claim: &DistillClaim,
+    local_deadline: Instant,
+    report: &mut DistillDispatchReport,
+) {
+    let dispatch = dispatcher.dispatch;
+    let lease = DistillLease::of(claim, &dispatch.lease_owner);
+    log_reclaimed(claim, dispatch.max_attempts);
     let lost = Cell::new(false);
     let mut attempt = claim.attempt;
     // ADR-0060 D-M: the admitted route's fields once the read leg admitted one.
