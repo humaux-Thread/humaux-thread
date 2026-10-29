@@ -121,8 +121,13 @@ pub fn normalize(
             .filter(|value| !value.is_null())
             .map(|value| cents(Some(value)))
             .transpose()?;
-        let period_start = cents(field("period_start"))?;
-        let period_end = cents(field("period_end"))?;
+        let period = if event_type == "checkout.completed" {
+            fetched_transaction.unwrap_or(source)
+        } else {
+            source
+        };
+        let period_start = cents(period.get("period_start").or_else(|| field("period_start")))?;
+        let period_end = cents(period.get("period_end").or_else(|| field("period_end")))?;
         if period_end <= period_start {
             return Err(ErrorCode::InvalidInput);
         }

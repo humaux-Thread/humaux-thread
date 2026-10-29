@@ -100,8 +100,10 @@ fn process_with(
     product: &str,
     fail_once: bool,
 ) -> Result<bool, ErrorCode> {
+    process_fetched(h, fetched_subscription(current, product), fail_once)
+}
+fn process_fetched(h: &Handle, subscription: Value, fail_once: bool) -> Result<bool, ErrorCode> {
     h.rt.block_on(async {
-        let subscription = fetched_subscription(current, product);
         // dep: HTTP(loopback) — merged Creem-shaped server; no external call (§79.4).
         let (base, server) = if fail_once {
             fake_creem::start_with_failure(subscription, json!({}), true).await
@@ -437,6 +439,23 @@ fn money_source_and_charge_replay() {
         h.admin.execute("UPDATE control.billing_inbox SET status='RECEIVED',processed_at=NULL WHERE event_id='checkout_paid'", &[]).unwrap();
         assert!(process(&h, "active"));
         assert_eq!(effects(&mut h), before);
+        payload["id"] = json!("stale_checkout");
+        payload["object"]["order"]["transaction"] = json!("txn_stale");
+        payload["object"]["order"]["period_start"] = json!(1);
+        payload["object"]["order"]["period_end"] = json!(2);
+        insert_payload(&mut h, &payload);
+        assert!(process(&h, "active"));
+        let period: Value = h.admin.query_one("SELECT jsonb_build_array(extract(epoch from period_start)::bigint,extract(epoch from period_end)::bigint) FROM control.billing_payments WHERE kind='CHARGE' AND provider_txn_ref='txn_stale'", &[]).unwrap().get(0);
+        assert_eq!(period, json!([1577836800_i64, 4070908800_i64]));
+        let before = effects(&mut h);
+        payload["id"] = json!("no_period");
+        insert_payload(&mut h, &payload);
+        let mut fetched = fetched_subscription("active", "prod_fixture");
+        fetched["current_period_start_date"] = Value::Null;
+        assert_eq!(process_fetched(&h, fetched, false), Ok(true));
+        let failed: Value = h.admin.query_one("SELECT jsonb_build_array(status,error_class) FROM control.billing_inbox WHERE event_id='no_period'", &[]).unwrap().get(0);
+        assert_eq!(failed, json!(["FAILED", "INVALID_INPUT"]));
+        assert_eq!(effects(&mut h), before);
         let mut renewal = money_payload(&h, "renewal_paid", "subscription.paid", "sub_fixture");
         renewal["object"]["last_transaction"]["id"] = json!("txn_renewal");
         insert_payload(&mut h, &renewal);
@@ -445,7 +464,8 @@ fn money_source_and_charge_replay() {
             payments(&mut h),
             json!([
                 ["txn_charge", "CHARGE", 1210, "USD"],
-                ["txn_renewal", "CHARGE", 1210, "USD"]
+                ["txn_renewal", "CHARGE", 1210, "USD"],
+                ["txn_stale", "CHARGE", 1210, "USD"]
             ])
         );
         let mut refund = money_payload(&h, "full_refund", "refund.created", "rf_full");
@@ -457,6 +477,7 @@ fn money_source_and_charge_replay() {
             json!([
                 ["txn_charge", "CHARGE", 1210, "USD"],
                 ["txn_renewal", "CHARGE", 1210, "USD"],
+                ["txn_stale", "CHARGE", 1210, "USD"],
                 ["rf_full", "REFUND", 1210, "USD"]
             ])
         );
@@ -553,6 +574,41 @@ fn invalid_money_and_historic_refund() {
                 ["negative", "FAILED", "INVALID_INPUT"]
             ])
         );
+    });
+}
+/// §71.3: conflicting nested tenants and foreign historical reversals have no money/grant effects.
+#[test]
+fn reversal_tenant_boundaries() {
+    run_db_fixture::<Fixture, _>("reversal_tenant_boundaries", |mut h| {
+        let tenant = h.tenant;
+        deliver(&mut h, "initial", "active", tenant);
+        assert!(process(&h, "active"));
+        let other: Uuid = h.admin.query_one("INSERT INTO control.tenants(name,state) VALUES ('other fixture','ACTIVE') RETURNING tenant_id", &[]).unwrap().get(0);
+        let before = effects(&mut h);
+        for kind in ["refund.created", "dispute.created"] {
+            for conflict in [true, false] {
+                let id = format!("{kind}_{conflict}");
+                let mut payload = money_payload(&h, &id, kind, &id);
+                payload["object"]["checkout"] = json!({"metadata":{"tenant_id":other}});
+                if !conflict {
+                    payload["object"]["subscription"]["metadata"]["tenant_id"] = json!(other);
+                    payload["object"]["transaction"]["period_start"] = json!(1);
+                    payload["object"]["transaction"]["period_end"] = json!(2);
+                }
+                insert_payload(&mut h, &payload);
+                assert!(process(&h, "active"));
+                let row: Value = h.admin.query_one("SELECT jsonb_build_array(status,error_class) FROM control.billing_inbox WHERE event_id=$1", &[&id]).unwrap().get(0);
+                let expected = if conflict {
+                    "TENANT_BOUNDARY"
+                } else {
+                    "FORBIDDEN"
+                };
+                assert_eq!(row, json!(["FAILED", expected]));
+                assert_eq!(effects(&mut h), before);
+                assert_eq!(payments(&mut h), json!([]));
+                assert_eq!(snapshot(&mut h), paid());
+            }
+        }
     });
 }
 /// G-M04-19 / §71.3: a reversal arriving before checkout must survive and project Free.
