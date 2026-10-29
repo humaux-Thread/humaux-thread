@@ -13748,6 +13748,7 @@ modules naming it:
 - `adapters::placement_repo`
 - `adapters::plan_repo`
 - `adapters::postgres`
+- `adapters::private_inference_rpc`
 - `adapters::private_projection_registry`
 - `adapters::processing_status`
 - `adapters::project_rollup`
