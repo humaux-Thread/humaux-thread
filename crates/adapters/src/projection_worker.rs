@@ -367,6 +367,17 @@ impl<'a> RowCtx<'a> {
             .unwrap_or_else(PoisonError::into_inner) = Some(code);
     }
 
+    fn stage_error(&self, terminal: RowTerminal) -> Option<ErrorCode> {
+        self.last_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .or(match terminal {
+                RowTerminal::Retry => Some(ErrorCode::DependencyUnavailable),
+                RowTerminal::Failed => Some(ErrorCode::InvalidInput),
+                _ => None,
+            })
+    }
+
     fn of(deps: &'a ProjectionWorkerDeps, policy: NoteChunkPolicy, bm25: &'a Bm25Probes) -> Self {
         Self {
             last_error: Mutex::new(None),
@@ -1826,11 +1837,6 @@ async fn write_slot(
             "projection_worker: stream_seq={stream_seq} qdrant_upsert transient={}",
             error.is_transient()
         );
-        ctx.record_error(if error.is_transient() {
-            ErrorCode::DependencyUnavailable
-        } else {
-            ErrorCode::InvalidInput
-        });
         return Err(if error.is_transient() {
             (RowTerminal::Retry, "qdrant_upsert_failed")
         } else {
@@ -1931,11 +1937,6 @@ async fn delete_retired(
     )
     .await
     {
-        ctx.record_error(if error.is_transient() {
-            ErrorCode::DependencyUnavailable
-        } else {
-            ErrorCode::InvalidInput
-        });
         return if error.is_transient() {
             (RowTerminal::Retry, "qdrant_delete_failed")
         } else {
@@ -2478,18 +2479,8 @@ async fn process_and_write(
                 bm25,
             };
             let result = process_row(&ctx, ticket.stream_seq, ticket.commit_seq).await;
-            if let Some(code) = *ctx
-                .last_error
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-            {
+            if let Some(code) = ctx.stage_error(result.0) {
                 outcome.last_error = Some(code);
-            } else if matches!(result.0, RowTerminal::Retry | RowTerminal::Failed) {
-                outcome.last_error = Some(if result.0 == RowTerminal::Retry {
-                    ErrorCode::DependencyUnavailable
-                } else {
-                    ErrorCode::InvalidInput
-                });
             }
             result
         }
