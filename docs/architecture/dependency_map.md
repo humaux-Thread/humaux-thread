@@ -7929,7 +7929,6 @@ read by:
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::onboarding`
-- (no process): `private-worker::distill_stale_tests`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::stream_repo`
@@ -8277,7 +8276,6 @@ read by:
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::phase9_assessed_contract`
-- (no process): `private-worker::distill_stale_tests`
 - (no process): `private-worker::tests::start_manual_contribution_command_0131`
 - (no process): `private-worker::tests::support::dispatch_fence`
 - process(cargo-xtask): `adapters::distill_repo`
@@ -8638,7 +8636,6 @@ written by:
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::measure`
 - (no process): `maintenance::tests::onboarding`
-- (no process): `private-worker::distill_stale_tests`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::distill_repo`
@@ -9730,7 +9727,6 @@ written by:
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `maintenance::tests::partitions`
-- (no process): `private-worker::distill_stale_tests`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::remember`
@@ -11810,7 +11806,6 @@ written by:
 - (no process): `maintenance::tests::measure`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::rebuild_cli`
-- (no process): `private-worker::distill_stale_tests`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::serving_repo`
 - process(cargo-xtask): `adapters::stream_repo`
@@ -11958,7 +11953,6 @@ written by:
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::serve`
-- (no process): `private-worker::distill_stale_tests`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `xtask::architecture_check`
@@ -13071,7 +13065,6 @@ executed by:
 - `maintenance::tests::roles_hygiene`
 - `maintenance::tests::serve`
 - `maintenance::tests::support::throwaway`
-- `private-worker::distill_stale_tests`
 - `private-worker::tests::contribution_execution_runner`
 - `private-worker::tests::derived_dispatch_e2e`
 - `private-worker::tests::distill_hop_e2e`
@@ -13355,7 +13348,6 @@ executed by:
 - `humaux-private-worker`
 - `maintenance::tests::drill`
 - `private-worker::distill`
-- `private-worker::distill_stale_tests`
 - `private-worker::inference_rpc`
 - `private-worker::main`
 - `private-worker::route_providers`
@@ -17569,7 +17561,6 @@ why: humaux-adapters dependency
 modules naming it:
 - `humaux-private-worker`
 - `private-worker::distill`
-- `private-worker::distill_stale_tests`
 - `private-worker::inference_rpc`
 - `private-worker::main`
 - `private-worker::route_providers`
@@ -17656,7 +17647,6 @@ why: serde_json dependency
 modules naming it:
 - `humaux-private-worker`
 - `private-worker::distill`
-- `private-worker::distill_stale_tests`
 - `private-worker::route_providers`
 - `private-worker::tests::contribution_execution_runner`
 - `private-worker::tests::derived_dispatch_e2e`
@@ -17767,7 +17757,6 @@ modules naming it:
 why: humaux-testkit dependency
 
 modules naming it:
-- `private-worker::distill_stale_tests`
 - `private-worker::tests::contribution_execution_runner`
 - `private-worker::tests::derived_dispatch_e2e`
 - `private-worker::tests::distill_hop_e2e`
