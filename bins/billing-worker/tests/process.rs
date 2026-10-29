@@ -1,7 +1,7 @@
 //! `billing-worker::tests::process` — real PG + fake Creem processor gates (§71.3).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-egress, humaux-testkit, postgres, serde_json, tokio, uuid];
-//!   services=[HTTP(loopback), PostgreSQL(owner) r=[control.subscriptions, control.subscription_events, control.entitlement_grants, control.entitlement_snapshots, control.billing_inbox] w=[control.tenants, control.plans, control.plan_versions, control.billing_inbox], PostgreSQL(role_maintenance)]; env=[];
-//!   modules=[adapters::postgres, adapters::tests::support::throwaway_db, billing-worker::creem, billing-worker::process, billing-worker::fake_creem, billing-worker::mode, domain::egress, domain::error, domain::ids, infra-egress::http, humaux-testkit]
+//!   services=[HTTP(loopback), PostgreSQL(owner) r=[control.subscriptions, control.subscription_events, control.entitlement_grants, control.entitlement_snapshots, control.billing_inbox, control.billing_payments] w=[control.tenants, control.plans, control.plan_versions, control.billing_inbox, control.entitlement_grants], PostgreSQL(role_maintenance)]; env=[];
+//!   modules=[adapters::postgres, adapters::entitlement_repo, adapters::tests::support::throwaway_db, billing-worker::creem, billing-worker::process, billing-worker::fake_creem, billing-worker::mode, domain::egress, domain::error, domain::ids, infra-egress::http, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [real maintenance identity; complete snapshot and effect counts; no mock PostgreSQL]
 //! Spec: Baseline §71.3; §76; §79.2
@@ -9,7 +9,7 @@
 mod fake_creem;
 #[path = "../../../crates/adapters/tests/support/throwaway_db.rs"]
 mod throwaway_db;
-use humaux_adapters::postgres::MaintenanceDbPool;
+use humaux_adapters::{entitlement_repo, postgres::MaintenanceDbPool};
 use humaux_billing_worker::{
     creem::CreemClient,
     mode::BillingMode,
@@ -86,8 +86,8 @@ fn free() -> Value {
     json!({"feature.byok":false})
 }
 fn deliver(h: &mut Handle, id: &str, arrival: &str, tenant: Uuid) {
-    let payload = json!({"id":id,"eventType":format!("subscription.{arrival}"),"created_at":1000,"object":{"id":"sub_fixture","status":arrival,"product":"prod_fixture","metadata":{"tenant_id":tenant},"current_period_start_date":"2020-01-01T00:00:00Z","current_period_end_date":"2099-01-01T00:00:00Z","last_transaction":{"id":"txn_fixture"}}});
-    // dep: PostgreSQL(owner) — authenticated ingress; sparse payment IDs must process before M04-11b money normalization (§71.3).
+    let payload = json!({"id":id,"eventType":format!("subscription.{arrival}"),"created_at":1000,"object":{"id":"sub_fixture","status":arrival,"product":"prod_fixture","metadata":{"tenant_id":tenant},"current_period_start_date":"2020-01-01T00:00:00Z","current_period_end_date":"2099-01-01T00:00:00Z","last_transaction":{"id":"txn_fixture","amount":500,"amount_paid":500,"currency":"USD","period_start":1577836800000_i64,"period_end":4070908800000_i64}}});
+    // dep: PostgreSQL(owner) — authenticated ingress with provider payment facts (§71.3).
     let stored = h.admin.execute("INSERT INTO control.billing_inbox(provider,event_id,event_type,object_id,payload) VALUES ('creem',$1,$2,'sub_fixture',$3) ON CONFLICT DO NOTHING", &[&id,&payload["eventType"].as_str().unwrap(),&payload]).unwrap();
     assert_eq!(stored, 1);
 }
@@ -100,8 +100,10 @@ fn process_with(
     product: &str,
     fail_once: bool,
 ) -> Result<bool, ErrorCode> {
+    process_fetched(h, fetched_subscription(current, product), fail_once)
+}
+fn process_fetched(h: &Handle, subscription: Value, fail_once: bool) -> Result<bool, ErrorCode> {
     h.rt.block_on(async {
-        let subscription = fetched_subscription(current, product);
         // dep: HTTP(loopback) — merged Creem-shaped server; no external call (§79.4).
         let (base, server) = if fail_once {
             fake_creem::start_with_failure(subscription, json!({}), true).await
@@ -386,4 +388,283 @@ fn past_due_projects_entire_free_template() {
             .get(0);
         assert_eq!(count, 6);
     });
+}
+
+fn money_payload(h: &Handle, id: &str, kind: &str, reference: &str) -> Value {
+    let transaction = json!({"id":"txn_charge","transaction":"txn_charge","subscription":"sub_fixture","amount":1000,"amount_due":1210,"amount_paid":1210,"tax_amount":210,"currency":"USD","period_start":1577836800000_i64,"period_end":4070908800000_i64});
+    let metadata = json!({"tenant_id":h.tenant});
+    let reversal = matches!(kind, "refund.created" | "dispute.created");
+    let mut payload = json!({"id":id,"eventType":kind,"created_at":1700000000000_i64,"object":{
+        "id":reference,"subscription":{"id":"sub_fixture","metadata":metadata},
+        "order":transaction,"last_transaction":transaction,"transaction":transaction,
+        "refund_amount":123,"amount":211,"currency":"USD"}});
+    if !reversal {
+        payload["object"]["metadata"] = metadata;
+    }
+    payload
+}
+fn insert_payload(h: &mut Handle, payload: &Value) {
+    assert_eq!(h.admin.execute("INSERT INTO control.billing_inbox(provider,event_id,event_type,object_id,payload) VALUES ('creem',$1,$2,$3,$4)", &[&payload["id"].as_str().unwrap(),&payload["eventType"].as_str().unwrap(),&payload["object"]["id"].as_str().unwrap(),payload]).unwrap(), 1);
+}
+fn payments(h: &mut Handle) -> Value {
+    h.admin.query_one("SELECT coalesce(jsonb_agg(jsonb_build_array(provider_txn_ref,kind,amount_cents,currency) ORDER BY kind,provider_txn_ref),'[]'::jsonb) FROM control.billing_payments", &[]).unwrap().get(0)
+}
+/// G-M04-18: gross tax-inclusive webhook amount_paid is stored (§71.3, lead ruling 2026-10-29).
+#[test]
+fn money_source_and_charge_replay() {
+    run_db_fixture::<Fixture, _>("money_source_and_charge_replay", |mut h| {
+        let mut payload = money_payload(
+            &h,
+            "checkout_paid",
+            "checkout.completed",
+            "checkout_fixture",
+        );
+        payload["object"]["order"]
+            .as_object_mut()
+            .unwrap()
+            .remove("period_start");
+        payload["object"]["order"]
+            .as_object_mut()
+            .unwrap()
+            .remove("period_end");
+        insert_payload(&mut h, &payload);
+        assert!(process(&h, "active"));
+        assert_eq!(
+            payments(&mut h),
+            json!([["txn_charge", "CHARGE", 1210, "USD"]]),
+            "G-M04-18: gross amount_paid=1210, not pre-tax amount=1000"
+        );
+        assert_eq!(snapshot(&mut h), paid());
+        let before = effects(&mut h);
+        h.admin.execute("UPDATE control.billing_inbox SET status='RECEIVED',processed_at=NULL WHERE event_id='checkout_paid'", &[]).unwrap();
+        assert!(process(&h, "active"));
+        assert_eq!(effects(&mut h), before);
+        payload["id"] = json!("stale_checkout");
+        payload["object"]["order"]["transaction"] = json!("txn_stale");
+        payload["object"]["order"]["period_start"] = json!(1);
+        payload["object"]["order"]["period_end"] = json!(2);
+        insert_payload(&mut h, &payload);
+        assert!(process(&h, "active"));
+        let period: Value = h.admin.query_one("SELECT jsonb_build_array(extract(epoch from period_start)::bigint,extract(epoch from period_end)::bigint) FROM control.billing_payments WHERE kind='CHARGE' AND provider_txn_ref='txn_stale'", &[]).unwrap().get(0);
+        assert_eq!(period, json!([1577836800_i64, 4070908800_i64]));
+        let before = effects(&mut h);
+        payload["id"] = json!("no_period");
+        insert_payload(&mut h, &payload);
+        let mut fetched = fetched_subscription("active", "prod_fixture");
+        fetched["current_period_start_date"] = Value::Null;
+        assert_eq!(process_fetched(&h, fetched, false), Ok(true));
+        let failed: Value = h.admin.query_one("SELECT jsonb_build_array(status,error_class) FROM control.billing_inbox WHERE event_id='no_period'", &[]).unwrap().get(0);
+        assert_eq!(failed, json!(["FAILED", "INVALID_INPUT"]));
+        assert_eq!(effects(&mut h), before);
+        let mut renewal = money_payload(&h, "renewal_paid", "subscription.paid", "sub_fixture");
+        renewal["object"]["last_transaction"]["id"] = json!("txn_renewal");
+        insert_payload(&mut h, &renewal);
+        assert!(process(&h, "active"));
+        assert_eq!(
+            payments(&mut h),
+            json!([
+                ["txn_charge", "CHARGE", 1210, "USD"],
+                ["txn_renewal", "CHARGE", 1210, "USD"],
+                ["txn_stale", "CHARGE", 1210, "USD"]
+            ])
+        );
+        let mut refund = money_payload(&h, "full_refund", "refund.created", "rf_full");
+        refund["object"]["refund_amount"] = json!(1210);
+        insert_payload(&mut h, &refund);
+        assert!(process(&h, "active"));
+        assert_eq!(
+            payments(&mut h),
+            json!([
+                ["txn_charge", "CHARGE", 1210, "USD"],
+                ["txn_renewal", "CHARGE", 1210, "USD"],
+                ["txn_stale", "CHARGE", 1210, "USD"],
+                ["rf_full", "REFUND", 1210, "USD"]
+            ])
+        );
+    });
+}
+/// G-M04-19: each reversal has its own key and amount; partial refund downgrades the entire snapshot (§76).
+#[test]
+fn partial_refund_and_dispute_downgrade() {
+    run_db_fixture::<Fixture, _>("partial_refund_and_dispute_downgrade", |mut h| {
+        let tenant = h.tenant;
+        deliver(&mut h, "initial", "active", tenant);
+        assert!(process(&h, "active"));
+        assert_eq!(snapshot(&mut h), paid());
+        for (id, kind, reference) in [
+            ("refund_1", "refund.created", "rf_1"),
+            ("refund_2", "refund.created", "rf_2"),
+            ("dispute_1", "dispute.created", "dp_1"),
+        ] {
+            let mut payload = money_payload(&h, id, kind, reference);
+            payload["object"]["checkout"] = json!({"metadata":{"tenant_id":h.tenant}});
+            payload["object"]
+                .as_object_mut()
+                .unwrap()
+                .remove("subscription");
+            insert_payload(&mut h, &payload);
+            assert!(process(&h, "active"));
+            assert_eq!(
+                snapshot(&mut h),
+                free(),
+                "G-M04-19: reversal downgrades immediately"
+            );
+            let before = effects(&mut h);
+            h.admin.execute("UPDATE control.billing_inbox SET status='RECEIVED',processed_at=NULL WHERE event_id=$1", &[&id]).unwrap();
+            assert!(process(&h, "active"));
+            assert_eq!(effects(&mut h), before);
+        }
+        assert_eq!(
+            payments(&mut h),
+            json!([
+                ["dp_1", "CHARGEBACK", 211, "USD"],
+                ["rf_1", "REFUND", 123, "USD"],
+                ["rf_2", "REFUND", 123, "USD"]
+            ]),
+            "G-M04-19: exact partial refunds, no full-charge substitution"
+        );
+        let rows: Value = h.admin.query_one("SELECT jsonb_agg(jsonb_build_array(event_id,status,error_class) ORDER BY event_id) FROM control.billing_inbox", &[]).unwrap().get(0);
+        assert_eq!(
+            rows,
+            json!([
+                ["dispute_1", "PROCESSED", null],
+                ["initial", "PROCESSED", null],
+                ["refund_1", "PROCESSED", null],
+                ["refund_2", "PROCESSED", null]
+            ])
+        );
+    });
+}
+/// §71.3: malformed money fails terminally without partial grants or payments; historic reversals are ledger-only.
+#[test]
+fn invalid_money_and_historic_refund() {
+    run_db_fixture::<Fixture, _>("invalid_money_and_historic_refund", |mut h| {
+        let tenant = h.tenant;
+        deliver(&mut h, "initial", "active", tenant);
+        assert!(process(&h, "active"));
+        let before = effects(&mut h);
+        for (id, amount, currency) in [
+            ("negative", json!(-1), "USD"),
+            ("currency", json!(500), "EUR"),
+            ("missing", Value::Null, "USD"),
+        ] {
+            let mut payload = money_payload(&h, id, "checkout.completed", id);
+            payload["object"]["order"]["amount_paid"] = amount;
+            payload["object"]["order"]["currency"] = json!(currency);
+            insert_payload(&mut h, &payload);
+            assert!(process(&h, "active"));
+        }
+        assert_eq!(effects(&mut h), before);
+        assert_eq!(payments(&mut h), json!([]));
+        let mut payload = money_payload(&h, "historic", "refund.created", "rf_old");
+        payload["object"]["transaction"]["period_end"] = json!(1609459200000_i64);
+        insert_payload(&mut h, &payload);
+        assert!(process(&h, "active"));
+        assert_eq!(effects(&mut h), before);
+        assert_eq!(snapshot(&mut h), paid());
+        assert_eq!(payments(&mut h), json!([["rf_old", "REFUND", 123, "USD"]]));
+        let rows: Value = h.admin.query_one("SELECT jsonb_agg(jsonb_build_array(event_id,status,error_class) ORDER BY event_id) FROM control.billing_inbox", &[]).unwrap().get(0);
+        assert_eq!(
+            rows,
+            json!([
+                ["currency", "FAILED", "INVALID_INPUT"],
+                ["historic", "PROCESSED", null],
+                ["initial", "PROCESSED", null],
+                ["missing", "FAILED", "INVALID_INPUT"],
+                ["negative", "FAILED", "INVALID_INPUT"]
+            ])
+        );
+    });
+}
+/// §71.3: conflicting nested tenants and foreign historical reversals have no money/grant effects.
+#[test]
+fn reversal_tenant_boundaries() {
+    run_db_fixture::<Fixture, _>("reversal_tenant_boundaries", |mut h| {
+        let tenant = h.tenant;
+        deliver(&mut h, "initial", "active", tenant);
+        assert!(process(&h, "active"));
+        let other: Uuid = h.admin.query_one("INSERT INTO control.tenants(name,state) VALUES ('other fixture','ACTIVE') RETURNING tenant_id", &[]).unwrap().get(0);
+        let before = effects(&mut h);
+        for kind in ["refund.created", "dispute.created"] {
+            for conflict in [true, false] {
+                let id = format!("{kind}_{conflict}");
+                let mut payload = money_payload(&h, &id, kind, &id);
+                payload["object"]["checkout"] = json!({"metadata":{"tenant_id":other}});
+                if !conflict {
+                    payload["object"]["subscription"]["metadata"]["tenant_id"] = json!(other);
+                    payload["object"]["transaction"]["period_start"] = json!(1);
+                    payload["object"]["transaction"]["period_end"] = json!(2);
+                }
+                insert_payload(&mut h, &payload);
+                assert!(process(&h, "active"));
+                let row: Value = h.admin.query_one("SELECT jsonb_build_array(status,error_class) FROM control.billing_inbox WHERE event_id=$1", &[&id]).unwrap().get(0);
+                let expected = if conflict {
+                    "TENANT_BOUNDARY"
+                } else {
+                    "FORBIDDEN"
+                };
+                assert_eq!(row, json!(["FAILED", expected]));
+                assert_eq!(effects(&mut h), before);
+                assert_eq!(payments(&mut h), json!([]));
+                assert_eq!(snapshot(&mut h), paid());
+            }
+        }
+    });
+}
+/// G-M04-19 / §71.3: a reversal arriving before checkout must survive and project Free.
+#[test]
+fn reversal_before_subscription_delivery() {
+    for (kind, reference, payment_kind, amount) in [
+        ("refund.created", "rf_first", "REFUND", 123),
+        ("dispute.created", "dp_first", "CHARGEBACK", 211),
+    ] {
+        run_db_fixture::<Fixture, _>("reversal_before_subscription_delivery", |mut h| {
+            let tenant = h.tenant;
+            let plan = h.config.plans["prod_fixture"];
+            h.admin.execute("INSERT INTO control.entitlement_grants(tenant_id,source,source_ref_id,feature,value,valid_from,priority) SELECT $1,'PLAN',$2,e.key,e.value,clock_timestamp(),0 FROM jsonb_each($3::jsonb) e", &[&tenant,&plan,&paid()]).unwrap();
+            let recompute = entitlement_repo::recompute(&h.pool, TenantId(tenant));
+            h.rt.block_on(recompute).unwrap();
+            assert_eq!(snapshot(&mut h), paid());
+            let count: i64 = h.admin.query_one("SELECT count(*) FROM control.subscriptions WHERE provider_subscription_ref='sub_fixture'", &[]).unwrap().get(0);
+            assert_eq!(count, 0);
+            let payload = money_payload(&h, "reversal_first", kind, reference);
+            insert_payload(&mut h, &payload);
+            assert!(process(&h, "active"));
+            let inbox: Value = h.admin.query_one("SELECT jsonb_build_array(status,error_class) FROM control.billing_inbox WHERE event_id='reversal_first'", &[]).unwrap().get(0);
+            assert_eq!(
+                inbox,
+                json!(["PROCESSED", null]),
+                "G-M04-19: unordered reversal must survive"
+            );
+            assert_eq!(
+                payments(&mut h),
+                json!([[reference, payment_kind, amount, "USD"]])
+            );
+            assert_eq!(snapshot(&mut h), free());
+            let events: Value = h.admin.query_one("SELECT jsonb_agg(jsonb_build_array(source_event_id,to_state) ORDER BY source_event_id) FROM control.subscription_events", &[]).unwrap().get(0);
+            assert_eq!(events, json!([["reversal_first", "CANCELED"]]));
+            for (id, arrival) in [
+                ("delayed_paid", "paid"),
+                ("resent_paid", "paid"),
+                ("updated", "update"),
+            ] {
+                deliver(&mut h, id, arrival, tenant);
+                assert!(process(&h, "active"));
+                assert_eq!(
+                    snapshot(&mut h),
+                    free(),
+                    "recorded reversal survives {arrival}"
+                );
+                let state: String = h.admin.query_one("SELECT state FROM control.subscriptions WHERE provider_subscription_ref='sub_fixture'", &[]).unwrap().get(0);
+                assert_eq!(state, "CANCELED");
+            }
+            assert_eq!(
+                payments(&mut h),
+                json!([
+                    ["txn_fixture", "CHARGE", 500, "USD"],
+                    [reference, payment_kind, amount, "USD"]
+                ])
+            );
+        });
+    }
 }

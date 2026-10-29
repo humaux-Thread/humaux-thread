@@ -94,6 +94,7 @@ rec_disk|alerts.rules.yml|backup_disk_free_bytes{volume="pgdata"} - 8053063680|b
 rec_users|alerts.rules.yml|(0.70 - max by (instance) (host_cpu_busy_ratio))|(0.80 - max by (instance) (host_cpu_busy_ratio))|expr:capacity:additional_users
 stage_output|alerts.rules.yml|stage_last_success_timestamp_seconds > stage_last_output_timestamp_seconds|stage_last_run_timestamp_seconds > stage_last_output_timestamp_seconds|MaintenanceStageNoOutput
 stage_policy|alerts.rules.yml|stage=~|stage!~|MaintenanceStageNoOutput
+stage_cannot|alerts.rules.yml|stage_state == 5|stage_state == 2|MaintenanceStageCannotRun
 ROWS
 fi
 # ponytail: `dead` uses `> 2`, not `> 1`: measured, delta() extrapolates a 0→1 step over [15m] at 1m

@@ -1,6 +1,6 @@
 //! `telemetry::metrics` — the §41.2 family table this workspace exports, a hand-written Prometheus text-format
 //!   0.0.4 encoder, and the std-only loopback listener that serves `/metrics` and `/status` (ADR-0061 D-A, D-B).
-//! Depends-on: crates=[]; services=[HTTP(loopback)]; env=[]; modules=[telemetry::degrade]
+//! Depends-on: crates=[humaux-domain]; services=[HTTP(loopback)]; env=[]; modules=[domain::error, telemetry::degrade]
 //! Called-by: [admin::cell_resources, admin::ops_status, consolidation-worker::main, gateway::bootstrap,
 //!   gateway::guard, gateway::main, humaux-telemetry, maintenance::health_serve, maintenance::resident, maintenance::serve,
 //!   private-worker::distill, private-worker::main, retrieval-worker::main, retrieval::completeness,
@@ -14,6 +14,7 @@
 //! `&'static str` so a tenant id, user id or free text cannot become a label without
 //! `Box::leak` — the cardinality and privacy bound is carried by the type.
 
+use humaux_domain::error::ErrorCode;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::{self, Read as _, Write as _};
@@ -329,6 +330,34 @@ pub mod families {
         Kind::Gauge,
         &["stage"],
     );
+    /// §39: zero until an error; otherwise one-based index in `ErrorCode::ALL` (§52).
+    pub const STAGE_LAST_ERROR_CLASS: Family = f(
+        "stage_last_error_class",
+        "Latest error: 0=none, otherwise 1-based ErrorCode::ALL index.",
+        Kind::Gauge,
+        &["stage"],
+    );
+    /// §39: work units visited by the latest completed attempt, including failed units.
+    pub const STAGE_PROCESSED_COUNT: Family = f(
+        "stage_processed_count",
+        "Work units visited in the latest attempt.",
+        Kind::Gauge,
+        &["stage"],
+    );
+    /// §39: committed rows or published readings in the latest attempt.
+    pub const STAGE_OUTPUT_COUNT: Family = f(
+        "stage_output_count",
+        "Committed products in the latest attempt.",
+        Kind::Gauge,
+        &["stage"],
+    );
+    /// §39: closed state codes; no additional label dimension (ADR-0061 D-A).
+    pub const STAGE_STATE: Family = f(
+        "stage_state",
+        "0=NO_BASELINE, 1=OK, 2=NO_OUTPUT, 3=ERRORING, 4=DISABLED_DECLARED, 5=CANNOT_RUN.",
+        Kind::Gauge,
+        &["stage"],
+    );
     // §41.2: the PARTITIONS run of `humaux-maintenance --serve` (card 36; emit
     // `adapters::maintenance_repo::set_partition_horizon_months`, ADR-0063 D-K; a failed run renders no sample).
     /// `partition_horizon_months{table}`.
@@ -556,6 +585,63 @@ impl StageGauge {
 static STAGE_LAST_RUN_TIMESTAMP_SECONDS: StageGauge = StageGauge(Mutex::new(BTreeMap::new()));
 static STAGE_LAST_SUCCESS_TIMESTAMP_SECONDS: StageGauge = StageGauge(Mutex::new(BTreeMap::new()));
 static STAGE_LAST_OUTPUT_TIMESTAMP_SECONDS: StageGauge = StageGauge(Mutex::new(BTreeMap::new()));
+static STAGE_LAST_ERROR_CLASS: StageGauge = StageGauge(Mutex::new(BTreeMap::new()));
+static STAGE_PROCESSED_COUNT: StageGauge = StageGauge(Mutex::new(BTreeMap::new()));
+static STAGE_OUTPUT_COUNT: StageGauge = StageGauge(Mutex::new(BTreeMap::new()));
+static STAGE_STATE: StageGauge = StageGauge(Mutex::new(BTreeMap::new()));
+
+// §39: metric wire codes, not a third error taxonomy (§52).
+enum StageState {
+    NoBaseline,
+    Ok,
+    NoOutput,
+    Erroring,
+    DisabledDeclared,
+    CannotRun,
+}
+
+fn record_stage_state(stage: &'static str, state: StageState) {
+    STAGE_STATE.set(stage, f64::from(state as u8)); // labels: stage
+}
+
+/// §39: declaration only, before attempts; never infer disabled from missing observations.
+pub fn stage_declared(stage: &'static str, enabled: bool, can_run: bool) {
+    record_stage_state(
+        stage,
+        if !enabled {
+            StageState::DisabledDeclared
+        } else if !can_run {
+            StageState::CannotRun
+        } else {
+            StageState::NoBaseline
+        },
+    );
+}
+
+/// §39: counts are the latest attempt's [visited work units, committed products], not cumulative totals.
+/// Errors retain their class across later successes; state describes the latest completed attempt.
+pub fn stage_recorded(stage: &'static str, now: f64, error: Option<ErrorCode>, counts: [u64; 2]) {
+    stage_finished(stage, now, error.is_none(), counts[1] > 0);
+    STAGE_PROCESSED_COUNT.set(stage, counts[0] as f64); // labels: stage
+    STAGE_OUTPUT_COUNT.set(stage, counts[1] as f64); // labels: stage
+    if let Some(error) = error {
+        let code = ErrorCode::ALL
+            .iter()
+            .position(|e| *e == error)
+            .expect("closed ErrorCode")
+            + 1;
+        STAGE_LAST_ERROR_CLASS.set(stage, code as f64); // labels: stage
+    }
+    record_stage_state(
+        stage,
+        match error {
+            Some(ErrorCode::DependencyUnavailable) => StageState::CannotRun,
+            Some(_) => StageState::Erroring,
+            None if counts[1] > 0 => StageState::Ok,
+            None => StageState::NoOutput,
+        },
+    );
+}
 
 /// §39: call only when an automatic stage actually starts, never when skipped by cadence.
 /// `stage` comes from the caller's closed task register; `now` is Unix seconds.
@@ -589,6 +675,10 @@ pub fn render_stage_liveness(out: &mut String, stages: &[&'static str]) {
             &families::STAGE_LAST_OUTPUT_TIMESTAMP_SECONDS,
             &STAGE_LAST_OUTPUT_TIMESTAMP_SECONDS,
         ),
+        (&families::STAGE_LAST_ERROR_CLASS, &STAGE_LAST_ERROR_CLASS),
+        (&families::STAGE_PROCESSED_COUNT, &STAGE_PROCESSED_COUNT),
+        (&families::STAGE_OUTPUT_COUNT, &STAGE_OUTPUT_COUNT),
+        (&families::STAGE_STATE, &STAGE_STATE),
     ] {
         write_single_label(out, family, stages, |i| gauge.get(stages[i]));
     }

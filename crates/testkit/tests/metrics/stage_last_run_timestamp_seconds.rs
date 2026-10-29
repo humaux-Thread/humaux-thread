@@ -12,6 +12,8 @@ use humaux_telemetry::metrics::{render_stage_liveness, stage_finished, stage_sta
 #[test]
 fn stage_last_run_timestamp_seconds() {
     let stages = MaintenanceTask::ALL.map(MaintenanceTask::label);
+    assert_eq!(stages.len(), 13);
+    assert_eq!(stages.join(","), "lost,ingest_tickets,quota_reservations,quota_renewal,provider_budgets,confirm_tokens,snapshots,jobs,reissue,redrive,partitions,dr_evidence,authority_i4");
     for (step, value) in [0, 10, 10, 20, 30].into_iter().enumerate() {
         for stage in stages {
             match step {
@@ -41,7 +43,7 @@ fn stage_last_run_timestamp_seconds() {
                 format!("stage_last_run_timestamp_seconds{{stage=\"{stage}\"}} {value}")
             })
             .collect();
-        assert_eq!(actual.len(), MaintenanceTask::ALL.len());
+        assert_eq!(actual.len(), 13);
         assert_eq!(actual, expected, "step {step}");
         if step == 3 {
             for stage in stages {
