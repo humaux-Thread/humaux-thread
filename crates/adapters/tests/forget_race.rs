@@ -299,7 +299,7 @@ fn g_m19_4_consolidation_rollup_rechecks_supporting_source() {
     );
 }
 fn registration(w: &mut World, memory: Uuid) -> PrivateMemoryPointRegistration {
-    let row = w.h.admin.query_one("SELECT updated_at,sha256(convert_to(content::text,'UTF8')) FROM private.memory_records WHERE memory_id=$1", &[&memory]).unwrap();
+    let row = w.h.admin.query_one("SELECT (extract(epoch FROM updated_at)*1000000)::bigint,sha256(convert_to(content::text,'UTF8')) FROM private.memory_records WHERE memory_id=$1", &[&memory]).unwrap();
     PrivateMemoryPointRegistration::deterministic(
         StreamFamily::new(
             TenantId(w.h.tenant_id),
@@ -311,7 +311,10 @@ fn registration(w: &mut World, memory: Uuid) -> PrivateMemoryPointRegistration {
         "private-v1".into(),
         "fixture-embed".into(),
         MemoryId(memory),
-        row.get(0),
+        sqlx::types::time::OffsetDateTime::from_unix_timestamp_nanos(
+            i128::from(row.get::<_, i64>(0)) * 1000,
+        )
+        .unwrap(),
         row.get(1),
     )
 }
