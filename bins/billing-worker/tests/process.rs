@@ -113,8 +113,11 @@ fn process_fetched(
 ) -> Result<bool, ErrorCode> {
     h.rt.block_on(async {
         // dep: HTTP(loopback) — merged Creem-shaped server; no external call (§79.4).
-        let (base, server) =
-            fake_creem::start_with_failure(subscription, json!({}), failure_status).await;
+        let (base, server) = if failure_status.is_some() {
+            fake_creem::start_with_failure(subscription, json!({}), failure_status).await
+        } else {
+            fake_creem::start(subscription, json!({})).await
+        };
         let secret = Box::leak(Uuid::new_v4().to_string().into_boxed_str());
         let provider = CreemClient::new(
             &base,
@@ -689,7 +692,7 @@ fn late_canceled_preserves_own_subscription_grants() {
             h.admin.execute("UPDATE control.billing_inbox SET object_id='sub_new',payload=jsonb_set(payload,'{object,id}',to_jsonb('sub_new'::text)) WHERE event_id='new_active'", &[]).unwrap();
             assert_eq!(process_fetched(&h, new, None), Ok(true));
             assert_eq!(snapshot(&mut h), paid());
-            let grants: Value = h.admin.query_one("SELECT jsonb_agg(grant_id ORDER BY grant_id) FROM control.entitlement_grants WHERE source_ref_id=(SELECT subscription_id FROM control.subscriptions WHERE provider_subscription_ref='sub_new') AND revoked_at IS NULL AND valid_until>clock_timestamp()", &[]).unwrap().get(0);
+            let grants: Value = h.admin.query_one("SELECT coalesce(jsonb_agg(grant_id ORDER BY grant_id),'[]'::jsonb) FROM control.entitlement_grants WHERE source_ref_id=(SELECT subscription_id FROM control.subscriptions WHERE provider_subscription_ref='sub_new') AND revoked_at IS NULL AND valid_until>clock_timestamp()", &[]).unwrap().get(0);
             assert_eq!(grants.as_array().unwrap().len(), 2);
             for reversal in [false, true] {
                 if reversal {
@@ -699,7 +702,7 @@ fn late_canceled_preserves_own_subscription_grants() {
                     deliver(&mut h, "old_late", "canceled", tenant);
                 }
                 assert!(process(&h, "canceled"));
-                let current: Value = h.admin.query_one("SELECT jsonb_agg(grant_id ORDER BY grant_id) FROM control.entitlement_grants WHERE source_ref_id=(SELECT subscription_id FROM control.subscriptions WHERE provider_subscription_ref='sub_new') AND revoked_at IS NULL AND valid_until>clock_timestamp()", &[]).unwrap().get(0);
+                let current: Value = h.admin.query_one("SELECT coalesce(jsonb_agg(grant_id ORDER BY grant_id),'[]'::jsonb) FROM control.entitlement_grants WHERE source_ref_id=(SELECT subscription_id FROM control.subscriptions WHERE provider_subscription_ref='sub_new') AND revoked_at IS NULL AND valid_until>clock_timestamp()", &[]).unwrap().get(0);
                 assert_eq!(current, grants, "G-M04-26: sub_B PLAN grants survive sub_A");
                 assert_eq!(snapshot(&mut h), paid(), "G-M04-26: snapshot stays paid");
             }
