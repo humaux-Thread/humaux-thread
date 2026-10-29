@@ -14190,6 +14190,7 @@ modules naming it:
 - `adapters::tests::exact_census_project`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_confirm`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::membership_lifecycle`
@@ -16054,6 +16055,7 @@ why: domain ids, errors and value types shared across layers
 modules naming it:
 - `telemetry::degrade`
 - `telemetry::health`
+- `telemetry::metrics`
 - `tests`
 
 ### humaux-telemetry → `humaux-fail-closed-macro` (normal)
@@ -16102,6 +16104,10 @@ modules naming it:
 - `testkit::tests::metrics::processing_gap_count`
 - `testkit::tests::metrics::projection_lag_events`
 - `testkit::tests::metrics::quota_window_horizon_seconds`
+- `testkit::tests::metrics::stage_last_error_class`
+- `testkit::tests::metrics::stage_output_count`
+- `testkit::tests::metrics::stage_processed_count`
+- `testkit::tests::metrics::stage_state`
 - `testkit::tests::pair::cannot_establish_completeness_degraded`
 - `testkit::tests::pair::cannot_establish_completeness_terminal`
 - `testkit::tests::pair::projection_lag_degraded`
@@ -16162,9 +16168,13 @@ modules naming it:
 - `testkit::tests::metrics::processing_gap_count`
 - `testkit::tests::metrics::projection_lag_events`
 - `testkit::tests::metrics::restore_drill_last_success_timestamp_seconds`
+- `testkit::tests::metrics::stage_last_error_class`
 - `testkit::tests::metrics::stage_last_output_timestamp_seconds`
 - `testkit::tests::metrics::stage_last_run_timestamp_seconds`
 - `testkit::tests::metrics::stage_last_success_timestamp_seconds`
+- `testkit::tests::metrics::stage_output_count`
+- `testkit::tests::metrics::stage_processed_count`
+- `testkit::tests::metrics::stage_state`
 - `testkit::tests::metrics::tenants_active_1d`
 - `testkit::tests::metrics::tenants_active_7d`
 - `testkit::tests::metrics::wal_archive_failing`

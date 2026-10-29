@@ -94,7 +94,7 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "s
 # why: jsonb column binding; used-by: [adapters::jobs, adapters::consolidate_repo]
 serde_json = "1"
 # why: timestamptz column binding; used-by: [adapters::affect_repo, adapters::distill_repo]
-time = "0.3"
+time = { version = "0.3", features = ["formatting", "parsing"] }
 # ADR-0053: the onboarding receipts `humaux-maintenance` prints as one JSON object.
 # why: serializable onboarding receipts; used-by: [adapters::provisioning]
 serde = { version = "1", features = ["derive"] }
