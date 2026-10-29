@@ -1,6 +1,6 @@
 //! `consolidation-worker::main` — `humaux-consolidation-worker` process entry (§4.2 minimal process set; §4.4 admin
 //!   probe contract; §11.7/§11.8 T4.6+T4.7).
-//! Depends-on: crates=[humaux-adapters, humaux-infra-cell, humaux-telemetry, tokio, uuid]; services=[HTTP(loopback),
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-telemetry, tokio, uuid]; services=[HTTP(loopback),
 //!   PostgreSQL(role_consolidation_worker), UDS(private-worker)]; env=[HUMAUX_CONSOLIDATION_WORKER_PG_POOL_MAX_CONNECTIONS, CARGO_PKG_VERSION,
 //!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_CONSOLIDATION_WORKER_BATCH,
 //!   HUMAUX_CONSOLIDATION_WORKER_CALL_TTL_SECS, HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS,
@@ -8,7 +8,7 @@
 //!   HUMAUX_CONSOLIDATION_WORKER_MAX_INPUTS, HUMAUX_CONSOLIDATION_WORKER_POLL_INTERVAL_SECS,
 //!   HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID, HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH,
 //!   HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR];
-//!   modules=[adapters::postgres, consolidation-worker::dsn, consolidation-worker::inference_client, humaux-consolidation-worker, humaux-telemetry,
+//!   modules=[adapters::postgres, consolidation-worker::dsn, consolidation-worker::inference_client, domain::error, humaux-consolidation-worker, humaux-telemetry,
 //!   infra-cell::uds, telemetry::metrics]
 //! Called-by: [process(humaux-consolidation-worker)]
 //! Invariants: [missing/invalid env or an unreachable role_consolidation_worker DSN exits non-zero before any claim;

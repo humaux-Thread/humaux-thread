@@ -3,7 +3,7 @@
 //!   binary-only crate has no target integration tests can link against, which is exactly why no test ever exercised
 //!   this function before this review (major finding: `run_once` had zero callers and zero test coverage anywhere in
 //!   the workspace).
-//! Depends-on: crates=[async-trait, humaux-adapters, humaux-application, humaux-domain, serde_json, uuid]; services=[]; env=[]; modules=[adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::jobs, adapters::postgres, application::consolidate, domain::authority, domain::consolidate]
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-application, humaux-domain, serde_json, uuid]; services=[]; env=[]; modules=[adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::jobs, adapters::postgres, application::consolidate, domain::authority, domain::consolidate, domain::error]
 //! Called-by: [consolidation-worker::main, tests]
 //! Invariants: []
 //! Spec: Baseline §11.8; §78
