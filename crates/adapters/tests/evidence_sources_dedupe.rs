@@ -600,12 +600,35 @@ fn g_m13_4_real_dedup_reimport_preserves_evidence_time() {
             (Dedupe::New, Dedupe::Existing)
         );
         assert_eq!(after.accepted.evidence_id, before.accepted.evidence_id);
+        assert_eq!(counts(&mut handle)[0], 1, "dedup creates no extra Evidence");
+        let other_version = identity(IngestSourceKind::AgentNote, "freshness", Some("v2"));
+        let other = stored(
+            put(
+                &handle,
+                principal,
+                &other_version,
+                "other-version",
+                "original",
+            ),
+            "other version",
+        );
+        assert_eq!(other.dedupe, Dedupe::New);
+        assert_ne!(other.accepted.evidence_id, before.accepted.evidence_id);
         let row = handle
             .admin
             .query_one(
-                "SELECT count(*), min(occurred_at) = to_timestamp(0) \
-            FROM private.evidence_objects WHERE evidence_id=$1",
-                &[&before.accepted.evidence_id],
+                "SELECT count(*), min(e.occurred_at) = to_timestamp(0) \
+                 FROM private.evidence_objects e \
+                 JOIN private.evidence_sources s USING (tenant_id, evidence_id) \
+                 WHERE s.tenant_id=$1 AND s.owner_user_id=$2 AND s.source_kind=$3 \
+                   AND s.object_key_d16=$4 AND s.source_version=$5",
+                &[
+                    &handle.tenant_id,
+                    &handle.user_id,
+                    &source.kind().db_code(),
+                    &source.object_key_d16().as_bytes().as_slice(),
+                    &source.version(),
+                ],
             )
             .expect("Evidence time");
         assert_eq!((row.get::<_, i64>(0), row.get::<_, bool>(1)), (1, true));

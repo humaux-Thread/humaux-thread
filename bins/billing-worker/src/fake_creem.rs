@@ -17,8 +17,20 @@ use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+use tokio::sync::Notify;
+
+/// §71.3: withhold the older response until the test observes a waiter or the newer worker commits.
+pub struct FetchOrder {
+    /// The second authoritative observation.
+    pub newer: Value,
+    /// Exact count of authenticated subscription fetches.
+    pub fetches: AtomicUsize,
+    /// Barrier releasing the first response.
+    pub release_first: Notify,
+}
+type ServerState = ([Value; 2], Arc<AtomicBool>, Option<Arc<FetchOrder>>);
 
 /// §79.4: public fixture token, not an API credential.
 pub const TEST_KEY: &str = "public-fixture-api-token";
@@ -52,12 +64,22 @@ pub async fn start_with_failure(
     transaction: Value,
     fail_once: bool,
 ) -> (String, tokio::task::JoinHandle<()>) {
+    start_controlled(subscription, transaction, fail_once, None).await
+}
+/// §79.4: retain the same request checks with an optional first-response ordering barrier.
+pub async fn start_controlled(
+    subscription: Value,
+    transaction: Value,
+    fail_once: bool,
+    order: Option<Arc<FetchOrder>>,
+) -> (String, tokio::task::JoinHandle<()>) {
     let router = Router::new()
         .route("/v1/subscriptions", get(read))
         .route("/v1/transactions", get(read))
         .with_state((
             [subscription, transaction],
             Arc::new(AtomicBool::new(fail_once)),
+            order,
         ));
     // dep: HTTP(loopback) — §79.4 isolated provider double; no external network.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -70,7 +92,7 @@ pub async fn start_with_failure(
     )
 }
 async fn read(
-    State((objects, failures)): State<([Value; 2], Arc<AtomicBool>)>,
+    State((objects, failures, order)): State<ServerState>,
     uri: axum::http::Uri,
     headers: HeaderMap,
     Query(query): Query<BTreeMap<String, String>>,
@@ -89,6 +111,13 @@ async fn read(
     }
     if index == 0 && failures.swap(false, Ordering::SeqCst) {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    if let Some(order) = order.filter(|_| index == 0) {
+        if order.fetches.fetch_add(1, Ordering::SeqCst) == 0 {
+            order.release_first.notified().await;
+        } else {
+            return Ok(Json(order.newer.clone()));
+        }
     }
     Ok(Json(objects[index].clone()))
 }
