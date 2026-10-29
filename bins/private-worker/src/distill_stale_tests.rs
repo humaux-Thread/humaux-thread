@@ -1,5 +1,5 @@
 //! `private-worker::distill_stale_tests` — §37 / ADR-0092 D-C: forgotten Evidence never reaches a provider or retries.
-//! Depends-on: crates=[humaux-adapters, humaux-testkit, serde_json]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq, ops.jobs] w=[ops.outbox, private.events, projection.stream_checkpoints, projection.stream_log]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, adapters::tests::support::operation_receipt_fixture, humaux-testkit, private-worker::distill, private-worker::tests::support::dispatch_fence, private-worker::tests::support::distill_lane]
+//! Depends-on: crates=[humaux-adapters, humaux-testkit, serde_json]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq, ops.jobs] w=[ops.outbox, private.events, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_private_worker)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, adapters::tests::support::operation_receipt_fixture, humaux-testkit, private-worker::distill, private-worker::tests::support::dispatch_fence, private-worker::tests::support::distill_lane]
 //! Called-by: []
 //! Invariants: [real dispatcher; exact provider count and durable job status]
 //! Spec: Baseline §37; ADR-0092 D-C
