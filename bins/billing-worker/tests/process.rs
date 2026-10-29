@@ -661,8 +661,8 @@ fn reversal_before_subscription_delivery() {
             assert_eq!(
                 payments(&mut h),
                 json!([
-                    [reference, payment_kind, amount, "USD"],
-                    ["txn_fixture", "CHARGE", 500, "USD"]
+                    ["txn_fixture", "CHARGE", 500, "USD"],
+                    [reference, payment_kind, amount, "USD"]
                 ])
             );
         });
