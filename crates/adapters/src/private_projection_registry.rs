@@ -1,8 +1,8 @@
 //! `adapters::private_projection_registry` — PostgreSQL-only identity binding for private Qdrant candidates, the
 //!   stored vector each binding was projected from, and the embedding label's fingerprint binding.
 //! Depends-on: crates=[humaux-domain, humaux-projection, sha2, sqlx]; services=[PostgreSQL(any)
-//!   r=[private.memory_records, private.memory_evidence, ops.outbox, projection.stream_log] w=[projection.embedding_fingerprints, projection.memory_vectors,
-//!   projection.private_memory_points], PostgreSQL(role_gateway),
+//!   r=[private.memory_records] w=[projection.embedding_fingerprints, projection.memory_vectors,
+//!   projection.private_memory_points] x=[private.lock_publish_source], PostgreSQL(role_gateway),
 //!   PostgreSQL(role_retrieval_worker)]; env=[];
 //!   modules=[adapters::placement_repo, adapters::postgres, domain::authority, domain::identity, domain::ids,
 //!   projection::card, projection::embedding_fingerprint, projection::note_chunks, projection::serving]

@@ -9712,6 +9712,7 @@ ADR-0092 把删除请求统一成一条流水线：一个请求一行（`MEMORY`
 删除是两次调用：第一次返回影响预览（调用者有权读到对象的计数与标题，`restore_supported:false`，多人来源逐条列出）与绑定预览摘要的确认 token；第二次执行。两轮之间闭包变了即拒绝。账号删除另需一次新鲜的登录证明。见 §33.10 规则 9 与 ADR-0018。
 
 确认事务提交时先把闭包里**每一个** outbox seq 置为 tombstone（第 1 步，全部 event_type，ADR-0079 D-J），追加 `FORGOTTEN` 生命周期事件（只记 id），overlay 从这一刻起隐藏全部目标；晚到的 distill / consolidation / rollup / projection publish 在自己的提交事务里复核输入，命中即 `STALE_INPUT`，不另设 fence 表。物理删行只走 ADR-0092 的一扇 owner SECURITY DEFINER 窄门：EXECUTE 只给 `role_maintenance`，只删该请求冻结的目标集，按外键顺序执行；runtime role 的 DELETE 禁令不变（§6.2.1、§37.2）。
+
 - M19-3b / migration 0304: `private.lock_publish_source` is the owner-definer recheck shared by distill, consolidation and registration; it holds SHARE locks on the accept door's stream rows through commit (§37 / ADR-0092 D-C).
 
 恢复不得复活已删除数据：删除完成时写一条内容无关的 erasure ledger（request id、scope、目标 id 的 sha256 集、完成时刻），在任何早于该时刻的备份仍可能被恢复期间保留。每份备份清单带一份副本；恢复流程在开放服务之前重放 ledger，恢复演练必须断言这一点（ADR-0092 的 Gates 表）。M23 v2 在导出卷上加一份 erasure journal 覆盖上一个已验证导出之后的删除，M19-9 写它。
