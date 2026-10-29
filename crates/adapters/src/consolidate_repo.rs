@@ -682,7 +682,7 @@ pub async fn publish_rollup(
     set_tenant_local(&mut txn, tenant_id).await?;
 
     let recorded_inputs = sqlx::query(
-        "SELECT memory_id, input_version, source_hash FROM private.memory_consolidation_inputs WHERE run_id = $1 ORDER BY evidence_id, memory_id",
+        "SELECT memory_id, input_version, source_hash FROM private.memory_consolidation_inputs AS i WHERE run_id = $1 ORDER BY (SELECT me.evidence_id FROM private.memory_evidence me WHERE me.memory_id = i.memory_id ORDER BY me.evidence_id LIMIT 1), memory_id",
     )
     .bind(run_id)
     .fetch_all(&mut *txn)

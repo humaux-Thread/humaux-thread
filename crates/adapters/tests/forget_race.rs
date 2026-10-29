@@ -143,7 +143,8 @@ fn seed_run(w: &mut World) -> Uuid {
         &[&w.h.tenant_id,&w.source,&vec![3_u8;32]],
     ).unwrap().get(0)
 }
-fn distill_publish(w: &mut World, forgotten: bool) {
+type PreparedDistill = (PrivateWorkerDbPool, distill::LoadedEvidence, Uuid);
+fn prepare_distill(w: &mut World) -> PreparedDistill {
     let run = seed_run(w);
     let pool =
         w.h.rt
@@ -168,6 +169,10 @@ fn distill_publish(w: &mut World, forgotten: bool) {
             .unwrap()
             .expect("source loaded before forget");
     w.h.rt.block_on(read.commit()).unwrap();
+    (pool, evidence, run)
+}
+fn distill_publish(w: &mut World, forgotten: bool, prepared: Option<PreparedDistill>) {
+    let (pool, evidence, run) = prepared.unwrap_or_else(|| prepare_distill(w));
     let mut txn =
         w.h.rt
             .block_on(distill::begin_write_context(
@@ -230,13 +235,13 @@ fn distill_publish(w: &mut World, forgotten: bool) {
 #[test]
 fn g_m19_4_distill_live_source_commits() {
     run_db_fixture::<Fixture, _>("g_m19_4_distill_live_source_commits", |mut w| {
-        distill_publish(&mut w, false)
+        distill_publish(&mut w, false, None)
     });
 }
 #[test]
 fn g_m19_4_distill_forgotten_source_rolls_back() {
     run_db_fixture::<Fixture, _>("g_m19_4_distill_forgotten_source_rolls_back", |mut w| {
-        distill_publish(&mut w, true)
+        distill_publish(&mut w, true, None)
     });
 }
 #[test]
@@ -398,9 +403,6 @@ fn race_registration(w: &mut World, reverse: bool) {
     );
 }
 fn race_publish(w: &mut World, site: &str, reverse: bool) {
-    if site == "distill" {
-        return distill_publish(w, reverse);
-    }
     if site == "registration" {
         return race_registration(w, reverse);
     }
@@ -520,6 +522,7 @@ fn race(name: &'static str, site: &str) {
     }
 }
 fn race_order(w: &mut World, site: &str, reverse: bool) {
+    let prepared = (site == "distill").then(|| prepare_distill(w));
     w.concurrent = true;
     let (mut deletion, request, principal, intent) = race_accept(w);
     let workspace = w.h.workspace_id;
@@ -590,7 +593,10 @@ fn race_order(w: &mut World, site: &str, reverse: bool) {
                 changed
             }
         });
-        race_publish(w, site, reverse);
+        match prepared {
+            Some(input) => distill_publish(w, reverse, Some(input)),
+            None => race_publish(w, site, reverse),
+        }
         coordinator.join().unwrap()
     });
     w.h.admin
@@ -678,7 +684,7 @@ fn memory_scope_accept_first() {
                     )
                     .unwrap()
                     .get(0);
-            assert_eq!(live, false, "MEMORY door must refuse revoked input");
+            assert!(!live, "MEMORY door must refuse revoked input");
         });
     }
 }
