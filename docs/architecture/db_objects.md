@@ -2944,6 +2944,7 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::g80_31_handoff`
+- (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -4996,6 +4997,7 @@ written by:
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
+- (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::jobs_claim`
 - (no process): `adapters::tests::ledger_append_only`
 - (no process): `adapters::tests::ledger_frontier`
@@ -10594,7 +10596,9 @@ written by:
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
+- (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_evidence_grounding`
@@ -10856,10 +10860,13 @@ written by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_sources`
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
+- (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -11251,27 +11258,42 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::projection_worker`
+- (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::postgres`
+- process(cargo-xtask): `adapters::stream_repo`
 - process(humaux-admin): `adapters::postgres`
 - process(humaux-consolidation-worker): `adapters::postgres`
+- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::postgres`
+- process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::postgres`
+- process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-private-worker): `adapters::postgres`
+- process(humaux-private-worker): `adapters::stream_repo`
 - process(humaux-public-worker): `adapters::postgres`
 - process(humaux-retrieval-worker): `adapters::postgres`
+- process(humaux-retrieval-worker): `adapters::stream_repo`
 
 written by:
 - (no process): `adapters::batch`
+- (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `maintenance::tests::partitions`
+- (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::remember`
+- process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::remember`
+- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::remember`
+- process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::remember`
+- process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::remember`
+- process(humaux-private-worker): `adapters::stream_repo`
 - process(humaux-retrieval-worker): `adapters::remember`
+- process(humaux-retrieval-worker): `adapters::stream_repo`
 
 executed by:
 
@@ -11592,6 +11614,7 @@ read by:
 - (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::evidence_task_runs`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
@@ -12047,6 +12070,7 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`

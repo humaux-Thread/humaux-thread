@@ -48,9 +48,9 @@ use humaux_domain::{
 };
 use humaux_projection::{serving::StreamFamily, stream::StreamKey};
 use humaux_retrieval::{
-    completeness::{CensusResult, FreshnessClass},
+    completeness::CensusResult,
     envelope::{
-        CompletenessBlock, CompletenessInputs, CountScope, Envelope, EvidenceBlock, FreshnessBlock,
+        CompletenessBlock, CompletenessInputs, CountScope, Envelope, EvidenceBlock,
         FrontierPipelineBlock, KnowledgeBlock, LaneStatus, MandatoryReport, PendingEnvelope,
         PinnedReport, PipelineBlock, build_projection_block, envelope_outcome_block,
         frontier_outcome_block,
@@ -988,6 +988,12 @@ fn memory_items<L>(
                     item: ContextItem {
                         memory_id,
                         content,
+                        freshness: materialized
+                            .bodies
+                            .freshness
+                            .get(&memory_id)
+                            .cloned()
+                            .ok_or(ErrorCode::Internal)?,
                         archived: archived || materialized.archived_ids.contains(&memory_id),
                     },
                     subjects: materialized.subjects.remove(&memory_id).unwrap_or_default(),
@@ -1023,6 +1029,7 @@ fn accept_get_envelope<T, L>(
     accept: impl FnOnce(Envelope<MemoryItem, FrontierPipelineBlock>) -> Result<T, ErrorCode>,
 ) -> Result<PendingEnvelope<T>, ErrorCode> {
     const LANE: &str = "direct_get";
+    let freshness = materialized.bodies.freshness_summary();
     let items = memory_items(&mut materialized, &mut affects, archived)?;
     let returned = u32::try_from(items.len()).map_err(|_| ErrorCode::Internal)?;
     let provenance = provenance(request, binary_build, vec![LANE.to_owned()]);
@@ -1043,11 +1050,7 @@ fn accept_get_envelope<T, L>(
                 degradations: Vec::new(),
             },
             provenance: provenance.clone(),
-            freshness: FreshnessBlock {
-                class: FreshnessClass::Unknown,
-                latest_evidence_at: None,
-                state_age_seconds: None,
-            },
+            freshness,
             grounding: materialized.grounding,
             mandatory: MandatoryReport::NotRun,
             pinned: PinnedReport::NotRun,
@@ -1071,6 +1074,7 @@ fn accept_memory_envelope<T>(
     enumeration: Option<EnumerationCensus>,
     accept: impl FnOnce(Envelope<MemoryItem>) -> Result<T, ErrorCode>,
 ) -> Result<PendingEnvelope<T>, ErrorCode> {
+    let freshness = materialized.bodies.freshness_summary();
     let items = memory_items(&mut materialized, &mut affects, archived)?;
     let returned = u32::try_from(items.len()).map_err(|_| ErrorCode::Internal)?;
     let projection = build_projection_block(&materialized.ledger, visible, lag_threshold);
@@ -1148,11 +1152,7 @@ fn accept_memory_envelope<T>(
                 },
                 pipeline: pipeline.clone(),
                 provenance: provenance.clone(),
-                freshness: FreshnessBlock {
-                    class: FreshnessClass::Unknown,
-                    latest_evidence_at: None,
-                    state_age_seconds: None,
-                },
+                freshness,
                 grounding: materialized.grounding,
                 mandatory: MandatoryReport::NotRun,
                 pinned: PinnedReport::NotRun,

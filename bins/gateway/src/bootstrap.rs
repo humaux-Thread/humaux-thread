@@ -3,7 +3,7 @@
 //!   (ADR-0031 D-A / ADR-0032 D-A, §34.0.1 Q9: one process serves every pair; no registry table, no per-process
 //!   stream cache) — the same family the 14 governance / subject / affect writes attach to since ADR-0054, so
 //!   the process holds no default write pair at all.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
+//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
 //!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde, serde_json, sha2, tokio, uuid];
 //!   services=[PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_BILLING_WEBHOOK_PROVIDERS, HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS, HUMAUX_GATEWAY_DEPLOYMENT, HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS,
@@ -51,7 +51,7 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN, HUMAUX_TEST_WEBHOOK_SECRET]; modules=[adapters::attribution_repo, adapters::postgres, domain::error, gateway::limiter,
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::attribution_repo, adapters::postgres, domain::error, gateway::limiter,
 //!   adapters::email, adapters::retrieve, application::auth, application::retrieval_embedding_port, cache::bounded, contracts::config_registry,
 //!   contracts::retrieval_config, domain::billing, domain::context, domain::dataclass, domain::identity, gateway::admission,
 //!   gateway::auth_pages, gateway::billing_webhook, gateway::oauth_http, gateway::cached_embedding, gateway::context,
@@ -627,7 +627,7 @@ impl GatewayBootstrap {
         let token_keys = parse_token_keys(&effective)?;
         let auth_pages = parse_auth_pages(&effective, &token_keys, &guard)?;
         let oauth_http = parse_oauth_http(&effective, &token_keys)?;
-        let billing_webhook = parse_billing_webhook(&effective)?;
+        let billing_webhook = parse_billing_webhook(&effective, admission.max_request_body_bytes)?;
         let metrics_addr = parse_metrics_addr(required(&effective, METRICS_ADDR_KEY)?)?;
         let readiness_refresh = seconds(
             required(&effective, READINESS_REFRESH_KEY)?,
@@ -924,15 +924,19 @@ fn webhook_providers(
 /// §71.3 / §78.1: secret values follow the same effective-config path as auth keys.
 fn parse_billing_webhook(
     effective: &BTreeMap<String, String>,
+    global_cap: usize,
 ) -> Result<Option<HashMap<String, BillingWebhookConfig>>, BootstrapError> {
     // ponytail: env map, one provider; a values-driven registry when a second provider exists
     let providers = webhook_providers(effective.get(BILLING_PROVIDERS).map(String::as_str))?
         .into_iter()
         .map(|(name, p)| {
+            let provider = humaux_domain::billing::BillingProviderId::parse_wire(&name)
+                .ok_or_else(|| BootstrapError::new(BILLING_PROVIDERS, "unknown provider"))?;
+            validate_webhook_provider(&p, global_cap)?;
             Ok((
                 name,
                 BillingWebhookConfig {
-                    provider: humaux_domain::billing::BillingProviderId::Creem,
+                    provider,
                     signature_header: p.header,
                     secret: required(effective, &p.secret_env)?.as_bytes().to_vec(),
                     event_id_pointer: p.event_id_pointer,
@@ -943,6 +947,39 @@ fn parse_billing_webhook(
         })
         .collect::<Result<HashMap<_, _>, BootstrapError>>()?;
     Ok(Some(providers))
+}
+
+// §71.3 / §78.1: bad ingress configuration must fail before binding a listener.
+fn validate_webhook_provider(
+    p: &WebhookProviderEnv,
+    global_cap: usize,
+) -> Result<(), BootstrapError> {
+    let pointer_valid = |pointer: &str| {
+        pointer.starts_with('/')
+            && pointer
+                .split('~')
+                .skip(1)
+                .all(|s| s.starts_with(['0', '1']))
+    };
+    if p.max_body_bytes == 0 || p.max_body_bytes > global_cap {
+        return Err(BootstrapError::new(
+            BILLING_PROVIDERS,
+            "body cap outside global bound",
+        ));
+    }
+    if axum::http::HeaderName::from_bytes(p.header.as_bytes()).is_err() {
+        return Err(BootstrapError::new(
+            BILLING_PROVIDERS,
+            "invalid signature header",
+        ));
+    }
+    if !pointer_valid(&p.event_id_pointer) || !pointer_valid(&p.event_type_pointer) {
+        return Err(BootstrapError::new(
+            BILLING_PROVIDERS,
+            "invalid event pointer",
+        ));
+    }
+    Ok(())
 }
 
 /// `key` as whole seconds (or a count) inside `range`; the bounds catch a unit slip, they are not business limits.
@@ -2267,23 +2304,20 @@ mod tests {
     #[test]
     fn webhook_provider_requires_a_nonempty_redacted_secret() {
         let mut values = raw();
-        values.insert(BILLING_PROVIDERS.into(), r#"{"creem":{"header":"creem-signature","secret_env":"HUMAUX_TEST_WEBHOOK_SECRET","event_id_pointer":"/id","event_type_pointer":"/eventType","max_body_bytes":262144}}"#.into());
+        values.insert(BILLING_PROVIDERS.into(), r#"{"creem":{"header":"creem-signature","secret_env":"BILLING_SIGNING_KEY","event_id_pointer":"/id","event_type_pointer":"/eventType","max_body_bytes":65536}}"#.into());
         for secret in [None, Some("")] {
             if let Some(secret) = secret {
-                values.insert("HUMAUX_TEST_WEBHOOK_SECRET".into(), secret.into());
+                values.insert("BILLING_SIGNING_KEY".into(), secret.into());
             }
             let error = GatewayBootstrap::from_raw(values.clone())
                 .err()
                 .expect("boot refusal");
             assert_eq!(
                 error.to_string(),
-                "gateway bootstrap configuration HUMAUX_TEST_WEBHOOK_SECRET: missing or empty"
+                "gateway bootstrap configuration BILLING_SIGNING_KEY: missing or empty"
             );
         }
-        values.insert(
-            "HUMAUX_TEST_WEBHOOK_SECRET".into(),
-            "webhook-secret-canary".into(),
-        );
+        values.insert("BILLING_SIGNING_KEY".into(), "webhook-secret-canary".into());
         let boot = GatewayBootstrap::from_raw(values).expect("enabled boot");
         assert_eq!(
             boot.billing_webhook
@@ -2300,6 +2334,126 @@ mod tests {
                 .contains("webhook-secret-canary")
         );
         assert!(!boot.config_fingerprint.contains("webhook-secret-canary"));
+    }
+
+    fn webhook_values() -> BTreeMap<String, String> {
+        let mut values = raw();
+        values.insert(BILLING_PROVIDERS.into(), serde_json::json!({"creem": {
+            "header": "creem-signature", "secret_env": "BILLING_SIGNING_KEY",
+            "event_id_pointer": "/id", "event_type_pointer": "/eventType", "max_body_bytes": 65536
+        }}).to_string());
+        values.insert("BILLING_SIGNING_KEY".into(), "secret-canary".into());
+        values
+    }
+
+    #[test]
+    fn webhook_provider_identity_is_closed() {
+        let mut values = webhook_values();
+        let boot = GatewayBootstrap::from_raw(values.clone()).expect("known provider");
+        let providers = boot.billing_webhook.unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(
+            providers["creem"].provider,
+            humaux_domain::billing::BillingProviderId::Creem
+        );
+        let config = values[BILLING_PROVIDERS].replace("\"creem\":", "\"creem-test\":");
+        values.insert(BILLING_PROVIDERS.into(), config);
+        assert_eq!(
+            GatewayBootstrap::from_raw(values).err().map(|e| e.to_string()),
+            Some("gateway bootstrap configuration HUMAUX_BILLING_WEBHOOK_PROVIDERS: unknown provider".into())
+        );
+    }
+
+    #[test]
+    fn webhook_boot_validates_ingress_contract() {
+        let valid = webhook_values();
+        for (field, bad, reason) in [
+            (
+                "max_body_bytes",
+                serde_json::json!(0),
+                "body cap outside global bound",
+            ),
+            (
+                "max_body_bytes",
+                serde_json::json!(65537),
+                "body cap outside global bound",
+            ),
+            (
+                "header",
+                serde_json::json!("bad header"),
+                "invalid signature header",
+            ),
+            ("header", serde_json::json!(""), "invalid signature header"),
+            (
+                "event_id_pointer",
+                serde_json::json!("id"),
+                "invalid event pointer",
+            ),
+            (
+                "event_type_pointer",
+                serde_json::json!("/bad~2"),
+                "invalid event pointer",
+            ),
+            (
+                "event_id_pointer",
+                serde_json::json!("/bad~"),
+                "invalid event pointer",
+            ),
+            (
+                "event_type_pointer",
+                serde_json::json!(""),
+                "invalid event pointer",
+            ),
+        ] {
+            let mut values = valid.clone();
+            let mut config: Value = serde_json::from_str(&values[BILLING_PROVIDERS]).unwrap();
+            config["creem"][field] = bad;
+            values.insert(BILLING_PROVIDERS.into(), config.to_string());
+            assert_eq!(
+                GatewayBootstrap::from_raw(values)
+                    .err()
+                    .map(|e| e.to_string()),
+                Some(format!(
+                    "gateway bootstrap configuration {BILLING_PROVIDERS}: {reason}"
+                ))
+            );
+        }
+        assert_eq!(
+            GatewayBootstrap::from_raw(valid)
+                .unwrap()
+                .billing_webhook
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn webhook_runtime_secret_registry_is_dynamic() {
+        let values = webhook_values();
+        let vars = values.into_iter().map(|(k, v)| (k.into(), v.into()));
+        let boot = GatewayBootstrap::from_env_vars(vars).expect("dynamic env secret");
+        let rows = boot.effective_config.as_array().unwrap();
+        let dynamic: Vec<_> = rows
+            .iter()
+            .filter(|r| r["name"] == "BILLING_SIGNING_KEY")
+            .collect();
+        assert_eq!(dynamic.len(), 1);
+        assert_eq!(dynamic[0]["secret"], true);
+        assert_eq!(dynamic[0].get("value"), None);
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r["name"]
+                    .as_str()
+                    .is_some_and(|name| name.ends_with("TEST_WEBHOOK_SECRET")))
+                .count(),
+            0
+        );
+        let header = include_str!("bootstrap.rs")
+            .split("use crate::")
+            .next()
+            .unwrap();
+        assert_eq!(header.matches("TEST_WEBHOOK_SECRET").count(), 0);
     }
 
     fn raw() -> BTreeMap<String, String> {

@@ -8,17 +8,18 @@
 //!   QUOTA_RENEWAL task's lead refusal and `quota_window_horizon_seconds` sample (ADR-0072 D-C, D-D).
 //! Depends-on: crates=[humaux-adapters, serde_json, time, tokio]; services=[PostgreSQL(any), PostgreSQL(owner)
 //!   r=[control.partition_registry, control.quota_windows, control.retention_policies, ops.maintenance_receipts,
-//!   ops.stage_runs, ops.wal_archive_failures]
+//!   ops.stage_runs, ops.wal_archive_failures, private.ingest_tickets]
 //!   w=[control.confirm_tokens, control.entitlement_snapshots, control.tenants, control.users,
 //!   control.workspaces,
 //!   ops.backup_receipts, ops.backup_sets, ops.jobs, ops.restore_drills, ops.selection_snapshots,
-//!   projection.stream_log]
+//!   private.ingest_tickets, projection.stream_log]
 //!   x=[control.maintenance_tenant_page, control.reap_quota_reservations], PostgreSQL(role_maintenance),
 //!   HTTP(loopback), subprocess(humaux-maintenance)];
 //!   env=[CARGO_TARGET_TMPDIR, HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS, HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH,
 //!   HUMAUX_MAINTENANCE_DR_REPO_FS_PATH, HUMAUX_MAINTENANCE_HEALTH_SAMPLE_SECONDS,
 //!   HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR, HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_CONSUMED_RETENTION_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_CYCLE_SECONDS, HUMAUX_MAINTENANCE_SERVE_DR_EVIDENCE_EVERY_SECONDS,
+//!   HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_EVERY_SECONDS, HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_LIMIT,
 //!   HUMAUX_MAINTENANCE_SERVE_JOBS_DEAD_RETENTION_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_JOBS_DONE_RETENTION_SECONDS, HUMAUX_MAINTENANCE_SERVE_LOST_AFTER_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_LOST_EVERY_SECONDS, HUMAUX_MAINTENANCE_SERVE_LOST_LIMIT,
@@ -32,7 +33,7 @@
 //! Invariants: [every DB test owns its throwaway database humaux_thread_c35_serve_<pid>_<n>, dropped by the
 //!   fixture's Drop even on panic, so no LOST transition ever touches the shared dev database; every spawned
 //!   daemon is killed by its own Drop; the key tests point at a closed port and never reach a database]
-//! Spec: Baseline §15.2; §77; §78.1; §79.2; ADR-0037; ADR-0057 D-F; ADR-0062 D-A; ADR-0062 D-B; ADR-0062 D-D;
+//! Spec: Baseline §15.2; §15.6; §77; §78.1; §79.2; ADR-0037; ADR-0057 D-F; ADR-0062 D-A; ADR-0062 D-B; ADR-0062 D-D;
 //!   ADR-0062 D-Q; ADR-0063 D-H; ADR-0063 D-K; ADR-0064 D-K; ADR-0064 10.11 D; ADR-0072 D-C; ADR-0072 D-D
 
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -63,8 +64,9 @@ const QUOTA_RENEWAL_LEAD: &str = "HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_LEAD_SE
 /// ADR-0072 D-D: the renewal gauge's unlabeled sample line prefix.
 const HORIZON_SAMPLE: &str = "quota_window_horizon_seconds ";
 /// Their `/status` and receipt labels, in the same order.
-const LABELS: [&str; 9] = [
+const LABELS: [&str; 10] = [
     "lost",
+    "ingest_tickets",
     "quota_reservations",
     "quota_renewal",
     "provider_budgets",
@@ -364,6 +366,58 @@ fn one_cycle_answers_200_and_counts_each_due_task() {
     );
 }
 
+/// §15.6 / ADR-0123 D4: the resident task calls the owner door and retains the exact issued denominator.
+#[test]
+fn ingest_ticket_task_expires_due_rows_in_a_real_cycle() {
+    use humaux_adapters::maintenance_repo::MaintenanceTask;
+
+    let Some(mut db) = db("ingest_ticket_task_expires_due_rows_in_a_real_cycle") else {
+        return;
+    };
+    let tenant = seed_orphan(&mut db, "ingest-expiry-cycle");
+    // dep: PostgreSQL(owner) — §15.6 due and fresh tickets on the same tenant
+    let seeded = db.client().execute(
+        "INSERT INTO private.ingest_tickets (tenant_id, scope_kind, scope_id, batch_id, client_batch_id, \
+             ordinal, expires_at) \
+         SELECT $1::text::uuid, 'workspace', gen_random_uuid(), gen_random_uuid(), 'cycle', v.ordinal, \
+             now() + make_interval(secs => v.seconds) \
+         FROM (VALUES (1, -3600), (2, 3600)) v(ordinal, seconds)",
+        &[&tenant],
+    ).expect("seed ingest tickets");
+    assert_eq!(seeded, 2);
+    let addr = free_addr();
+    let _serve = spawn(&keys(addr, &db.maintenance_dsn, 10, 1000));
+    let status = after_cycles(addr, 1, Duration::from_secs(15));
+    let tasks = status["last_cycle"].as_array().expect("closed task list");
+    assert_eq!(tasks.len(), 13);
+    assert_eq!(
+        tasks
+            .iter()
+            .map(|t| t["task"].as_str().expect("task label"))
+            .collect::<Vec<_>>(),
+        MaintenanceTask::ALL.map(MaintenanceTask::label)
+    );
+    let run = task(&status, "ingest_tickets");
+    assert_eq!(run["ran"], true, "{status}");
+    assert_eq!(run["failed"], 0, "{status}");
+    assert_eq!(run["affected"], 1, "{status}");
+    // dep: PostgreSQL(owner) — read back every row, including the unexpired denominator entry
+    let states: Vec<(i32, String)> = db
+        .client()
+        .query(
+            "SELECT ordinal, state FROM private.ingest_tickets ORDER BY ordinal",
+            &[],
+        )
+        .expect("retained tickets")
+        .iter()
+        .map(|r| (r.get(0), r.get(1)))
+        .collect();
+    assert_eq!(
+        states,
+        [(1, "EXPIRED".to_owned()), (2, "ISSUED".to_owned())]
+    );
+}
+
 /// The value of the exposition sample whose name and labels are exactly `series`.
 fn sample(body: &str, series: &str) -> i64 {
     body.lines()
@@ -635,7 +689,7 @@ fn the_tenant_page_walks_every_tenant_once_per_rotation() {
     );
 }
 
-/// One purgeable row per purge door on `tenant`, each older than the one-hour ages of [`keys`].
+/// §15.6 / ADR-0062 D-Q: one due ingest ticket and one row per purge door, past the one-hour ages of [`keys`].
 fn seed_purgeable(db: &mut Db, tenant: &str) {
     db.sql(&format!(
         "WITH u AS (INSERT INTO control.users (user_id) VALUES (gen_random_uuid()) RETURNING user_id), \
@@ -649,7 +703,11 @@ fn seed_purgeable(db: &mut Db, tenant: &str) {
          INSERT INTO ops.selection_snapshots (tenant_id, query_fingerprint, expires_at) \
            VALUES ('{tenant}', 'c35-once', now() - interval '1 minute'); \
          INSERT INTO ops.jobs (tenant_id, job_type, status, idempotency_key, created_at) \
-           VALUES ('{tenant}', 'c35.fixture', 'DONE', gen_random_uuid()::text, now() - interval '2 hours');"
+           VALUES ('{tenant}', 'c35.fixture', 'DONE', gen_random_uuid()::text, now() - interval '2 hours'); \
+         INSERT INTO private.ingest_tickets (tenant_id, scope_kind, scope_id, batch_id, client_batch_id, \
+             ordinal, expires_at) \
+           VALUES ('{tenant}', 'workspace', gen_random_uuid(), gen_random_uuid(), 'once', 1, \
+             now() - interval '1 hour');"
     ));
 }
 

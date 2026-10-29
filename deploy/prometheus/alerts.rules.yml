@@ -291,3 +291,13 @@ groups:
         labels:
           severity: critical
           resource: memory
+
+  # §39 / §78.1: output-expected policy list = dr_evidence, authority_i4.
+  # Each success publishes a reading or finding; cleanup stages may stay empty.
+  - name: humaux-stage-liveness
+    rules:
+      - alert: MaintenanceStageNoOutput
+        expr: stage_last_success_timestamp_seconds > stage_last_output_timestamp_seconds and on (stage) stage_last_success_timestamp_seconds{stage=~"dr_evidence|authority_i4"}
+        for: 24h
+        labels:
+          severity: warning

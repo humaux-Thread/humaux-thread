@@ -14,11 +14,12 @@
 //! `&'static str` so a tenant id, user id or free text cannot become a label without
 //! `Box::leak` — the cardinality and privacy bound is carried by the type.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::{self, Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -306,6 +307,28 @@ pub mod families {
         Kind::Counter,
         &["task"],
     );
+    // ponytail: maintenance stages only; worker-process stages follow (issue).
+    /// `stage_last_run_timestamp_seconds{stage}` (§39).
+    pub const STAGE_LAST_RUN_TIMESTAMP_SECONDS: Family = f(
+        "stage_last_run_timestamp_seconds",
+        "Latest maintenance stage attempt start.",
+        Kind::Gauge,
+        &["stage"],
+    );
+    /// `stage_last_success_timestamp_seconds{stage}` (§39).
+    pub const STAGE_LAST_SUCCESS_TIMESTAMP_SECONDS: Family = f(
+        "stage_last_success_timestamp_seconds",
+        "Latest complete successful maintenance stage run.",
+        Kind::Gauge,
+        &["stage"],
+    );
+    /// `stage_last_output_timestamp_seconds{stage}` (§39).
+    pub const STAGE_LAST_OUTPUT_TIMESTAMP_SECONDS: Family = f(
+        "stage_last_output_timestamp_seconds",
+        "Latest maintenance stage output (affected rows or published reading), including partial runs.",
+        Kind::Gauge,
+        &["stage"],
+    );
     // §41.2: the PARTITIONS run of `humaux-maintenance --serve` (card 36; emit
     // `adapters::maintenance_repo::set_partition_horizon_months`, ADR-0063 D-K; a failed run renders no sample).
     /// `partition_horizon_months{table}`.
@@ -506,6 +529,68 @@ impl<const N: usize> Gauges<N> {
 
     pub(crate) fn get(&self, slot: usize) -> f64 {
         f64::from_bits(self.0[slot].load(Ordering::Relaxed))
+    }
+}
+
+// §39: process-local history survives failed/empty runs, but resets on restart.
+struct StageGauge(Mutex<BTreeMap<&'static str, f64>>);
+
+impl StageGauge {
+    fn set(&self, stage: &'static str, now: f64) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(stage, now);
+    }
+
+    fn get(&self, stage: &'static str) -> f64 {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(stage)
+            .copied()
+            .unwrap_or(0.0)
+    }
+}
+
+static STAGE_LAST_RUN_TIMESTAMP_SECONDS: StageGauge = StageGauge(Mutex::new(BTreeMap::new()));
+static STAGE_LAST_SUCCESS_TIMESTAMP_SECONDS: StageGauge = StageGauge(Mutex::new(BTreeMap::new()));
+static STAGE_LAST_OUTPUT_TIMESTAMP_SECONDS: StageGauge = StageGauge(Mutex::new(BTreeMap::new()));
+
+/// §39: call only when an automatic stage actually starts, never when skipped by cadence.
+/// `stage` comes from the caller's closed task register; `now` is Unix seconds.
+pub fn stage_started(stage: &'static str, now: f64) {
+    STAGE_LAST_RUN_TIMESTAMP_SECONDS.set(stage, now); // labels: stage
+}
+
+/// §39: success requires a complete run without errors; output requires the stage's declared product.
+/// Partial committed output advances output even if another call failed or the budget expired.
+pub fn stage_finished(stage: &'static str, now: f64, success: bool, output: bool) {
+    if success {
+        STAGE_LAST_SUCCESS_TIMESTAMP_SECONDS.set(stage, now); // labels: stage
+    }
+    if output {
+        STAGE_LAST_OUTPUT_TIMESTAMP_SECONDS.set(stage, now); // labels: stage
+    }
+}
+
+/// §39 / ADR-0061 D-A: seed every closed stage with zero (never observed since restart).
+pub fn render_stage_liveness(out: &mut String, stages: &[&'static str]) {
+    for (family, gauge) in [
+        (
+            &families::STAGE_LAST_RUN_TIMESTAMP_SECONDS,
+            &STAGE_LAST_RUN_TIMESTAMP_SECONDS,
+        ),
+        (
+            &families::STAGE_LAST_SUCCESS_TIMESTAMP_SECONDS,
+            &STAGE_LAST_SUCCESS_TIMESTAMP_SECONDS,
+        ),
+        (
+            &families::STAGE_LAST_OUTPUT_TIMESTAMP_SECONDS,
+            &STAGE_LAST_OUTPUT_TIMESTAMP_SECONDS,
+        ),
+    ] {
+        write_single_label(out, family, stages, |i| gauge.get(stages[i]));
     }
 }
 

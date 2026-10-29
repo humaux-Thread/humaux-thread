@@ -299,10 +299,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.commit_seq_seq`
 - reads `ops.jobs`
 - reads `ops.outbox`
+- reads `private.ingest_tickets`
 - reads `projection.processing_gaps`
 - reads `projection.rebuild_tickets`
 - reads `projection.tenant_placements`
 - writes `ops.outbox`
+- writes `private.ingest_tickets`
 - writes `projection.stream_checkpoints`
 - writes `projection.stream_log`
 - executes `projection.claim_issued_tickets`
@@ -350,6 +352,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::feature_registry`
+
+#### `contracts::freshness`
 
 #### `contracts::mechanism_registry`
 - reads `public.consensus_ready`
@@ -874,6 +878,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::signals`
 
 #### `telemetry::degrade`
 
@@ -1785,10 +1791,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.commit_seq_seq`
 - reads `ops.jobs`
 - reads `ops.outbox`
+- reads `private.ingest_tickets`
 - reads `projection.processing_gaps`
 - reads `projection.rebuild_tickets`
 - reads `projection.tenant_placements`
 - writes `ops.outbox`
+- writes `private.ingest_tickets`
 - writes `projection.stream_checkpoints`
 - writes `projection.stream_log`
 - executes `projection.claim_issued_tickets`
@@ -1860,6 +1868,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
+
+#### `contracts::freshness`
 
 #### `contracts::retrieval_config`
 
@@ -1991,6 +2001,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::signals`
 
 #### `telemetry::degrade`
 
@@ -2362,10 +2374,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.commit_seq_seq`
 - reads `ops.jobs`
 - reads `ops.outbox`
+- reads `private.ingest_tickets`
 - reads `projection.processing_gaps`
 - reads `projection.rebuild_tickets`
 - reads `projection.tenant_placements`
 - writes `ops.outbox`
+- writes `private.ingest_tickets`
 - writes `projection.stream_checkpoints`
 - writes `projection.stream_log`
 - executes `projection.claim_issued_tickets`
@@ -2425,6 +2439,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
+
+#### `contracts::freshness`
 
 #### `contracts::retrieval_config`
 
@@ -2613,7 +2629,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS`
 - env `HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS`
 - env `HUMAUX_GATEWAY_UNKNOWN`
-- env `HUMAUX_TEST_WEBHOOK_SECRET`
 - service `PostgreSQL(role_gateway)`
 
 #### `gateway::cached_embedding`
@@ -2748,6 +2763,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::request`
 
 #### `retrieval::rerank`
+
+#### `retrieval::signals`
 
 #### `telemetry::admission`
 
@@ -3165,10 +3182,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.commit_seq_seq`
 - reads `ops.jobs`
 - reads `ops.outbox`
+- reads `private.ingest_tickets`
 - reads `projection.processing_gaps`
 - reads `projection.rebuild_tickets`
 - reads `projection.tenant_placements`
 - writes `ops.outbox`
+- writes `private.ingest_tickets`
 - writes `projection.stream_checkpoints`
 - writes `projection.stream_log`
 - executes `projection.claim_issued_tickets`
@@ -3214,6 +3233,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
+
+#### `contracts::freshness`
 
 #### `contracts::retrieval_config`
 
@@ -3769,6 +3790,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_MAINTENANCE_SERVE_CONFIRM_TOKENS_LIMIT`
 - env `HUMAUX_MAINTENANCE_SERVE_CYCLE_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_DR_EVIDENCE_EVERY_SECONDS`
+- env `HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_EVERY_SECONDS`
+- env `HUMAUX_MAINTENANCE_SERVE_INGEST_TICKETS_LIMIT`
 - env `HUMAUX_MAINTENANCE_SERVE_JOBS_DEAD_RETENTION_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_JOBS_DONE_RETENTION_SECONDS`
 - env `HUMAUX_MAINTENANCE_SERVE_JOBS_EVERY_SECONDS`
@@ -3852,6 +3875,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::signals`
 
 #### `telemetry::degrade`
 
@@ -4230,10 +4255,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.commit_seq_seq`
 - reads `ops.jobs`
 - reads `ops.outbox`
+- reads `private.ingest_tickets`
 - reads `projection.processing_gaps`
 - reads `projection.rebuild_tickets`
 - reads `projection.tenant_placements`
 - writes `ops.outbox`
+- writes `private.ingest_tickets`
 - writes `projection.stream_checkpoints`
 - writes `projection.stream_log`
 - executes `projection.claim_issued_tickets`
@@ -4279,6 +4306,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
+
+#### `contracts::freshness`
 
 #### `contracts::retrieval_config`
 
@@ -4460,6 +4489,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::signals`
 
 #### `telemetry::degrade`
 
@@ -4912,10 +4943,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.commit_seq_seq`
 - reads `ops.jobs`
 - reads `ops.outbox`
+- reads `private.ingest_tickets`
 - reads `projection.processing_gaps`
 - reads `projection.rebuild_tickets`
 - reads `projection.tenant_placements`
 - writes `ops.outbox`
+- writes `private.ingest_tickets`
 - writes `projection.stream_checkpoints`
 - writes `projection.stream_log`
 - executes `projection.claim_issued_tickets`
@@ -4957,6 +4990,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
+
+#### `contracts::freshness`
 
 #### `contracts::retrieval_config`
 
@@ -5171,6 +5206,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::signals`
 
 #### `telemetry::degrade`
 
@@ -6392,6 +6429,7 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::g80_31_handoff`
+- (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -7150,6 +7188,7 @@ written by:
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
+- (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::jobs_claim`
 - (no process): `adapters::tests::ledger_append_only`
 - (no process): `adapters::tests::ledger_frontier`
@@ -9597,7 +9636,9 @@ written by:
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
+- (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_evidence_grounding`
@@ -9784,10 +9825,13 @@ written by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_sources`
+- (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
+- (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -10005,27 +10049,42 @@ executed by:
 ### `private.ingest_tickets`
 read by:
 - (no process): `adapters::tests::projection_worker`
+- (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::postgres`
+- process(cargo-xtask): `adapters::stream_repo`
 - process(humaux-admin): `adapters::postgres`
 - process(humaux-consolidation-worker): `adapters::postgres`
+- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::postgres`
+- process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::postgres`
+- process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-private-worker): `adapters::postgres`
+- process(humaux-private-worker): `adapters::stream_repo`
 - process(humaux-public-worker): `adapters::postgres`
 - process(humaux-retrieval-worker): `adapters::postgres`
+- process(humaux-retrieval-worker): `adapters::stream_repo`
 
 written by:
 - (no process): `adapters::batch`
+- (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `maintenance::tests::partitions`
+- (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::remember`
+- process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::remember`
+- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::remember`
+- process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::remember`
+- process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::remember`
+- process(humaux-private-worker): `adapters::stream_repo`
 - process(humaux-retrieval-worker): `adapters::remember`
+- process(humaux-retrieval-worker): `adapters::stream_repo`
 
 executed by:
 
@@ -10173,6 +10232,7 @@ read by:
 - (no process): `adapters::dedup_repo`
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - (no process): `adapters::tests::evidence_task_runs`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
@@ -10514,6 +10574,7 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -12826,12 +12887,15 @@ executed by:
 - `adapters::tests::distill_dispatch_v2`
 - `adapters::tests::entitlement_projector`
 - `adapters::tests::enumerate_scale`
+- `adapters::tests::evidence_sources_dedupe`
 - `adapters::tests::evidence_task_runs`
 - `adapters::tests::exact_census_project`
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
+- `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::ledger_frontier`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
@@ -12988,6 +13052,7 @@ executed by:
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::jobs_claim`
@@ -13090,6 +13155,7 @@ executed by:
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_repo`
 - `adapters::tests::health_snapshot`
+- `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::memory_in_project`
 - `adapters::tests::plan_catalog`
@@ -13575,8 +13641,10 @@ modules naming it:
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
+- `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_frontier`
 - `adapters::tests::login_challenge`
@@ -13735,6 +13803,7 @@ modules naming it:
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::ledger_frontier`
@@ -13818,6 +13887,7 @@ modules naming it:
 - `adapters::exact_census`
 - `adapters::processing_status`
 - `adapters::read_gate`
+- `adapters::read_materialize`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
 - `adapters::serving_repo`
@@ -13825,6 +13895,7 @@ modules naming it:
 - `adapters::tests::exact_census_project`
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_confirm`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::projection_lag`
 - `adapters::tests::recall_envelope_g23`
@@ -13947,6 +14018,7 @@ modules naming it:
 - `adapters::tests::exact_completeness_eval`
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::ledger_frontier`
 - `adapters::tests::note_chunk_count_parity`
@@ -14159,6 +14231,7 @@ modules naming it:
 - `adapters::processing_status`
 - `adapters::quota_repo`
 - `adapters::read_gate`
+- `adapters::read_materialize`
 - `adapters::tests::billing_doors`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::oauth_persistence`
@@ -14178,6 +14251,7 @@ modules naming it:
 - `adapters::processing_status`
 - `adapters::project_rollup`
 - `adapters::provisioning`
+- `adapters::read_materialize`
 - `adapters::reasoning_route_onboarding`
 
 ### humaux-adapters → `sha2` (normal)
@@ -14407,8 +14481,10 @@ modules naming it:
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
+- `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_frontier`
 - `adapters::tests::login_challenge`
@@ -14538,6 +14614,7 @@ modules naming it:
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::hot_path_indexes`
+- `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
 - `adapters::tests::ledger_frontier`
@@ -14755,9 +14832,11 @@ modules naming it:
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::hot_path_indexes`
+- `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_append_only`
 - `adapters::tests::ledger_frontier`
@@ -14866,6 +14945,7 @@ modules naming it:
 - `adapters::tests::forget_repo`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
+- `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::ledger_frontier`
 - `adapters::tests::login_challenge`
@@ -16067,6 +16147,9 @@ modules naming it:
 - `testkit::tests::metrics::processing_gap_count`
 - `testkit::tests::metrics::projection_lag_events`
 - `testkit::tests::metrics::restore_drill_last_success_timestamp_seconds`
+- `testkit::tests::metrics::stage_last_output_timestamp_seconds`
+- `testkit::tests::metrics::stage_last_run_timestamp_seconds`
+- `testkit::tests::metrics::stage_last_success_timestamp_seconds`
 - `testkit::tests::metrics::tenants_active_1d`
 - `testkit::tests::metrics::tenants_active_7d`
 - `testkit::tests::metrics::wal_archive_failing`
@@ -16724,6 +16807,7 @@ modules naming it:
 - `gateway::admission`
 - `gateway::auth_pages`
 - `gateway::billing_webhook`
+- `gateway::bootstrap`
 - `gateway::main`
 - `gateway::mcp_application`
 - `gateway::oauth_http`
@@ -18460,6 +18544,13 @@ services (computed):
 
 default run:
 
+### `bins/maintenance/tests/stage_liveness.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `bins/private-worker/tests/contribution_execution_runner.rs`
 db-bound (default run): yes
 
@@ -19067,6 +19158,15 @@ services (computed):
 default run:
 - PostgreSQL
 
+### `crates/adapters/tests/freshness.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
 ### `crates/adapters/tests/g80_31_handoff.rs`
 db-bound (default run): yes
 
@@ -19086,6 +19186,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/hot_path_indexes.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/ingest_ticket_expiry.rs`
 db-bound (default run): yes
 
 services (computed):
@@ -20100,9 +20209,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3516` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3521` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3526` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3670` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3675` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3680` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
