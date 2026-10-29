@@ -87,8 +87,6 @@ fn usage() -> &'static str {
 /// §78.1 / ADR-0061 D-B: `--serve`'s own ops listener address (loopback only, no default).
 const SERVE_METRICS_ADDR: &str = "HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR";
 
-/// The §41.2 families this process counts: none yet (ADR-0061 E10). `/metrics` and `--metrics-families` both
-/// call this.
 const STAGES: [&str; 1] = ["consolidation_dispatch"];
 
 async fn dispatch_iteration(
@@ -125,6 +123,7 @@ async fn dispatch_iteration(
     result
 }
 
+/// §39 / ADR-0061: the closed dispatch stage, shared by both metrics routes.
 fn render_metrics(out: &mut String) {
     humaux_telemetry::metrics::render_stage_liveness(out, &STAGES);
 }

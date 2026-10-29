@@ -120,8 +120,6 @@ const SERVE_RPC_METRICS_ADDR: &str = "HUMAUX_RETRIEVAL_WORKER_SERVE_RPC_METRICS_
 /// §78.1 / ADR-0061 D-B: `--serve`'s own ops listener address (loopback only, no default).
 const SERVE_METRICS_ADDR: &str = "HUMAUX_RETRIEVAL_WORKER_SERVE_METRICS_ADDR";
 
-/// The four §41.2 `retrieval_provider_*` families this process counts (ADR-0061 D-C), each seeded over its
-/// closed label product by the `snapshot_*` functions. `/metrics` and `--metrics-families` both call this.
 const STAGES: [&str; 1] = ["retrieval_projection"];
 
 async fn projection_iteration(
@@ -144,6 +142,8 @@ async fn projection_iteration(
     result
 }
 
+/// The four §41.2 `retrieval_provider_*` families this process counts (ADR-0061 D-C), each seeded over its
+/// closed label product by the `snapshot_*` functions. `/metrics` and `--metrics-families` both call this.
 fn render_metrics(out: &mut String) {
     humaux_telemetry::metrics::render_stage_liveness(out, &STAGES);
     let counter = |out: &mut String, family, rows: Vec<(Vec<&'static str>, u64)>| {

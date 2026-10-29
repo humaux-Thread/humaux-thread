@@ -375,7 +375,10 @@ pub async fn dispatch_pass<P: PrivateReasoningPort>(
                     )
                     | RunOnceError::NotReady(_) => ErrorCode::DependencyUnavailable,
                     RunOnceError::Repo(_) => ErrorCode::InvalidInput,
-                    RunOnceError::Reasoning(_) => ErrorCode::ProviderTransient,
+                    RunOnceError::Reasoning(error) => ErrorCode::ALL
+                        .into_iter()
+                        .find(|code| Some(code.as_str()) == error.class())
+                        .unwrap_or(ErrorCode::ProviderTransient),
                 });
                 // The pass keeps going: one tenant's environmental failure must not stop the
                 // other tenants this cross-tenant pass claimed.

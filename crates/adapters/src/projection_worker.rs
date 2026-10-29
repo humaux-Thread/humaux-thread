@@ -360,6 +360,13 @@ struct RowCtx<'a> {
 }
 
 impl<'a> RowCtx<'a> {
+    fn record_error(&self, code: ErrorCode) {
+        *self
+            .last_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(code);
+    }
+
     fn of(deps: &'a ProjectionWorkerDeps, policy: NoteChunkPolicy, bm25: &'a Bm25Probes) -> Self {
         Self {
             last_error: Mutex::new(None),
@@ -1402,11 +1409,12 @@ async fn seal_and_embed(
     // A thread that cannot even be spawned is the scanner not having run: transient, like a failed scan process.
     let sealed_cards = run_off_thread(move || seal_all(&scanner, &sources, &cards))
         .await
-        .map_err(|_| seal_failure(ErrorCode::DependencyUnavailable))?
+        .map_err(|_| {
+            ctx.record_error(ErrorCode::DependencyUnavailable);
+            seal_failure(ErrorCode::DependencyUnavailable)
+        })?
         .map_err(|code| {
-            *ctx.last_error
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(code);
+            ctx.record_error(code);
             seal_failure(code)
         })?;
     let memory_ids: Vec<Uuid> = inputs
@@ -1426,9 +1434,7 @@ async fn seal_and_embed(
         )
         .await
         .map_err(|code| {
-            *ctx.last_error
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(code);
+            ctx.record_error(code);
             // Operator signal only: the wire `ErrorCode` variant, never provider text (§7.x).
             eprintln!("projection_worker: commit_seq={commit_seq} embedding_failed code={code:?}");
             if code_is_transient(code) {
@@ -1820,6 +1826,11 @@ async fn write_slot(
             "projection_worker: stream_seq={stream_seq} qdrant_upsert transient={}",
             error.is_transient()
         );
+        ctx.record_error(if error.is_transient() {
+            ErrorCode::DependencyUnavailable
+        } else {
+            ErrorCode::InvalidInput
+        });
         return Err(if error.is_transient() {
             (RowTerminal::Retry, "qdrant_upsert_failed")
         } else {
@@ -1920,6 +1931,11 @@ async fn delete_retired(
     )
     .await
     {
+        ctx.record_error(if error.is_transient() {
+            ErrorCode::DependencyUnavailable
+        } else {
+            ErrorCode::InvalidInput
+        });
         return if error.is_transient() {
             (RowTerminal::Retry, "qdrant_delete_failed")
         } else {
