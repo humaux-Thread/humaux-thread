@@ -68,14 +68,15 @@ BEGIN
   INSERT INTO control.subscription_events
     (tenant_id, subscription_id, from_state, to_state, source_provider, source_event_id, observed_at)
   VALUES (p_tenant, v_id, v_old, p_state, p_provider, p_event_id, p_observed_at);
-  -- §71.3: legacy plan-version pointers belong here only when no other paid subscription can own them.
+  -- §71.3 / §76: only this tenant's subscription IDs own PLAN grants; retire all legacy pointers.
   SELECT EXISTS (SELECT 1 FROM control.subscriptions WHERE tenant_id = p_tenant AND subscription_id <> v_id
     AND state IN ('ACTIVE', 'CANCEL_AT_PERIOD_END') AND current_period_end > v_now) INTO v_other_paid;
   UPDATE control.entitlement_grants SET revoked_at = v_now,
       valid_until = CASE WHEN valid_from < v_now AND (valid_until IS NULL OR valid_until > v_now)
                          THEN v_now ELSE valid_until END
     WHERE tenant_id = p_tenant AND source = 'PLAN' AND revoked_at IS NULL
-      AND (source_ref_id = v_id OR (NOT v_other_paid AND source_ref_id IN (p_plan_version, p_free_plan_version)));
+      AND (source_ref_id = v_id OR NOT EXISTS (SELECT 1 FROM control.subscriptions s
+        WHERE s.tenant_id = p_tenant AND s.subscription_id = source_ref_id));
   INSERT INTO control.entitlement_grants
     (tenant_id, source, source_ref_id, feature, value, valid_from, valid_until, priority)
   SELECT p_tenant, 'PLAN', v_id, e.key,
@@ -83,7 +84,7 @@ BEGIN
       'period_start', to_char(p_period_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
       'period_end', to_char(p_period_end AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) ELSE e.value END,
     v_now, CASE WHEN v_paid THEN p_period_end ELSE NULL END, 0
-    FROM jsonb_each(v_template) e WHERE NOT v_other_paid;
+    FROM jsonb_each(v_template) e WHERE v_paid OR NOT v_other_paid;
   RETURN true;
 END;
 $$;

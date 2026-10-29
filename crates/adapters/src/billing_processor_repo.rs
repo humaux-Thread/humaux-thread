@@ -197,3 +197,44 @@ pub async fn append_payment_in_txn(
     .await
     .map_err(db_error)
 }
+
+/// §71.3: lock, cancellation and deadlock SQLSTATEs remain retryable without a database.
+#[cfg(test)]
+#[test]
+fn db_error_transient_sqlstates() {
+    #[derive(Debug)]
+    struct SqlState(&'static str);
+    impl std::fmt::Display for SqlState {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+    impl std::error::Error for SqlState {}
+    impl sqlx::error::DatabaseError for SqlState {
+        fn message(&self) -> &str {
+            self.0
+        }
+        fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+            Some(self.0.into())
+        }
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+    }
+    for code in ["55P03", "57014", "40P01"] {
+        assert_eq!(
+            db_error(sqlx::Error::Database(Box::new(SqlState(code)))),
+            ErrorCode::DependencyUnavailable,
+            "SQLSTATE {code}"
+        );
+    }
+}
