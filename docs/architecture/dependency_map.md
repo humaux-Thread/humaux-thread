@@ -4460,6 +4460,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `HTTP(provider endpoint)`
 - service `PostgreSQL(role_private_worker)`
 
+#### `private-worker::stages`
+
 #### `projection::card`
 
 #### `projection::dense`
@@ -16450,6 +16452,7 @@ modules naming it:
 why: humaux-domain dependency
 
 modules naming it:
+- `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::run_once_e2e`
 - `humaux-consolidation-worker`
