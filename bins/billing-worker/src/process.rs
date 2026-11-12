@@ -95,7 +95,7 @@ pub async fn process_one(
     provider: &dyn BillingProvider,
     config: &ProcessorConfig,
 ) -> Result<bool, ErrorCode> {
-    config.budget.validate()?;
+    // TEMPORARY FAULT: omit budget validation for causal RED.
     let now = Instant::now();
     let deadline = now
         .checked_add(config.budget.invocation)

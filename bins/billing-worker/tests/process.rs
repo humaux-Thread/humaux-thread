@@ -225,6 +225,88 @@ fn processor_http_timeout_rolls_back_and_retries() {
     });
 }
 
+/// Invalid budgets fail before claim or provider IO, leaving the inbox retryable.
+#[test]
+fn processor_invalid_budgets_have_no_effects() {
+    run_db_fixture::<Fixture, _>("processor_invalid_budgets_have_no_effects", |mut h| {
+        let tenant = h.tenant;
+        deliver(&mut h, "invalid_budget", "active", tenant);
+        h.rt.block_on(async {
+            let order = Arc::new(fake_creem::FetchOrder {
+                newer: fetched_subscription("active", "prod_fixture"),
+                fetches: AtomicUsize::new(0),
+                release_first: Notify::new(),
+            });
+            let (base, server) = fake_creem::start_controlled(
+                fetched_subscription("active", "prod_fixture"),
+                json!({}),
+                None,
+                Some(order.clone()),
+            )
+            .await;
+            let provider = CreemClient::new(
+                &base,
+                &BillingMode::parse(Some("fake"), None).unwrap(),
+                TenantId(tenant),
+                ProcessorId(Uuid::new_v4()),
+                HttpEgressConfig::default(),
+                Arc::new(fake_creem::FixtureCredential(fake_creem::TEST_KEY)),
+                Arc::new(fake_creem::FixtureCredential(fake_creem::TEST_KEY)),
+            )
+            .unwrap();
+            let mut cases = Vec::new();
+            let mut zero = h.config.budget;
+            zero.provider = Duration::ZERO;
+            cases.push(zero);
+            let mut overflow = h.config.budget;
+            overflow.invocation = Duration::MAX;
+            cases.push(overflow);
+            let mut order_bad = h.config.budget;
+            order_bad.lock = order_bad.statement;
+            cases.push(order_bad);
+            let mut allowance = h.config.budget;
+            allowance.provider = Duration::from_secs(23);
+            cases.push(allowance);
+            for budget in cases {
+                h.config.budget = budget;
+                assert_eq!(
+                    process_one(&h.pool, &provider, &h.config).await,
+                    Err(ErrorCode::InvalidInput),
+                    "invalid budget must fail before IO"
+                );
+                assert_eq!(order.fetches.load(Ordering::SeqCst), 0);
+            }
+            server.abort();
+        });
+        let status: String = h
+            .admin
+            .query_one(
+                "SELECT status FROM control.billing_inbox WHERE event_id='invalid_budget'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(status, "RECEIVED");
+        for table in [
+            "subscriptions",
+            "subscription_events",
+            "billing_payments",
+            "entitlement_grants",
+            "entitlement_snapshots",
+        ] {
+            let count: i64 = h
+                .admin
+                .query_one(&format!("SELECT count(*) FROM control.{table}"), &[])
+                .unwrap()
+                .get(0);
+            assert_eq!(count, 0, "unexpected effect in {table}");
+        }
+        h.config.budget = Default::default();
+        assert!(process(&h, "active"));
+        assert_eq!(snapshot(&mut h), paid());
+    });
+}
+
 /// G-M04-25: an older response committed last cannot overwrite a newer authoritative observation (§71.3).
 #[test]
 fn concurrent_subscription_observations_are_ordered() {
