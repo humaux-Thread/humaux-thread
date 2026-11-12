@@ -1529,3 +1529,78 @@ fn snapshot_rows_never_exceed_the_cap() {
         "page 1's census still counts the whole universe"
     );
 }
+
+/// Test-only PG18 mechanism probe; synchronous query/commit acknowledgements are the
+/// handshake. This neither attributes the historical actor nor changes G80's contract.
+/// dep: PostgreSQL(owner) — observes snapshots and fixture-only content digests.
+fn g8031_observe(f: &mut Fixture, phase: &str) -> (String, String) {
+    let mut tx = f.admin.transaction().expect("observation transaction");
+    tx.batch_execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .expect("RR observation");
+    let row = tx.query_one(
+        "SELECT pg_current_snapshot()::text, pg_backend_pid(), \
+         current_setting('server_version'), pg_current_xact_id_if_assigned()::text",
+        &[],
+    ).expect("raw snapshot observation");
+    let token: String = row.get(0);
+    let pid: i32 = row.get(1);
+    let version: String = row.get(2);
+    let xid: Option<String> = row.get(3);
+    // Hash complete seeded memory rows and links, never print content or a DSN.
+    let digest: String = tx.query_one(
+        "SELECT md5(jsonb_build_array( \
+         (SELECT jsonb_agg(to_jsonb(m) ORDER BY memory_id) FROM private.memory_records m WHERE tenant_id=$1), \
+         (SELECT jsonb_agg(to_jsonb(e) ORDER BY e.memory_id, e.evidence_id) FROM private.memory_evidence e \
+          JOIN private.memory_records m ON m.memory_id=e.memory_id WHERE m.tenant_id=$1), \
+         (SELECT jsonb_agg(to_jsonb(e) ORDER BY evidence_id) FROM private.evidence_objects e WHERE tenant_id=$1) \
+         )::text)",
+        &[&f.tenant_id],
+    ).expect("fixture digest").get(0);
+    eprintln!("G8031 phase={phase} raw={token} pid={pid} version={version} xid={xid:?} fixture_md5={digest}");
+    tx.commit().expect("observation commit acknowledgement");
+    (token, digest)
+}
+
+/// Explicitly allocate and complete one top-level XID without writing fixture rows.
+/// Control and restored arms use exactly the same equality precondition.
+fn g8031_mechanism_arm(inject: bool, phase: &str) {
+    let Some(mut f) = setup() else { return };
+    seed_many(&mut f, "ProjectConstraint", 1);
+    seed_many(&mut f, "PrivateKnowledge", 200);
+    let before = g8031_observe(&mut f, &format!("{phase}/before"));
+    if inject {
+        // dep: PostgreSQL(owner) — controlled XID allocation, not a guessed background actor.
+        // dep: PostgreSQL(any) — opens the control connection for `g8031_mechanism_arm`.
+        let owner = std::env::var("HUMAUX_TEST_PG_DSN").expect("owner configured by setup");
+        let mut actor = Client::connect(&owner, NoTls).expect("controlled connection");
+        let mut tx = actor.transaction().expect("injected begin acknowledgement");
+        let row = tx.query_one(
+            "SELECT pg_current_xact_id()::text, pg_backend_pid(), current_setting('server_version')",
+            &[],
+        ).expect("injected allocation acknowledgement");
+        let xid: String = row.get(0);
+        let pid: i32 = row.get(1);
+        let version: String = row.get(2);
+        eprintln!("G8031 phase={phase}/injected xid={xid} pid={pid} version={version}");
+        tx.commit().expect("injected commit acknowledgement");
+    }
+    let after = g8031_observe(&mut f, &format!("{phase}/after"));
+    assert_eq!(before.1, after.1, "controlled XID must not change fixture content");
+    // RED_REF_WITNESS: the independent red ref keeps this exact original precondition.
+    assert_eq!(before.0, after.0, "G8031 original token precondition: {phase}");
+}
+
+#[test]
+fn g8031_snapshot_1_control() {
+    g8031_mechanism_arm(false, "control");
+}
+
+#[test]
+fn g8031_snapshot_2_injected() {
+    g8031_mechanism_arm(true, "injected");
+}
+
+#[test]
+fn g8031_snapshot_3_restored() {
+    g8031_mechanism_arm(false, "restored");
+}
