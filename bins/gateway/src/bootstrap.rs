@@ -364,6 +364,12 @@ pub struct GatewayRuntime {
     billing_webhook: Option<HashMap<String, BillingWebhookConfig>>,
 }
 
+fn declare_stages() {
+    for stage in crate::status::STAGES {
+        humaux_telemetry::metrics::stage_declared(stage, true, true);
+    }
+}
+
 // §67.2 / ADR-0100: a stalled original session is lost; never reconnect or continue serving.
 async fn session_heartbeat(
     timeout: Duration,
@@ -506,9 +512,7 @@ impl GatewayBootstrap {
     /// Guard/application/adapter chain. No caller can inject an alternate pool
     /// or a per-request write policy.
     pub async fn build(self) -> Result<GatewayRuntime, BootstrapError> {
-        for stage in crate::status::STAGES {
-            humaux_telemetry::metrics::stage_declared(stage, true, true);
-        }
+        declare_stages();
         // ADR-0059 D-G: the one production install, before the pool, the guard and the listener.
         install_token_keys(self.token_keys).map_err(|_| {
             BootstrapError::new(
