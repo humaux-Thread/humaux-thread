@@ -1,0 +1,22 @@
+# §71.3 / §76: owner-only slot observation and local handover.
+migration_id = "0307_billing_slot_handover"
+class = "EXPAND_CONTRACT"
+precheck = """
+select to_regprocedure('control.billing_apply_subscription(uuid,text,text,text,uuid,uuid,text,timestamptz,timestamptz,timestamptz)') is not null
+ and to_regclass('control.subscription_events') is not null
+ and to_regclass('control.entitlement_grants') is not null as precheck_ok
+"""
+postcheck = """
+with fns as (select * from pg_proc where oid in (
+ to_regprocedure('control.billing_slot_observe(uuid,text,text,text,timestamptz,timestamptz)'),
+ to_regprocedure('control.billing_handover_subscription(uuid,text,text,uuid,text,text,uuid,uuid,timestamptz,timestamptz,timestamptz)'))),
+r(role) as (values ('role_gateway'),('role_private_worker'),('role_consolidation_worker'),('role_public_worker'),
+ ('role_retrieval_worker'),('role_batch_issuer'),('role_maintenance'),('role_admin'),('role_health_reader'))
+select (select count(*) = 2 from fns where pg_get_userbyid(proowner) = 'role_migration_owner'
+ and prosecdef and 'search_path=pg_catalog' = any(coalesce(proconfig,'{}')))
+ and not exists (select 1 from fns cross join r where has_function_privilege(r.role, fns.oid, 'EXECUTE') <> (r.role = 'role_maintenance'))
+ and not exists (select 1 from fns, lateral aclexplode(coalesce(proacl,acldefault('f',proowner))) x
+ where x.privilege_type = 'EXECUTE' and x.grantee not in (proowner, 'role_maintenance'::regrole)) as postcheck_ok
+"""
+rollback_or_forward_fix = "forward-fix only: preserve append-only events and payments."
+backup_restore_requirement = "none: no table privilege or existing row changes."

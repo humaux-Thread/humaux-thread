@@ -16,7 +16,7 @@
 //!   HUMAUX_MAINTENANCE_SERVE_QUOTA_RENEWAL_SUBSCRIPTION_MONTHS, HUMAUX_MAINTENANCE_SERVE_REDRIVE_COOLDOWN_SECONDS, HUMAUX_MAINTENANCE_SERVE_REISSUE_COOLDOWN_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_TENANTS_PER_RUN, HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS, HUMAUX_TEST_PG_DSN];
 //!   modules=[humaux-testkit, testkit::reaped]
-//! Called-by: [maintenance::tests::backup, maintenance::tests::billing_legacy_migration, maintenance::tests::drill, maintenance::tests::health_serve,
+//! Called-by: [maintenance::tests::backup, maintenance::tests::billing_legacy_migration, maintenance::tests::billing_slot_migration, maintenance::tests::drill, maintenance::tests::health_serve,
 //!   maintenance::tests::i4_scan, maintenance::tests::measure, maintenance::tests::partition_pg_facts, maintenance::tests::partitions,
 //!   maintenance::tests::rebuild_cli, maintenance::tests::retention, maintenance::tests::serve,
 //!   maintenance::tests::spike]

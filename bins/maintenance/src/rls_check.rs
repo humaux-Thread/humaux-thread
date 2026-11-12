@@ -5354,12 +5354,14 @@ pub fn check_entitlement_doors(client: &mut impl GenericClient) -> GateResult {
         fail(check, problems.join("; "))
     }
 }
-/// §71.3 / §76, 0300/0301: the exact processor door set (M04-11a, G-M04-23).
-const BILLING_PROCESSOR_DOOR_FUNCTIONS: [&str; 4] = [
+/// §71.3 / §76, 0300/0301/0307: the exact processor door set (M04-11a, G-M04-23).
+const BILLING_PROCESSOR_DOOR_FUNCTIONS: [&str; 6] = [
     "control.billing_append_payment(uuid,text,text,text,uuid,uuid,text,text,bigint,text,timestamptz,timestamptz,timestamptz,timestamptz,timestamptz)",
     "control.billing_inbox_claim(integer)",
     "control.billing_inbox_settle(text,text,text,text)",
     "control.billing_apply_subscription(uuid,text,text,text,uuid,uuid,text,timestamptz,timestamptz,timestamptz)",
+    "control.billing_slot_observe(uuid,text,text,text,timestamptz,timestamptz)",
+    "control.billing_handover_subscription(uuid,text,text,uuid,text,text,uuid,uuid,timestamptz,timestamptz,timestamptz)",
 ];
 const BILLING_PROCESSOR_EXECUTORS: &[&str] = &["role_maintenance"];
 
@@ -7645,7 +7647,7 @@ mod tests {
     #[test]
     fn billing_processor_doors_are_maintenance_only() {
         txn_or_skip!(client, txn);
-        assert_eq!(BILLING_PROCESSOR_DOOR_FUNCTIONS.len(), 4);
+        assert_eq!(BILLING_PROCESSOR_DOOR_FUNCTIONS.len(), 6);
         let clean = check_billing_processor_doors(&mut txn);
         assert_eq!(clean.status, GateStatus::Pass);
         for signature in BILLING_PROCESSOR_DOOR_FUNCTIONS {
