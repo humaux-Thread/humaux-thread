@@ -1,6 +1,6 @@
 //! `billing-worker::fake_creem` — test-only HTTP double (§71.2).
 //! Depends-on: crates=[async-trait, axum, hex, hmac, humaux-domain, humaux-infra-egress, serde_json, sha2, tokio]; services=[HTTP(loopback)]; env=[]; modules=[domain::error, infra-egress::http]
-//! Called-by: [billing-worker::tests::fetch, billing-worker::tests::process]
+//! Called-by: [billing-worker::tests::cancel, billing-worker::tests::fetch, billing-worker::tests::process]
 //! Invariants: [loopback only; exact query identities; no M04-10 dependency]
 //! Spec: Baseline §71.2; §71.3; §79.4
 use axum::{
@@ -123,4 +123,44 @@ async fn read(
         }
     }
     Ok(Json(objects[index].clone()))
+}
+
+/// Raw request observations; tests assert the wire contract independently of the client.
+pub type CancelRequests = Arc<std::sync::Mutex<Vec<(String, String, HeaderMap, Vec<u8>)>>>;
+
+/// Immediate-cancel HTTP fixture: capture even malformed routes/methods, with a controlled response.
+pub async fn start_cancel(
+    response: Value,
+    status: u16,
+) -> (String, tokio::task::JoinHandle<()>, CancelRequests) {
+    let requests: CancelRequests = Arc::default();
+    let captured = requests.clone();
+    let router = Router::new().fallback(move |request: axum::extract::Request| {
+        let captured = captured.clone();
+        let response = response.clone();
+        async move {
+            let (parts, body) = request.into_parts();
+            let body = axum::body::to_bytes(body, 4096).await.unwrap();
+            captured.lock().unwrap().push((
+                parts.method.to_string(),
+                parts.uri.to_string(),
+                parts.headers.clone(),
+                body.to_vec(),
+            ));
+            if parts.headers.get("x-api-key").and_then(|h| h.to_str().ok()) != Some(TEST_KEY) {
+                return (StatusCode::UNAUTHORIZED, Json(Value::Null));
+            }
+            (StatusCode::from_u16(status).unwrap(), Json(response))
+        }
+    });
+    // dep: HTTP(loopback) — isolated cancellation contract fixture, never a real provider.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    (
+        base,
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        }),
+        requests,
+    )
 }

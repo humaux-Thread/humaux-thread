@@ -84,6 +84,15 @@ impl CreemClient {
             .join(resource)
             .map_err(|_| ErrorCode::InvalidInput)?;
         url.query_pairs_mut().append_pair(parameter, id);
+        self.request(url, "GET", Vec::new(), id).await
+    }
+    async fn request(
+        &self,
+        url: Url,
+        method: &str,
+        body: Vec<u8>,
+        id: &str,
+    ) -> Result<Value, ErrorCode> {
         let call = HttpExternalCall::new(
             url.as_str(),
             self.processor,
@@ -93,11 +102,11 @@ impl CreemClient {
         )
         .map_err(|_| ErrorCode::InvalidInput)?
         .with_request_policy(
-            "GET".parse().map_err(|_| ErrorCode::InvalidInput)?,
+            method.parse().map_err(|_| ErrorCode::InvalidInput)?,
             "x-api-key".parse().map_err(|_| ErrorCode::InvalidInput)?,
             self.hosts.clone(),
         )?;
-        let payload = AuthorizedEgressPayload::new(Vec::new());
+        let payload = AuthorizedEgressPayload::new(body);
         // §71 / external-egress-registry: BILLING is metadata; no private-data disclosure reservation.
         let permit = egress::authorize(
             self.tenant,
@@ -107,7 +116,7 @@ impl CreemClient {
             &payload,
             self.config.request_timeout,
         )?;
-        // dep: HTTP(provider) — §71.2 purpose-bound GET with transport-injected credential
+        // dep: HTTP(provider) — §71.2 purpose-bound provider call with transport-injected credential
         let body = call.call(&permit, &payload).await?;
         let value: Value = serde_json::from_slice(&body).map_err(|_| ErrorCode::InvalidInput)?;
         if text(&value, "id")? != id {
@@ -158,32 +167,30 @@ impl BillingProvider for CreemClient {
                 }
                 other => other,
             })?;
-        let date = |key| {
-            OffsetDateTime::parse(text(&value, key)?, &Rfc3339).map_err(|_| ErrorCode::InvalidInput)
-        };
-        let start = date("current_period_start_date")?;
-        let end = date("current_period_end_date")?;
-        if end <= start {
+        parse_subscription(&value, reference)
+    }
+    async fn cancel_subscription_now(
+        &self,
+        reference: &ExternalSubscriptionRef,
+    ) -> Result<ProviderSubscription, ErrorCode> {
+        // Reject dot segments too: URL parsers normalize them rather than preserving identity.
+        if reference.0.is_empty() || matches!(reference.0.as_str(), "." | "..") {
             return Err(ErrorCode::InvalidInput);
         }
-        let customer = value["customer"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(Ok)
-            .unwrap_or_else(|| text(&value["customer"], "id"))?;
-        Ok(ProviderSubscription {
-            reference: reference.clone(),
-            customer: ExternalCustomerRef(customer.into()),
-            product: value["product"]
-                .as_str()
-                .filter(|id| !id.is_empty())
-                .map(Ok)
-                .unwrap_or_else(|| text(&value["product"], "id"))?
-                .into(),
-            status: normalize::status(text(&value, "status")?)?,
-            current_period_start: start,
-            current_period_end: end,
-        })
+        let mut url = self.base.clone();
+        url.path_segments_mut()
+            .map_err(|_| ErrorCode::InvalidInput)?
+            .extend(["v1", "subscriptions", reference.0.as_str(), "cancel"]);
+        // Explicit immediate mode; neither this adapter nor HttpExternalCall retries a POST.
+        let value = self
+            .request(
+                url,
+                "POST",
+                br#"{"mode":"immediate"}"#.to_vec(),
+                &reference.0,
+            )
+            .await?;
+        parse_subscription(&value, reference)
     }
     async fn verify_webhook(
         &self,
@@ -208,6 +215,37 @@ impl BillingProvider for CreemClient {
             object_id: value["object"]["id"].as_str().map(str::to_owned),
         })
     }
+}
+fn parse_subscription(
+    value: &Value,
+    reference: &ExternalSubscriptionRef,
+) -> Result<ProviderSubscription, ErrorCode> {
+    let date = |key| {
+        OffsetDateTime::parse(text(value, key)?, &Rfc3339).map_err(|_| ErrorCode::InvalidInput)
+    };
+    let start = date("current_period_start_date")?;
+    let end = date("current_period_end_date")?;
+    if end <= start {
+        return Err(ErrorCode::InvalidInput);
+    }
+    let customer = value["customer"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(Ok)
+        .unwrap_or_else(|| text(&value["customer"], "id"))?;
+    Ok(ProviderSubscription {
+        reference: reference.clone(),
+        customer: ExternalCustomerRef(customer.into()),
+        product: value["product"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(Ok)
+            .unwrap_or_else(|| text(&value["product"], "id"))?
+            .into(),
+        status: normalize::status(text(value, "status")?)?,
+        current_period_start: start,
+        current_period_end: end,
+    })
 }
 fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, ErrorCode> {
     value[key]
