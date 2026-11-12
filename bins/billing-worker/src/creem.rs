@@ -153,7 +153,9 @@ impl BillingProvider for CreemClient {
             .get("v1/subscriptions", "subscription_id", &reference.0)
             .await
             .map_err(|error| match error {
-                ErrorCode::ProviderTransient => ErrorCode::DependencyUnavailable,
+                ErrorCode::ProviderTransient | ErrorCode::ProviderRateLimited => {
+                    ErrorCode::DependencyUnavailable
+                }
                 other => other,
             })?;
         let date = |key| {
