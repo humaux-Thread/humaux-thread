@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, humaux-protocol, serde_json, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.curation_candidate_targets, private.curation_candidates, private.memory_projects, private.memory_projects_live, private.nodes, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.subjects, public.entities] w=[coord.tasks, private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.i4_authority_scan, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::known_red, xtask::serial_lane]
+//! Depends-on: crates=[humaux-domain, humaux-protocol, proc-macro2, serde_json, syn, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.curation_candidate_targets, private.curation_candidates, private.memory_projects, private.memory_projects_live, private.nodes, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.subjects, public.entities] w=[coord.tasks, private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.i4_authority_scan, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::known_red, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main, xtask::vocab_check]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails; G-M23-3 / G-M23-3b read docs/architecture/db_objects.md and backup_catalog.toml and fail, never not_applicable, on a missing file or an inventory without foreign-key blocks; G-M23-3b also fails unless every D5_RESTORE_DEPENDENCIES entry is a KNOWLEDGE catalog row (M23 D5)]
 //! Spec: Baseline §53.3; §55.1; §59.1; §65; §78.3; §78; §78.1; §78.4; §52.4; §22.1; §23.1④; ADR-0110 D-B; ADR-0110 D-C; ADR-0121 D-A; ADR-0123 D3
@@ -322,71 +322,202 @@ fn is_ident_byte(b: u8) -> bool {
 // §53.3 规则1 + 规则3: Outcome<_> fallback scan, shared by real code and sentinels
 // ============================================================================
 
-/// Scans `source` for `fn`s whose signature contains the literal text `Outcome<` and, within
-/// each such fn's body (nested closures included — §53.3 规则1 says "函数体内", not "顶层
-/// 语句"), flags `unwrap_or_default()` / `unwrap_or(` / `Ok(Vec::new())` / `Ok(None)` unless
-/// the same line also calls `abstain(` (i.e. is itself the abstain call chain).
+/// §53.3 rule1/rule3 syntax scan. Outcome is a syntactic generic path in the
+/// signature, including arguments and nested result types; aliases are not resolved.
+/// Diagnostics remain unique path:line sites. Closures inherit the function scope;
+/// nested functions/methods establish their own. Only the abstain expression chain
+/// exempts a fallback, never an unrelated abstain on the same line.
 ///
-/// ponytail: literal-text matching on `Outcome<`, not type resolution — a fn returning the
-/// `Response<T>` alias (`Result<Outcome<T>, ErrorCode>`) is invisible to this scan because
-/// its signature text says `Response<T>`, not `Outcome<`. §53.3 registers this as a grep-
-/// style check ("forbidden import grep with positive sentinels", §78.3); upgrade to alias-
-/// aware matching if `Response<T>`-returning functions start actually using bare fallbacks.
+/// Source-level macro arguments are inspected with syn where possible. Opaque
+/// tokens with a real fallback call candidate fail with coverage UNKNOWN. This
+/// does not expand macros, resolve types, or prove properties of generated code.
 pub fn scan_outcome_fallback_violations(display_path: &str, source: &str) -> Vec<String> {
-    let mut violations = Vec::new();
-    let mut search_from = 0usize;
-    while let Some(rel) = source[search_from..].find("fn ") {
-        let fn_kw = search_from + rel;
-        let after = &source[fn_kw..];
-        let brace_opt = after.find('{');
-        let semi_opt = after.find(';');
-        // A `;` reached before the next `{` means this is a body-less declaration (a trait
-        // method signature, `fn a(&self) -> Outcome<i32>;`) — its own "signature" text must
-        // not be treated as ending at some later, unrelated fn's opening brace, and that
-        // later fn's real body must not be misattributed to this bodyless one.
-        let is_bodyless = match (semi_opt, brace_opt) {
-            (Some(s), Some(b)) => s < b,
-            (Some(_), None) => true,
-            _ => false,
-        };
-        if is_bodyless {
-            search_from = fn_kw + semi_opt.expect("is_bodyless implies semi_opt is Some") + 1;
-            continue;
+    outcome_fallback::scan(display_path, source)
+}
+
+// Private syntax implementation shared by rule1 and rule3 through the public scanner.
+mod outcome_fallback {
+    use syn::{
+        parse::Parser,
+        visit::{self, Visit},
+    };
+
+    #[derive(Default)]
+    struct SignatureScope(bool);
+    impl<'ast> Visit<'ast> for SignatureScope {
+        fn visit_path_segment(&mut self, node: &'ast syn::PathSegment) {
+            if node.ident == "Outcome"
+                && matches!(node.arguments, syn::PathArguments::AngleBracketed(_))
+            {
+                self.0 = true;
+            }
+            visit::visit_path_segment(self, node);
         }
-        let Some(brace_rel) = brace_opt else {
-            break;
-        };
-        let open_brace = fn_kw + brace_rel;
-        let signature = &source[fn_kw..open_brace];
-        // A stray '}' before the next '{' means we scanned across some other block (e.g.
-        // "fn" appearing inside a comment/string) rather than a real signature — skip it.
-        if !signature.contains('}')
-            && signature.contains("Outcome<")
-            && !line_is_comment_at(source, fn_kw)
-            && let Some(close) = matching_brace_end(source, open_brace)
-        {
-            let body = &source[open_brace..close];
-            let body_start_line = source[..open_brace].matches('\n').count() + 1;
-            for (i, line) in body.lines().enumerate() {
-                // §53.3 规则1 targets real fallback calls, not prose that merely mentions
-                // them (e.g. a comment citing this very rule inside the fn body it documents).
-                if line.trim_start().starts_with("//") {
+    }
+    fn scoped(sig: &syn::Signature) -> bool {
+        let mut scope = SignatureScope::default();
+        scope.visit_signature(sig);
+        scope.0
+    }
+    fn named(expr: &syn::Expr, name: &str) -> bool {
+        matches!(expr, syn::Expr::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == name))
+    }
+    fn abstain(expr: &syn::Expr) -> bool {
+        matches!(expr, syn::Expr::Call(c) if named(&c.func, "abstain"))
+    }
+    fn empty_value(expr: &syn::Expr) -> bool {
+        named(expr, "None")
+            || matches!(expr, syn::Expr::Call(c)
+            if c.args.is_empty() && matches!(&*c.func, syn::Expr::Path(p)
+                if p.path.segments.len() == 2 && p.path.segments[0].ident == "Vec"
+                    && p.path.segments[1].ident == "new"))
+    }
+    struct Scanner {
+        active: bool,
+        in_abstain: bool,
+        hits: std::collections::BTreeSet<usize>,
+        unknown: std::collections::BTreeSet<usize>,
+    }
+    impl Scanner {
+        fn hit(&mut self, span: proc_macro2::Span) {
+            if self.active && !self.in_abstain {
+                self.hits.insert(span.start().line);
+            }
+        }
+        // No character parser: groups/literals come from proc-macro2, local call
+        // syntax from syn. Bare Ok/None/Vec identifiers and literal prose are inert.
+        fn opaque(&mut self, stream: proc_macro2::TokenStream) {
+            use proc_macro2::TokenTree;
+            let tokens: Vec<_> = stream.into_iter().collect();
+            let mut i = 0;
+            while i < tokens.len() {
+                if self.opaque_call(&tokens, i) {
+                    i += 2;
                     continue;
                 }
-                let has_fallback = line.contains("unwrap_or_default()")
-                    || line.contains("unwrap_or(")
-                    || line.contains("Ok(Vec::new())")
-                    || line.contains("Ok(None)");
-                if has_fallback && !line.contains("abstain(") {
-                    violations.push(format!("{display_path}:{}", body_start_line + i));
+                if let TokenTree::Group(g) = &tokens[i] {
+                    self.opaque(g.stream());
                 }
+                i += 1;
             }
-            search_from = close;
-            continue;
         }
-        search_from = open_brace + 1;
+        // True consumes the parsed Ok call and its arguments exactly once.
+        fn opaque_call(&mut self, tokens: &[proc_macro2::TokenTree], i: usize) -> bool {
+            use proc_macro2::{Delimiter, TokenTree};
+            let TokenTree::Ident(id) = &tokens[i] else {
+                return false;
+            };
+            let Some(TokenTree::Group(args)) = tokens.get(i + 1) else {
+                return false;
+            };
+            if args.delimiter() != Delimiter::Parenthesis {
+                return false;
+            }
+            if id == "Ok"
+                && let Ok(expr) =
+                    syn::parse2::<syn::Expr>(tokens[i..=i + 1].iter().cloned().collect())
+            {
+                self.visit_expr(&expr);
+                return true;
+            }
+            if (id == "unwrap_or" || id == "unwrap_or_default")
+                && matches!(i.checked_sub(1).and_then(|n| tokens.get(n)),
+                    Some(TokenTree::Punct(p)) if p.as_char() == '.')
+                && !self.in_abstain
+            {
+                self.unknown.insert(id.span().start().line);
+            }
+            false
+        }
+        fn body(&mut self, sig: &syn::Signature, block: &syn::Block) {
+            let old = (self.active, self.in_abstain);
+            self.active = scoped(sig);
+            self.in_abstain = false;
+            self.visit_block(block);
+            (self.active, self.in_abstain) = old;
+        }
     }
-    violations
+    impl<'ast> Visit<'ast> for Scanner {
+        fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+            self.body(&node.sig, &node.block);
+        }
+        fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+            self.body(&node.sig, &node.block);
+        }
+        fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
+            if let Some(block) = &node.default {
+                self.body(&node.sig, block);
+            }
+        }
+        fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+            if (node.method == "unwrap_or_default" || node.method == "unwrap_or")
+                && !node.args.iter().any(abstain)
+            {
+                self.hit(node.method.span());
+            }
+            visit::visit_expr_method_call(self, node);
+        }
+        fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+            if named(&node.func, "Ok")
+                && node.args.len() == 1
+                && empty_value(&node.args[0])
+                && let syn::Expr::Path(path) = &*node.func
+            {
+                self.hit(
+                    path.path
+                        .segments
+                        .last()
+                        .expect("nonempty path")
+                        .ident
+                        .span(),
+                );
+            }
+            let old = self.in_abstain;
+            self.in_abstain |= named(&node.func, "abstain");
+            visit::visit_expr_call(self, node);
+            self.in_abstain = old;
+        }
+        fn visit_macro(&mut self, node: &'ast syn::Macro) {
+            if !self.active {
+                return;
+            }
+            let parser = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+            if let Ok(args) = parser.parse2(node.tokens.clone()) {
+                for arg in &args {
+                    self.visit_expr(arg);
+                }
+            } else {
+                self.opaque(node.tokens.clone());
+            }
+        }
+    }
+    pub(super) fn scan(display_path: &str, source: &str) -> Vec<String> {
+        let file = match syn::parse_file(source) {
+            Ok(file) => file,
+            Err(error) => {
+                return vec![format!(
+                    "{display_path}:{}: coverage UNKNOWN: Rust parse error: {error}",
+                    error.span().start().line
+                )];
+            }
+        };
+        let mut scanner = Scanner {
+            active: false,
+            in_abstain: false,
+            hits: Default::default(),
+            unknown: Default::default(),
+        };
+        scanner.visit_file(&file);
+        let mut violations: Vec<_> = scanner
+            .hits
+            .into_iter()
+            .map(|line| format!("{display_path}:{line}"))
+            .collect();
+        violations.extend(scanner.unknown.into_iter().map(|line| {
+            format!("{display_path}:{line}: coverage UNKNOWN: opaque macro fallback candidate")
+        }));
+        violations
+    }
 }
 
 /// §53.3 规则1: no `crates/**/*.rs` function returning `Outcome<_>` may fall back to a
@@ -14551,6 +14682,114 @@ runs:
     fn rule1_ignores_comment_mentioning_the_pattern() {
         let src = "// example: unwrap_or_default() inside Outcome<T> is forbidden\nfn real() -> Outcome<i32> {\n    Outcome::Decided(1)\n}\n";
         assert!(scan_outcome_fallback_violations("f.rs", src).is_empty());
+    }
+
+    // M24-AST-01: syntax-valid Rust inputs; expected diagnostics are §53.3 rule1
+    // path:line identities, not just a nonzero aggregate hit count.
+    #[test]
+    fn rule1_ast_phase1_string_brace_does_not_hide_real_fallback() {
+        let src = r#"fn pick(x: Option<i32>) -> Outcome<i32> {
+    let _label = "}";
+    Outcome::Decided(x.unwrap_or_default())
+}
+"#;
+        assert_eq!(
+            scan_outcome_fallback_violations("brace.rs", src),
+            vec!["brace.rs:3"],
+            "§53.3 rule1: literal brace must not truncate the function body"
+        );
+    }
+
+    #[test]
+    fn rule1_ast_phase1_whitespace_does_not_hide_real_fallback() {
+        let src = r#"fn pick(x: Option<i32>) -> Outcome<i32> {
+    let value = x.unwrap_or_default
+        ( );
+    Outcome::Decided(value)
+}
+"#;
+        assert_eq!(
+            scan_outcome_fallback_violations("whitespace.rs", src),
+            vec!["whitespace.rs:2"],
+            "§53.3 rule1: whitespace preserves the real method call"
+        );
+    }
+
+    #[test]
+    fn rule1_ast_phase1_prose_is_not_a_fallback_call() {
+        let src = r#"fn pick() -> Outcome<i32> {
+    // unwrap_or_default() and Ok(None) are prose here.
+    let _label = "unwrap_or_default() / Ok(None)";
+    Outcome::Decided(1)
+}
+"#;
+        assert_eq!(
+            scan_outcome_fallback_violations("prose.rs", src),
+            Vec::<String>::new(),
+            "§53.3 rule1: comments and strings are not fallback calls"
+        );
+    }
+
+    #[test]
+    fn rule1_ast_phase2_macro_arguments_preserve_calls_and_lines() {
+        let src = "fn f(x: Option<i32>) -> Outcome<i32> {\n wrapper!(x.unwrap_or_default());\n wrapper!(Ok(None));\n}";
+        assert_eq!(
+            scan_outcome_fallback_violations("macro.rs", src),
+            vec!["macro.rs:2", "macro.rs:3"]
+        );
+    }
+
+    #[test]
+    fn rule1_ast_phase2_opaque_candidate_is_unknown() {
+        let src =
+            "fn f(x: Option<i32>) -> Outcome<i32> {\n log!(target: x.unwrap_or_default());\n}";
+        assert_eq!(
+            scan_outcome_fallback_violations("opaque.rs", src),
+            vec!["opaque.rs:2: coverage UNKNOWN: opaque macro fallback candidate"]
+        );
+    }
+
+    #[test]
+    fn rule1_ast_phase2_opaque_ok_call_is_not_lost() {
+        let src = "fn f() -> Outcome<i32> {\n log!(target: Ok(None));\n}";
+        assert_eq!(
+            scan_outcome_fallback_violations("opaque.rs", src),
+            vec!["opaque.rs:2"]
+        );
+    }
+
+    #[test]
+    fn rule1_ast_phase2_macro_prose_and_bare_names_are_inert() {
+        let src = r#"fn f() -> Outcome<i32> {
+ log!(target: "unwrap_or_default() / Ok(None)", Ok, None, Vec);
+ println!("unwrap_or(0)");
+}"#;
+        assert!(scan_outcome_fallback_violations("log.rs", src).is_empty());
+    }
+
+    #[test]
+    fn rule1_ast_phase2_abstain_is_an_expression_not_a_line_exemption() {
+        let src = "fn f(x: Option<i32>) -> Outcome<i32> {\n abstain(Code::X, 0); x.unwrap_or_default();\n x.unwrap_or(abstain(Code::X, 0));\n abstain(Code::X, x.unwrap_or_default());\n}";
+        assert_eq!(
+            scan_outcome_fallback_violations("chain.rs", src),
+            vec!["chain.rs:2"]
+        );
+    }
+
+    #[test]
+    fn rule1_ast_phase2_scopes_methods_closures_and_nested_functions() {
+        let src = "impl X { fn f() -> Outcome<i32> {\n let _ = || x.unwrap_or_default();\n fn inner() -> i32 { x.unwrap_or_default() }\n} }\ntrait T { fn decl() -> Outcome<i32>; fn plain() -> i32 { x.unwrap_or_default() } }";
+        assert_eq!(
+            scan_outcome_fallback_violations("scope.rs", src),
+            vec!["scope.rs:2"]
+        );
+    }
+
+    #[test]
+    fn rule1_ast_phase2_parse_failure_is_not_clean() {
+        let hits = scan_outcome_fallback_violations("bad.rs", "fn broken(");
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].starts_with("bad.rs:1: coverage UNKNOWN: Rust parse error:"));
     }
 
     #[test]

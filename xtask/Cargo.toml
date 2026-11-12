@@ -63,6 +63,11 @@ humaux-testkit = { path = "../crates/testkit" }
 # why: the loadgen image runs this binary and deploy-check --release reads its `--version` line (ADR-0066 D-D / D-S); used-by: [xtask::main]
 humaux-telemetry = { path = "../crates/telemetry" }
 
+# why: §53.3 syntax-only Outcome fallback scan, reuse the workspace parser; used-by: [xtask::architecture_check]
+syn = { version = "=2.0.119", default-features = false, features = ["full", "parsing", "visit"] }
+# why: source line diagnostics and opaque macro token groups; used-by: [xtask::architecture_check]
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+
 [dev-dependencies]
 # why: the throwaway-database guard (test-support feature) the lane and seed tests share with the moved migrate tests; used-by: [tests]
 humaux-maintenance = { path = "../bins/maintenance", features = ["test-support"] }
