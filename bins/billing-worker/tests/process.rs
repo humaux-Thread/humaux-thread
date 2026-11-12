@@ -68,6 +68,7 @@ impl DbIntegrationFixture for Fixture {
         let config = ProcessorConfig {
             plans: [("prod_fixture".into(), versions[0])].into(),
             free_plan_version: versions[1],
+            budget: Default::default(),
         };
         Ok(Handle {
             admin,
@@ -138,6 +139,90 @@ fn process_fetched(
 }
 fn fetched_subscription(current: &str, product: &str) -> Value {
     json!({"id":"sub_fixture","customer":"cust_fixture","product":{"id":product},"status":current,"current_period_start_date":"2020-01-01T00:00:00Z","current_period_end_date":"2099-01-01T00:00:00Z"})
+}
+
+/// A hung real HTTP request is bounded and retry starts from a fresh observation.
+#[test]
+fn processor_http_timeout_rolls_back_and_retries() {
+    run_db_fixture::<Fixture, _>("processor_http_timeout_rolls_back_and_retries", |mut h| {
+        let tenant = h.tenant;
+        deliver(&mut h, "bounded_http", "active", tenant);
+        h.config.budget = humaux_billing_worker::process::ProcessorBudget {
+            invocation: Duration::from_millis(1_100),
+            acquire: Duration::from_millis(100),
+            provider: Duration::from_millis(100),
+            lock: Duration::from_millis(10),
+            statement: Duration::from_millis(30),
+            transaction: Duration::from_millis(1_000),
+        };
+        h.rt.block_on(async {
+            let order = Arc::new(fake_creem::FetchOrder {
+                newer: fetched_subscription("active", "prod_fixture"),
+                fetches: AtomicUsize::new(0),
+                release_first: Notify::new(),
+            });
+            let (base, server) = fake_creem::start_controlled(
+                fetched_subscription("active", "prod_fixture"),
+                json!({}),
+                None,
+                Some(order.clone()),
+            )
+            .await;
+            let provider = CreemClient::new(
+                &base,
+                &BillingMode::parse(Some("fake"), None).unwrap(),
+                TenantId(tenant),
+                ProcessorId(Uuid::new_v4()),
+                HttpEgressConfig::default(),
+                Arc::new(fake_creem::FixtureCredential(fake_creem::TEST_KEY)),
+                Arc::new(fake_creem::FixtureCredential(fake_creem::TEST_KEY)),
+            )
+            .unwrap();
+            assert_eq!(
+                tokio::time::timeout(
+                    Duration::from_millis(500),
+                    process_one(&h.pool, &provider, &h.config)
+                )
+                .await
+                .expect("provider cap must beat the overall deadline"),
+                Err(ErrorCode::DependencyUnavailable)
+            );
+            assert_eq!(order.fetches.load(Ordering::SeqCst), 1);
+            server.abort();
+        });
+        let row = h
+            .admin
+            .query_one(
+                "SELECT status FROM control.billing_inbox WHERE event_id='bounded_http'",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(row.get::<_, String>(0), "RECEIVED");
+        for table in [
+            "subscriptions",
+            "subscription_events",
+            "billing_payments",
+            "entitlement_grants",
+            "entitlement_snapshots",
+        ] {
+            let count: i64 = h
+                .admin
+                .query_one(&format!("SELECT count(*) FROM control.{table}"), &[])
+                .unwrap()
+                .get(0);
+            assert_eq!(count, 0, "unexpected effect in {table}");
+        }
+        assert!(process(&h, "active"));
+        let row = h
+            .admin
+            .query_one(
+                "SELECT status FROM control.billing_inbox WHERE event_id='bounded_http'",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(row.get::<_, String>(0), "PROCESSED");
+        assert_eq!(snapshot(&mut h), paid());
+    });
 }
 
 /// G-M04-25: an older response committed last cannot overwrite a newer authoritative observation (§71.3).

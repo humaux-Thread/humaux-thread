@@ -39,6 +39,9 @@ humaux-adapters = { path = "../../crates/adapters" }
 # why: configured plan version and opaque tenant IDs (§78.2); used-by: [billing-worker::process]
 uuid = { version = "1.25.0" }
 
+# why: bound processor waits with the existing runtime timer (§71.3); used-by: [billing-worker::process]
+tokio = { version = "1", features = ["time"] }
+
 [dev-dependencies]
 # why: real PostgreSQL isolated fixture (§79.2); used-by: [billing-worker::tests::process]
 humaux-testkit = { path = "../../crates/testkit" }

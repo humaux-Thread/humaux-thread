@@ -23,7 +23,7 @@ pub type Txn<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
 fn db_error(error: sqlx::Error) -> ErrorCode {
     match error {
         sqlx::Error::Database(ref db) => match db.code().as_deref() {
-            Some("55P03" | "57014" | "40P01") => ErrorCode::DependencyUnavailable,
+            Some("55P03" | "57014" | "40P01" | "25P04") => ErrorCode::DependencyUnavailable,
             Some("42501") => ErrorCode::Forbidden,
             Some("23505") => ErrorCode::Conflict,
             Some("22023" | "22P02" | "23502" | "23514") => ErrorCode::InvalidInput,
@@ -37,6 +37,39 @@ fn db_error(error: sqlx::Error) -> ErrorCode {
 pub async fn begin_processor(pool: &MaintenanceDbPool) -> Result<Txn<'_>, ErrorCode> {
     // dep: PostgreSQL(role_maintenance) — caller owns claim/apply/recompute/settle atomicity
     pool.pool().begin().await.map_err(db_error)
+}
+
+/// Apply local PG bounds to this processor transaction before claiming work.
+pub async fn configure_processor_timeouts(
+    txn: &mut Txn<'_>,
+    lock: std::time::Duration,
+    statement: std::time::Duration,
+    transaction: std::time::Duration,
+) -> Result<(), ErrorCode> {
+    if !(lock < statement && statement < transaction) {
+        return Err(ErrorCode::InvalidInput);
+    }
+    if [lock, statement, transaction].iter().any(|value| {
+        value.as_millis() == 0
+            || value.as_millis() > i32::MAX as u128
+            || value.subsec_nanos() % 1_000_000 != 0
+    }) {
+        return Err(ErrorCode::InvalidInput);
+    }
+    for (key, value) in [
+        ("lock_timeout", lock),
+        ("statement_timeout", statement),
+        ("transaction_timeout", transaction),
+    ] {
+        let ms = value.as_millis();
+        sqlx::query("SELECT pg_catalog.set_config($1,$2,true)")
+            .bind(key)
+            .bind(format!("{ms}ms"))
+            .execute(&mut **txn)
+            .await
+            .map_err(db_error)?;
+    }
+    Ok(())
 }
 
 /// §71.3: failed effects roll back to this savepoint while the outer inbox claim stays locked.
