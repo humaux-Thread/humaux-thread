@@ -1,11 +1,13 @@
 //! `adapters::billing_processor_repo` — maintenance-only 0300 doors (§71.3).
-//! Depends-on: crates=[humaux-application, humaux-domain, serde_json, sqlx, time, uuid]; services=[PostgreSQL(role_maintenance) r=[control.tenants] x=[control.billing_inbox_claim, control.billing_inbox_settle, control.billing_apply_subscription, control.billing_append_payment]]; env=[];
+//! Depends-on: crates=[humaux-application, humaux-domain, serde_json, sqlx, time, uuid]; services=[PostgreSQL(role_maintenance) r=[control.tenants] x=[control.billing_inbox_claim, control.billing_inbox_settle, control.billing_apply_subscription, control.billing_append_payment, control.billing_slot_observe, control.billing_handover_subscription]]; env=[];
 //!   modules=[adapters::postgres, application::billing, domain::billing, domain::error, domain::ids, domain::plan]
 //! Called-by: [billing-worker::process, tests]
-//! Invariants: [no gateway caller; 0300/0301/0305 owner doors; C2 alone writes snapshots]
+//! Invariants: [no gateway caller; 0300/0301/0305/0307 owner doors; C2 alone writes snapshots]
 //! Spec: Baseline §71.3; §76
 use crate::postgres::MaintenanceDbPool;
-use humaux_application::billing::{ProviderSubscription, VerifiedBillingEvent};
+use humaux_application::billing::{
+    ExternalSubscriptionRef, ProviderSubscription, VerifiedBillingEvent,
+};
 use humaux_domain::{
     billing::{BillingProviderId, InboxStatus, PaymentKind, SubscriptionState},
     error::ErrorCode,
@@ -23,6 +25,7 @@ fn db_error(error: sqlx::Error) -> ErrorCode {
         sqlx::Error::Database(ref db) => match db.code().as_deref() {
             Some("55P03" | "57014" | "40P01") => ErrorCode::DependencyUnavailable,
             Some("42501") => ErrorCode::Forbidden,
+            Some("23505") => ErrorCode::Conflict,
             Some("22023" | "22P02" | "23502" | "23514") => ErrorCode::InvalidInput,
             _ => ErrorCode::Internal,
         },
@@ -75,6 +78,109 @@ pub async fn lock_subscription(
         .map_err(db_error)?;
     Ok(())
 }
+/// The currently occupied slot, read through the owner door.
+pub struct SlotOccupant {
+    pub id: Uuid,
+    pub provider: BillingProviderId,
+    pub reference: ExternalSubscriptionRef,
+    pub state: SubscriptionState,
+}
+
+/// Replay and reversal facts must be checked before any external cancellation.
+pub struct SlotObservation {
+    pub replay: bool,
+    pub old: Option<SlotOccupant>,
+    pub reversed_b: bool,
+}
+
+/// Acquire the common event then quota locks before subscription locks or provider fetches.
+pub async fn acquire_billing_scope_in_txn(
+    txn: &mut Txn<'_>,
+    tenant: TenantId,
+    event: &VerifiedBillingEvent,
+) -> Result<(), ErrorCode> {
+    let scope: Option<String> =
+        sqlx::query_scalar("SELECT NULLIF(current_setting('humaux.tenant_id', true), '')")
+            .fetch_one(&mut **txn)
+            .await
+            .map_err(db_error)?;
+    if tenant.0.is_nil() || scope.as_deref() != Some(tenant.0.to_string().as_str()) {
+        return Err(ErrorCode::Forbidden);
+    }
+    for key in [
+        format!("billing-event:{}:{}", event.provider.wire(), event.event_id),
+        format!(
+            "quota-window:{}:mcp.billable_operations.per_period",
+            tenant.0
+        ),
+    ] {
+        sqlx::query("SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1,0))")
+            .bind(key)
+            .execute(&mut **txn)
+            .await
+            .map_err(db_error)?;
+    }
+    Ok(())
+}
+
+/// Observe a slot after acquiring the scope locks and fetching the new subscription.
+pub async fn prepare_slot_in_txn(
+    txn: &mut Txn<'_>,
+    tenant: TenantId,
+    event: &VerifiedBillingEvent,
+    new_ref: &ExternalSubscriptionRef,
+    period: [OffsetDateTime; 2],
+) -> Result<SlotObservation, ErrorCode> {
+    let row = sqlx::query("SELECT * FROM control.billing_slot_observe($1,$2,$3,$4,$5,$6)")
+        .bind(tenant.0)
+        .bind(event.provider.wire())
+        .bind(&event.event_id)
+        .bind(&new_ref.0)
+        .bind(period[0])
+        .bind(period[1])
+        .fetch_one(&mut **txn)
+        .await
+        .map_err(db_error)?;
+    let id: Option<Uuid> = row.try_get("old_id").map_err(db_error)?;
+    let old = match id {
+        None => None,
+        Some(id) => {
+            let provider: String = row.try_get("old_provider").map_err(db_error)?;
+            let state: String = row.try_get("old_state").map_err(db_error)?;
+            Some(SlotOccupant {
+                id,
+                provider: BillingProviderId::parse_wire(&provider).ok_or(ErrorCode::Internal)?,
+                reference: ExternalSubscriptionRef(row.try_get("old_ref").map_err(db_error)?),
+                state: SubscriptionState::parse_wire(&state).ok_or(ErrorCode::Internal)?,
+            })
+        }
+    };
+    Ok(SlotObservation {
+        replay: row.try_get("replay").map_err(db_error)?,
+        old,
+        reversed_b: row.try_get("reversed_b").map_err(db_error)?,
+    })
+}
+
+/// End the eligible old slot and apply the new active subscription in one transaction.
+#[allow(clippy::too_many_arguments)]
+pub async fn handover_subscription_in_txn(
+    txn: &mut Txn<'_>,
+    tenant: TenantId,
+    event: &VerifiedBillingEvent,
+    old_id: Uuid,
+    old_state: SubscriptionState,
+    new: &ProviderSubscription,
+    plan: Uuid,
+    free: Uuid,
+) -> Result<bool, ErrorCode> {
+    sqlx::query_scalar("SELECT control.billing_handover_subscription($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,clock_timestamp())")
+        .bind(tenant.0).bind(event.provider.wire()).bind(&event.event_id).bind(old_id)
+        .bind(old_state.wire()).bind(&new.reference.0).bind(plan).bind(free)
+        .bind(new.current_period_start).bind(new.current_period_end)
+        .fetch_one(&mut **txn).await.map_err(db_error)
+}
+
 /// Claims oldest RECEIVED rows without waiting for another processor's locks (0300, §71.3).
 pub async fn inbox_claim(
     txn: &mut Txn<'_>,
@@ -234,6 +340,22 @@ fn db_error_transient_sqlstates() {
         assert_eq!(
             db_error(sqlx::Error::Database(Box::new(SqlState(code)))),
             ErrorCode::DependencyUnavailable,
+            "SQLSTATE {code}"
+        );
+    }
+    for (code, expected) in [
+        ("23505", ErrorCode::Conflict),
+        ("23503", ErrorCode::Internal),
+        ("XX000", ErrorCode::Internal),
+        ("42501", ErrorCode::Forbidden),
+        ("22023", ErrorCode::InvalidInput),
+        ("22P02", ErrorCode::InvalidInput),
+        ("23502", ErrorCode::InvalidInput),
+        ("23514", ErrorCode::InvalidInput),
+    ] {
+        assert_eq!(
+            db_error(sqlx::Error::Database(Box::new(SqlState(code)))),
+            expected,
             "SQLSTATE {code}"
         );
     }

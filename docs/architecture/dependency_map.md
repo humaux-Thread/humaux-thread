@@ -693,8 +693,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.audit_event_identity_release`
 - executes `control.billing_append_payment`
 - executes `control.billing_apply_subscription`
+- executes `control.billing_handover_subscription`
 - executes `control.billing_inbox_claim`
 - executes `control.billing_inbox_settle`
+- executes `control.billing_slot_observe`
 - executes `control.bind_reasoning_domain`
 - executes `control.credential_pepper_epoch`
 - executes `control.credential_pepper_epoch_advance`
@@ -3652,8 +3654,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.audit_event_identity_release`
 - executes `control.billing_append_payment`
 - executes `control.billing_apply_subscription`
+- executes `control.billing_handover_subscription`
 - executes `control.billing_inbox_claim`
 - executes `control.billing_inbox_settle`
+- executes `control.billing_slot_observe`
 - executes `control.bind_reasoning_domain`
 - executes `control.credential_pepper_epoch`
 - executes `control.credential_pepper_epoch_advance`
@@ -5522,6 +5526,18 @@ written by:
 
 executed by:
 
+### `control.billing_handover_subscription`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::billing_processor_repo`
+- (no process): `adapters::tests::billing_slot_handover`
+- (no process): `maintenance::tests::billing_slot_migration`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `control.billing_inbox`
 read by:
 - (no process): `adapters::tests::facet_contract`
@@ -5532,6 +5548,7 @@ read by:
 written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `billing-worker::tests::process`
 - (no process): `gateway::tests::billing_webhook`
 - process(humaux-gateway): `adapters::billing_repo`
@@ -5568,9 +5585,22 @@ read by:
 
 written by:
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `adapters::tests::cost_repo`
 
 executed by:
+
+### `control.billing_slot_observe`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::billing_processor_repo`
+- (no process): `adapters::tests::billing_slot_handover`
+- (no process): `maintenance::tests::billing_slot_migration`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.bind_reasoning_domain`
 read by:
@@ -5919,6 +5949,7 @@ executed by:
 ### `control.entitlement_grants`
 read by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
@@ -5927,6 +5958,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::billing_legacy_migration`
@@ -5948,6 +5980,7 @@ executed by:
 ### `control.entitlement_snapshots`
 read by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
@@ -6441,10 +6474,12 @@ read by:
 written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
 - (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::billing_legacy_migration`
+- (no process): `maintenance::tests::billing_slot_migration`
 
 executed by:
 
@@ -6455,9 +6490,11 @@ read by:
 written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `adapters::tests::plan_catalog`
 - (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::billing_legacy_migration`
+- (no process): `maintenance::tests::billing_slot_migration`
 
 executed by:
 
@@ -7165,6 +7202,7 @@ executed by:
 ### `control.subscription_events`
 read by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `adapters::tests::facet_contract`
 - (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -7178,15 +7216,19 @@ executed by:
 ### `control.subscriptions`
 read by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `adapters::tests::facet_contract`
 - (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::billing_legacy_migration`
+- (no process): `maintenance::tests::billing_slot_migration`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `maintenance::tests::billing_legacy_migration`
+- (no process): `maintenance::tests::billing_slot_migration`
 
 executed by:
 
@@ -7237,6 +7279,7 @@ written by:
 - (no process): `adapters::tests::authority_g59_5`
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::code_schema`
 - (no process): `adapters::tests::confirm_token_retention`
@@ -7325,6 +7368,7 @@ written by:
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::billing_legacy_migration`
+- (no process): `maintenance::tests::billing_slot_migration`
 - (no process): `maintenance::tests::health_serve`
 - (no process): `maintenance::tests::i4_scan`
 - (no process): `maintenance::tests::partitions`
@@ -9007,6 +9051,7 @@ read by:
 - (no process): `adapters::tests::support::throwaway_db`
 - (no process): `admin::tests::probes`
 - (no process): `maintenance::tests::billing_legacy_migration`
+- (no process): `maintenance::tests::billing_slot_migration`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::reasoning_routes`
 - (no process): `maintenance::tests::support::throwaway`
@@ -13013,6 +13058,7 @@ executed by:
 - `adapters::tests::applicability`
 - `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
+- `adapters::tests::billing_slot_handover`
 - `adapters::tests::code_rls`
 - `adapters::tests::code_schema`
 - `adapters::tests::continuity_publish`
@@ -13092,6 +13138,7 @@ executed by:
 - `maintenance::switch_visible`
 - `maintenance::tests::backup`
 - `maintenance::tests::billing_legacy_migration`
+- `maintenance::tests::billing_slot_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::health_serve`
 - `maintenance::tests::i4_scan`
@@ -13289,6 +13336,7 @@ executed by:
 - `adapters::stream_repo`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::billing_doors`
+- `adapters::tests::billing_slot_handover`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::contribution_eligibility`
 - `adapters::tests::core_never_auto`
@@ -13614,6 +13662,7 @@ executed by:
 ### `subprocess(humaux-maintenance)`
 - `maintenance::tests::backup`
 - `maintenance::tests::billing_legacy_migration`
+- `maintenance::tests::billing_slot_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::exit_codes`
 - `maintenance::tests::health_serve`
@@ -13772,6 +13821,7 @@ modules naming it:
 - `adapters::subject_repo`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::billing_doors`
+- `adapters::tests::billing_slot_handover`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
 - `adapters::tests::consolidate_snapshot`
@@ -13928,6 +13978,7 @@ modules naming it:
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
+- `adapters::tests::billing_slot_handover`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
@@ -14118,6 +14169,7 @@ modules naming it:
 - `adapters::session_repo`
 - `adapters::tests::auth_contract`
 - `adapters::tests::billing_doors`
+- `adapters::tests::billing_slot_handover`
 - `adapters::tests::console_session`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::contribution_authorization`
@@ -14317,6 +14369,7 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
+- `adapters::tests::billing_slot_handover`
 - `adapters::tests::candidates`
 - `adapters::tests::consolidate_snapshot`
 - `adapters::tests::continuity_publish`
@@ -14395,6 +14448,7 @@ modules naming it:
 - `adapters::read_gate`
 - `adapters::read_materialize`
 - `adapters::tests::billing_doors`
+- `adapters::tests::billing_slot_handover`
 - `adapters::tests::core_never_auto`
 - `adapters::tests::oauth_persistence`
 - `adapters::tests::operation_receipts`
@@ -14519,6 +14573,7 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
+- `adapters::tests::billing_slot_handover`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
@@ -14612,6 +14667,7 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
+- `adapters::tests::billing_slot_handover`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
 - `adapters::tests::confirm_token_retention`
@@ -14743,6 +14799,7 @@ modules naming it:
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
+- `adapters::tests::billing_slot_handover`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
 - `adapters::tests::code_schema`
@@ -14895,6 +14952,7 @@ modules naming it:
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
+- `adapters::tests::billing_slot_handover`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
@@ -14971,6 +15029,7 @@ modules naming it:
 - `adapters::tests::authority_g59_5`
 - `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
+- `adapters::tests::billing_slot_handover`
 - `adapters::tests::candidates`
 - `adapters::tests::code_rls`
 - `adapters::tests::code_schema`
@@ -15090,6 +15149,7 @@ modules naming it:
 - `adapters::stream_repo`
 - `adapters::tests::billing_doors`
 - `adapters::tests::billing_repo`
+- `adapters::tests::billing_slot_handover`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::confirm_token_retention`
 - `adapters::tests::console_session`
@@ -17431,6 +17491,7 @@ modules naming it:
 - `maintenance::serve`
 - `maintenance::switch_visible`
 - `maintenance::tests::billing_legacy_migration`
+- `maintenance::tests::billing_slot_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
@@ -17473,6 +17534,7 @@ modules naming it:
 - `maintenance::switch_visible`
 - `maintenance::tests::backup`
 - `maintenance::tests::billing_legacy_migration`
+- `maintenance::tests::billing_slot_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
@@ -17584,6 +17646,7 @@ modules naming it:
 - `maintenance::serve`
 - `maintenance::switch_visible`
 - `maintenance::tests::billing_legacy_migration`
+- `maintenance::tests::billing_slot_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
@@ -18624,6 +18687,17 @@ default run:
 - PostgreSQL
 - subprocess
 
+### `bins/maintenance/tests/billing_slot_migration.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+- subprocess
+
+default run:
+- PostgreSQL
+- subprocess
+
 ### `bins/maintenance/tests/drill.rs`
 db-bound (default run): yes
 
@@ -19018,6 +19092,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/billing_repo.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/billing_slot_handover.rs`
 db-bound (default run): yes
 
 services (computed):

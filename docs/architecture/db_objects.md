@@ -654,6 +654,28 @@ written by:
 
 executed by:
 
+### `control.billing_handover_subscription`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0307_billing_slot_handover
+
+grants (runtime roles):
+- role_maintenance: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::billing_processor_repo`
+- (no process): `adapters::tests::billing_slot_handover`
+- (no process): `maintenance::tests::billing_slot_migration`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `control.billing_inbox`
 - kind: table
 - owner: role_migration_owner
@@ -683,6 +705,7 @@ read by:
 written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `billing-worker::tests::process`
 - (no process): `gateway::tests::billing_webhook`
 - process(humaux-gateway): `adapters::billing_repo`
@@ -758,6 +781,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `adapters::tests::cost_repo`
 
 executed by:
@@ -777,6 +801,28 @@ read by:
 written by:
 
 executed by:
+
+### `control.billing_slot_observe`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0307_billing_slot_handover
+
+grants (runtime roles):
+- role_maintenance: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::billing_processor_repo`
+- (no process): `adapters::tests::billing_slot_handover`
+- (no process): `maintenance::tests::billing_slot_migration`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.bind_reasoning_domain`
 - kind: function (SECURITY DEFINER)
@@ -1622,6 +1668,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
@@ -1630,6 +1677,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::billing_legacy_migration`
@@ -1702,6 +1750,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
@@ -2855,10 +2904,12 @@ read by:
 written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
 - (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::billing_legacy_migration`
+- (no process): `maintenance::tests::billing_slot_migration`
 
 executed by:
 
@@ -2909,9 +2960,11 @@ read by:
 written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `adapters::tests::plan_catalog`
 - (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::billing_legacy_migration`
+- (no process): `maintenance::tests::billing_slot_migration`
 
 executed by:
 
@@ -4814,6 +4867,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `adapters::tests::facet_contract`
 - (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -4863,15 +4917,19 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::billing_doors`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `adapters::tests::facet_contract`
 - (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::billing_legacy_migration`
+- (no process): `maintenance::tests::billing_slot_migration`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `maintenance::tests::billing_legacy_migration`
+- (no process): `maintenance::tests::billing_slot_migration`
 
 executed by:
 
@@ -5012,6 +5070,7 @@ written by:
 - (no process): `adapters::tests::authority_g59_5`
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_repo`
+- (no process): `adapters::tests::billing_slot_handover`
 - (no process): `adapters::tests::code_rls`
 - (no process): `adapters::tests::code_schema`
 - (no process): `adapters::tests::confirm_token_retention`
@@ -5100,6 +5159,7 @@ written by:
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::billing_legacy_migration`
+- (no process): `maintenance::tests::billing_slot_migration`
 - (no process): `maintenance::tests::health_serve`
 - (no process): `maintenance::tests::i4_scan`
 - (no process): `maintenance::tests::partitions`
