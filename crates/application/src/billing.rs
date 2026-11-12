@@ -111,6 +111,15 @@ pub trait BillingProvider: Send + Sync {
         subscription: &ExternalSubscriptionRef,
     ) -> Result<ProviderSubscription, ErrorCode>;
 
+    /// Requests immediate cancellation and returns the provider's typed observation.
+    /// This side effect is sent once, without automatic network retries. A transport failure has
+    /// an unknown outcome; callers must re-fetch before deciding to repeat it. Success does not
+    /// prove handover or a terminal state: callers must confirm the returned identity and status.
+    async fn cancel_subscription_now(
+        &self,
+        subscription: &ExternalSubscriptionRef,
+    ) -> Result<ProviderSubscription, ErrorCode>;
+
     /// Verifies the raw-body signature; provider event ID UNIQUE keys enforce replay protection (§71.3).
     /// Creem documents no timestamp; no timestamp window is assumed (M04 lead ruling 2026-10-28).
     /// `headers` are the request's header name and value pairs; `raw_body` is the exact bytes received.

@@ -2813,3 +2813,10 @@ impl humaux_application::continuity::ContextReadPort for ContextReadAdapter {
         fetch_frozen(&self.pool, &self.authorization, scope).await
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/g8031_snapshot_fixture.rs"]
+mod g8031_snapshot_fixture;
+#[cfg(test)]
+#[path = "context_repo/g8031_snapshot_tests.rs"]
+mod g8031_snapshot_tests;

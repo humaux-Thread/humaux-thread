@@ -620,6 +620,7 @@ written by:
 executed by:
 - (no process): `adapters::billing_processor_repo`
 - (no process): `adapters::tests::billing_doors`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -1474,8 +1475,11 @@ foreign keys (outgoing):
 - fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
+- process(humaux-retrieval-worker): `adapters::egress_policy`
 
 written by:
+- (no process): `retrieval-provider::tests::dashscope_live_smoke`
+- process(humaux-retrieval-worker): `retrieval-provider::adapters`
 
 executed by:
 
@@ -1619,6 +1623,7 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -1627,6 +1632,7 @@ written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -1697,6 +1703,7 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `adapters::request_guard_repo`
@@ -2851,6 +2858,7 @@ written by:
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -2903,6 +2911,7 @@ written by:
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::plan_catalog`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -2970,7 +2979,6 @@ written by:
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
-- (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
@@ -3004,6 +3012,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::support::private_route`
 - (no process): `adapters::tests::task_grant_contract`
@@ -4856,11 +4865,13 @@ read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::facet_contract`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::billing_repo`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -5022,7 +5033,6 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::forget_repo`
-- (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::jobs_claim`
@@ -5071,6 +5081,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::support::private_route`
@@ -5088,6 +5099,7 @@ written by:
 - (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::health_serve`
 - (no process): `maintenance::tests::i4_scan`
 - (no process): `maintenance::tests::partitions`
@@ -7508,7 +7520,6 @@ written by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
-- (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::jobs_claim`
 - (no process): `adapters::tests::maintenance_doors`
@@ -7529,6 +7540,7 @@ written by:
 - (no process): `adapters::tests::stream_repo`
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `admin::tests::probes`
@@ -8984,11 +8996,12 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::enumerate_scale`
+- (no process): `adapters::tests::g80_31_handoff`
 
 written by:
-- (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::selection_snapshot`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - process(cargo-xtask): `adapters::selection_repo`
 - process(cargo-xtask): `xtask::e2e_seed`
@@ -9041,6 +9054,7 @@ written by:
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::selection_snapshot`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `maintenance::tests::serve`
@@ -9745,6 +9759,7 @@ written by:
 - (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::task_grant_contract`
 - (no process): `gateway::tests::mcp_gateway`
@@ -10635,7 +10650,6 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::freshness`
-- (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -10662,6 +10676,7 @@ written by:
 - (no process): `adapters::tests::stream_repo`
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
@@ -10938,6 +10953,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::support::private_route`
 - (no process): `adapters::tests::task_grant_contract`
@@ -11806,6 +11822,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::task_grant_contract`
 - (no process): `adapters::tests::visible_index_count`
@@ -12180,6 +12197,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::task_grant_contract`
 - (no process): `adapters::tests::visible_index_count`
@@ -14557,6 +14575,7 @@ written by:
 - (no process): `adapters::tests::serving_repo`
 - (no process): `adapters::tests::stream_repo`
 - (no process): `adapters::tests::support::a2_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `admin::tests::probes`
@@ -14762,6 +14781,7 @@ written by:
 - (no process): `adapters::tests::stream_repo`
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`

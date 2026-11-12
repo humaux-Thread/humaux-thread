@@ -4486,6 +4486,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `HTTP(provider endpoint)`
 - service `PostgreSQL(role_private_worker)`
 
+#### `private-worker::stages`
+
 #### `projection::card`
 
 #### `projection::dense`
@@ -4734,6 +4736,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.lock_publish_source`
 - env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
+
+#### `adapters::egress_policy`
+- reads `control.egress_policies`
+- service `PostgreSQL(role_retrieval_worker)`
 
 #### `adapters::evidence_repo`
 - writes `private.evidence_objects`
@@ -5136,6 +5142,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.retrieval_provider_budget_allocations`
 - reads `ops.retrieval_provider_budget_reservations`
 - reads `private.retrieval_query_sources`
+- writes `control.egress_policies`
 - writes `control.memberships`
 - writes `control.private_reasoning_domains`
 - writes `control.retrieval_provider_admission_limits`
@@ -5500,6 +5507,7 @@ written by:
 executed by:
 - (no process): `adapters::billing_processor_repo`
 - (no process): `adapters::tests::billing_doors`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -5845,6 +5853,16 @@ written by:
 
 executed by:
 
+### `control.egress_policies`
+read by:
+- process(humaux-retrieval-worker): `adapters::egress_policy`
+
+written by:
+- (no process): `retrieval-provider::tests::dashscope_live_smoke`
+- process(humaux-retrieval-worker): `retrieval-provider::adapters`
+
+executed by:
+
 ### `control.email_challenges`
 read by:
 - (no process): `adapters::tests::auth_contract`
@@ -5902,6 +5920,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -5910,6 +5929,7 @@ written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -5929,6 +5949,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `adapters::request_guard_repo`
@@ -6423,6 +6444,7 @@ written by:
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -6435,6 +6457,7 @@ written by:
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::plan_catalog`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -6475,7 +6498,6 @@ written by:
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
-- (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
@@ -6509,6 +6531,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::support::private_route`
 - (no process): `adapters::tests::task_grant_contract`
@@ -7157,11 +7180,13 @@ read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::facet_contract`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::billing_repo`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -7233,7 +7258,6 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::forget_repo`
-- (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::jobs_claim`
@@ -7282,6 +7306,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::support::private_route`
@@ -7299,6 +7324,7 @@ written by:
 - (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::health_serve`
 - (no process): `maintenance::tests::i4_scan`
 - (no process): `maintenance::tests::partitions`
@@ -8308,7 +8334,6 @@ written by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
-- (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::jobs_claim`
 - (no process): `adapters::tests::maintenance_doors`
@@ -8329,6 +8354,7 @@ written by:
 - (no process): `adapters::tests::stream_repo`
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `admin::tests::probes`
@@ -8980,6 +9006,7 @@ read by:
 - (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::support::throwaway_db`
 - (no process): `admin::tests::probes`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::reasoning_routes`
 - (no process): `maintenance::tests::support::throwaway`
@@ -9002,11 +9029,12 @@ executed by:
 ### `ops.selection_snapshot_items`
 read by:
 - (no process): `adapters::tests::enumerate_scale`
+- (no process): `adapters::tests::g80_31_handoff`
 
 written by:
-- (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::selection_snapshot`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - process(cargo-xtask): `adapters::selection_repo`
 - process(cargo-xtask): `xtask::e2e_seed`
@@ -9026,6 +9054,7 @@ written by:
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::selection_snapshot`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `maintenance::tests::serve`
@@ -9314,6 +9343,7 @@ written by:
 - (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::task_grant_contract`
 - (no process): `gateway::tests::mcp_gateway`
@@ -9695,7 +9725,6 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::freshness`
-- (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -9722,6 +9751,7 @@ written by:
 - (no process): `adapters::tests::stream_repo`
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
@@ -9923,6 +9953,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::support::private_route`
 - (no process): `adapters::tests::task_grant_contract`
@@ -10432,6 +10463,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::task_grant_contract`
 - (no process): `adapters::tests::visible_index_count`
@@ -10692,6 +10724,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::task_grant_contract`
 - (no process): `adapters::tests::visible_index_count`
@@ -11791,6 +11824,7 @@ written by:
 - (no process): `adapters::tests::serving_repo`
 - (no process): `adapters::tests::stream_repo`
 - (no process): `adapters::tests::support::a2_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `admin::tests::probes`
@@ -11943,6 +11977,7 @@ written by:
 - (no process): `adapters::tests::stream_repo`
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
@@ -12772,6 +12807,7 @@ executed by:
 - `admin::ops_status`
 - `admin::tests::probes`
 - `billing-worker::fake_creem`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::process`
 - `consolidation-worker::main`
@@ -12932,6 +12968,7 @@ executed by:
 - `adapters::tests::quota_and_rate`
 - `adapters::tests::read_gate_closure`
 - `adapters::tests::support::continuity_0137_cleanup`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `contracts::mechanism_registry`
 - `domain::consolidate`
 - `domain::context`
@@ -12968,6 +13005,7 @@ executed by:
 - `xtask::serial_lane`
 
 ### `PostgreSQL(owner)`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::maintenance_repo`
 - `adapters::postgres`
 - `adapters::role_hygiene`
@@ -13028,6 +13066,7 @@ executed by:
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::support::private_route`
@@ -13052,6 +13091,7 @@ executed by:
 - `maintenance::roles`
 - `maintenance::switch_visible`
 - `maintenance::tests::backup`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::health_serve`
 - `maintenance::tests::i4_scan`
@@ -13112,6 +13152,7 @@ executed by:
 
 ### `PostgreSQL(role_gateway)`
 - `adapters::billing_repo`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::coord_task_repo`
 - `adapters::coord_tree_repo`
 - `adapters::grep_repo`
@@ -13194,6 +13235,7 @@ executed by:
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::support::project_tree_fixture`
@@ -13287,6 +13329,7 @@ executed by:
 - `maintenance::roles`
 - `maintenance::serve`
 - `maintenance::switch_visible`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::i4_scan`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
@@ -13376,6 +13419,7 @@ executed by:
 - `public-worker::main`
 
 ### `PostgreSQL(role_retrieval_worker)`
+- `adapters::egress_policy`
 - `adapters::maintenance_repo`
 - `adapters::postgres`
 - `adapters::private_projection_registry`
@@ -13569,6 +13613,7 @@ executed by:
 
 ### `subprocess(humaux-maintenance)`
 - `maintenance::tests::backup`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::exit_codes`
 - `maintenance::tests::health_serve`
@@ -13657,6 +13702,7 @@ modules naming it:
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::context_repo`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
 - `adapters::contribution_eligibility`
@@ -13674,6 +13720,7 @@ modules naming it:
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
+- `adapters::egress_policy`
 - `adapters::email::outbox`
 - `adapters::entitlement_repo`
 - `adapters::evidence_repo`
@@ -13747,7 +13794,6 @@ modules naming it:
 - `adapters::tests::forget_race`
 - `adapters::tests::forget_repo`
 - `adapters::tests::freshness`
-- `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::jobs_claim`
@@ -13790,6 +13836,7 @@ modules naming it:
 - `adapters::tests::serving_repo`
 - `adapters::tests::stream_repo`
 - `adapters::tests::support::a2_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::switch_user_private`
@@ -13832,6 +13879,7 @@ modules naming it:
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
+- `adapters::egress_policy`
 - `adapters::entitlement_repo`
 - `adapters::evidence_repo`
 - `adapters::exact_census`
@@ -13851,6 +13899,7 @@ modules naming it:
 - `adapters::placement_repo`
 - `adapters::plan_repo`
 - `adapters::postgres`
+- `adapters::private_inference_rpc`
 - `adapters::private_projection_registry`
 - `adapters::processing_status`
 - `adapters::project_rollup`
@@ -13966,6 +14015,7 @@ modules naming it:
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::switch_user_private`
@@ -13989,6 +14039,7 @@ why: retrieval compiler/handoff types this adapter serves
 
 modules naming it:
 - `adapters::context_repo`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::continuity_read`
 - `adapters::exact_census`
 - `adapters::processing_status`
@@ -14322,6 +14373,7 @@ modules naming it:
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::continuity_0137_cleanup`
 - `adapters::tests::support::continuity_0137_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::visible_index_count`
@@ -14444,6 +14496,7 @@ modules naming it:
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
 - `adapters::contribution_reasoner`
@@ -14522,6 +14575,7 @@ modules naming it:
 - `adapters::tests::support::continuity_0137_cleanup`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::private_route`
 - `adapters::tests::support::project_tree_fixture`
 - `adapters::tests::visible_index_count`
@@ -14681,6 +14735,7 @@ why: blocking client for real-Postgres integration tests
 
 modules naming it:
 - `adapters::consolidate_repo`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::postgres`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::auth_contract`
@@ -14785,6 +14840,7 @@ modules naming it:
 - `adapters::tests::support::continuity_0137_cleanup`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::support::private_route`
@@ -14816,6 +14872,7 @@ modules naming it:
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
 - `adapters::contribution_reasoner`
@@ -14894,6 +14951,7 @@ modules naming it:
 - `adapters::tests::support::continuity_0137_cleanup`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::private_route`
 - `adapters::tests::support::project_tree_fixture`
 - `adapters::tests::visible_index_count`
@@ -14946,7 +15004,6 @@ modules naming it:
 - `adapters::tests::forget_race`
 - `adapters::tests::forget_repo`
 - `adapters::tests::freshness`
-- `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::hot_path_indexes`
 - `adapters::tests::ingest_ticket_expiry`
@@ -15007,6 +15064,7 @@ modules naming it:
 - `adapters::tests::support::continuity_0137_cleanup`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::support::throwaway_db`
 - `adapters::tests::switch_user_private`
@@ -15027,6 +15085,7 @@ why: async runtime driving pool-connect fixtures
 
 modules naming it:
 - `adapters::byok`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::postgres`
 - `adapters::stream_repo`
 - `adapters::tests::billing_doors`
@@ -16391,6 +16450,7 @@ modules naming it:
 - `billing-worker::normalize`
 - `billing-worker::process`
 - `billing-worker::signature`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::normalization`
 - `billing-worker::tests::process`
@@ -16405,6 +16465,7 @@ modules naming it:
 - `billing-worker::fake_creem`
 - `billing-worker::normalize`
 - `billing-worker::process`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::normalization`
 - `billing-worker::tests::process`
@@ -16443,6 +16504,7 @@ why: provider-neutral billing port (§71.2)
 modules naming it:
 - `billing-worker::creem`
 - `billing-worker::process`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `tests`
 
@@ -16452,6 +16514,7 @@ why: purpose-bound transport and credential sources (§71.2)
 modules naming it:
 - `billing-worker::creem`
 - `billing-worker::fake_creem`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::process`
 - `tests`
@@ -16490,6 +16553,7 @@ why: configured plan version and opaque tenant IDs (§78.2)
 
 modules naming it:
 - `billing-worker::process`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::process`
 - `billing-worker::tests::signature`
@@ -16514,6 +16578,7 @@ why: runtime-only random HMAC test keys (§79.4)
 
 modules naming it:
 - `billing-worker::process`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::process`
 - `billing-worker::tests::signature`
@@ -16524,6 +16589,7 @@ why: test-only loopback Creem routes (§79.4)
 
 modules naming it:
 - `billing-worker::fake_creem`
+- `billing-worker::tests::cancel`
 - `tests`
 
 ### humaux-billing-worker → `tokio` (dev)
@@ -16531,6 +16597,7 @@ why: test HTTP double lifecycle (§79.4)
 
 modules naming it:
 - `billing-worker::fake_creem`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::process`
 - `tests`
@@ -16562,6 +16629,8 @@ modules naming it:
 why: humaux-domain dependency
 
 modules naming it:
+- `consolidation-worker::inference_client`
+- `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::run_once_e2e`
 - `humaux-consolidation-worker`
@@ -17242,6 +17311,7 @@ modules naming it:
 - `maintenance::roles`
 - `maintenance::serve`
 - `maintenance::switch_visible`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
 - `maintenance::tests::partitions`
@@ -17260,6 +17330,7 @@ modules naming it:
 - `maintenance::projection_serve`
 - `maintenance::serve`
 - `maintenance::switch_visible`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::measure`
 - `maintenance::tests::partitions`
 - `tests`
@@ -17296,6 +17367,7 @@ modules naming it:
 - `maintenance::resident`
 - `maintenance::serve`
 - `maintenance::switch_visible`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::measure`
 - `maintenance::tests::partitions`
 - `maintenance::tests::retention`
@@ -17326,6 +17398,7 @@ modules naming it:
 - `maintenance::serve`
 - `maintenance::switch_visible`
 - `maintenance::tests::backup`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::health_serve`
 - `maintenance::tests::measure`
@@ -17355,6 +17428,7 @@ modules naming it:
 - `maintenance::rebuild_cli`
 - `maintenance::serve`
 - `maintenance::switch_visible`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
@@ -17396,6 +17470,7 @@ modules naming it:
 - `maintenance::rls_check`
 - `maintenance::switch_visible`
 - `maintenance::tests::backup`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
@@ -17482,6 +17557,7 @@ modules naming it:
 - `maintenance::serve`
 - `maintenance::switch_visible`
 - `maintenance::tests::backup`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::health_serve`
 - `maintenance::tests::measure`
@@ -17505,6 +17581,7 @@ modules naming it:
 - `maintenance::rebuild_cli`
 - `maintenance::serve`
 - `maintenance::switch_visible`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
@@ -18210,6 +18287,13 @@ default run:
 - UDS
 - subprocess
 
+### `bins/billing-worker/tests/cancel.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `bins/billing-worker/tests/fetch.rs`
 db-bound (default run): no
 
@@ -18517,6 +18601,17 @@ default run:
 - subprocess
 
 ### `bins/maintenance/tests/backup.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+- subprocess
+
+default run:
+- PostgreSQL
+- subprocess
+
+### `bins/maintenance/tests/billing_legacy_migration.rs`
 db-bound (default run): yes
 
 services (computed):

@@ -1,7 +1,7 @@
 //! `retrieval-provider::tests::dashscope_live_smoke` — T7.1 real-network smoke test — §19 production embedding model
 //!   is `text-embedding-v4` (1024-dim default).
 //! Depends-on: crates=[humaux-adapters, humaux-contracts, humaux-domain, humaux-local-secret-scan, humaux-retrieval,
-//!   humaux-testkit, postgres, tokio, uuid]; services=[PostgreSQL(owner) w=[control.memberships,
+//!   humaux-testkit, postgres, tokio, uuid]; services=[PostgreSQL(owner) w=[control.egress_policies, control.memberships,
 //!   control.private_reasoning_domains, control.retrieval_provider_admission_limits, control.tenants, control.users,
 //!   control.workspaces, private.evidence_objects], PostgreSQL(role_retrieval_worker), DashScope];
 //!   env=[HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256,
@@ -184,6 +184,12 @@ impl DbIntegrationFixture for SmokeFixture {
             )
             .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?
             .get(0);
+        admin
+            .execute(
+                "INSERT INTO control.egress_policies (tenant_id, private_retrieval_external_allowed) VALUES ($1, true)",
+                &[&tenant_id],
+            )
+            .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
         let user_id = Uuid::now_v7();
         admin
             // dep: PostgreSQL(owner) — seeds the evidence/disclosure rows the live smoke test needs.
