@@ -1,11 +1,15 @@
 //! `billing-worker::tests::cancel` — immediate cancellation HTTP contract (M04 D13h).
-//! Depends-on: crates=[humaux-application, humaux-billing-worker, humaux-domain, humaux-infra-egress, serde_json, tokio, uuid]; services=[HTTP(loopback)]; env=[]; modules=[application::billing, billing-worker::creem, billing-worker::fake_creem, billing-worker::mode, domain::billing, domain::egress, domain::error, domain::ids, infra-egress::http]
+//! Depends-on: crates=[axum, humaux-application, humaux-domain, humaux-infra-egress, serde_json, tokio, uuid]; services=[HTTP(loopback)]; env=[]; modules=[application::billing, billing-worker::creem, billing-worker::fake_creem, billing-worker::mode, domain::billing, domain::egress, domain::error, domain::ids, infra-egress::http]
 //! Called-by: [cargo-test]
 //! Invariants: [fixture credentials only; raw wire assertions; no automatic cancellation retry]
 //! Spec: Baseline §71.2; §71.3; §79.4; M04 D13(h)
 #[allow(dead_code)]
 #[path = "../src/fake_creem.rs"]
 mod fake_creem;
+use axum::{
+    Json, Router,
+    http::{HeaderMap, StatusCode},
+};
 use fake_creem::{FixtureCredential, TEST_KEY};
 use humaux_application::billing::{BillingProvider, ExternalSubscriptionRef};
 use humaux_billing_worker::{creem::CreemClient, mode::BillingMode};
@@ -35,7 +39,7 @@ fn subscription(id: &str) -> Value {
 #[tokio::test]
 async fn cancel_wire_contract_and_typed_observation() {
     let id = "sub/a ?#%";
-    let (base, server, requests) = fake_creem::start_cancel(subscription(id), 200).await;
+    let (base, server, requests) = start_cancel(subscription(id), 200).await;
     let provider: Box<dyn BillingProvider> = Box::new(client(&base, TEST_KEY));
     let observed = provider
         .cancel_subscription_now(&ExternalSubscriptionRef(id.into()))
@@ -71,7 +75,7 @@ async fn cancel_rejects_wrong_identity_and_malformed_subscription() {
     bad_period["current_period_end_date"] = json!("invalid");
     cases.push(bad_period);
     for response in cases {
-        let (base, server, requests) = fake_creem::start_cancel(response, 200).await;
+        let (base, server, requests) = start_cancel(response, 200).await;
         assert_eq!(
             client(&base, TEST_KEY)
                 .cancel_subscription_now(&ExternalSubscriptionRef("sub_fixture".into()))
@@ -90,8 +94,7 @@ async fn cancel_errors_are_classified_without_post_retries() {
         (400, TEST_KEY, ErrorCode::ProviderPermanent),
         (200, "wrong-fixture-token", ErrorCode::Unauthorized),
     ] {
-        let (base, server, requests) =
-            fake_creem::start_cancel(subscription("sub_fixture"), status).await;
+        let (base, server, requests) = start_cancel(subscription("sub_fixture"), status).await;
         assert_eq!(
             client(&base, key)
                 .cancel_subscription_now(&ExternalSubscriptionRef("sub_fixture".into()))
@@ -131,7 +134,7 @@ async fn cancel_transport_failure_is_unknown_and_not_retried() {
 }
 #[tokio::test]
 async fn cancel_invalid_reference_never_sends() {
-    let (base, server, requests) = fake_creem::start_cancel(subscription("sub_fixture"), 200).await;
+    let (base, server, requests) = start_cancel(subscription("sub_fixture"), 200).await;
     for id in ["", ".", ".."] {
         assert_eq!(
             client(&base, TEST_KEY)
@@ -142,4 +145,44 @@ async fn cancel_invalid_reference_never_sends() {
     }
     assert!(requests.lock().unwrap().is_empty());
     server.abort();
+}
+
+/// Raw request observations; tests assert the wire contract independently of the client.
+type CancelRequests = Arc<std::sync::Mutex<Vec<(String, String, HeaderMap, Vec<u8>)>>>;
+
+/// Immediate-cancel HTTP fixture: capture even malformed routes/methods, with a controlled response.
+async fn start_cancel(
+    response: Value,
+    status: u16,
+) -> (String, tokio::task::JoinHandle<()>, CancelRequests) {
+    let requests: CancelRequests = Arc::default();
+    let captured = requests.clone();
+    let router = Router::new().fallback(move |request: axum::extract::Request| {
+        let captured = captured.clone();
+        let response = response.clone();
+        async move {
+            let (parts, body) = request.into_parts();
+            let body = axum::body::to_bytes(body, 4096).await.unwrap();
+            captured.lock().unwrap().push((
+                parts.method.to_string(),
+                parts.uri.to_string(),
+                parts.headers.clone(),
+                body.to_vec(),
+            ));
+            if parts.headers.get("x-api-key").and_then(|h| h.to_str().ok()) != Some(TEST_KEY) {
+                return (StatusCode::UNAUTHORIZED, Json(Value::Null));
+            }
+            (StatusCode::from_u16(status).unwrap(), Json(response))
+        }
+    });
+    // dep: HTTP(loopback) — isolated cancellation contract fixture, never a real provider.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    (
+        base,
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        }),
+        requests,
+    )
 }
