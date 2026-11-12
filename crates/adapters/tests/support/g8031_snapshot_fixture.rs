@@ -1,7 +1,8 @@
-//! Shared G80 test fixture: seeds and cleans one tenant; no production entry point.
-//! Depends-on: crates=[humaux-domain, humaux-testkit, postgres, serde_json, sqlx, uuid]; services=[PostgreSQL(owner), PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_GATEWAY_PG_DSN]; modules=[domain::context, domain::identity, domain::ids, humaux-testkit]
-//! Called-by: [adapters::context_repo::g8031_snapshot_tests, adapters::tests::g80_31_handoff]
+//! `adapters::tests::support::g8031_snapshot_fixture` — seeds and cleans one G80 tenant; no production entry point.
+//! Depends-on: crates=[humaux-domain, humaux-testkit, postgres, serde_json, sqlx, uuid]; services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.jobs, ops.selection_snapshot_items, ops.selection_snapshots, private.context_bindings, private.events, private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log], PostgreSQL(owner), PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_GATEWAY_PG_DSN]; modules=[domain::context, domain::identity, domain::ids, humaux-testkit]
+//! Called-by: [adapters::context_repo, adapters::context_repo::g8031_snapshot_tests, adapters::tests::g80_31_handoff]
 //! Invariants: [one fixture per process; full snapshot identity requires explicit import]
+//! Spec: ADR-0047; ADR-0050; Baseline §57.1
 use humaux_domain::context::ContextBudget;
 use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId};
 use humaux_domain::ids::{Scope, TenantId};

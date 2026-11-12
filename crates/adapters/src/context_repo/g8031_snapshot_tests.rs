@@ -1,7 +1,8 @@
-//! G80-31 real double-read harness in the owning module; no public production hooks.
-//! Depends-on: crates=[humaux-domain, humaux-retrieval, postgres, sqlx, tokio, uuid]; services=[PostgreSQL(owner), PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_GATEWAY_PG_DSN]; modules=[adapters::context_repo, adapters::postgres, domain::context, domain::identity, domain::ids, retrieval::handoff]
-//! Called-by: [cargo-test]
+//! `adapters::context_repo::g8031_snapshot_tests` — G80-31 real double-read harness; no public production hooks.
+//! Depends-on: crates=[humaux-retrieval, postgres, sqlx, tokio, uuid]; services=[PostgreSQL(owner), PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_GATEWAY_PG_DSN]; modules=[adapters::context_repo, adapters::postgres, adapters::tests::support::g8031_snapshot_fixture, retrieval::handoff]
+//! Called-by: [adapters::context_repo]
 //! Invariants: [exporter stays alive; import precedes every read; complete token and bytes are checked]
+//! Spec: ADR-0047; ADR-0050; Baseline §57.1
 use super::g8031_snapshot_fixture::{authorization_for, budget, scope_for, seed_many, setup};
 use crate::postgres::RuntimeDbPool;
 use humaux_retrieval::handoff::{Handoff, assemble};
@@ -11,7 +12,9 @@ use uuid::Uuid;
 /// Each call opens and commits an independent real runtime transaction. The production
 /// helper installs authorization GUCs and applies the usual tenant/RLS selectors.
 async fn imported_read(dsn: &str, tenant: Uuid, snapshot: &str, import: bool) -> Handoff {
+    // dep: PostgreSQL(role_gateway) — real runtime role connection.
     let pool = RuntimeDbPool::connect(dsn).await.expect("runtime pool");
+    // dep: PostgreSQL(any) — independent caller-owned RR transaction.
     let mut tx = pool.pool().begin().await.expect("independent reader begin");
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .execute(&mut *tx)
@@ -67,6 +70,7 @@ fn same_snapshot_assembles_byte_identical_handoffs_with_the_constraint_present()
     let h1 = rt.block_on(imported_read(&f.dsn, f.tenant_id, &snapshot, true));
     // Synchronous SQL receipts establish ordering, not wall-clock sleeps.
     let owner = std::env::var("HUMAUX_TEST_PG_DSN").expect("owner configured by setup");
+    // dep: PostgreSQL(owner) — controlled XID allocator, no fixture-row mutation.
     let mut actor = Client::connect(&owner, NoTls).expect("controlled actor connection");
     let mut actor_tx = actor.transaction().expect("actor begin");
     let xid: String = actor_tx

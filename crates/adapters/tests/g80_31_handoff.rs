@@ -1,14 +1,14 @@
 //! `adapters::tests::g80_31_handoff` — G80-31（§57.1 Phase 8 出场判据）端到端：**同一快照两次装配 handoff 逐字节相同**， 且 Mandatory
 //!   的选取是机械规则、撤销立即生效、pinned 的「钉 3 带 2」可观测。
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval,
-//!   humaux-testkit, postgres, serde_json, sqlx, tokio, uuid]; services=[PostgreSQL(any)
+//!   postgres, serde_json, tokio, uuid]; services=[PostgreSQL(any)
 //!   w=[control.private_reasoning_domains, control.tenants, ops.jobs, ops.selection_snapshot_items,
 //!   ops.selection_snapshots, private.context_bindings, private.events, private.evidence_objects,
 //!   private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log],
 //!   PostgreSQL(owner),
 //!   PostgreSQL(role_gateway)]; env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::context_repo,
 //!   adapters::postgres, adapters::read_gate, adapters::read_materialize, application::continuity, domain::authority, domain::context,
-//!   domain::error, domain::identity, domain::ids, humaux-testkit, projection::serving, projection::stream,
+//!   domain::error, domain::identity, domain::ids, adapters::tests::support::g8031_snapshot_fixture, projection::serving, projection::stream,
 //!   retrieval::compiler, retrieval::handoff]
 //! Called-by: [cargo-test]
 //! Invariants: [snapshot byte-identity is checked in the owning-module imported-snapshot test; all other G80
