@@ -332,6 +332,11 @@ fn is_ident_byte(b: u8) -> bool {
 /// tokens with a real fallback call candidate fail with coverage UNKNOWN. This
 /// does not expand macros, resolve types, or prove properties of generated code.
 pub fn scan_outcome_fallback_violations(display_path: &str, source: &str) -> Vec<String> {
+    outcome_fallback::scan(display_path, source)
+}
+
+// Private syntax implementation shared by rule1 and rule3 through the public scanner.
+mod outcome_fallback {
     use syn::{
         parse::Parser,
         visit::{self, Visit},
@@ -382,35 +387,47 @@ pub fn scan_outcome_fallback_violations(display_path: &str, source: &str) -> Vec
         // No character parser: groups/literals come from proc-macro2, local call
         // syntax from syn. Bare Ok/None/Vec identifiers and literal prose are inert.
         fn opaque(&mut self, stream: proc_macro2::TokenStream) {
-            use proc_macro2::{Delimiter, TokenTree};
+            use proc_macro2::TokenTree;
             let tokens: Vec<_> = stream.into_iter().collect();
             let mut i = 0;
             while i < tokens.len() {
-                if let TokenTree::Ident(id) = &tokens[i]
-                    && let Some(TokenTree::Group(args)) = tokens.get(i + 1)
-                    && args.delimiter() == Delimiter::Parenthesis
-                {
-                    if id == "Ok" {
-                        let call = tokens[i..=i + 1].iter().cloned().collect();
-                        if let Ok(expr) = syn::parse2::<syn::Expr>(call) {
-                            self.visit_expr(&expr);
-                            i += 2;
-                            continue;
-                        }
-                    }
-                    if (id == "unwrap_or" || id == "unwrap_or_default")
-                        && matches!(i.checked_sub(1).and_then(|n| tokens.get(n)),
-                            Some(TokenTree::Punct(p)) if p.as_char() == '.')
-                        && !self.in_abstain
-                    {
-                        self.unknown.insert(id.span().start().line);
-                    }
+                if self.opaque_call(&tokens, i) {
+                    i += 2;
+                    continue;
                 }
                 if let TokenTree::Group(g) = &tokens[i] {
                     self.opaque(g.stream());
                 }
                 i += 1;
             }
+        }
+        // True consumes the parsed Ok call and its arguments exactly once.
+        fn opaque_call(&mut self, tokens: &[proc_macro2::TokenTree], i: usize) -> bool {
+            use proc_macro2::{Delimiter, TokenTree};
+            let TokenTree::Ident(id) = &tokens[i] else {
+                return false;
+            };
+            let Some(TokenTree::Group(args)) = tokens.get(i + 1) else {
+                return false;
+            };
+            if args.delimiter() != Delimiter::Parenthesis {
+                return false;
+            }
+            if id == "Ok"
+                && let Ok(expr) =
+                    syn::parse2::<syn::Expr>(tokens[i..=i + 1].iter().cloned().collect())
+            {
+                self.visit_expr(&expr);
+                return true;
+            }
+            if (id == "unwrap_or" || id == "unwrap_or_default")
+                && matches!(i.checked_sub(1).and_then(|n| tokens.get(n)),
+                    Some(TokenTree::Punct(p)) if p.as_char() == '.')
+                && !self.in_abstain
+            {
+                self.unknown.insert(id.span().start().line);
+            }
+            false
         }
         fn body(&mut self, sig: &syn::Signature, block: &syn::Block) {
             let old = (self.active, self.in_abstain);
@@ -441,17 +458,19 @@ pub fn scan_outcome_fallback_violations(display_path: &str, source: &str) -> Vec
             visit::visit_expr_method_call(self, node);
         }
         fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
-            if named(&node.func, "Ok") && node.args.len() == 1 && empty_value(&node.args[0]) {
-                if let syn::Expr::Path(path) = &*node.func {
-                    self.hit(
-                        path.path
-                            .segments
-                            .last()
-                            .expect("nonempty path")
-                            .ident
-                            .span(),
-                    );
-                }
+            if named(&node.func, "Ok")
+                && node.args.len() == 1
+                && empty_value(&node.args[0])
+                && let syn::Expr::Path(path) = &*node.func
+            {
+                self.hit(
+                    path.path
+                        .segments
+                        .last()
+                        .expect("nonempty path")
+                        .ident
+                        .span(),
+                );
             }
             let old = self.in_abstain;
             self.in_abstain |= named(&node.func, "abstain");
@@ -472,31 +491,33 @@ pub fn scan_outcome_fallback_violations(display_path: &str, source: &str) -> Vec
             }
         }
     }
-    let file = match syn::parse_file(source) {
-        Ok(file) => file,
-        Err(error) => {
-            return vec![format!(
-                "{display_path}:{}: coverage UNKNOWN: Rust parse error: {error}",
-                error.span().start().line
-            )];
-        }
-    };
-    let mut scanner = Scanner {
-        active: false,
-        in_abstain: false,
-        hits: Default::default(),
-        unknown: Default::default(),
-    };
-    scanner.visit_file(&file);
-    let mut violations: Vec<_> = scanner
-        .hits
-        .into_iter()
-        .map(|line| format!("{display_path}:{line}"))
-        .collect();
-    violations.extend(scanner.unknown.into_iter().map(|line| {
-        format!("{display_path}:{line}: coverage UNKNOWN: opaque macro fallback candidate")
-    }));
-    violations
+    pub(super) fn scan(display_path: &str, source: &str) -> Vec<String> {
+        let file = match syn::parse_file(source) {
+            Ok(file) => file,
+            Err(error) => {
+                return vec![format!(
+                    "{display_path}:{}: coverage UNKNOWN: Rust parse error: {error}",
+                    error.span().start().line
+                )];
+            }
+        };
+        let mut scanner = Scanner {
+            active: false,
+            in_abstain: false,
+            hits: Default::default(),
+            unknown: Default::default(),
+        };
+        scanner.visit_file(&file);
+        let mut violations: Vec<_> = scanner
+            .hits
+            .into_iter()
+            .map(|line| format!("{display_path}:{line}"))
+            .collect();
+        violations.extend(scanner.unknown.into_iter().map(|line| {
+            format!("{display_path}:{line}: coverage UNKNOWN: opaque macro fallback candidate")
+        }));
+        violations
+    }
 }
 
 /// §53.3 规则1: no `crates/**/*.rs` function returning `Outcome<_>` may fall back to a
