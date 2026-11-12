@@ -41,8 +41,10 @@ use humaux_adapters::read_gate::{
 use humaux_adapters::read_materialize::MaterializedItem;
 use humaux_application::continuity::assemble_handoff;
 use humaux_domain::authority::MemoryId;
+use humaux_domain::context::ContextBudget;
 use humaux_domain::error::ErrorCode;
-use humaux_domain::ids::{TenantId, WorkspaceId};
+use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId};
+use humaux_domain::ids::{Scope, TenantId, WorkspaceId};
 use humaux_projection::serving::StreamFamily;
 use humaux_projection::stream::StreamKey;
 use humaux_retrieval::compiler::ContextOutcome;
