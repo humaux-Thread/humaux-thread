@@ -219,7 +219,10 @@ async fn apply(
     repo::acquire_billing_scope_in_txn(txn, tenant, event).await?;
     repo::lock_subscription(txn, event.provider, reference).await?;
     ensure_time(deadline)?;
-    let provider_deadline = deadline; // TEMPORARY FAULT for named causal red
+    let provider_deadline = Instant::now()
+        .checked_add(config.budget.provider)
+        .ok_or(ErrorCode::InvalidInput)?
+        .min(deadline);
     let fetched = timeout_at(
         provider_deadline,
         provider.fetch_subscription(&ExternalSubscriptionRef(reference.into())),
