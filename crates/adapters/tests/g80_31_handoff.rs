@@ -2,8 +2,7 @@
 //!   的选取是机械规则、撤销立即生效、pinned 的「钉 3 带 2」可观测。
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval,
 //!   postgres, serde_json, tokio, uuid]; services=[PostgreSQL(any)
-//!   w=[ops.selection_snapshot_items,
-//!   ops.selection_snapshots, private.context_bindings, private.evidence_objects,
+//!   w=[ops.selection_snapshots, private.context_bindings, private.evidence_objects,
 //!   private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log],
 //!   PostgreSQL(owner),
 //!   PostgreSQL(role_gateway)]; env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::context_repo,
