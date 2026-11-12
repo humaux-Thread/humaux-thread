@@ -1728,6 +1728,64 @@ mod tests {
     }
 
     #[test]
+    fn m05_tenant_opt_out_stops_disclosure_and_transport() {
+        run_db_fixture::<QueryProviderFixture, _>("m05_tenant_opt_out", |mut handle| {
+            handle.admin.execute(
+                "INSERT INTO control.egress_policies (tenant_id, private_retrieval_external_allowed) VALUES ($1, true)",
+                &[&handle.tenant_id],
+            ).expect("seed tenant opt-in");
+            let transport = Arc::new(DeterministicEmbeddingTransport::new());
+            let (provider, authorization, workspace_id) =
+                query_provider_and_authorization(&mut handle, transport.clone());
+            let queries = [sealed_query_fixture("policy controlled retrieval query")];
+            let (_, _, positive_context) = trusted_query_context(&authorization, workspace_id);
+            let positive =
+                handle
+                    .rt
+                    .block_on(provider.embed_queries(&positive_context, 2, &queries));
+            let positive_calls = transport.calls.load(Ordering::SeqCst);
+            let positive_disclosures: i64 = handle
+                .admin
+                .query_one(
+                    "SELECT count(*) FROM ops.data_disclosures WHERE tenant_id = $1",
+                    &[&handle.tenant_id],
+                )
+                .expect("positive disclosure count")
+                .get(0);
+            assert!(
+                positive.is_ok(),
+                "opt-in positive control failed: {positive:?}"
+            );
+            assert_eq!(positive_calls, 1, "opt-in must reach ExternalCall");
+            assert_eq!(positive_disclosures, 1, "opt-in must reserve disclosure");
+
+            handle.admin.execute(
+                "UPDATE control.egress_policies SET private_retrieval_external_allowed = false WHERE tenant_id = $1",
+                &[&handle.tenant_id],
+            ).expect("set tenant opt-out");
+            let (_, _, negative_context) = trusted_query_context(&authorization, workspace_id);
+            let negative =
+                handle
+                    .rt
+                    .block_on(provider.embed_queries(&negative_context, 2, &queries));
+            let negative_calls = transport.calls.load(Ordering::SeqCst) - positive_calls;
+            let negative_disclosures: i64 = handle
+                .admin
+                .query_one(
+                    "SELECT count(*) FROM ops.data_disclosures WHERE tenant_id = $1",
+                    &[&handle.tenant_id],
+                )
+                .expect("negative disclosure count")
+                .get::<_, i64>(0)
+                - positive_disclosures;
+            assert!(
+                negative.is_err() && negative_calls == 0 && negative_disclosures == 0,
+                "opt-out must reject before ExternalCall and disclosure: result={negative:?}, ExternalCall delta={negative_calls}, disclosure delta={negative_disclosures}"
+            );
+        });
+    }
+
+    #[test]
     fn dashscope_query_sut_commits_exact_batch_provenance_before_transport() {
         run_db_fixture::<QueryProviderFixture, _>(
             "dashscope_query_provenance_sut",
