@@ -103,58 +103,69 @@ fn subscription() -> ProviderSubscription {
         current_period_end: now + Duration::days(1),
     }
 }
+fn assert_failed_application_rolls_back(
+    h: &mut Handle,
+    tenant: TenantId,
+    old: Uuid,
+    free: Uuid,
+    new: &ProviderSubscription,
+    event: &VerifiedBillingEvent,
+) {
+    h.rt.block_on(async {
+        let mut tx = repo::begin_processor(&h.pool).await.unwrap();
+        assert_eq!(
+            repo::acquire_billing_scope_in_txn(&mut tx, tenant, event).await,
+            Err(ErrorCode::Forbidden)
+        );
+        repo::scope_tenant(&mut tx, tenant).await.unwrap();
+        repo::acquire_billing_scope_in_txn(&mut tx, tenant, event)
+            .await
+            .unwrap();
+        let observation = repo::prepare_slot_in_txn(
+            &mut tx,
+            tenant,
+            event,
+            &new.reference,
+            [new.current_period_start, new.current_period_end],
+        )
+        .await
+        .unwrap();
+        assert!(!observation.replay && !observation.reversed_b);
+        assert_eq!(observation.old.unwrap().id, old);
+        let error = repo::handover_subscription_in_txn(
+            &mut tx,
+            tenant,
+            event,
+            old,
+            SubscriptionState::PastDue,
+            new,
+            Uuid::new_v4(),
+            free,
+        )
+        .await;
+        assert_eq!(error, Err(ErrorCode::InvalidInput));
+        tx.rollback().await.unwrap();
+    });
+    let state: String = h
+        .owner
+        .query_one(
+            "SELECT state FROM control.subscriptions WHERE subscription_id=$1",
+            &[&old],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(state, "PAST_DUE", "failed B must roll back A");
+    let counts = h.owner.query_one("SELECT (SELECT count(*) FROM control.subscription_events),(SELECT count(*) FROM control.entitlement_grants WHERE revoked_at IS NOT NULL)", &[]).unwrap();
+    assert_eq!((counts.get::<_, i64>(0), counts.get::<_, i64>(1)), (0, 0));
+}
+
 #[test]
 fn atomic_handover_replay_and_rollback() {
     run_db_fixture::<Fixture, _>("atomic_handover_replay_and_rollback", |mut h| {
         let (tenant, old, paid, free) = seed(&mut h, "PAST_DUE");
         let new = subscription();
         let event = event();
-        h.rt.block_on(async {
-            let mut tx = repo::begin_processor(&h.pool).await.unwrap();
-            assert_eq!(
-                repo::acquire_billing_scope_in_txn(&mut tx, tenant, &event).await,
-                Err(ErrorCode::Forbidden)
-            );
-            repo::scope_tenant(&mut tx, tenant).await.unwrap();
-            repo::acquire_billing_scope_in_txn(&mut tx, tenant, &event)
-                .await
-                .unwrap();
-            let observation = repo::prepare_slot_in_txn(
-                &mut tx,
-                tenant,
-                &event,
-                &new.reference,
-                [new.current_period_start, new.current_period_end],
-            )
-            .await
-            .unwrap();
-            assert!(!observation.replay && !observation.reversed_b);
-            assert_eq!(observation.old.unwrap().id, old);
-            let error = repo::handover_subscription_in_txn(
-                &mut tx,
-                tenant,
-                &event,
-                old,
-                SubscriptionState::PastDue,
-                &new,
-                Uuid::new_v4(),
-                free,
-            )
-            .await;
-            assert_eq!(error, Err(ErrorCode::InvalidInput));
-            tx.rollback().await.unwrap();
-        });
-        let state: String = h
-            .owner
-            .query_one(
-                "SELECT state FROM control.subscriptions WHERE subscription_id=$1",
-                &[&old],
-            )
-            .unwrap()
-            .get(0);
-        assert_eq!(state, "PAST_DUE", "failed B must roll back A");
-        let counts = h.owner.query_one("SELECT (SELECT count(*) FROM control.subscription_events),(SELECT count(*) FROM control.entitlement_grants WHERE revoked_at IS NOT NULL)", &[]).unwrap();
-        assert_eq!((counts.get::<_, i64>(0), counts.get::<_, i64>(1)), (0, 0));
+        assert_failed_application_rolls_back(&mut h, tenant, old, free, &new, &event);
         // Force the projector's scope guard to fail after a successful handover, then roll back.
         h.rt.block_on(async {
             let mut tx = repo::begin_processor(&h.pool).await.unwrap();
@@ -306,79 +317,95 @@ fn active_slot_is_not_retired() {
     });
 }
 
-#[test]
-fn acl_scope_and_lasting_reversal() {
-    run_db_fixture::<Fixture, _>("acl_scope_and_lasting_reversal", |mut h| {
-        let (tenant, old, paid, free) = seed(&mut h, "PAST_DUE");
-        let new = subscription();
-        let sigs = [
-            "control.billing_slot_observe(uuid,text,text,text,timestamptz,timestamptz)",
-            "control.billing_handover_subscription(uuid,text,text,uuid,text,text,uuid,uuid,timestamptz,timestamptz,timestamptz)",
-        ];
-        for sig in sigs {
-            let row = h.owner.query_one("SELECT pg_get_userbyid(p.proowner), p.prosecdef, 'search_path=pg_catalog'=ANY(p.proconfig), has_function_privilege('role_maintenance',p.oid,'EXECUTE'), has_function_privilege('role_gateway',p.oid,'EXECUTE'), EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 AND a.privilege_type='EXECUTE') FROM pg_proc p WHERE p.oid=to_regprocedure($1)", &[&sig]).unwrap();
-            assert_eq!(row.get::<_, String>(0), "role_migration_owner");
-            assert!(row.get::<_, bool>(1) && row.get::<_, bool>(2) && row.get::<_, bool>(3));
-            assert!(!row.get::<_, bool>(4) && !row.get::<_, bool>(5));
-        }
-        assert!(!h
-            .owner
+fn assert_slot_acl(h: &mut Handle) {
+    let sigs = [
+        "control.billing_slot_observe(uuid,text,text,text,timestamptz,timestamptz)",
+        "control.billing_handover_subscription(uuid,text,text,uuid,text,text,uuid,uuid,timestamptz,timestamptz,timestamptz)",
+    ];
+    for sig in sigs {
+        let row = h.owner.query_one("SELECT pg_get_userbyid(p.proowner), p.prosecdef, 'search_path=pg_catalog'=ANY(p.proconfig), has_function_privilege('role_maintenance',p.oid,'EXECUTE'), has_function_privilege('role_gateway',p.oid,'EXECUTE'), EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 AND a.privilege_type='EXECUTE') FROM pg_proc p WHERE p.oid=to_regprocedure($1)", &[&sig]).unwrap();
+        assert_eq!(row.get::<_, String>(0), "role_migration_owner");
+        assert!(row.get::<_, bool>(1) && row.get::<_, bool>(2) && row.get::<_, bool>(3));
+        assert!(!row.get::<_, bool>(4) && !row.get::<_, bool>(5));
+    }
+    assert!(
+        !h.owner
             .query_one(
                 "SELECT has_table_privilege('role_maintenance','control.subscriptions','SELECT')",
                 &[]
             )
             .unwrap()
-            .get::<_, bool>(0));
-        for (scoped, requested) in [
-            (None, tenant),
-            (Some(Uuid::new_v4()), tenant),
-            (Some(Uuid::nil()), tenant),
-            (Some(Uuid::nil()), TenantId(Uuid::nil())),
-        ] {
-            for handover in [false, true] {
-                h.rt.block_on(async {
-                    let mut tx = repo::begin_processor(&h.pool).await.unwrap();
-                    if let Some(scope) = scoped {
-                        sqlx::query("SELECT set_config('humaux.tenant_id',$1,true)")
-                            .bind(scope.to_string())
-                            .execute(&mut *tx)
-                            .await
-                            .unwrap();
-                    }
-                    let result = if handover {
-                        repo::handover_subscription_in_txn(
-                            &mut tx,
-                            requested,
-                            &event(),
-                            old,
-                            SubscriptionState::PastDue,
-                            &new,
-                            paid,
-                            free,
-                        )
+            .get::<_, bool>(0)
+    );
+}
+
+fn assert_slot_scope_guards(
+    h: &Handle,
+    tenant: TenantId,
+    old: Uuid,
+    paid: Uuid,
+    free: Uuid,
+    new: &ProviderSubscription,
+) {
+    for (scoped, requested) in [
+        (None, tenant),
+        (Some(Uuid::new_v4()), tenant),
+        (Some(Uuid::nil()), tenant),
+        (Some(Uuid::nil()), TenantId(Uuid::nil())),
+    ] {
+        for handover in [false, true] {
+            h.rt.block_on(async {
+                let mut tx = repo::begin_processor(&h.pool).await.unwrap();
+                if let Some(scope) = scoped {
+                    sqlx::query("SELECT set_config('humaux.tenant_id',$1,true)")
+                        .bind(scope.to_string())
+                        .execute(&mut *tx)
                         .await
-                        .map(|_| ())
-                    } else {
-                        repo::prepare_slot_in_txn(
-                            &mut tx,
-                            requested,
-                            &event(),
-                            &new.reference,
-                            [new.current_period_start, new.current_period_end],
-                        )
-                        .await
-                        .map(|_| ())
-                    };
-                    assert_eq!(
-                        result,
-                        Err(ErrorCode::Forbidden),
-                        "scope {scoped:?}, requested {:?}, handover={handover}",
-                        requested.0
-                    );
-                    tx.rollback().await.unwrap();
-                });
-            }
+                        .unwrap();
+                }
+                let result = if handover {
+                    repo::handover_subscription_in_txn(
+                        &mut tx,
+                        requested,
+                        &event(),
+                        old,
+                        SubscriptionState::PastDue,
+                        new,
+                        paid,
+                        free,
+                    )
+                    .await
+                    .map(|_| ())
+                } else {
+                    repo::prepare_slot_in_txn(
+                        &mut tx,
+                        requested,
+                        &event(),
+                        &new.reference,
+                        [new.current_period_start, new.current_period_end],
+                    )
+                    .await
+                    .map(|_| ())
+                };
+                assert_eq!(
+                    result,
+                    Err(ErrorCode::Forbidden),
+                    "scope {scoped:?}, requested {:?}, handover={handover}",
+                    requested.0
+                );
+                tx.rollback().await.unwrap();
+            });
         }
+    }
+}
+
+#[test]
+fn acl_scope_and_lasting_reversal() {
+    run_db_fixture::<Fixture, _>("acl_scope_and_lasting_reversal", |mut h| {
+        let (tenant, old, paid, free) = seed(&mut h, "PAST_DUE");
+        let new = subscription();
+        assert_slot_acl(&mut h);
+        assert_slot_scope_guards(&h, tenant, old, paid, free, &new);
         let start = new.current_period_start.unix_timestamp();
         let end = new.current_period_end.unix_timestamp();
         // Use exact whole-second boundaries on both ledger and observation.
