@@ -1,5 +1,5 @@
 //! `maintenance::tests::billing_slot_migration` — production migrator fresh and populated upgrade.
-//! Depends-on: crates=[postgres, uuid]; services=[PostgreSQL(owner) r=[ops.schema_migrations, control.subscriptions] w=[control.tenants, control.plans, control.plan_versions, control.subscriptions], subprocess(humaux-maintenance)]; env=[HUMAUX_MIGRATOR_PG_DSN, HUMAUX_TEST_PG_DSN, HUMAUX_MAINTENANCE_PG_DSN]; modules=[maintenance::tests::support::throwaway]
+//! Depends-on: crates=[postgres, uuid]; services=[PostgreSQL(owner) r=[ops.schema_migrations, control.subscriptions] w=[control.tenants, control.plans, control.plan_versions, control.subscriptions] x=[control.billing_slot_observe, control.billing_handover_subscription], subprocess(humaux-maintenance)]; env=[HUMAUX_MIGRATOR_PG_DSN, HUMAUX_TEST_PG_DSN, HUMAUX_MAINTENANCE_PG_DSN]; modules=[maintenance::tests::support::throwaway]
 //! Called-by: [cargo-test]
 //! Invariants: [isolated disposable database, real migrator, no provider calls]
 //! Spec: Baseline §71.3; §76; §79.2
