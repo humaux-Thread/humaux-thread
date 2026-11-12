@@ -809,7 +809,7 @@ fn legacy_paid_grants(upgrade: bool) {
         h.admin.execute("UPDATE control.billing_inbox SET object_id='sub_paid',payload=jsonb_set(payload,'{object,id}',to_jsonb('sub_paid'::text)) WHERE event_id='legacy_paid'", &[]).unwrap();
         assert_eq!(process_fetched(&h, paid_sub, None), Ok(true));
         let plan = h.config.plans["prod_fixture"];
-        assert_eq!(h.admin.execute("UPDATE control.entitlement_grants SET source_ref_id=$1 WHERE tenant_id=$2 AND source='PLAN' AND revoked_at IS NULL", &[&plan, &tenant]).unwrap(), 2);
+        assert_eq!(h.admin.execute("UPDATE control.entitlement_grants SET source_ref_id=$1 WHERE tenant_id=$2 AND source='PLAN' AND revoked_at IS NULL AND source_ref_id=(SELECT subscription_id FROM control.subscriptions WHERE tenant_id=$2 AND provider_subscription_ref='sub_paid')", &[&plan, &tenant]).unwrap(), 2);
         let grants: Value = h.admin.query_one("SELECT jsonb_agg(grant_id ORDER BY grant_id) FROM control.entitlement_grants WHERE tenant_id=$1 AND source_ref_id=$2 AND revoked_at IS NULL", &[&tenant, &plan]).unwrap().get(0);
         if upgrade {
             h.admin
