@@ -51,7 +51,7 @@ BEGIN
   IF v_slot.replay THEN RETURN false; END IF;
   IF v_slot.reversed_b OR v_slot.old_id IS DISTINCT FROM p_old_id
      OR v_slot.old_provider IS DISTINCT FROM p_provider OR v_slot.old_state IS DISTINCT FROM p_old_state
-     OR p_old_state NOT IN ('PAST_DUE', 'CANCEL_AT_PERIOD_END') THEN
+     THEN
     RAISE EXCEPTION 'slot changed or ineligible' USING ERRCODE = '23505';
   END IF;
   SELECT * INTO v_old FROM control.subscriptions s WHERE s.tenant_id = p_tenant
