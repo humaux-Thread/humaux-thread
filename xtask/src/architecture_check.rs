@@ -322,70 +322,180 @@ fn is_ident_byte(b: u8) -> bool {
 // §53.3 规则1 + 规则3: Outcome<_> fallback scan, shared by real code and sentinels
 // ============================================================================
 
-/// Scans `source` for `fn`s whose signature contains the literal text `Outcome<` and, within
-/// each such fn's body (nested closures included — §53.3 规则1 says "函数体内", not "顶层
-/// 语句"), flags `unwrap_or_default()` / `unwrap_or(` / `Ok(Vec::new())` / `Ok(None)` unless
-/// the same line also calls `abstain(` (i.e. is itself the abstain call chain).
+/// §53.3 rule1/rule3 syntax scan. Outcome is a syntactic generic path in the
+/// signature, including arguments and nested result types; aliases are not resolved.
+/// Diagnostics remain unique path:line sites. Closures inherit the function scope;
+/// nested functions/methods establish their own. Only the abstain expression chain
+/// exempts a fallback, never an unrelated abstain on the same line.
 ///
-/// ponytail: literal-text matching on `Outcome<`, not type resolution — a fn returning the
-/// `Response<T>` alias (`Result<Outcome<T>, ErrorCode>`) is invisible to this scan because
-/// its signature text says `Response<T>`, not `Outcome<`. §53.3 registers this as a grep-
-/// style check ("forbidden import grep with positive sentinels", §78.3); upgrade to alias-
-/// aware matching if `Response<T>`-returning functions start actually using bare fallbacks.
+/// Source-level macro arguments are inspected with syn where possible. Opaque
+/// tokens with a real fallback call candidate fail with coverage UNKNOWN. This
+/// does not expand macros, resolve types, or prove properties of generated code.
 pub fn scan_outcome_fallback_violations(display_path: &str, source: &str) -> Vec<String> {
-    let mut violations = Vec::new();
-    let mut search_from = 0usize;
-    while let Some(rel) = source[search_from..].find("fn ") {
-        let fn_kw = search_from + rel;
-        let after = &source[fn_kw..];
-        let brace_opt = after.find('{');
-        let semi_opt = after.find(';');
-        // A `;` reached before the next `{` means this is a body-less declaration (a trait
-        // method signature, `fn a(&self) -> Outcome<i32>;`) — its own "signature" text must
-        // not be treated as ending at some later, unrelated fn's opening brace, and that
-        // later fn's real body must not be misattributed to this bodyless one.
-        let is_bodyless = match (semi_opt, brace_opt) {
-            (Some(s), Some(b)) => s < b,
-            (Some(_), None) => true,
-            _ => false,
-        };
-        if is_bodyless {
-            search_from = fn_kw + semi_opt.expect("is_bodyless implies semi_opt is Some") + 1;
-            continue;
+    use syn::{
+        parse::Parser,
+        visit::{self, Visit},
+    };
+
+    #[derive(Default)]
+    struct SignatureScope(bool);
+    impl<'ast> Visit<'ast> for SignatureScope {
+        fn visit_path_segment(&mut self, node: &'ast syn::PathSegment) {
+            if node.ident == "Outcome"
+                && matches!(node.arguments, syn::PathArguments::AngleBracketed(_))
+            {
+                self.0 = true;
+            }
+            visit::visit_path_segment(self, node);
         }
-        let Some(brace_rel) = brace_opt else {
-            break;
-        };
-        let open_brace = fn_kw + brace_rel;
-        let signature = &source[fn_kw..open_brace];
-        // A stray '}' before the next '{' means we scanned across some other block (e.g.
-        // "fn" appearing inside a comment/string) rather than a real signature — skip it.
-        if !signature.contains('}')
-            && signature.contains("Outcome<")
-            && !line_is_comment_at(source, fn_kw)
-            && let Some(close) = matching_brace_end(source, open_brace)
-        {
-            let body = &source[open_brace..close];
-            let body_start_line = source[..open_brace].matches('\n').count() + 1;
-            for (i, line) in body.lines().enumerate() {
-                // §53.3 规则1 targets real fallback calls, not prose that merely mentions
-                // them (e.g. a comment citing this very rule inside the fn body it documents).
-                if line.trim_start().starts_with("//") {
-                    continue;
+    }
+    fn scoped(sig: &syn::Signature) -> bool {
+        let mut scope = SignatureScope::default();
+        scope.visit_signature(sig);
+        scope.0
+    }
+    fn named(expr: &syn::Expr, name: &str) -> bool {
+        matches!(expr, syn::Expr::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == name))
+    }
+    fn abstain(expr: &syn::Expr) -> bool {
+        matches!(expr, syn::Expr::Call(c) if named(&c.func, "abstain"))
+    }
+    fn empty_value(expr: &syn::Expr) -> bool {
+        named(expr, "None")
+            || matches!(expr, syn::Expr::Call(c)
+            if c.args.is_empty() && matches!(&*c.func, syn::Expr::Path(p)
+                if p.path.segments.len() == 2 && p.path.segments[0].ident == "Vec"
+                    && p.path.segments[1].ident == "new"))
+    }
+    struct Scanner {
+        active: bool,
+        in_abstain: bool,
+        hits: std::collections::BTreeSet<usize>,
+        unknown: std::collections::BTreeSet<usize>,
+    }
+    impl Scanner {
+        fn hit(&mut self, span: proc_macro2::Span) {
+            if self.active && !self.in_abstain {
+                self.hits.insert(span.start().line);
+            }
+        }
+        // No character parser: groups/literals come from proc-macro2, local call
+        // syntax from syn. Bare Ok/None/Vec identifiers and literal prose are inert.
+        fn opaque(&mut self, stream: proc_macro2::TokenStream) {
+            use proc_macro2::{Delimiter, TokenTree};
+            let tokens: Vec<_> = stream.into_iter().collect();
+            let mut i = 0;
+            while i < tokens.len() {
+                if let TokenTree::Ident(id) = &tokens[i]
+                    && let Some(TokenTree::Group(args)) = tokens.get(i + 1)
+                    && args.delimiter() == Delimiter::Parenthesis
+                {
+                    if id == "Ok" {
+                        let call = tokens[i..=i + 1].iter().cloned().collect();
+                        if let Ok(expr) = syn::parse2::<syn::Expr>(call) {
+                            self.visit_expr(&expr);
+                            i += 2;
+                            continue;
+                        }
+                    }
+                    if (id == "unwrap_or" || id == "unwrap_or_default")
+                        && matches!(i.checked_sub(1).and_then(|n| tokens.get(n)),
+                            Some(TokenTree::Punct(p)) if p.as_char() == '.')
+                        && !self.in_abstain
+                    {
+                        self.unknown.insert(id.span().start().line);
+                    }
                 }
-                let has_fallback = line.contains("unwrap_or_default()")
-                    || line.contains("unwrap_or(")
-                    || line.contains("Ok(Vec::new())")
-                    || line.contains("Ok(None)");
-                if has_fallback && !line.contains("abstain(") {
-                    violations.push(format!("{display_path}:{}", body_start_line + i));
+                if let TokenTree::Group(g) = &tokens[i] {
+                    self.opaque(g.stream());
+                }
+                i += 1;
+            }
+        }
+        fn body(&mut self, sig: &syn::Signature, block: &syn::Block) {
+            let old = (self.active, self.in_abstain);
+            self.active = scoped(sig);
+            self.in_abstain = false;
+            self.visit_block(block);
+            (self.active, self.in_abstain) = old;
+        }
+    }
+    impl<'ast> Visit<'ast> for Scanner {
+        fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+            self.body(&node.sig, &node.block);
+        }
+        fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+            self.body(&node.sig, &node.block);
+        }
+        fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
+            if let Some(block) = &node.default {
+                self.body(&node.sig, block);
+            }
+        }
+        fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+            if (node.method == "unwrap_or_default" || node.method == "unwrap_or")
+                && !node.args.iter().any(abstain)
+            {
+                self.hit(node.method.span());
+            }
+            visit::visit_expr_method_call(self, node);
+        }
+        fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+            if named(&node.func, "Ok") && node.args.len() == 1 && empty_value(&node.args[0]) {
+                if let syn::Expr::Path(path) = &*node.func {
+                    self.hit(
+                        path.path
+                            .segments
+                            .last()
+                            .expect("nonempty path")
+                            .ident
+                            .span(),
+                    );
                 }
             }
-            search_from = close;
-            continue;
+            let old = self.in_abstain;
+            self.in_abstain |= named(&node.func, "abstain");
+            visit::visit_expr_call(self, node);
+            self.in_abstain = old;
         }
-        search_from = open_brace + 1;
+        fn visit_macro(&mut self, node: &'ast syn::Macro) {
+            if !self.active {
+                return;
+            }
+            let parser = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+            if let Ok(args) = parser.parse2(node.tokens.clone()) {
+                for arg in &args {
+                    self.visit_expr(arg);
+                }
+            } else {
+                self.opaque(node.tokens.clone());
+            }
+        }
     }
+    let file = match syn::parse_file(source) {
+        Ok(file) => file,
+        Err(error) => {
+            return vec![format!(
+                "{display_path}:{}: coverage UNKNOWN: Rust parse error: {error}",
+                error.span().start().line
+            )];
+        }
+    };
+    let mut scanner = Scanner {
+        active: false,
+        in_abstain: false,
+        hits: Default::default(),
+        unknown: Default::default(),
+    };
+    scanner.visit_file(&file);
+    let mut violations: Vec<_> = scanner
+        .hits
+        .into_iter()
+        .map(|line| format!("{display_path}:{line}"))
+        .collect();
+    violations.extend(scanner.unknown.into_iter().map(|line| {
+        format!("{display_path}:{line}: coverage UNKNOWN: opaque macro fallback candidate")
+    }));
     violations
 }
 
@@ -14597,6 +14707,68 @@ runs:
             Vec::<String>::new(),
             "§53.3 rule1: comments and strings are not fallback calls"
         );
+    }
+
+    #[test]
+    fn rule1_ast_phase2_macro_arguments_preserve_calls_and_lines() {
+        let src = "fn f(x: Option<i32>) -> Outcome<i32> {\n wrapper!(x.unwrap_or_default());\n wrapper!(Ok(None));\n}";
+        assert_eq!(
+            scan_outcome_fallback_violations("macro.rs", src),
+            vec!["macro.rs:2", "macro.rs:3"]
+        );
+    }
+
+    #[test]
+    fn rule1_ast_phase2_opaque_candidate_is_unknown() {
+        let src =
+            "fn f(x: Option<i32>) -> Outcome<i32> {\n log!(target: x.unwrap_or_default());\n}";
+        assert_eq!(
+            scan_outcome_fallback_violations("opaque.rs", src),
+            vec!["opaque.rs:2: coverage UNKNOWN: opaque macro fallback candidate"]
+        );
+    }
+
+    #[test]
+    fn rule1_ast_phase2_opaque_ok_call_is_not_lost() {
+        let src = "fn f() -> Outcome<i32> {\n log!(target: Ok(None));\n}";
+        assert_eq!(
+            scan_outcome_fallback_violations("opaque.rs", src),
+            vec!["opaque.rs:2"]
+        );
+    }
+
+    #[test]
+    fn rule1_ast_phase2_macro_prose_and_bare_names_are_inert() {
+        let src = r#"fn f() -> Outcome<i32> {
+ log!(target: "unwrap_or_default() / Ok(None)", Ok, None, Vec);
+ println!("unwrap_or(0)");
+}"#;
+        assert!(scan_outcome_fallback_violations("log.rs", src).is_empty());
+    }
+
+    #[test]
+    fn rule1_ast_phase2_abstain_is_an_expression_not_a_line_exemption() {
+        let src = "fn f(x: Option<i32>) -> Outcome<i32> {\n abstain(Code::X, 0); x.unwrap_or_default();\n x.unwrap_or(abstain(Code::X, 0));\n abstain(Code::X, x.unwrap_or_default());\n}";
+        assert_eq!(
+            scan_outcome_fallback_violations("chain.rs", src),
+            vec!["chain.rs:2"]
+        );
+    }
+
+    #[test]
+    fn rule1_ast_phase2_scopes_methods_closures_and_nested_functions() {
+        let src = "impl X { fn f() -> Outcome<i32> {\n let _ = || x.unwrap_or_default();\n fn inner() -> i32 { x.unwrap_or_default() }\n} }\ntrait T { fn decl() -> Outcome<i32>; fn plain() -> i32 { x.unwrap_or_default() } }";
+        assert_eq!(
+            scan_outcome_fallback_violations("scope.rs", src),
+            vec!["scope.rs:2"]
+        );
+    }
+
+    #[test]
+    fn rule1_ast_phase2_parse_failure_is_not_clean() {
+        let hits = scan_outcome_fallback_violations("bad.rs", "fn broken(");
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].starts_with("bad.rs:1: coverage UNKNOWN: Rust parse error:"));
     }
 
     #[test]
