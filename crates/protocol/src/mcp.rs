@@ -37,7 +37,7 @@ use rmcp::{
     model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
         InitializeRequestParams, InitializeResult, JsonObject, ListToolsResult, ProtocolVersion,
-        ServerCapabilities, ServerInfo, Tool,
+        ServerCapabilities, ServerConfig, Tool,
     },
     service::RequestContext,
     transport::streamable_http_server::{
@@ -607,7 +607,7 @@ fn http_context(parts: &Parts, state: &McpRequestState) -> Result<McpHttpContext
 }
 
 impl ServerHandler for NativeMcpHandler {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(NATIVE_PROTOCOL)
     }

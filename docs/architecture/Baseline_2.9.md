@@ -7461,7 +7461,7 @@ Humaux 的 Agent 主接口采用 remote HTTP MCP。Native wire target 是 `2026-
 - DCR deprecated，CIMD 为新方向；
 - legacy HTTP+SSE deprecated。
 
-Protocol Adapter 固定使用官方 Rust SDK `rmcp =3.1.4`（2026-08-28 复核官方版本发布）；native wire 保持 MCP `2026-07-28`。SDK 仍不进入 Domain，所有 SDK/wire 类型只存在 `protocol/mcp`；Tier/SDK 演进只能修改 Protocol Adapter / Compatibility Profile。历史 Tier 2 调研记录见 §84，当前实现不依赖 Tier 标签。
+Protocol Adapter 固定使用官方 Rust SDK `rmcp =3.9.0`（[官方发布](https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.9.0)；[RUSTSEC-2026-0457](https://rustsec.org/advisories/RUSTSEC-2026-0457.html)、[0461](https://rustsec.org/advisories/RUSTSEC-2026-0461.html)、[0462](https://rustsec.org/advisories/RUSTSEC-2026-0462.html)，均于 2026-11-09 发布）；native wire 保持 MCP `2026-07-28`。SDK 仍不进入 Domain，所有 SDK/wire 类型只存在 `protocol/mcp`；Tier/SDK 演进只能修改 Protocol Adapter / Compatibility Profile。历史 Tier 2 调研记录见 §84，当前实现不依赖 Tier 标签。
 
 ## 33.1 Canonical Tool Contract
 
