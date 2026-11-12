@@ -39,6 +39,7 @@ use humaux_adapters::disclosure::DeletionCapability;
 use humaux_adapters::postgres::PrivateWorkerDbPool;
 use humaux_adapters::private_inference_rpc::{
     ClaimOutcome, ClaimedRegistration, FinishOutcome, PrivateWorkerInferenceCalls, StoredOutcome,
+    reasoning_failure,
 };
 use humaux_adapters::reasoning_route_admission::ProviderFor;
 use humaux_application::consolidate::{
@@ -390,7 +391,7 @@ async fn infer(
             model_call_id: Some(result.model_call_id),
             failure_message: None,
         },
-        Err(error) => failed_envelope(call_id, error.to_string()),
+        Err(error) => failed_envelope(call_id, reasoning_failure(&error)),
     };
     (envelope, route)
 }
