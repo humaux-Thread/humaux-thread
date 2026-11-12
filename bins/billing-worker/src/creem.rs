@@ -186,7 +186,7 @@ impl BillingProvider for CreemClient {
             .request(
                 url,
                 "POST",
-                br#"{"mode":"immediate"}"#.to_vec(),
+                br#"{"mode":"scheduled"}"#.to_vec(),
                 &reference.0,
             )
             .await?;
