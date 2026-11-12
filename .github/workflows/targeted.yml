@@ -6,7 +6,7 @@ name: targeted
 # Exit 3 = no test matched (also what `--no-run` / `-- --list` give, by design); exit 2 = bad input or a ref older than
 # the setup action.
 #   gh workflow run targeted.yml -f ref=red/40a-g07 -f cargo_args="-p humaux-adapters --test note_put g07"
-# regen_docs=true runs no tests: it renders `cargo xtask dep-map --write` and uploads the patch as artifact dep-map-regen,
+# regen_docs=true runs no tests: it resolves Cargo.lock, renders `cargo xtask dep-map --write` and uploads the patch as artifact dep-map-regen,
 # so a card fixes dep-map drift before its first full CI round (T-CI-2). Dispatch with the card branch as the workflow ref
 # (`--ref`): the definition comes from that ref.
 #   gh workflow run targeted.yml --ref <branch> -f ref=<branch> -f regen_docs=true -f cargo_args=""
@@ -151,9 +151,9 @@ jobs:
         shell: bash
         run: |
           cargo xtask dep-map --write
-          git add -A -- docs/architecture deploy/env
-          git diff --cached --binary -- docs/architecture deploy/env > "$RUNNER_TEMP/dep-map-regen.patch" || true
-          git diff --cached --stat -- docs/architecture deploy/env
+          git add -A -- Cargo.lock docs/architecture deploy/env
+          git diff --cached --binary -- Cargo.lock docs/architecture deploy/env > "$RUNNER_TEMP/dep-map-regen.patch" || true
+          git diff --cached --stat -- Cargo.lock docs/architecture deploy/env
           if [ -s "$RUNNER_TEMP/dep-map-regen.patch" ]; then echo "REGEN: patch written"; else echo "REGEN: no drift"; fi
 
       - name: upload the dep-map regen patch
