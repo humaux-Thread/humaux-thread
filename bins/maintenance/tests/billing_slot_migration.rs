@@ -52,7 +52,10 @@ fn fresh_and_populated_0306_upgrade() {
             db.client()
                 .execute(
                     "INSERT INTO control.plans(plan_id,plan_key) VALUES ($1,$2)",
-                    &[&plan, &format!("slot_{}", tenant.simple())],
+                    &[
+                        &plan,
+                        &format!("slot_{}", &tenant.simple().to_string()[..26]),
+                    ],
                 )
                 .unwrap();
             db.client().execute("INSERT INTO control.plan_versions(plan_version_id,plan_id,version,price_cents,billing_interval,entitlement_template,lease_block) VALUES ($1,$2,1,0,'month','{}',1)", &[&version,&plan]).unwrap();

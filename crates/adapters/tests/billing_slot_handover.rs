@@ -68,7 +68,10 @@ fn seed(h: &mut Handle, state: &str) -> (TenantId, Uuid, Uuid, Uuid) {
     h.owner
         .execute(
             "INSERT INTO control.plans(plan_id,plan_key) VALUES ($1,$2)",
-            &[&plan, &format!("slot_{}", tenant.simple())],
+            &[
+                &plan,
+                &format!("slot_{}", &tenant.simple().to_string()[..26]),
+            ],
         )
         .unwrap();
     for (id, version, template) in [
