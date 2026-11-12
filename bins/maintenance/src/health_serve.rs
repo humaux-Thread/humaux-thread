@@ -1,9 +1,9 @@
 //! `maintenance::health_serve` — `humaux-maintenance health serve`, the one resident owner of the §41.2 SQL-derived
 //!   health gauges: a periodic `ops.health_snapshot` sampler plus the loopback `/metrics` + `/status` listener
 //!   (ADR-0061 D-D process side, D-B).
-//! Depends-on: crates=[humaux-adapters, humaux-telemetry, serde_json, time, tokio];
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-telemetry, serde_json, time, tokio];
 //!   services=[PostgreSQL(role_maintenance) x=[ops.health_snapshot]]; env=[
-//!   HUMAUX_MAINTENANCE_HEALTH_SAMPLE_SECONDS, HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR, HUMAUX_MAINTENANCE_PG_DSN]; modules=[adapters::disclosure, adapters::health, adapters::postgres,
+//!   HUMAUX_MAINTENANCE_HEALTH_SAMPLE_SECONDS, HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR, HUMAUX_MAINTENANCE_PG_DSN]; modules=[adapters::disclosure, adapters::health, adapters::postgres, domain::error,
 //!   telemetry::health, telemetry::host, telemetry::metrics, maintenance::main, maintenance::resident]
 //! Called-by: [maintenance::main]
 //! Invariants: [a scrape never runs SQL, it renders the last publish; a failed or stale (> 2 × interval) sample

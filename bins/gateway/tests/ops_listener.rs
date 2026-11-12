@@ -3,7 +3,7 @@
 //!   retrieval socket and on a PostgreSQL that refuses connections, the drain window, and no secret in `/status`.
 //! Depends-on: crates=[humaux-testkit, postgres, serde_json, uuid]; services=[PostgreSQL(owner),
 //!   HTTP(loopback), UDS(serve), subprocess(humaux-gateway), subprocess(kill)];
-//!   env=[CARGO_BIN_EXE_humaux-gateway, HUMAUX_GATEWAY_METRICS_ADDR, HUMAUX_GATEWAY_PG_DSN, HUMAUX_TEST_PG_DSN,
+//!   env=[CARGO_BIN_EXE_humaux-gateway, HUMAUX_GATEWAY_METRICS_ADDR, HUMAUX_GATEWAY_PG_DSN, HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS, HUMAUX_TEST_PG_DSN,
 //!   HUMAUX_TEST_QDRANT_PORT]; modules=[gateway::bootstrap, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [every listener port is taken free at run time on 127.0.0.1 and every socket is the test's own; the
