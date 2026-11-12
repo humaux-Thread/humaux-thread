@@ -4002,6 +4002,7 @@ modules:
 - `maintenance::retention`
 - `maintenance::rls_check`
 - `maintenance::roles`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::partitions`
 - `maintenance::tests::retention`
@@ -6341,6 +6342,7 @@ modules:
 - `gateway::tests::singleton`
 - `maintenance::rls_check`
 - `maintenance::switch_visible`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::onboarding`
 - `maintenance::tests::reasoning_routes`
 - `maintenance::tests::roles_hygiene`
