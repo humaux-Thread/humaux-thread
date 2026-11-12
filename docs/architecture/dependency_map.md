@@ -12774,6 +12774,7 @@ executed by:
 - `admin::ops_status`
 - `admin::tests::probes`
 - `billing-worker::fake_creem`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::process`
 - `consolidation-worker::main`
@@ -16394,6 +16395,7 @@ modules naming it:
 - `billing-worker::normalize`
 - `billing-worker::process`
 - `billing-worker::signature`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::normalization`
 - `billing-worker::tests::process`
@@ -16408,6 +16410,7 @@ modules naming it:
 - `billing-worker::fake_creem`
 - `billing-worker::normalize`
 - `billing-worker::process`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::normalization`
 - `billing-worker::tests::process`
@@ -16446,6 +16449,7 @@ why: provider-neutral billing port (§71.2)
 modules naming it:
 - `billing-worker::creem`
 - `billing-worker::process`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `tests`
 
@@ -16455,6 +16459,7 @@ why: purpose-bound transport and credential sources (§71.2)
 modules naming it:
 - `billing-worker::creem`
 - `billing-worker::fake_creem`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::process`
 - `tests`
@@ -16493,6 +16498,7 @@ why: configured plan version and opaque tenant IDs (§78.2)
 
 modules naming it:
 - `billing-worker::process`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::process`
 - `billing-worker::tests::signature`
@@ -16517,6 +16523,7 @@ why: runtime-only random HMAC test keys (§79.4)
 
 modules naming it:
 - `billing-worker::process`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::process`
 - `billing-worker::tests::signature`
@@ -16527,6 +16534,7 @@ why: test-only loopback Creem routes (§79.4)
 
 modules naming it:
 - `billing-worker::fake_creem`
+- `billing-worker::tests::cancel`
 - `tests`
 
 ### humaux-billing-worker → `tokio` (dev)
@@ -16534,6 +16542,7 @@ why: test HTTP double lifecycle (§79.4)
 
 modules naming it:
 - `billing-worker::fake_creem`
+- `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::process`
 - `tests`
@@ -18202,6 +18211,13 @@ default run:
 - PostgreSQL
 - UDS
 - subprocess
+
+### `bins/billing-worker/tests/cancel.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
 
 ### `bins/billing-worker/tests/fetch.rs`
 db-bound (default run): no
