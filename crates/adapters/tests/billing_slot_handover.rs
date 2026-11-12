@@ -329,7 +329,12 @@ fn acl_scope_and_lasting_reversal() {
             )
             .unwrap()
             .get::<_, bool>(0));
-        for scoped in [None, Some(Uuid::new_v4()), Some(Uuid::nil())] {
+        for (scoped, requested) in [
+            (None, tenant),
+            (Some(Uuid::new_v4()), tenant),
+            (Some(Uuid::nil()), tenant),
+            (Some(Uuid::nil()), TenantId(Uuid::nil())),
+        ] {
             for handover in [false, true] {
                 h.rt.block_on(async {
                     let mut tx = repo::begin_processor(&h.pool).await.unwrap();
@@ -343,7 +348,7 @@ fn acl_scope_and_lasting_reversal() {
                     let result = if handover {
                         repo::handover_subscription_in_txn(
                             &mut tx,
-                            tenant,
+                            requested,
                             &event(),
                             old,
                             SubscriptionState::PastDue,
@@ -356,7 +361,7 @@ fn acl_scope_and_lasting_reversal() {
                     } else {
                         repo::prepare_slot_in_txn(
                             &mut tx,
-                            tenant,
+                            requested,
                             &event(),
                             &new.reference,
                             [new.current_period_start, new.current_period_end],
@@ -367,7 +372,8 @@ fn acl_scope_and_lasting_reversal() {
                     assert_eq!(
                         result,
                         Err(ErrorCode::Forbidden),
-                        "scope {scoped:?}, handover={handover}"
+                        "scope {scoped:?}, requested {:?}, handover={handover}",
+                        requested.0
                     );
                     tx.rollback().await.unwrap();
                 });
