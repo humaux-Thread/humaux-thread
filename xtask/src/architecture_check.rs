@@ -14553,6 +14553,52 @@ runs:
         assert!(scan_outcome_fallback_violations("f.rs", src).is_empty());
     }
 
+    // M24-AST-01: syntax-valid Rust inputs; expected diagnostics are §53.3 rule1
+    // path:line identities, not just a nonzero aggregate hit count.
+    #[test]
+    fn rule1_ast_phase1_string_brace_does_not_hide_real_fallback() {
+        let src = r#"fn pick(x: Option<i32>) -> Outcome<i32> {
+    let _label = "}";
+    Outcome::Decided(x.unwrap_or_default())
+}
+"#;
+        assert_eq!(
+            scan_outcome_fallback_violations("brace.rs", src),
+            vec!["brace.rs:3"],
+            "§53.3 rule1: literal brace must not truncate the function body"
+        );
+    }
+
+    #[test]
+    fn rule1_ast_phase1_whitespace_does_not_hide_real_fallback() {
+        let src = r#"fn pick(x: Option<i32>) -> Outcome<i32> {
+    let value = x.unwrap_or_default
+        ( );
+    Outcome::Decided(value)
+}
+"#;
+        assert_eq!(
+            scan_outcome_fallback_violations("whitespace.rs", src),
+            vec!["whitespace.rs:2"],
+            "§53.3 rule1: whitespace preserves the real method call"
+        );
+    }
+
+    #[test]
+    fn rule1_ast_phase1_prose_is_not_a_fallback_call() {
+        let src = r#"fn pick() -> Outcome<i32> {
+    // unwrap_or_default() and Ok(None) are prose here.
+    let _label = "unwrap_or_default() / Ok(None)";
+    Outcome::Decided(1)
+}
+"#;
+        assert_eq!(
+            scan_outcome_fallback_violations("prose.rs", src),
+            Vec::<String>::new(),
+            "§53.3 rule1: comments and strings are not fallback calls"
+        );
+    }
+
     #[test]
     fn rule1_real_repo_source_is_clean() {
         // §80.1 准入条件的另一半：真实代码今天必须是绿的，不是靠样本硬凑出来的绿。
