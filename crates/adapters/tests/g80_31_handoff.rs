@@ -1537,11 +1537,13 @@ fn g8031_observe(f: &mut Fixture, phase: &str) -> (String, String) {
     let mut tx = f.admin.transaction().expect("observation transaction");
     tx.batch_execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .expect("RR observation");
-    let row = tx.query_one(
-        "SELECT pg_current_snapshot()::text, pg_backend_pid(), \
+    let row = tx
+        .query_one(
+            "SELECT pg_current_snapshot()::text, pg_backend_pid(), \
          current_setting('server_version'), pg_current_xact_id_if_assigned()::text",
-        &[],
-    ).expect("raw snapshot observation");
+            &[],
+        )
+        .expect("raw snapshot observation");
     let token: String = row.get(0);
     let pid: i32 = row.get(1);
     let version: String = row.get(2);
@@ -1556,7 +1558,9 @@ fn g8031_observe(f: &mut Fixture, phase: &str) -> (String, String) {
          )::text)",
         &[&f.tenant_id],
     ).expect("fixture digest").get(0);
-    eprintln!("G8031 phase={phase} raw={token} pid={pid} version={version} xid={xid:?} fixture_md5={digest}");
+    eprintln!(
+        "G8031 phase={phase} raw={token} pid={pid} version={version} xid={xid:?} fixture_md5={digest}"
+    );
     tx.commit().expect("observation commit acknowledgement");
     (token, digest)
 }
@@ -1585,9 +1589,21 @@ fn g8031_mechanism_arm(inject: bool, phase: &str) {
         tx.commit().expect("injected commit acknowledgement");
     }
     let after = g8031_observe(&mut f, &format!("{phase}/after"));
-    assert_eq!(before.1, after.1, "controlled XID must not change fixture content");
-    // RED_REF_WITNESS: the independent red ref keeps this exact original precondition.
-    assert_eq!(before.0, after.0, "G8031 original token precondition: {phase}");
+    assert_eq!(
+        before.1, after.1,
+        "controlled XID must not change fixture content"
+    );
+    if inject {
+        assert_ne!(
+            before.0, after.0,
+            "controlled completed XID candidate falsified"
+        );
+    } else {
+        assert_eq!(
+            before.0, after.0,
+            "G8031 original token precondition: {phase}"
+        );
+    }
 }
 
 #[test]
