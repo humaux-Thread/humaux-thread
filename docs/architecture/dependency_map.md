@@ -4735,6 +4735,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
 
+#### `adapters::egress_policy`
+- reads `control.egress_policies`
+- service `PostgreSQL(role_retrieval_worker)`
+
 #### `adapters::evidence_repo`
 - writes `private.evidence_objects`
 - env `CARGO_MANIFEST_DIR`
@@ -5136,6 +5140,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.retrieval_provider_budget_allocations`
 - reads `ops.retrieval_provider_budget_reservations`
 - reads `private.retrieval_query_sources`
+- writes `control.egress_policies`
 - writes `control.memberships`
 - writes `control.private_reasoning_domains`
 - writes `control.retrieval_provider_admission_limits`
@@ -5842,6 +5847,16 @@ written by:
 - (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::forget_repo`
 - (no process): `gateway::tests::mcp_forget`
+
+executed by:
+
+### `control.egress_policies`
+read by:
+- process(humaux-retrieval-worker): `adapters::egress_policy`
+
+written by:
+- (no process): `retrieval-provider::tests::dashscope_live_smoke`
+- process(humaux-retrieval-worker): `retrieval-provider::adapters`
 
 executed by:
 
@@ -13376,6 +13391,7 @@ executed by:
 - `public-worker::main`
 
 ### `PostgreSQL(role_retrieval_worker)`
+- `adapters::egress_policy`
 - `adapters::maintenance_repo`
 - `adapters::postgres`
 - `adapters::private_projection_registry`
@@ -13674,6 +13690,7 @@ modules naming it:
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
+- `adapters::egress_policy`
 - `adapters::email::outbox`
 - `adapters::entitlement_repo`
 - `adapters::evidence_repo`
@@ -13832,6 +13849,7 @@ modules naming it:
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
+- `adapters::egress_policy`
 - `adapters::entitlement_repo`
 - `adapters::evidence_repo`
 - `adapters::exact_census`
