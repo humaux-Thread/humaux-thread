@@ -159,6 +159,57 @@ fn assert_failed_application_rolls_back(
     assert_eq!((counts.get::<_, i64>(0), counts.get::<_, i64>(1)), (0, 0));
 }
 
+fn assert_projector_failure_rolls_back(
+    h: &mut Handle,
+    tenant: TenantId,
+    old: Uuid,
+    paid: Uuid,
+    free: Uuid,
+    new: &ProviderSubscription,
+    event: &VerifiedBillingEvent,
+) {
+    // Force the projector's scope guard to fail after a successful handover, then roll back.
+    h.rt.block_on(async {
+        let mut tx = repo::begin_processor(&h.pool).await.unwrap();
+        repo::scope_tenant(&mut tx, tenant).await.unwrap();
+        assert_eq!(
+            repo::handover_subscription_in_txn(
+                &mut tx,
+                tenant,
+                event,
+                old,
+                SubscriptionState::PastDue,
+                new,
+                paid,
+                free
+            )
+            .await,
+            Ok(true)
+        );
+        sqlx::query("SELECT set_config('humaux.tenant_id',$1,true)")
+            .bind(Uuid::new_v4().to_string())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            entitlement_repo::recompute_in_txn(&mut tx, tenant).await,
+            Err(ErrorCode::Forbidden)
+        );
+        tx.rollback().await.unwrap();
+    });
+    let unchanged = h.owner.query_one("SELECT (SELECT state FROM control.subscriptions WHERE subscription_id=$1), (SELECT count(*) FROM control.subscription_events), (SELECT count(*) FROM control.entitlement_grants WHERE revoked_at IS NOT NULL), (SELECT count(*) FROM control.entitlement_snapshots)", &[&old]).unwrap();
+    assert_eq!(
+        (
+            unchanged.get::<_, String>(0),
+            unchanged.get::<_, i64>(1),
+            unchanged.get::<_, i64>(2),
+            unchanged.get::<_, i64>(3)
+        ),
+        ("PAST_DUE".into(), 0, 0, 0),
+        "projector failure rolls back every effect"
+    );
+}
+
 #[test]
 fn atomic_handover_replay_and_rollback() {
     run_db_fixture::<Fixture, _>("atomic_handover_replay_and_rollback", |mut h| {
@@ -166,46 +217,7 @@ fn atomic_handover_replay_and_rollback() {
         let new = subscription();
         let event = event();
         assert_failed_application_rolls_back(&mut h, tenant, old, free, &new, &event);
-        // Force the projector's scope guard to fail after a successful handover, then roll back.
-        h.rt.block_on(async {
-            let mut tx = repo::begin_processor(&h.pool).await.unwrap();
-            repo::scope_tenant(&mut tx, tenant).await.unwrap();
-            assert_eq!(
-                repo::handover_subscription_in_txn(
-                    &mut tx,
-                    tenant,
-                    &event,
-                    old,
-                    SubscriptionState::PastDue,
-                    &new,
-                    paid,
-                    free
-                )
-                .await,
-                Ok(true)
-            );
-            sqlx::query("SELECT set_config('humaux.tenant_id',$1,true)")
-                .bind(Uuid::new_v4().to_string())
-                .execute(&mut *tx)
-                .await
-                .unwrap();
-            assert_eq!(
-                entitlement_repo::recompute_in_txn(&mut tx, tenant).await,
-                Err(ErrorCode::Forbidden)
-            );
-            tx.rollback().await.unwrap();
-        });
-        let unchanged = h.owner.query_one("SELECT (SELECT state FROM control.subscriptions WHERE subscription_id=$1), (SELECT count(*) FROM control.subscription_events), (SELECT count(*) FROM control.entitlement_grants WHERE revoked_at IS NOT NULL), (SELECT count(*) FROM control.entitlement_snapshots)", &[&old]).unwrap();
-        assert_eq!(
-            (
-                unchanged.get::<_, String>(0),
-                unchanged.get::<_, i64>(1),
-                unchanged.get::<_, i64>(2),
-                unchanged.get::<_, i64>(3)
-            ),
-            ("PAST_DUE".into(), 0, 0, 0),
-            "projector failure rolls back every effect"
-        );
+        assert_projector_failure_rolls_back(&mut h, tenant, old, paid, free, &new, &event);
         h.rt.block_on(async {
             let mut tx = repo::begin_processor(&h.pool).await.unwrap();
             repo::scope_tenant(&mut tx, tenant).await.unwrap();
