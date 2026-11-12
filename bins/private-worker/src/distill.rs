@@ -518,9 +518,12 @@ struct Settled {
 
 impl Settled {
     fn record_origin_error(&mut self, error: &DistillError) {
-        self.error = Some(match error {
-            DistillError::Config(code) => *code,
-            other => stage_class(other.class()),
+        // A refused settlement fence already identifies lease loss more precisely.
+        self.error = self.error.or_else(|| {
+            Some(match error {
+                DistillError::Config(code) => *code,
+                other => stage_class(other.class()),
+            })
         });
     }
 
@@ -2056,16 +2059,22 @@ mod stage_witness {
     use super::*;
     #[test]
     fn settlement_preserves_lease_loss_over_origin_class() {
-        for error in [DistillError::StaleInput, DistillError::Config(ErrorCode::Internal)] {
+        for error in [
+            DistillError::StaleInput,
+            DistillError::Config(ErrorCode::Internal),
+        ] {
             let mut lost = Settled::new(JobOutcome::LeaseLost, None);
             lost.record_origin_error(&error);
             assert_eq!(lost.error, Some(ErrorCode::Conflict));
             let mut done = Settled::new(JobOutcome::Done, None);
             done.record_origin_error(&error);
-            assert_eq!(done.error, Some(match error {
-                DistillError::Config(code) => code,
-                other => stage_class(other.class()),
-            }));
+            assert_eq!(
+                done.error,
+                Some(match error {
+                    DistillError::Config(code) => code,
+                    other => stage_class(other.class()),
+                })
+            );
         }
     }
 
