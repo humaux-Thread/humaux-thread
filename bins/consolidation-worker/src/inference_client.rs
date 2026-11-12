@@ -1,9 +1,9 @@
 //! `consolidation-worker::inference_client` — §11.8 `UdsInferenceClient` — `humaux-consolidation-worker`'s
 //!   [`PrivateReasoningPort`] implementation: registers a call row on [`ConsolidationDbPool`]
 //!   (`role_consolidation_worker`), then RPCs `humaux-private-worker` over the ADR-0012 Unix domain socket.
-//! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-application, humaux-infra-cell, serde, serde_json, sha2, tokio, uuid];
+//! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell, serde, serde_json, sha2, tokio, uuid];
 //!   services=[UDS(private-worker)]; env=[]; modules=[adapters::postgres, adapters::private_inference_rpc,
-//!   application::consolidate, infra-cell::uds]
+//!   application::consolidate, domain::error, infra-cell::uds]
 //! Called-by: [consolidation-worker::main, tests]
 //! Invariants: [one fresh UDS connection per call to the private worker's inference socket; a dial/IO/parse failure
 //!   is TRANSPORT/INVALID_RESPONSE mapped to PrivateReasoningError, never a local fallback inference]
@@ -28,6 +28,7 @@ use humaux_application::consolidate::{
     PrivateReasoningError, PrivateReasoningPort, PrivateReasoningResult, ProviderTraceRef,
     SealedPrivateReasoningRequest,
 };
+use humaux_domain::error::ErrorCode;
 use humaux_infra_cell::uds::{UdsError, connect_verified};
 
 const SCHEMA_VERSION: u16 = 1;
@@ -181,6 +182,23 @@ fn parse_http_response(raw: &[u8]) -> Result<PrivateInferenceRpcEnvelope, String
     serde_json::from_slice(body).map_err(|_| "INVALID_RESPONSE".to_owned())
 }
 
+fn rpc_failure(reason: &str) -> PrivateReasoningError {
+    let code = match reason {
+        "INVALID_RESPONSE" | "RESPONSE_DIGEST_MISMATCH" => ErrorCode::ProviderPermanent,
+        reason if reason.starts_with("TRANSPORT") => ErrorCode::ProviderTransient,
+        _ => ErrorCode::Internal,
+    };
+    PrivateReasoningError::classified(code.as_str())
+}
+
+fn rpc_reasoning_failure(reason: &str) -> PrivateReasoningError {
+    let label = reason.split(": ").next().unwrap_or(reason);
+    let code = ErrorCode::ALL
+        .into_iter()
+        .find(|code| code.as_str() == label)
+        .unwrap_or(ErrorCode::Internal);
+    PrivateReasoningError::classified(code.as_str())
+}
 #[async_trait::async_trait]
 impl PrivateReasoningPort for UdsInferenceClient<'_> {
     async fn infer(
@@ -202,7 +220,9 @@ impl PrivateReasoningPort for UdsInferenceClient<'_> {
                 ttl: self.call_ttl,
             })
             .await
-            .map_err(|error| PrivateReasoningError::new(error.to_string()))?;
+            .map_err(|_| {
+                PrivateReasoningError::classified(ErrorCode::DependencyUnavailable.as_str())
+            })?;
 
         let wire = PrivateInferenceRpcRequest {
             schema_version: SCHEMA_VERSION,
@@ -212,15 +232,13 @@ impl PrivateReasoningPort for UdsInferenceClient<'_> {
         let envelope = match self.dial(&wire).await {
             Ok(envelope) if envelope.call_id == call_id => envelope,
             Ok(_) => {
-                return Err(PrivateReasoningError::new("INVALID_RESPONSE".to_owned()));
+                return Err(rpc_failure("INVALID_RESPONSE"));
             }
-            Err(reason) => return Err(PrivateReasoningError::new(reason)),
+            Err(reason) => return Err(rpc_failure(&reason)),
         };
         if envelope.outcome != "COMPLETED" {
-            return Err(PrivateReasoningError::new(
-                envelope
-                    .failure_message
-                    .unwrap_or_else(|| "UNKNOWN".to_owned()),
+            return Err(rpc_reasoning_failure(
+                envelope.failure_message.as_deref().unwrap_or("UNKNOWN"),
             ));
         }
         let (Some(output_hex), Some(sha_hex), Some(trace), Some(model_call_id)) = (
@@ -229,24 +247,20 @@ impl PrivateReasoningPort for UdsInferenceClient<'_> {
             envelope.provider_trace,
             envelope.model_call_id,
         ) else {
-            return Err(PrivateReasoningError::new("INVALID_RESPONSE".to_owned()));
+            return Err(rpc_failure("INVALID_RESPONSE"));
         };
-        let output_bytes =
-            hex::decode(&output_hex).map_err(|_| PrivateReasoningError::new("INVALID_RESPONSE"))?;
-        let sha_bytes =
-            hex::decode(&sha_hex).map_err(|_| PrivateReasoningError::new("INVALID_RESPONSE"))?;
+        let output_bytes = hex::decode(&output_hex).map_err(|_| rpc_failure("INVALID_RESPONSE"))?;
+        let sha_bytes = hex::decode(&sha_hex).map_err(|_| rpc_failure("INVALID_RESPONSE"))?;
         let output_sha256: [u8; 32] = sha_bytes
             .try_into()
-            .map_err(|_| PrivateReasoningError::new("INVALID_RESPONSE"))?;
+            .map_err(|_| rpc_failure("INVALID_RESPONSE"))?;
         // §11.8: proves the wire body's `output_bytes` is the actual referent of
         // `output_sha256`, not a mismatched pair a compromised/buggy peer sent — the same
         // integrity discipline `retrieval_embedding_rpc`'s `query_sha256` check applies at the
         // registration boundary, applied here at the response boundary instead.
         let computed: [u8; 32] = Sha256::digest(&output_bytes).into();
         if computed != output_sha256 {
-            return Err(PrivateReasoningError::new(
-                "RESPONSE_DIGEST_MISMATCH".to_owned(),
-            ));
+            return Err(rpc_failure("RESPONSE_DIGEST_MISMATCH"));
         }
         Ok(PrivateReasoningResult {
             output_bytes,
@@ -267,6 +281,18 @@ mod tests {
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
 
+    #[test]
+    fn rpc_preserves_reasoning_classes() {
+        use super::rpc_reasoning_failure as decode;
+        use humaux_adapters::private_inference_rpc::reasoning_failure as encode;
+        use humaux_application::consolidate::PrivateReasoningError as Error;
+        use humaux_domain::error::ErrorCode;
+        for code in ErrorCode::ALL {
+            let wire = encode(&Error::classified(code.as_str()));
+            assert_eq!(decode(&wire).class(), Some(code.as_str()));
+        }
+        assert_eq!(decode("unknown: redacted").class(), Some("INTERNAL"));
+    }
     /// ADR-0066 D-L: a socket served by any uid but the registered private-worker uid is refused before a byte is
     /// written. Fault: dial without the peer-uid check ⇒ the request is written ⇒ red.
     #[tokio::test]
