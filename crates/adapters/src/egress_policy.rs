@@ -16,6 +16,7 @@ pub async fn authorize_retrieval(
     pool: &RetrievalWorkerDbPool,
     tenant_id: TenantId,
 ) -> Result<(), ErrorCode> {
+    // dep: PostgreSQL(role_retrieval_worker) — tenant-scoped policy read.
     let mut txn = pool
         .pool()
         .begin()
