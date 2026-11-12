@@ -778,3 +778,26 @@ fn cancellation_ends_third_version_onboarding_grants() {
         },
     );
 }
+
+/// A paid subscription's pre-0305 PLAN pointers survive a late canceled sibling event.
+#[test]
+fn legacy_paid_grants_survive_late_canceled_sibling() {
+    run_db_fixture::<Fixture, _>("legacy_paid_grants_survive_late_canceled_sibling", |mut h| {
+        let tenant = h.tenant;
+        deliver(&mut h, "legacy_old", "canceled", tenant);
+        assert!(process(&h, "canceled"));
+        let mut paid_sub = fetched_subscription("active", "prod_fixture");
+        paid_sub["id"] = json!("sub_paid");
+        deliver(&mut h, "legacy_paid", "active", tenant);
+        h.admin.execute("UPDATE control.billing_inbox SET object_id='sub_paid',payload=jsonb_set(payload,'{object,id}',to_jsonb('sub_paid'::text)) WHERE event_id='legacy_paid'", &[]).unwrap();
+        assert_eq!(process_fetched(&h, paid_sub, None), Ok(true));
+        let plan = h.config.plans["prod_fixture"];
+        assert_eq!(h.admin.execute("UPDATE control.entitlement_grants SET source_ref_id=$1 WHERE tenant_id=$2 AND source='PLAN' AND revoked_at IS NULL", &[&plan, &tenant]).unwrap(), 2);
+        let grants: Value = h.admin.query_one("SELECT jsonb_agg(grant_id ORDER BY grant_id) FROM control.entitlement_grants WHERE tenant_id=$1 AND source_ref_id=$2 AND revoked_at IS NULL", &[&tenant, &plan]).unwrap().get(0);
+        deliver(&mut h, "legacy_late", "canceled", tenant);
+        assert!(process(&h, "canceled"));
+        let after: Value = h.admin.query_one("SELECT coalesce(jsonb_agg(grant_id ORDER BY grant_id),'[]'::jsonb) FROM control.entitlement_grants WHERE tenant_id=$1 AND source_ref_id=$2 AND revoked_at IS NULL", &[&tenant, &plan]).unwrap().get(0);
+        assert_eq!(after, grants, "paid legacy grant identities survive");
+        assert_eq!(snapshot(&mut h), paid(), "paid snapshot survives");
+    });
+}
