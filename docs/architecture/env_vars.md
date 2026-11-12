@@ -2010,12 +2010,14 @@ processes:
 - process(humaux-maintenance)
 
 modules:
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::tests::code_rls`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::mandatory_context_lane`
 - `adapters::tests::provider_budget`
 - `adapters::tests::quota_and_rate`
 - `adapters::tests::request_guard`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::operation_receipt_fixture`
 - `gateway::bootstrap`
 - `gateway::tests::mcp_gateway`
@@ -6220,6 +6222,7 @@ processes:
 
 modules:
 - `adapters::consolidate_repo`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::postgres`
 - `adapters::stream_repo`
 - `adapters::tests::auth_contract`
@@ -6319,6 +6322,7 @@ modules:
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::support::project_tree_fixture`
 - `adapters::tests::support::throwaway_db`

@@ -6498,7 +6498,6 @@ written by:
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
-- (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
@@ -6532,6 +6531,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::support::private_route`
 - (no process): `adapters::tests::task_grant_contract`
@@ -7258,7 +7258,6 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::forget_repo`
-- (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::jobs_claim`
@@ -7307,6 +7306,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::support::private_route`
@@ -8334,7 +8334,6 @@ written by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
-- (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::jobs_claim`
 - (no process): `adapters::tests::maintenance_doors`
@@ -8355,6 +8354,7 @@ written by:
 - (no process): `adapters::tests::stream_repo`
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `admin::tests::probes`
@@ -9029,11 +9029,12 @@ executed by:
 ### `ops.selection_snapshot_items`
 read by:
 - (no process): `adapters::tests::enumerate_scale`
+- (no process): `adapters::tests::g80_31_handoff`
 
 written by:
-- (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::selection_snapshot`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - process(cargo-xtask): `adapters::selection_repo`
 - process(cargo-xtask): `xtask::e2e_seed`
@@ -9053,6 +9054,7 @@ written by:
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::selection_snapshot`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `maintenance::tests::serve`
@@ -9341,6 +9343,7 @@ written by:
 - (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::task_grant_contract`
 - (no process): `gateway::tests::mcp_gateway`
@@ -9722,7 +9725,6 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::freshness`
-- (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -9749,6 +9751,7 @@ written by:
 - (no process): `adapters::tests::stream_repo`
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
@@ -9950,6 +9953,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::support::private_route`
 - (no process): `adapters::tests::task_grant_contract`
@@ -10459,6 +10463,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::task_grant_contract`
 - (no process): `adapters::tests::visible_index_count`
@@ -10719,6 +10724,7 @@ written by:
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
 - (no process): `adapters::tests::support::contribution_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::task_grant_contract`
 - (no process): `adapters::tests::visible_index_count`
@@ -11818,6 +11824,7 @@ written by:
 - (no process): `adapters::tests::serving_repo`
 - (no process): `adapters::tests::stream_repo`
 - (no process): `adapters::tests::support::a2_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `admin::tests::probes`
@@ -11970,6 +11977,7 @@ written by:
 - (no process): `adapters::tests::stream_repo`
 - (no process): `adapters::tests::support::a2_fixture`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
+- (no process): `adapters::tests::support::g8031_snapshot_fixture`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `adapters::tests::visible_index_count`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
@@ -12959,6 +12967,7 @@ executed by:
 - `adapters::tests::quota_and_rate`
 - `adapters::tests::read_gate_closure`
 - `adapters::tests::support::continuity_0137_cleanup`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `contracts::mechanism_registry`
 - `domain::consolidate`
 - `domain::context`
@@ -12995,6 +13004,7 @@ executed by:
 - `xtask::serial_lane`
 
 ### `PostgreSQL(owner)`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::maintenance_repo`
 - `adapters::postgres`
 - `adapters::role_hygiene`
@@ -13055,6 +13065,7 @@ executed by:
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::support::private_route`
@@ -13140,6 +13151,7 @@ executed by:
 
 ### `PostgreSQL(role_gateway)`
 - `adapters::billing_repo`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::coord_task_repo`
 - `adapters::coord_tree_repo`
 - `adapters::grep_repo`
@@ -13222,6 +13234,7 @@ executed by:
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::support::project_tree_fixture`
@@ -13688,6 +13701,7 @@ modules naming it:
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::context_repo`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
 - `adapters::contribution_eligibility`
@@ -13779,7 +13793,6 @@ modules naming it:
 - `adapters::tests::forget_race`
 - `adapters::tests::forget_repo`
 - `adapters::tests::freshness`
-- `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::ingest_ticket_expiry`
 - `adapters::tests::jobs_claim`
@@ -13822,6 +13835,7 @@ modules naming it:
 - `adapters::tests::serving_repo`
 - `adapters::tests::stream_repo`
 - `adapters::tests::support::a2_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::switch_user_private`
@@ -14000,6 +14014,7 @@ modules naming it:
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::switch_user_private`
@@ -14023,6 +14038,7 @@ why: retrieval compiler/handoff types this adapter serves
 
 modules naming it:
 - `adapters::context_repo`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::continuity_read`
 - `adapters::exact_census`
 - `adapters::processing_status`
@@ -14356,6 +14372,7 @@ modules naming it:
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::continuity_0137_cleanup`
 - `adapters::tests::support::continuity_0137_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::visible_index_count`
@@ -14478,6 +14495,7 @@ modules naming it:
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
 - `adapters::contribution_reasoner`
@@ -14556,6 +14574,7 @@ modules naming it:
 - `adapters::tests::support::continuity_0137_cleanup`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::private_route`
 - `adapters::tests::support::project_tree_fixture`
 - `adapters::tests::visible_index_count`
@@ -14715,6 +14734,7 @@ why: blocking client for real-Postgres integration tests
 
 modules naming it:
 - `adapters::consolidate_repo`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::postgres`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::auth_contract`
@@ -14819,6 +14839,7 @@ modules naming it:
 - `adapters::tests::support::continuity_0137_cleanup`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::support::private_route`
@@ -14850,6 +14871,7 @@ modules naming it:
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
 - `adapters::contribution_reasoner`
@@ -14928,6 +14950,7 @@ modules naming it:
 - `adapters::tests::support::continuity_0137_cleanup`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::private_route`
 - `adapters::tests::support::project_tree_fixture`
 - `adapters::tests::visible_index_count`
@@ -14980,7 +15003,6 @@ modules naming it:
 - `adapters::tests::forget_race`
 - `adapters::tests::forget_repo`
 - `adapters::tests::freshness`
-- `adapters::tests::g80_31_handoff`
 - `adapters::tests::health_snapshot`
 - `adapters::tests::hot_path_indexes`
 - `adapters::tests::ingest_ticket_expiry`
@@ -15041,6 +15063,7 @@ modules naming it:
 - `adapters::tests::support::continuity_0137_cleanup`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::support::throwaway_db`
 - `adapters::tests::switch_user_private`
@@ -15061,6 +15084,7 @@ why: async runtime driving pool-connect fixtures
 
 modules naming it:
 - `adapters::byok`
+- `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::postgres`
 - `adapters::stream_repo`
 - `adapters::tests::billing_doors`
