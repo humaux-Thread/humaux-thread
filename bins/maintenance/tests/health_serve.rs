@@ -264,10 +264,46 @@ fn metrics_families_prints_fourteen_families_without_env() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
         text.lines().filter(|l| l.starts_with("# TYPE ")).count(),
-        14,
+        21,
         "{text}"
     );
     for family in FAMILIES.into_iter().chain(HOST_FAMILIES) {
         assert!(text.contains(&format!("# TYPE {family} ")), "{family}");
+    }
+}
+
+/// §39: actual health loop publishes the complete, closed two-stage set.
+#[test]
+fn health_stage_iteration_exports_exact_set() {
+    let Some(db) = db("health_stage_iteration_exports_exact_set") else {
+        return;
+    };
+    let (_serve, addr) = spawn(&db);
+    let (_, initial) = get(addr, "/metrics").expect("initial metrics");
+    let series = "stage_last_run_timestamp_seconds{stage=\"health_db_snapshot\"}";
+    let first = value(&initial, series).expect("initial sample");
+    let (_, body) = poll(addr, "/metrics", 5 * INTERVAL, |(_, body)| {
+        value(body, series).is_some_and(|t| t > first)
+    })
+    .expect("periodic sample");
+    assert!(
+        value(&body, series).is_some_and(|t| t > first),
+        "periodic sample missing"
+    );
+    let rows: Vec<_> = body
+        .lines()
+        .filter(|line| line.starts_with("stage_last_success_timestamp_seconds{"))
+        .collect();
+    let names = ["health_host_sampling", "health_db_snapshot"];
+    assert_eq!(rows.len(), 2, "closed stage set: {rows:?}");
+    for (row, name) in rows.iter().zip(names) {
+        let prefix = format!("stage_last_success_timestamp_seconds{{stage=\"{name}\"}}");
+        let value = row
+            .strip_prefix(&prefix)
+            .expect(name)
+            .trim()
+            .parse::<f64>()
+            .unwrap();
+        assert!(value > 0.0, "{name}: recording absent: {row}");
     }
 }

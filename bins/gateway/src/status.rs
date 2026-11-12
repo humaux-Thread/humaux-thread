@@ -35,6 +35,38 @@ use crate::retrieval_embedding_client::GatewayRetrievalEmbeddingClient;
 pub const READINESS_REFRESH_KEY: &str = "HUMAUX_GATEWAY_READINESS_REFRESH_SECONDS";
 /// §78.1 / ADR-0061 D-B: the loopback ops listener serving `/metrics` and `/status`.
 pub const METRICS_ADDR_KEY: &str = "HUMAUX_GATEWAY_METRICS_ADDR";
+pub(crate) const STAGES: [&str; 2] = ["gateway_singleton_heartbeat", "gateway_readiness_refresh"];
+
+async fn readiness_iteration(
+    work: impl std::future::Future<
+        Output = (ReadinessSnapshot, Option<humaux_domain::error::ErrorCode>),
+    >,
+) -> ReadinessSnapshot {
+    use humaux_telemetry::metrics::{stage_recorded, stage_started};
+    stage_started(STAGES[1], unix(SystemTime::now()) as f64);
+    let (next, rpc_error) = work.await;
+    let checks = [&next.pg, &next.retrieval_rpc, &next.qdrant];
+    let error = rpc_error.or_else(|| {
+        checks
+            .iter()
+            .any(|c| c.state == DepState::Fail)
+            .then_some(humaux_domain::error::ErrorCode::DependencyUnavailable)
+    });
+    stage_recorded(
+        STAGES[1],
+        unix(SystemTime::now()) as f64,
+        error,
+        [
+            checks
+                .iter()
+                .filter(|c| c.state != DepState::NotApplicable)
+                .count() as u64,
+            1,
+        ],
+    );
+    next
+}
+
 const SOCKET_KEY: &str = "HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH";
 
 /// One dependency's state (§57.1 three states).
@@ -187,6 +219,13 @@ pub struct ReadinessProbe {
 impl ReadinessProbe {
     /// Runs the three checks concurrently, each bounded by `deadline`.
     pub async fn check(&self, deadline: Duration) -> ReadinessSnapshot {
+        readiness_iteration(self.check_dependencies(deadline)).await
+    }
+
+    async fn check_dependencies(
+        &self,
+        deadline: Duration,
+    ) -> (ReadinessSnapshot, Option<humaux_domain::error::ErrorCode>) {
         let bounded = |name: &'static str| {
             move |r: Result<Result<(), String>, tokio::time::error::Elapsed>| {
                 r.unwrap_or_else(|_| {
@@ -201,7 +240,7 @@ impl ReadinessProbe {
                 .await
                 .map(|r| r.map_err(|e| format!("PostgreSQL as role_gateway ({e})")))
         };
-        let (pg, retrieval_rpc, qdrant) = match &self.semantic {
+        let (pg, retrieval_rpc, qdrant, rpc_error) = match &self.semantic {
             None => {
                 let na = || {
                     DepCheck::new(
@@ -209,32 +248,44 @@ impl ReadinessProbe {
                         Some(format!("{SOCKET_KEY} (semantic recall disabled)")),
                     )
                 };
-                (DepCheck::of(bounded("PostgreSQL")(pg.await)), na(), na())
+                (
+                    DepCheck::of(bounded("PostgreSQL")(pg.await)),
+                    na(),
+                    na(),
+                    None,
+                )
             }
             Some(deps) => {
                 let rpc = async {
                     // dep: UDS(retrieval-worker) — the readiness round trip over the recall socket
                     deps.rpc
-                        .ping(deadline)
+                        .ping_with_code(deadline)
                         .await
-                        .map_err(|reason| format!("{} ({reason})", deps.socket_path))
+                        .map_err(|(reason, code)| {
+                            (format!("{} ({reason})", deps.socket_path), code)
+                        })
                 };
                 let qdrant = tokio::time::timeout(deadline, qdrant_round_trip(deps, deadline));
                 let (pg, rpc, qdrant) = tokio::join!(pg, rpc, qdrant);
+                let rpc_error = rpc.as_ref().err().map(|(_, code)| *code);
                 (
                     DepCheck::of(bounded("PostgreSQL")(pg)),
-                    DepCheck::of(rpc),
+                    DepCheck::of(rpc.map_err(|(message, _)| message)),
                     DepCheck::of(bounded("the Qdrant cell resource")(qdrant)),
+                    rpc_error,
                 )
             }
         };
-        ReadinessSnapshot {
-            pg,
-            retrieval_rpc,
-            qdrant,
-            taken_at: SystemTime::now(),
-            taken: Instant::now(),
-        }
+        (
+            ReadinessSnapshot {
+                pg,
+                retrieval_rpc,
+                qdrant,
+                taken_at: SystemTime::now(),
+                taken: Instant::now(),
+            },
+            rpc_error,
+        )
     }
 }
 
@@ -367,6 +418,7 @@ pub fn render_metrics(guard: &GuardMetrics) -> String {
     humaux_telemetry::degrade::render(&mut out);
     humaux_retrieval::completeness::render_metrics(&mut out);
     guard.render(&mut out);
+    humaux_telemetry::metrics::render_stage_liveness(&mut out, &STAGES);
     out
 }
 
@@ -489,6 +541,13 @@ mod tests {
                 "cache_evictions_total",
                 "cache_bytes",
                 "cache_singleflight_waiters",
+                "stage_last_run_timestamp_seconds",
+                "stage_last_success_timestamp_seconds",
+                "stage_last_output_timestamp_seconds",
+                "stage_last_error_class",
+                "stage_processed_count",
+                "stage_output_count",
+                "stage_state",
             ]
         );
         for family in families {
