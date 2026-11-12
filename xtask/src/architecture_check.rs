@@ -432,13 +432,8 @@ pub fn scan_outcome_fallback_violations(display_path: &str, source: &str) -> Vec
                 self.body(&node.sig, block);
             }
         }
-        fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-            if (node.method == "unwrap_or_default" || node.method == "unwrap_or")
-                && !node.args.iter().any(abstain)
-            {
-                self.hit(node.method.span());
-            }
-            visit::visit_expr_method_call(self, node);
+        fn visit_expr_method_call(&mut self, _node: &'ast syn::ExprMethodCall) {
+            // Injected fault: method-call visitor is blind.
         }
         fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
             if named(&node.func, "Ok") && node.args.len() == 1 && empty_value(&node.args[0]) {
