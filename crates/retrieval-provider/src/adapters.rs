@@ -1808,6 +1808,7 @@ mod tests {
             let (provider, authorization, workspace_id) =
                 query_provider_and_authorization(&mut handle, transport.clone());
             let queries = [sealed_query_fixture("tenant isolation query")];
+            let (memory_ids, cards) = seeded_memory_cards(&mut handle, 1);
             for remove in [false, true] {
                 if remove {
                     handle
@@ -1822,6 +1823,12 @@ mod tests {
                 let result = handle
                     .rt
                     .block_on(provider.embed_queries(&context, 2, &queries));
+                let card_result = handle.rt.block_on(provider.embed_cards_for_memories(
+                    TenantId(handle.tenant_id),
+                    2,
+                    &cards,
+                    &memory_ids,
+                ));
                 let disclosures: i64 = handle
                     .admin
                     .query_one(
@@ -1833,6 +1840,10 @@ mod tests {
                 assert!(
                     matches!(result, Err(ErrorCode::Forbidden)),
                     "missing={remove} result={result:?}"
+                );
+                assert!(
+                    matches!(card_result, Err(ErrorCode::Forbidden)),
+                    "missing={remove} card_result={card_result:?}"
                 );
                 assert_eq!(
                     transport.calls.load(Ordering::SeqCst),
