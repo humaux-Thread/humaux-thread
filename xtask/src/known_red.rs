@@ -1,8 +1,8 @@
 //! `xtask::known_red` — `cargo xtask known-red`: the ledger of gates that are due but still red, every row owned by a module card and forced out when its item passes.
 //! Depends-on: crates=[toml]; services=[]; env=[CARGO_MANIFEST_DIR]; modules=[xtask::architecture_check, xtask::benchset_declaration, xtask::dod_check, xtask::phase]
-//! Called-by: [xtask::main]
+//! Called-by: [xtask::architecture_check, xtask::main]
 //! Invariants: [a failing item without a ledger row is red; a ledger row whose item no longer fails is red (the row must be deleted); a row without a module-card owner is red; --release turns every row without deferred_past_go_live red and lists every deferred row for owner sign-off; an unknown ledger section or key, and an unparsable --phase value, is rejected, never ignored]
-//! Spec: Baseline §57.1; §69; §80.1.1; §46
+//! Spec: Baseline §78.1; §57.1; §69; §80.1.1; §46
 //!
 //! §57.1 rule 2: `not_applicable` is only for an object that is not yet due, and it names the missing object. A
 //! due gate that is red is therefore a row in `xtask/known_red.toml` with the module card that fixes it, never an
@@ -13,7 +13,8 @@
 //! `benchset` (G80-16 verdicts per benchmark set, reused from `benchset_declaration`) and `due_items`
 //! (the §57.1 rule 3 list, judged against the `PHASE` file); `crate_boundary` (G-M01-3 violations from
 //! `architecture_check`, M01 D5) is the fourth. M01 cards add their sections to [`SECTIONS`] together with an
-//! evaluator. `lint_allows` is the fifth and is not a "due but red" item: it pins the exact `#[allow(...)]`
+//! evaluator. `magic_literals` uses the G-M01-11 evaluator and item ratchet (§78.1 / M01 D7).
+//! `lint_allows` is the fifth and is not a "due but red" item: it pins the exact `#[allow(...)]`
 //! count per §78.4 lint (M01 D6 / G-M01-8), and `cargo xtask architecture-check` is what compares the pin with
 //! the tree — this module reads the rows so a malformed baseline is red here too, and names each one in the log.
 
@@ -26,13 +27,29 @@ use crate::dod_check::GateStatus;
 const LEDGER_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/known_red.toml");
 /// Name used in messages (what a reader opens).
 const LEDGER_FILE: &str = "xtask/known_red.toml";
+/// §78.1 / M01 D7: remove resolved ids only; a replacement violation cannot inherit a removed row.
+const MAGIC_LITERAL_HASHES: [u64; 12] = [
+    0x3bc3_7190_80ec_3519,
+    0xc7d1_324c_9029_8475,
+    0xc7d1_2f4c_9029_7f5c,
+    0xc7d1_304c_9029_810f,
+    0xa978_1de5_a170_a81c,
+    0xea23_55cf_3a2e_10e4,
+    0x35ea_5cad_739d_d46c,
+    0x5473_7676_04e6_8342,
+    0x5aa6_f102_1019_630d,
+    0xcc11_e814_c651_51e3,
+    0x1f1d_faef_7b32_c70b,
+    0x26e6_c5a0_c236_8957,
+];
 /// Sections this build evaluates. A section nobody evaluates would never go red, so the parser rejects any
 /// other name instead of ignoring it.
-const SECTIONS: [&str; 5] = [
+const SECTIONS: [&str; 6] = [
     "dod",
     "benchset",
     "due_items",
     "crate_boundary",
+    "magic_literals",
     "lint_allows",
 ];
 /// The one baseline section: `[[lint_allows]]` rows are not item verdicts, so they have their own keys.
@@ -238,6 +255,13 @@ fn row_shape_reds(tag: &str, row: &Row, release: bool) -> Vec<String> {
     reds
 }
 
+/// §78.1: FNV-1a 64 pins ledger identities independently of Rust's randomized hashers.
+fn magic_id_hash(id: &str) -> u64 {
+    id.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
 /// D4 rules for one section. A row is forced out when its item stops failing (§80.1.1 shape), so a row for an
 /// item that passes, or is not yet due without a declared deferral, is red.
 fn judge(section: &str, items: &[Item], rows: &[Row], release: bool) -> Report {
@@ -254,6 +278,19 @@ fn judge(section: &str, items: &[Item], rows: &[Row], release: bool) -> Report {
         ledgered: rows.len(),
         ..Report::default()
     };
+    if section == "magic_literals" {
+        let hashes: BTreeSet<_> = rows.iter().map(|r| magic_id_hash(&r.id)).collect();
+        let pins = BTreeSet::from(MAGIC_LITERAL_HASHES);
+        let extra: Vec<_> = rows
+            .iter()
+            .filter(|r| !pins.contains(&magic_id_hash(&r.id)))
+            .map(|r| &r.id)
+            .collect();
+        let missing = &pins - &hashes;
+        if !extra.is_empty() || !missing.is_empty() {
+            rep.reds.push(format!("[magic_literals]: unpinned ids {extra:?}; missing hashes {missing:016x?}; delete resolved hashes (§78.1)"));
+        }
+    }
     for it in by_id.values() {
         match it.status {
             Status::Pass => rep.pass += 1,
@@ -518,6 +555,18 @@ fn boundary_items(violations: Vec<(String, String)>) -> Vec<Item> {
         .collect()
 }
 
+/// §78.1 / M01 D7: use the same strict parser and shrink-only judgment as `known-red`.
+pub fn magic_literal_reds(raw: &str, hits: Vec<(String, String)>) -> Vec<String> {
+    let (ledger, mut reds) = parse_ledger(raw);
+    let rows = ledger.get("magic_literals").map_or(&[][..], Vec::as_slice);
+    let report = judge("magic_literals", &boundary_items(hits), rows, false);
+    for line in &report.ledgered_lines {
+        println!("known-red: ledgered [magic_literals] {line}");
+    }
+    reds.extend(report.reds);
+    reds
+}
+
 fn section_items(section: &str, phase: u32) -> Result<Vec<Item>, String> {
     match section {
         "dod" => dod_items(phase),
@@ -526,6 +575,10 @@ fn section_items(section: &str, phase: u32) -> Result<Vec<Item>, String> {
         "crate_boundary" => {
             crate::architecture_check::crate_boundary_violations().map(boundary_items)
         }
+        "magic_literals" => crate::architecture_check::magic_literal_violations_at(
+            &crate::architecture_check::workspace_root(),
+        )
+        .map(boundary_items),
         other => Err(format!("no evaluator is wired for section `{other}`")),
     }
 }
@@ -927,7 +980,7 @@ mod tests {
             false,
             &none,
         );
-        assert_eq!(out.reds.len(), 1, "{:?}", out.reds);
+        assert_eq!(out.reds.len(), 2, "{:?}", out.reds);
         assert!(
             out.reds[0].contains("[dods]: unknown ledger section"),
             "{:?}",
@@ -946,7 +999,7 @@ mod tests {
             }
         };
         let out = check("", 9, false, &broken);
-        assert_eq!(out.reds.len(), 1, "{:?}", out.reds);
+        assert_eq!(out.reds.len(), 2, "{:?}", out.reds);
         assert!(
             out.reds[0].contains("[benchset]: cannot evaluate: spec unreadable"),
             "{:?}",
@@ -1037,8 +1090,7 @@ mod tests {
         assert!(rep.reds.iter().any(|r| r.contains("listed twice")));
     }
 
-    /// The baseline section never reaches the item evaluators: a ledger with only `[[lint_allows]]` rows is green
-    /// through `check` even when the fake evaluator fails every item section it is asked about.
+    /// §78.4: lint rows bypass item evaluators; absent magic rows still fail the independent §78.1 ceiling.
     #[test]
     fn a_lint_allows_section_does_not_go_through_the_item_evaluators() {
         let asked = std::cell::RefCell::new(Vec::new());
@@ -1053,7 +1105,7 @@ mod tests {
             false,
             &none,
         );
-        assert!(out.reds.is_empty(), "{:?}", out.reds);
+        assert_eq!(out.reds.len(), 1);
         assert!(
             !asked.borrow().iter().any(|s| s == LINT_ALLOWS),
             "{:?}",
@@ -1069,7 +1121,7 @@ mod tests {
         assert_eq!(out.rows, 2);
     }
 
-    /// Unchanged ledger through `check`: green, and the totals the log prints count rows and deferrals.
+    /// §80.1.1: totals count rows and deferrals independently of the missing §78.1 baseline.
     #[test]
     fn check_counts_rows_and_deferrals() {
         let items_for = |section: &str, _: u32| -> Result<Vec<Item>, String> {
@@ -1081,10 +1133,10 @@ mod tests {
         let raw = "[[dod]]\nid = \"A\"\nowner = \"M11\"\nreason = \"r\"\n\
                    [[dod]]\nid = \"B\"\nowner = \"M24\"\nreason = \"r\"\ndeferred_past_go_live = \"d\"\n";
         let out = check(raw, 9, false, &items_for);
-        assert!(out.reds.is_empty(), "{:?}", out.reds);
+        assert_eq!(out.reds.len(), 1);
         assert_eq!((out.rows, out.deferred), (2, 1));
         let release = check(raw, 9, true, &items_for);
-        assert_eq!(release.reds.len(), 1, "{:?}", release.reds);
+        assert_eq!(release.reds.len(), 2, "{:?}", release.reds);
         assert!(
             release.reds[0].contains("[dod] A: --release"),
             "{:?}",
@@ -1326,6 +1378,60 @@ mod tests {
         let covered = judge("crate_boundary", &items, &rows, false);
         assert!(covered.reds.is_empty(), "{:?}", covered.reds);
         assert_eq!(covered.ledgered_lines.len(), 1);
+    }
+
+    /// §78.1: unknown keys, missing owners, duplicate rows, new hits and stale rows remain red.
+    #[test]
+    fn magic_literal_rows_use_the_shrink_only_judgment() {
+        let raw = include_str!("../known_red.toml");
+        let raw = raw[raw.find("\n[[magic_literals]]").unwrap()..].to_string();
+        let hits = || {
+            parse_ledger(&raw).0["magic_literals"]
+                .iter()
+                .map(|r| (r.id.clone(), "p:line 1".into()))
+                .collect()
+        };
+        assert_eq!(magic_literal_reds(&raw, hits()), Vec::<String>::new());
+        assert_eq!(magic_literal_reds("", hits()).len(), 13);
+        assert_eq!(magic_literal_reds(&raw, vec![]).len(), 12);
+        assert_eq!(
+            magic_literal_reds(&raw.replacen("owner = \"M11\"", "owner = \"\"", 1), hits()).len(),
+            1
+        );
+        assert_eq!(
+            magic_literal_reds(&format!("{raw}count = 1\n"), hits()).len(),
+            1
+        );
+        assert_eq!(magic_literal_reds(&format!("{raw}{raw}"), hits()).len(), 12);
+        assert_eq!(
+            SECTIONS.iter().filter(|s| **s == "magic_literals").count(),
+            1
+        );
+    }
+
+    /// §78.1: matching hits and rows cannot grow, shrink or swap the frozen identity set.
+    #[test]
+    fn magic_literal_set_is_independent_of_matching_rows() {
+        assert_eq!(magic_id_hash("hello"), 0xa430_d846_80aa_bd0b);
+        let ledger = parse_ledger(include_str!("../known_red.toml")).0;
+        for (new, gone) in [
+            ("p::new#1", ""),
+            ("", "3bc3719080ec3519"),
+            ("p::new#1", "3bc3719080ec3519"),
+        ] {
+            let mut rows = ledger["magic_literals"][usize::from(!gone.is_empty())..].to_vec();
+            rows.extend((!new.is_empty()).then(|| row(new, "M11")));
+            let items: Vec<_> = rows.iter().map(|r| item(&r.id, Status::Fail)).collect();
+            let reds = judge("magic_literals", &items, &rows, false).reds;
+            let extra: Vec<_> = new.split_whitespace().collect();
+            let missing = format!("{{{gone}}}");
+            assert_eq!(
+                reds,
+                vec![format!(
+                    "[magic_literals]: unpinned ids {extra:?}; missing hashes {missing}; delete resolved hashes (§78.1)"
+                )]
+            );
+        }
     }
 
     /// The committed ledger is well formed: it parses clean and every row has a module-card owner and a reason.

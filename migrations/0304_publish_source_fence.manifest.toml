@@ -1,0 +1,19 @@
+# §37 / ADR-0092 D-C: owner fence, no table privileges.
+migration_id = "0304_publish_source_fence"
+class = "EXPAND_CONTRACT"
+precheck = """
+select to_regprocedure('private.lock_publish_source(uuid,uuid,uuid)') is null
+ and to_regclass('projection.stream_log') is not null as precheck_ok
+"""
+postcheck = """
+with f as (select * from pg_proc where oid = to_regprocedure('private.lock_publish_source(uuid,uuid,uuid)'))
+select (select count(*) = 1 from f where pg_get_userbyid(proowner) = 'role_migration_owner'
+ and prosecdef and 'search_path=pg_catalog' = any(coalesce(proconfig,'{}')))
+ and (select array_agg(x.grantee::regrole::text order by x.grantee::regrole::text)
+      from f, lateral aclexplode(coalesce(proacl,acldefault('f',proowner))) x
+      where x.privilege_type = 'EXECUTE') = array[
+        'role_consolidation_worker','role_migration_owner','role_private_worker','role_retrieval_worker']
+ as postcheck_ok
+"""
+rollback_or_forward_fix = "forward-fix only: retire the door after retiring all three callers."
+backup_restore_requirement = "none: function only; no row or table privilege changes."

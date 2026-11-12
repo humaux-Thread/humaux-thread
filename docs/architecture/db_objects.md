@@ -582,6 +582,26 @@ written by:
 
 executed by:
 
+### `control.billing_append_payment`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0301_billing_payments
+
+grants (runtime roles):
+- role_maintenance: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::billing_processor_repo`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `control.billing_apply_subscription`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
@@ -731,6 +751,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::facet_contract`
+- (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -885,6 +906,7 @@ read by:
 written by:
 - (no process): `adapters::tests::confirm_token_retention`
 - (no process): `adapters::tests::forget_confirm`
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::support::governance_ops`
 - (no process): `gateway::tests::mcp_forget`
@@ -1323,6 +1345,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::forget_race`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-gateway): `adapters::forget_repo`
 
@@ -1343,6 +1366,7 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::forget_race`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-gateway): `adapters::forget_repo`
 
@@ -1380,6 +1404,7 @@ read by:
 written by:
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::forget_repo`
 - (no process): `gateway::tests::mcp_forget`
 
@@ -1416,6 +1441,7 @@ read by:
 written by:
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::forget_repo`
 - (no process): `gateway::tests::mcp_forget`
 
@@ -1600,6 +1626,7 @@ read by:
 written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::entitlement_projector`
+- (no process): `billing-worker::tests::process`
 
 executed by:
 
@@ -6400,6 +6427,7 @@ read by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_confirm`
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `adapters::tests::phase9_exact_assessed_storage_binding`
@@ -7730,6 +7758,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::forget_confirm`
+- (no process): `adapters::tests::forget_race`
 - (no process): `gateway::tests::mcp_forget`
 - (no process): `gateway::tests::mcp_gateway`
 
@@ -7991,6 +8020,7 @@ read by:
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `public-pool::tests::public_runtime`
 - (no process): `public-pool::tests::public_trust`
+- process(cargo-xtask): `adapters::distill_repo`
 - process(cargo-xtask): `adapters::exact_census`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::note_repo`
@@ -8001,6 +8031,7 @@ read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::soak`
+- process(humaux-consolidation-worker): `adapters::distill_repo`
 - process(humaux-consolidation-worker): `adapters::exact_census`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::note_repo`
@@ -8009,6 +8040,7 @@ read by:
 - process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::continuity_read`
+- process(humaux-gateway): `adapters::distill_repo`
 - process(humaux-gateway): `adapters::exact_census`
 - process(humaux-gateway): `adapters::memory_governance_repo`
 - process(humaux-gateway): `adapters::note_repo`
@@ -8016,6 +8048,7 @@ read by:
 - process(humaux-gateway): `adapters::remember`
 - process(humaux-gateway): `adapters::retrieve`
 - process(humaux-gateway): `adapters::stream_repo`
+- process(humaux-maintenance): `adapters::distill_repo`
 - process(humaux-maintenance): `adapters::exact_census`
 - process(humaux-maintenance): `adapters::memory_governance_repo`
 - process(humaux-maintenance): `adapters::note_repo`
@@ -8025,6 +8058,7 @@ read by:
 - process(humaux-maintenance): `adapters::retrieve`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
+- process(humaux-private-worker): `adapters::distill_repo`
 - process(humaux-private-worker): `adapters::exact_census`
 - process(humaux-private-worker): `adapters::memory_governance_repo`
 - process(humaux-private-worker): `adapters::note_repo`
@@ -8032,6 +8066,7 @@ read by:
 - process(humaux-private-worker): `adapters::remember`
 - process(humaux-private-worker): `adapters::retrieve`
 - process(humaux-private-worker): `adapters::stream_repo`
+- process(humaux-retrieval-worker): `adapters::distill_repo`
 - process(humaux-retrieval-worker): `adapters::exact_census`
 - process(humaux-retrieval-worker): `adapters::memory_governance_repo`
 - process(humaux-retrieval-worker): `adapters::note_repo`
@@ -8051,6 +8086,7 @@ written by:
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_confirm`
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::operation_receipts`
@@ -9706,6 +9742,7 @@ read by:
 - (no process): `adapters::tests::facet_contract`
 
 written by:
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
@@ -10596,6 +10633,7 @@ written by:
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::exact_completeness_eval`
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::freshness`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::ingest_ticket_expiry`
@@ -11362,6 +11400,42 @@ executed by:
 - process(humaux-private-worker): `adapters::subject_repo`
 - process(humaux-retrieval-worker): `adapters::subject_repo`
 
+### `private.lock_publish_source`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0304_publish_source_fence
+
+grants (runtime roles):
+- role_consolidation_worker: EXECUTE
+- role_migration_owner: EXECUTE
+- role_private_worker: EXECUTE
+- role_retrieval_worker: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::forget_race`
+- process(cargo-xtask): `adapters::distill_repo`
+- process(cargo-xtask): `adapters::private_projection_registry`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-consolidation-worker): `adapters::consolidate_repo`
+- process(humaux-consolidation-worker): `adapters::distill_repo`
+- process(humaux-consolidation-worker): `adapters::private_projection_registry`
+- process(humaux-gateway): `adapters::distill_repo`
+- process(humaux-gateway): `adapters::private_projection_registry`
+- process(humaux-maintenance): `adapters::distill_repo`
+- process(humaux-maintenance): `adapters::private_projection_registry`
+- process(humaux-maintenance): `maintenance::rls_check`
+- process(humaux-private-worker): `adapters::consolidate_repo`
+- process(humaux-private-worker): `adapters::distill_repo`
+- process(humaux-private-worker): `adapters::private_projection_registry`
+- process(humaux-retrieval-worker): `adapters::distill_repo`
+- process(humaux-retrieval-worker): `adapters::private_projection_registry`
+
 ### `private.mark_contribution_reconciliation_required`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
@@ -11527,6 +11601,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::forget_race`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::mcp_gateway`
@@ -11572,6 +11647,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::subject_registry_rls`
@@ -11703,6 +11779,7 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_confirm`
 - (no process): `adapters::tests::forget_preview`
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::mandatory_context_lane`
 - (no process): `adapters::tests::memory_affects`
@@ -11953,6 +12030,7 @@ read by:
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::facet_contract`
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
@@ -12175,6 +12253,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - process(humaux-consolidation-worker): `adapters::consolidate_repo`
@@ -12255,6 +12334,7 @@ read by:
 
 written by:
 - (no process): `adapters::tests::consolidate_snapshot`
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::subject_registry_rls`
@@ -12670,6 +12750,7 @@ read by:
 - (no process): `private-worker::tests::distill_hop_e2e`
 
 written by:
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::processing_runs_fingerprint_rerun`
 - (no process): `adapters::tests::reasoning_route_runtime`
 - process(cargo-xtask): `adapters::distill_repo`
@@ -14112,6 +14193,7 @@ read by:
 - process(humaux-retrieval-worker): `adapters::projection_worker`
 
 written by:
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::private_projection_registry`
 - (no process): `adapters::tests::projection_claim`
 - (no process): `adapters::tests::projection_worker`
@@ -14457,6 +14539,7 @@ written by:
 - (no process): `adapters::tests::enumerate_scale`
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::forget_confirm`
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`
@@ -14585,6 +14668,7 @@ read by:
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::measure`
 - process(cargo-xtask): `adapters::context_repo`
+- process(cargo-xtask): `adapters::distill_repo`
 - process(cargo-xtask): `adapters::exact_census`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `adapters::note_repo`
@@ -14597,6 +14681,7 @@ read by:
 - process(cargo-xtask): `xtask::soak`
 - process(humaux-admin): `adapters::postgres`
 - process(humaux-consolidation-worker): `adapters::context_repo`
+- process(humaux-consolidation-worker): `adapters::distill_repo`
 - process(humaux-consolidation-worker): `adapters::exact_census`
 - process(humaux-consolidation-worker): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::note_repo`
@@ -14606,6 +14691,7 @@ read by:
 - process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::continuity_read`
+- process(humaux-gateway): `adapters::distill_repo`
 - process(humaux-gateway): `adapters::exact_census`
 - process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::memory_governance_repo`
@@ -14616,6 +14702,7 @@ read by:
 - process(humaux-gateway): `adapters::remember`
 - process(humaux-gateway): `adapters::retrieve`
 - process(humaux-maintenance): `adapters::context_repo`
+- process(humaux-maintenance): `adapters::distill_repo`
 - process(humaux-maintenance): `adapters::exact_census`
 - process(humaux-maintenance): `adapters::maintenance_repo`
 - process(humaux-maintenance): `adapters::memory_governance_repo`
@@ -14629,6 +14716,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::switch_visible`
 - process(humaux-private-worker): `adapters::context_repo`
+- process(humaux-private-worker): `adapters::distill_repo`
 - process(humaux-private-worker): `adapters::exact_census`
 - process(humaux-private-worker): `adapters::memory_governance_repo`
 - process(humaux-private-worker): `adapters::note_repo`
@@ -14638,6 +14726,7 @@ read by:
 - process(humaux-private-worker): `adapters::retrieve`
 - process(humaux-public-worker): `adapters::postgres`
 - process(humaux-retrieval-worker): `adapters::context_repo`
+- process(humaux-retrieval-worker): `adapters::distill_repo`
 - process(humaux-retrieval-worker): `adapters::exact_census`
 - process(humaux-retrieval-worker): `adapters::memory_governance_repo`
 - process(humaux-retrieval-worker): `adapters::note_repo`
@@ -14654,6 +14743,7 @@ written by:
 - (no process): `adapters::tests::evidence_sources`
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_confirm`
+- (no process): `adapters::tests::forget_race`
 - (no process): `adapters::tests::forget_repo`
 - (no process): `adapters::tests::g80_31_handoff`
 - (no process): `adapters::tests::health_snapshot`

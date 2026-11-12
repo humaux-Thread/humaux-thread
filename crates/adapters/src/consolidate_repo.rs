@@ -1,5 +1,5 @@
 //! `adapters::consolidate_repo` — §11.6/§11.7 Private Memory Consolidation SQL, through [`ConsolidationDbPool`] only.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sha2, sqlx]; services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.jobs, private.context_bindings, private.events, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_rollup_sources, private.memory_rollups] x=[control.current_reasoning_route_binding]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::jobs, adapters::memory_governance_repo, adapters::memory_repo, adapters::postgres, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::consolidate, domain::authority, domain::consolidate, domain::error, domain::ids, domain::ticket_family, projection::stream]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sha2, sqlx]; services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.jobs, private.context_bindings, private.events, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_rollup_sources, private.memory_rollups] x=[control.current_reasoning_route_binding, private.lock_publish_source]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::jobs, adapters::memory_governance_repo, adapters::memory_repo, adapters::postgres, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::consolidate, domain::authority, domain::consolidate, domain::error, domain::ids, domain::ticket_family, projection::stream]
 //! Called-by: [adapters::consolidation_reasoner, adapters::distill_reasoner, humaux-consolidation-worker, tests]
 //! Invariants: [input selection and materialization happen in ONE REPEATABLE READ READ WRITE transaction (§11.7), so
 //!   no concurrent insert can leak into a run; a lost lease is LostRace and an unknown source UnknownSource, never a
@@ -551,12 +551,8 @@ pub enum PublishOutcome {
 /// re-checks below mutually consistent — every `SELECT ... FROM memory_records` in this
 /// transaction observes the same snapshot, so a correction landing between input #3's check
 /// and input #40's check cannot make #40 look fresh relative to a state #3 already moved past.
-/// This does not close the residual commit-window race (a correction landing between this
-/// transaction's snapshot and its `COMMIT`) — `role_consolidation_worker` has no `SELECT ...
-/// FOR SHARE` grant on `private.memory_records` to hold those rows locked for that long
-/// (verified live: `SET ROLE role_consolidation_worker; SELECT ... FOR SHARE` →
-/// `permission denied for table memory_records`), so closing it needs a §6.2.2 role-grant
-/// decision this task does not own; flagged, not silently treated as solved.
+/// §37 / ADR-0092 D-C: 0304 locks the accept door's stream rows through commit; a
+/// concurrent tombstone invalidating this snapshot (40001) becomes STALE_INPUT after rollback.
 ///
 /// `sources` must each be a `(memory_id, evidence_id)` pair already recorded as one of this
 /// run's own `memory_consolidation_inputs` rows — checked explicitly
@@ -580,7 +576,7 @@ pub enum PublishOutcome {
 /// The staleness re-check loop, split out of [`publish_rollup`] purely to keep that function
 /// under the workspace's `too_many_lines` lint — see its doc comment for the actual semantics
 /// (§11.7 re-validation, `REPEATABLE READ` consistency). Returns `None` the moment any input is
-/// found stale (matching the original early-return-on-first-stale behavior exactly); `Some` map
+/// found stale under §37 / ADR-0092 D-C or the recorded fingerprint (matching the original early-return-on-first-stale behavior exactly); `Some` map
 /// otherwise, keyed by every recorded input whose current row was found and whose
 /// `authority_class` parsed — used by the §11.9 ceiling check below.
 async fn resolve_current_authority_or_stale(
@@ -596,7 +592,8 @@ async fn resolve_current_authority_or_stale(
 
         let current = sqlx::query(
             "SELECT updated_at, content, authority_class, confidence, status, superseded_by \
-             FROM private.memory_records WHERE memory_id = $1",
+             FROM private.memory_records AS m WHERE memory_id = $1 \
+             AND private.lock_publish_source(m.tenant_id, NULL, m.memory_id)",
         )
         .bind(memory_id)
         .fetch_optional(&mut **txn)
@@ -675,6 +672,7 @@ pub async fn publish_rollup(
     sources: &[(AutoMutableMemoryId, EvidenceId)],
     fence: Option<&crate::jobs::DerivedLease<'_>>,
 ) -> Result<PublishOutcome, ConsolidateRepoError> {
+    let result = async {
     // dep: PostgreSQL(any) — opens a PostgreSQL transaction
     let mut txn = pool.pool().begin().await?;
     // §11.7-style consistency guard for the re-validation loop below — see doc comment.
@@ -684,7 +682,7 @@ pub async fn publish_rollup(
     set_tenant_local(&mut txn, tenant_id).await?;
 
     let recorded_inputs = sqlx::query(
-        "SELECT memory_id, input_version, source_hash FROM private.memory_consolidation_inputs WHERE run_id = $1",
+        "SELECT memory_id, input_version, source_hash FROM private.memory_consolidation_inputs AS i WHERE run_id = $1 ORDER BY (SELECT me.evidence_id FROM private.memory_evidence me WHERE me.memory_id = i.memory_id ORDER BY me.evidence_id LIMIT 1), memory_id",
     )
     .bind(run_id)
     .fetch_all(&mut *txn)
@@ -693,16 +691,7 @@ pub async fn publish_rollup(
     let Some(current_authority) =
         resolve_current_authority_or_stale(&mut txn, &recorded_inputs).await?
     else {
-        sqlx::query(
-            "UPDATE private.memory_consolidation_runs \
-             SET status = 'STALE_INPUT', manifest_hash = $2, finished_at = now() \
-             WHERE run_id = $1",
-        )
-        .bind(run_id)
-        .bind(manifest_hash)
-        .execute(&mut *txn)
-        .await?;
-        txn.commit().await?;
+        txn.rollback().await?;
         return Ok(PublishOutcome::StaleInput);
     };
 
@@ -840,6 +829,45 @@ pub async fn publish_rollup(
 
     txn.commit().await?;
     Ok(PublishOutcome::Published { rollup_id })
+    }.await;
+    retry_stale_input(pool, tenant_id, run_id, manifest_hash, result).await
+}
+/// §37 / ADR-0092 D-C: normalize serialization at transaction boundaries, after rollback.
+pub async fn retry_stale_input(
+    pool: &ConsolidationDbPool,
+    tenant_id: Uuid,
+    run_id: Uuid,
+    manifest_hash: Option<&[u8]>,
+    result: Result<PublishOutcome, ConsolidateRepoError>,
+) -> Result<PublishOutcome, ConsolidateRepoError> {
+    match result {
+        Ok(PublishOutcome::StaleInput) => {}
+        Err(
+            ConsolidateRepoError::Db(sqlx::Error::Database(ref e))
+            | ConsolidateRepoError::Jobs(crate::jobs::JobsError::Db(sqlx::Error::Database(ref e))),
+        ) if stale_publish_sqlstate(e.code().as_deref()) => {}
+        other => return other,
+    }
+    // dep: PostgreSQL(any) — §37 persist retry outcome outside the aborted snapshot
+    let mut txn = pool.pool().begin().await?;
+    set_tenant_local(&mut txn, tenant_id).await?;
+    sqlx::query("UPDATE private.memory_consolidation_runs SET status='STALE_INPUT', manifest_hash=$2, finished_at=now() WHERE run_id=$1")
+        .bind(run_id).bind(manifest_hash).execute(&mut *txn).await?;
+    txn.commit().await?;
+    Ok(PublishOutcome::StaleInput)
+}
+
+fn stale_publish_sqlstate(code: Option<&str>) -> bool {
+    matches!(code, Some("40001" | "40P01"))
+}
+
+#[cfg(test)]
+#[test]
+fn publish_transaction_sqlstates_are_exact() {
+    assert_eq!(
+        [Some("40001"), Some("40P01"), Some("23505"), None].map(stale_publish_sqlstate),
+        [true, true, false, false]
+    );
 }
 
 #[cfg(test)]

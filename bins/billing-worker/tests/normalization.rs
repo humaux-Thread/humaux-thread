@@ -12,7 +12,7 @@ use humaux_domain::{
 use serde_json::{Value, json};
 
 fn transaction() -> Value {
-    json!({"id":"txn_fixture","order":"ord_fixture","subscription":"sub_fixture","amount":500,"currency":"USD","tax_amount":50,"period_start":1000,"period_end":2000})
+    json!({"id":"txn_fixture","order":"ord_fixture","subscription":"sub_fixture","amount":500,"amount_paid":550,"currency":"USD","tax_amount":50,"period_start":1000,"period_end":2000})
 }
 fn order() -> Value {
     let mut order = transaction();
@@ -29,7 +29,7 @@ fn event(kind: &str, object: Value) -> Vec<u8> {
 #[test]
 fn missing_amount_is_refused() {
     let mut txn = transaction();
-    txn.as_object_mut().unwrap().remove("amount");
+    txn.as_object_mut().unwrap().remove("amount_paid");
     assert_eq!(
         normalize(
             &event("subscription.paid", json!({"last_transaction":txn})),
@@ -86,7 +86,7 @@ fn exact_events_and_payload_money() {
             Some(Money {
                 amount: match payment {
                     PaymentKind::Charge => PaymentAmount::Charge {
-                        charged_amount: 500
+                        charged_amount: 550
                     },
                     PaymentKind::Refund => PaymentAmount::Refund {
                         refund_amount: 125,
@@ -229,12 +229,12 @@ fn fetched_status_and_money_fail_closed() {
         .unwrap()
         .amount,
         PaymentAmount::Charge {
-            charged_amount: 500
+            charged_amount: 550
         }
     );
     for (key, bad) in [
-        ("amount", json!(-1)),
-        ("amount", json!("500")),
+        ("amount_paid", json!(-1)),
+        ("amount_paid", json!("500")),
         ("currency", json!("EUR")),
         ("period_end", json!(1000)),
         ("tax_amount", json!(-1)),
@@ -249,7 +249,7 @@ fn fetched_status_and_money_fail_closed() {
             Err(ErrorCode::InvalidInput)
         );
     }
-    for key in ["amount", "currency", "period_start", "period_end"] {
+    for key in ["amount_paid", "currency", "period_start", "period_end"] {
         let mut txn = transaction();
         txn.as_object_mut().unwrap().remove(key);
         assert_eq!(

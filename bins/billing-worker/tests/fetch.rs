@@ -35,7 +35,7 @@ fn client(base: &str, key: &'static str) -> CreemClient {
 }
 #[tokio::test]
 async fn authoritative_fetch_and_authentication() {
-    let transaction = json!({"id":"txn_fixture","amount":500,"currency":"USD","tax_amount":50,"period_start":1000,"period_end":2000});
+    let transaction = json!({"id":"txn_fixture","amount":500,"amount_paid":550,"currency":"USD","tax_amount":50,"period_start":1000,"period_end":2000});
     let subscription = json!({"id":"sub_fixture","customer":{"id":"cust_fixture"},"product":{"id":"prod_fixture"},"status":"past_due","current_period_start_date":"2026-10-01T00:00:00Z","current_period_end_date":"2026-11-01T00:00:00Z"});
     // dep: HTTP(loopback) — §79.4 isolated provider double; no external network.
     let (base, server) = fake_creem::start(subscription, transaction.clone()).await;
@@ -72,7 +72,7 @@ async fn authoritative_fetch_and_authentication() {
     assert_eq!(
         normalized.money.unwrap().amount,
         PaymentAmount::Charge {
-            charged_amount: 500
+            charged_amount: 550
         }
     );
     assert_eq!(
