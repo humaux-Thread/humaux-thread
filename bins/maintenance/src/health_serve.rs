@@ -69,15 +69,6 @@ async fn snapshot_iteration(
     let result = work.await;
     // §39: this string-only boundary reads DB state; failures are DependencyUnavailable.
     // ponytail: a non-dependency health failure would be mis-classed; upgrade = typed health errors.
-    stage_recorded(
-        STAGES[1],
-        resident::stage_now(),
-        result
-            .as_ref()
-            .err()
-            .map(|_| ErrorCode::DependencyUnavailable),
-        [1, u64::from(result.is_ok())],
-    );
     result
 }
 
