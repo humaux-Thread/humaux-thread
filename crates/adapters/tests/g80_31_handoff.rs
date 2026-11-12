@@ -1,7 +1,7 @@
 //! `adapters::tests::g80_31_handoff` — G80-31（§57.1 Phase 8 出场判据）端到端：**同一快照两次装配 handoff 逐字节相同**， 且 Mandatory
 //!   的选取是机械规则、撤销立即生效、pinned 的「钉 3 带 2」可观测。
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval,
-//!   postgres, serde_json, tokio, uuid]; services=[PostgreSQL(any)
+//!   postgres, serde_json, tokio, uuid]; services=[PostgreSQL(any) r=[ops.selection_snapshot_items]
 //!   w=[ops.selection_snapshots, private.context_bindings, private.evidence_objects,
 //!   private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log],
 //!   PostgreSQL(owner),
