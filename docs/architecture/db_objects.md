@@ -1475,8 +1475,11 @@ foreign keys (outgoing):
 - fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
+- process(humaux-retrieval-worker): `adapters::egress_policy`
 
 written by:
+- (no process): `retrieval-provider::tests::dashscope_live_smoke`
+- process(humaux-retrieval-worker): `retrieval-provider::adapters`
 
 executed by:
 

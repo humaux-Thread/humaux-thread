@@ -97,6 +97,10 @@ status-level = "fail"
 final-status-level = "slow"
 
 [[profile.ci.overrides]]
+filter = 'binary_id(humaux-retrieval-provider)'
+test-group = 'global-db'
+
+[[profile.ci.overrides]]
 filter = 'binary_id(humaux-adapters::ingest_ticket_expiry)'
 test-group = 'global-db'
 

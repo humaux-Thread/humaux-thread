@@ -4,13 +4,13 @@
 //!   humaux-projection, humaux-retrieval, humaux-testkit, postgres, serde, serde_json, tokio, uuid];
 //!   services=[PostgreSQL(any) r=[ops.data_disclosure_sources, ops.data_disclosures, ops.model_call_ledger,
 //!   ops.retrieval_provider_budget_allocations, ops.retrieval_provider_budget_reservations,
-//!   private.retrieval_query_sources] w=[control.memberships, control.private_reasoning_domains,
+//!   private.retrieval_query_sources] w=[control.egress_policies, control.memberships, control.private_reasoning_domains,
 //!   control.retrieval_provider_admission_limits, control.tenants, control.users, control.workspaces, private.events,
 //!   private.evidence_objects, private.memory_evidence, private.memory_records], PostgreSQL(owner),
 //!   PostgreSQL(role_retrieval_worker), DashScope];
 //!   env=[HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256,
 //!   HUMAUX_TEST_GITLEAKS_VERSION, HUMAUX_TEST_PG_DSN]; modules=[adapters::disclosure, adapters::model_call_ledger,
-//!   adapters::postgres, adapters::provider_budget, adapters::retrieval_query_source, domain::dataclass,
+//!   adapters::egress_policy, adapters::postgres, adapters::provider_budget, adapters::retrieval_query_source, domain::dataclass,
 //!   domain::egress, domain::error, domain::ids, domain::ledger, infra-egress::http, retrieval-provider::admission,
 //!   retrieval-provider::contract, retrieval-provider::metrics]
 //! Called-by: [retrieval-worker::main, tests]
@@ -616,6 +616,7 @@ impl DashscopeEmbeddingProvider {
         estimated_input_tokens: u64,
         card_sources: &[DisclosureSource],
     ) -> Result<PreparedEmbeddingDispatch, ErrorCode> {
+        humaux_adapters::egress_policy::authorize_retrieval(&self.pool, tenant_id).await?;
         let dispatch_payload = match query_call {
             Some((_, queries)) => EmbeddingDispatchPayload::Query(
                 retrieval_query_source::SerializedRetrievalQueryBatch::new(
@@ -1445,6 +1446,12 @@ mod tests {
             ));
         }
         let tenant_id = seed_query_provider_tenant(&mut admin)?;
+        admin
+            .execute(
+                "INSERT INTO control.egress_policies (tenant_id, private_retrieval_external_allowed) VALUES ($1, true)",
+                &[&tenant_id],
+            )
+            .map_err(|e| DbFixtureSkipReason::IsolationSetupFailed(e.to_string()))?;
         let user_id = uuid::Uuid::now_v7();
         admin
             // dep: PostgreSQL(owner) — seeds control.users for the query-provider fixture.
@@ -1725,6 +1732,169 @@ mod tests {
             "failed source reservation leaves no source/disclosure residue"
         );
         assert_provider_budget_state(handle, conflicting_request_id, "RELEASED", false);
+    }
+
+    #[test]
+    fn m05_tenant_opt_out_stops_disclosure_and_transport() {
+        run_db_fixture::<QueryProviderFixture, _>("m05_tenant_opt_out", |mut handle| {
+            handle.admin.execute(
+                "UPDATE control.egress_policies SET private_retrieval_external_allowed = true WHERE tenant_id = $1",
+                &[&handle.tenant_id],
+            ).expect("seed tenant opt-in");
+            let transport = Arc::new(DeterministicEmbeddingTransport::new());
+            let (provider, authorization, workspace_id) =
+                query_provider_and_authorization(&mut handle, transport.clone());
+            let queries = [sealed_query_fixture("policy controlled retrieval query")];
+            let (_, _, positive_context) = trusted_query_context(&authorization, workspace_id);
+            let positive =
+                handle
+                    .rt
+                    .block_on(provider.embed_queries(&positive_context, 2, &queries));
+            let positive_calls = transport.calls.load(Ordering::SeqCst);
+            let positive_disclosures: i64 = handle
+                .admin
+                .query_one(
+                    "SELECT count(*) FROM ops.data_disclosures WHERE tenant_id = $1",
+                    &[&handle.tenant_id],
+                )
+                .expect("positive disclosure count")
+                .get(0);
+            assert!(
+                positive.is_ok(),
+                "opt-in positive control failed: {positive:?}"
+            );
+            assert_eq!(positive_calls, 1, "opt-in must reach ExternalCall");
+            assert_eq!(positive_disclosures, 1, "opt-in must reserve disclosure");
+
+            handle.admin.execute(
+                "UPDATE control.egress_policies SET private_retrieval_external_allowed = false WHERE tenant_id = $1",
+                &[&handle.tenant_id],
+            ).expect("set tenant opt-out");
+            let (_, _, negative_context) = trusted_query_context(&authorization, workspace_id);
+            let negative =
+                handle
+                    .rt
+                    .block_on(provider.embed_queries(&negative_context, 2, &queries));
+            let negative_calls = transport.calls.load(Ordering::SeqCst) - positive_calls;
+            let negative_disclosures: i64 = handle
+                .admin
+                .query_one(
+                    "SELECT count(*) FROM ops.data_disclosures WHERE tenant_id = $1",
+                    &[&handle.tenant_id],
+                )
+                .expect("negative disclosure count")
+                .get::<_, i64>(0)
+                - positive_disclosures;
+            assert!(
+                negative.is_err() && negative_calls == 0 && negative_disclosures == 0,
+                "opt-out must reject before ExternalCall and disclosure: result={negative:?}, ExternalCall delta={negative_calls}, disclosure delta={negative_disclosures}"
+            );
+        });
+    }
+
+    #[test]
+    fn m05_missing_and_other_tenant_policy_deny_without_side_effects() {
+        run_db_fixture::<QueryProviderFixture, _>("m05_isolation", |mut handle| {
+            let other: uuid::Uuid = handle.admin.query_one(
+                "INSERT INTO control.tenants(name) VALUES ('m05 opposite policy') RETURNING tenant_id", &[],
+            ).expect("other tenant").get(0);
+            handle.admin.execute(
+                "INSERT INTO control.egress_policies (tenant_id, private_retrieval_external_allowed) VALUES ($1, true)", &[&other],
+            ).expect("other tenant opt-in");
+            handle.admin.execute(
+                "UPDATE control.egress_policies SET private_retrieval_external_allowed = false WHERE tenant_id = $1", &[&handle.tenant_id],
+            ).expect("current tenant opt-out");
+            let transport = Arc::new(DeterministicEmbeddingTransport::new());
+            let (provider, authorization, workspace_id) =
+                query_provider_and_authorization(&mut handle, transport.clone());
+            let queries = [sealed_query_fixture("tenant isolation query")];
+            let (memory_ids, cards) = seeded_memory_cards(&mut handle, 1);
+            for remove in [false, true] {
+                if remove {
+                    handle
+                        .admin
+                        .execute(
+                            "DELETE FROM control.egress_policies WHERE tenant_id = $1",
+                            &[&handle.tenant_id],
+                        )
+                        .expect("remove current tenant policy");
+                }
+                let (_, _, context) = trusted_query_context(&authorization, workspace_id);
+                let result = handle
+                    .rt
+                    .block_on(provider.embed_queries(&context, 2, &queries));
+                let card_result = handle.rt.block_on(provider.embed_cards_for_memories(
+                    TenantId(handle.tenant_id),
+                    2,
+                    &cards,
+                    &memory_ids,
+                ));
+                let disclosures: i64 = handle
+                    .admin
+                    .query_one(
+                        "SELECT count(*) FROM ops.data_disclosures WHERE tenant_id = $1",
+                        &[&handle.tenant_id],
+                    )
+                    .expect("disclosure count")
+                    .get(0);
+                assert!(
+                    matches!(result, Err(ErrorCode::Forbidden)),
+                    "missing={remove} result={result:?}"
+                );
+                assert!(
+                    matches!(card_result, Err(ErrorCode::Forbidden)),
+                    "missing={remove} card_result={card_result:?}"
+                );
+                assert_eq!(
+                    transport.calls.load(Ordering::SeqCst),
+                    0,
+                    "missing={remove}"
+                );
+                assert_eq!(disclosures, 0, "missing={remove}");
+            }
+        });
+    }
+
+    #[test]
+    fn m05_policy_db_failure_denies_without_side_effects() {
+        run_db_fixture::<QueryProviderFixture, _>("m05_policy_db_failure", |mut handle| {
+            let dsn = std::env::var("HUMAUX_RETRIEVAL_WORKER_PG_DSN").expect("worker DSN");
+            let mut settings =
+                humaux_adapters::postgres::load_pool_settings(Some("1")).expect("pool settings");
+            settings.statement_timeout = Duration::from_millis(300);
+            handle.pool = Some(
+                handle
+                    .rt
+                    .block_on(RetrievalWorkerDbPool::connect_with(&dsn, &settings))
+                    .expect("worker pool"),
+            );
+            let transport = Arc::new(DeterministicEmbeddingTransport::new());
+            let (provider, authorization, workspace_id) =
+                query_provider_and_authorization(&mut handle, transport.clone());
+            let queries = [sealed_query_fixture("database failure query")];
+            let (_, _, context) = trusted_query_context(&authorization, workspace_id);
+            let mut lock = handle.admin.transaction().expect("lock transaction");
+            lock.batch_execute("LOCK TABLE control.egress_policies IN ACCESS EXCLUSIVE MODE")
+                .expect("policy table lock");
+            let result = handle
+                .rt
+                .block_on(provider.embed_queries(&context, 2, &queries));
+            lock.rollback().expect("release policy lock");
+            let disclosures: i64 = handle
+                .admin
+                .query_one(
+                    "SELECT count(*) FROM ops.data_disclosures WHERE tenant_id = $1",
+                    &[&handle.tenant_id],
+                )
+                .expect("disclosure count")
+                .get(0);
+            assert!(
+                matches!(result, Err(ErrorCode::DependencyUnavailable)),
+                "result={result:?}"
+            );
+            assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(disclosures, 0);
+        });
     }
 
     #[test]
