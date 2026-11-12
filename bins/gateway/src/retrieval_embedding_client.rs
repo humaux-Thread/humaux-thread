@@ -329,17 +329,35 @@ impl GatewayRetrievalEmbeddingClient {
     /// # Errors
     /// The permit refusal, a transport failure, the deadline, or a non-200 answer.
     pub async fn ping(&self, deadline: Duration) -> Result<(), String> {
-        let _permit = self
-            .permit()
-            .map_err(|_| "IntraCellResource::RETRIEVAL_EMBEDDING_RPC permit refused".to_owned())?;
+        self.ping_with_code(deadline)
+            .await
+            .map_err(|(message, _)| message)
+    }
+
+    pub(crate) async fn ping_with_code(
+        &self,
+        deadline: Duration,
+    ) -> Result<(), (String, ErrorCode)> {
+        self.permit().map_err(|code| {
+            (
+                "IntraCellResource::RETRIEVAL_EMBEDDING_RPC permit refused".to_owned(),
+                code,
+            )
+        })?;
         let raw = tokio::time::timeout(deadline, self.exchange("GET", READYZ_PATH, &[]))
             .await
-            .unwrap_or_else(|_| Err("TRANSPORT_TIMEOUT".to_owned()))?;
-        match split_http_response(&raw)? {
+            .unwrap_or_else(|_| Err("TRANSPORT_TIMEOUT".to_owned()))
+            .map_err(|message| (message, ErrorCode::DependencyUnavailable))?;
+        match split_http_response(&raw)
+            .map_err(|message| (message, ErrorCode::DependencyUnavailable))?
+        {
             (200, _) => Ok(()),
-            (status, body) => Err(format!(
-                "TRANSPORT_HTTP_{status}: {}",
-                String::from_utf8_lossy(body).trim()
+            (status, body) => Err((
+                format!(
+                    "TRANSPORT_HTTP_{status}: {}",
+                    String::from_utf8_lossy(body).trim()
+                ),
+                ErrorCode::DependencyUnavailable,
             )),
         }
     }

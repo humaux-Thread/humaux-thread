@@ -2860,6 +2860,7 @@ processes:
 
 modules:
 - `gateway::bootstrap`
+- `gateway::tests::ops_listener`
 - `gateway::tests::singleton`
 
 ### `HUMAUX_GATEWAY_SESSION_LOCK_TIMEOUT_SECONDS`

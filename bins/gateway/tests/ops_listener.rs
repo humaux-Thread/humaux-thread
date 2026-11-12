@@ -3,7 +3,7 @@
 //!   retrieval socket and on a PostgreSQL that refuses connections, the drain window, and no secret in `/status`.
 //! Depends-on: crates=[humaux-testkit, postgres, serde_json, uuid]; services=[PostgreSQL(owner),
 //!   HTTP(loopback), UDS(serve), subprocess(humaux-gateway), subprocess(kill)];
-//!   env=[CARGO_BIN_EXE_humaux-gateway, HUMAUX_GATEWAY_METRICS_ADDR, HUMAUX_GATEWAY_PG_DSN, HUMAUX_TEST_PG_DSN,
+//!   env=[CARGO_BIN_EXE_humaux-gateway, HUMAUX_GATEWAY_METRICS_ADDR, HUMAUX_GATEWAY_PG_DSN, HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS, HUMAUX_TEST_PG_DSN,
 //!   HUMAUX_TEST_QDRANT_PORT]; modules=[gateway::bootstrap, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [every listener port is taken free at run time on 127.0.0.1 and every socket is the test's own; the
@@ -34,7 +34,7 @@ const METRICS_ADDR: &str = "HUMAUX_GATEWAY_METRICS_ADDR";
 /// The test's refresh interval; every "within" bound below is derived from it.
 const INTERVAL: Duration = Duration::from_secs(1);
 const START: Duration = Duration::from_secs(15);
-const GATEWAY_FAMILIES: [&str; 14] = [
+const GATEWAY_FAMILIES: [&str; 21] = [
     "degrade_total",
     "humaux_retrieval_requests_total",
     "retrieval_completeness_total",
@@ -50,6 +50,13 @@ const GATEWAY_FAMILIES: [&str; 14] = [
     "cache_evictions_total",
     "cache_bytes",
     "cache_singleflight_waiters",
+    "stage_last_run_timestamp_seconds",
+    "stage_last_success_timestamp_seconds",
+    "stage_last_output_timestamp_seconds",
+    "stage_last_error_class",
+    "stage_processed_count",
+    "stage_output_count",
+    "stage_state",
 ];
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -708,4 +715,59 @@ fn metrics_families_runs_with_an_empty_env() {
     );
     let text = String::from_utf8_lossy(&out.stdout);
     assert_eq!(families_of(&text), GATEWAY_FAMILIES);
+}
+
+/// §39: both real gateway loops export exactly their closed set after completing an iteration.
+#[test]
+fn gateway_stage_iteration_exports_exact_set() {
+    let Some(dsn) = env_or_skip(
+        "gateway_stage_iteration_exports_exact_set",
+        "HUMAUX_GATEWAY_PG_DSN",
+        ExternalDep::Postgres,
+    ) else {
+        return;
+    };
+    let (bind, ops) = (free_addr(), free_addr());
+    let mut env = base_env(&dsn, bind, ops);
+    env.insert(
+        "HUMAUX_GATEWAY_SESSION_LOCK_CHECK_SECONDS".into(),
+        "1".into(),
+    );
+    let _gateway = Gateway::start(&env);
+    let initial = get(ops, "/metrics").expect("initial metrics").2;
+    let readiness = "stage_last_run_timestamp_seconds{stage=\"gateway_readiness_refresh\"}";
+    let first = initial
+        .lines()
+        .find_map(|line| line.strip_prefix(readiness)?.trim().parse::<f64>().ok())
+        .unwrap();
+    let names = ["gateway_singleton_heartbeat", "gateway_readiness_refresh"];
+    let series = |name: &str| format!("stage_last_success_timestamp_seconds{{stage=\"{name}\"}}");
+    let answer = poll(ops, "/metrics", 6 * INTERVAL, |(_, _, body)| {
+        body.lines()
+            .find_map(|line| line.strip_prefix(readiness)?.trim().parse::<f64>().ok())
+            .is_some_and(|t| t > first)
+            && names.iter().all(|name| {
+                body.lines().any(|line| {
+                    line.strip_prefix(&series(name))
+                        .and_then(|v| v.trim().parse::<f64>().ok())
+                        .is_some_and(|v| v > 0.0)
+                })
+            })
+    })
+    .expect("metrics response");
+    let rows: Vec<_> = answer
+        .2
+        .lines()
+        .filter(|line| line.starts_with("stage_last_success_timestamp_seconds{"))
+        .collect();
+    assert_eq!(rows.len(), 2, "closed stage set: {rows:?}");
+    for (row, name) in rows.iter().zip(names) {
+        let value = row
+            .strip_prefix(&series(name))
+            .expect(name)
+            .trim()
+            .parse::<f64>()
+            .unwrap();
+        assert!(value > 0.0, "{name}: recording absent: {row}");
+    }
 }

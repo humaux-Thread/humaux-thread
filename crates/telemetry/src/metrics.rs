@@ -2,7 +2,7 @@
 //!   0.0.4 encoder, and the std-only loopback listener that serves `/metrics` and `/status` (ADR-0061 D-A, D-B).
 //! Depends-on: crates=[humaux-domain]; services=[HTTP(loopback)]; env=[]; modules=[domain::error, telemetry::degrade]
 //! Called-by: [admin::cell_resources, admin::ops_status, consolidation-worker::main, gateway::bootstrap,
-//!   gateway::guard, gateway::main, humaux-telemetry, maintenance::health_serve, maintenance::resident, maintenance::serve,
+//!   gateway::guard, gateway::main, gateway::status, humaux-telemetry, maintenance::health_serve, maintenance::resident, maintenance::serve,
 //!   private-worker::distill, private-worker::main, retrieval-worker::main, retrieval::completeness,
 //!   telemetry::admission, telemetry::cache, telemetry::degrade, telemetry::dr, telemetry::health, telemetry::host, tests]
 //! Invariants: [every exported family is a `families::*` const and nowhere else; label values are `&'static str`
