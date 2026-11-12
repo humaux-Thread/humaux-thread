@@ -18157,6 +18157,18 @@ modules naming it:
 - `xtask::main`
 - `xtask::tests::version`
 
+### xtask → `syn` (normal)
+why: §53.3 syntax-only Outcome fallback scan, reuse the workspace parser
+
+modules naming it:
+- `xtask::architecture_check`
+
+### xtask → `proc-macro2` (normal)
+why: source line diagnostics and opaque macro token groups
+
+modules naming it:
+- `xtask::architecture_check`
+
 ### xtask → `humaux-maintenance` (dev)
 why: the throwaway-database guard (test-support feature) the lane and seed tests share with the moved migrate tests
 
