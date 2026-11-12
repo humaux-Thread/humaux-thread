@@ -620,6 +620,7 @@ written by:
 executed by:
 - (no process): `adapters::billing_processor_repo`
 - (no process): `adapters::tests::billing_doors`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -1619,6 +1620,7 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -1627,6 +1629,7 @@ written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -1697,6 +1700,7 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `adapters::request_guard_repo`
@@ -2851,6 +2855,7 @@ written by:
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -2903,6 +2908,7 @@ written by:
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::plan_catalog`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -4856,11 +4862,13 @@ read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::facet_contract`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::billing_repo`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -5088,6 +5096,7 @@ written by:
 - (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::health_serve`
 - (no process): `maintenance::tests::i4_scan`
 - (no process): `maintenance::tests::partitions`

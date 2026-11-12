@@ -5502,6 +5502,7 @@ written by:
 executed by:
 - (no process): `adapters::billing_processor_repo`
 - (no process): `adapters::tests::billing_doors`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -5904,6 +5905,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -5912,6 +5914,7 @@ written by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -5931,6 +5934,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `adapters::request_guard_repo`
@@ -6425,6 +6429,7 @@ written by:
 - (no process): `adapters::tests::entitlement_projector`
 - (no process): `adapters::tests::plan_catalog`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -6437,6 +6442,7 @@ written by:
 - (no process): `adapters::tests::billing_repo`
 - (no process): `adapters::tests::plan_catalog`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -7159,11 +7165,13 @@ read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::facet_contract`
 - (no process): `billing-worker::tests::process`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::billing_repo`
+- (no process): `maintenance::tests::billing_legacy_migration`
 
 executed by:
 
@@ -7301,6 +7309,7 @@ written by:
 - (no process): `gateway::tests::memory_get_frontier`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::health_serve`
 - (no process): `maintenance::tests::i4_scan`
 - (no process): `maintenance::tests::partitions`
@@ -8982,6 +8991,7 @@ read by:
 - (no process): `adapters::tests::health_snapshot`
 - (no process): `adapters::tests::support::throwaway_db`
 - (no process): `admin::tests::probes`
+- (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
 - (no process): `maintenance::tests::reasoning_routes`
 - (no process): `maintenance::tests::support::throwaway`
@@ -13054,6 +13064,7 @@ executed by:
 - `maintenance::roles`
 - `maintenance::switch_visible`
 - `maintenance::tests::backup`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::health_serve`
 - `maintenance::tests::i4_scan`
@@ -13289,6 +13300,7 @@ executed by:
 - `maintenance::roles`
 - `maintenance::serve`
 - `maintenance::switch_visible`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::i4_scan`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
@@ -13571,6 +13583,7 @@ executed by:
 
 ### `subprocess(humaux-maintenance)`
 - `maintenance::tests::backup`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::exit_codes`
 - `maintenance::tests::health_serve`
@@ -17247,6 +17260,7 @@ modules naming it:
 - `maintenance::roles`
 - `maintenance::serve`
 - `maintenance::switch_visible`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
 - `maintenance::tests::partitions`
@@ -17265,6 +17279,7 @@ modules naming it:
 - `maintenance::projection_serve`
 - `maintenance::serve`
 - `maintenance::switch_visible`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::measure`
 - `maintenance::tests::partitions`
 - `tests`
@@ -17301,6 +17316,7 @@ modules naming it:
 - `maintenance::resident`
 - `maintenance::serve`
 - `maintenance::switch_visible`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::measure`
 - `maintenance::tests::partitions`
 - `maintenance::tests::retention`
@@ -17331,6 +17347,7 @@ modules naming it:
 - `maintenance::serve`
 - `maintenance::switch_visible`
 - `maintenance::tests::backup`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::health_serve`
 - `maintenance::tests::measure`
@@ -17360,6 +17377,7 @@ modules naming it:
 - `maintenance::rebuild_cli`
 - `maintenance::serve`
 - `maintenance::switch_visible`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
@@ -17401,6 +17419,7 @@ modules naming it:
 - `maintenance::rls_check`
 - `maintenance::switch_visible`
 - `maintenance::tests::backup`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
@@ -17487,6 +17506,7 @@ modules naming it:
 - `maintenance::serve`
 - `maintenance::switch_visible`
 - `maintenance::tests::backup`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::health_serve`
 - `maintenance::tests::measure`
@@ -17510,6 +17530,7 @@ modules naming it:
 - `maintenance::rebuild_cli`
 - `maintenance::serve`
 - `maintenance::switch_visible`
+- `maintenance::tests::billing_legacy_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
@@ -18510,6 +18531,17 @@ default run:
 - subprocess
 
 ### `bins/maintenance/tests/backup.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+- subprocess
+
+default run:
+- PostgreSQL
+- subprocess
+
+### `bins/maintenance/tests/billing_legacy_migration.rs`
 db-bound (default run): yes
 
 services (computed):
