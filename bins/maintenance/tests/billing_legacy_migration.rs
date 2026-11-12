@@ -55,7 +55,10 @@ fn seed(db: &mut Client) -> (Uuid, Uuid, Vec<Uuid>) {
     db.execute("INSERT INTO control.tenants(tenant_id,name,state) VALUES ($1,'m04 migration fixture','ACTIVE')", &[&tenant]).unwrap();
     db.execute(
         "INSERT INTO control.plans(plan_id,plan_key) VALUES ($1,$2)",
-        &[&plan, &format!("m04_{}", tenant.simple())],
+        &[
+            &plan,
+            &format!("m04_{}", &tenant.simple().to_string()[..28]),
+        ],
     )
     .unwrap();
     for (id, version, template) in [(paid_version, 1_i32, &paid), (free_version, 2_i32, &free)] {
