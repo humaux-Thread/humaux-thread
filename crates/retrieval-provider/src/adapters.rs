@@ -10,7 +10,7 @@
 //!   PostgreSQL(role_retrieval_worker), DashScope];
 //!   env=[HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256,
 //!   HUMAUX_TEST_GITLEAKS_VERSION, HUMAUX_TEST_PG_DSN]; modules=[adapters::disclosure, adapters::model_call_ledger,
-//!   adapters::postgres, adapters::provider_budget, adapters::retrieval_query_source, domain::dataclass,
+//!   adapters::egress_policy, adapters::postgres, adapters::provider_budget, adapters::retrieval_query_source, domain::dataclass,
 //!   domain::egress, domain::error, domain::ids, domain::ledger, infra-egress::http, retrieval-provider::admission,
 //!   retrieval-provider::contract, retrieval-provider::metrics]
 //! Called-by: [retrieval-worker::main, tests]
@@ -616,6 +616,7 @@ impl DashscopeEmbeddingProvider {
         estimated_input_tokens: u64,
         card_sources: &[DisclosureSource],
     ) -> Result<PreparedEmbeddingDispatch, ErrorCode> {
+        humaux_adapters::egress_policy::authorize_retrieval(&self.pool, tenant_id).await?;
         let dispatch_payload = match query_call {
             Some((_, queries)) => EmbeddingDispatchPayload::Query(
                 retrieval_query_source::SerializedRetrievalQueryBatch::new(

@@ -49,6 +49,7 @@ pub mod dedup_repo;
 pub mod disclosure;
 pub mod distill_reasoner;
 pub mod distill_repo;
+pub mod egress_policy;
 pub mod email;
 pub mod entitlement_repo;
 pub mod evidence_repo;
