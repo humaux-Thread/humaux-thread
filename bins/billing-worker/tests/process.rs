@@ -782,7 +782,24 @@ fn cancellation_ends_third_version_onboarding_grants() {
 /// A paid subscription's pre-0305 PLAN pointers survive a late canceled sibling event.
 #[test]
 fn legacy_paid_grants_survive_late_canceled_sibling() {
-    run_db_fixture::<Fixture, _>("legacy_paid_grants_survive_late_canceled_sibling", |mut h| {
+    legacy_paid_grants(false);
+}
+
+/// Upgrade an already populated 0305 state before exercising the installed 0306 door.
+#[test]
+fn legacy_paid_grants_survive_0305_upgrade() {
+    legacy_paid_grants(true);
+}
+
+fn legacy_paid_grants(upgrade: bool) {
+    run_db_fixture::<Fixture, _>("legacy_paid_grants", |mut h| {
+        if upgrade {
+            h.admin
+                .batch_execute(include_str!(
+                    "../../../migrations/0305_billing_own_subscription.sql"
+                ))
+                .unwrap();
+        }
         let tenant = h.tenant;
         deliver(&mut h, "legacy_old", "canceled", tenant);
         assert!(process(&h, "canceled"));
@@ -794,6 +811,13 @@ fn legacy_paid_grants_survive_late_canceled_sibling() {
         let plan = h.config.plans["prod_fixture"];
         assert_eq!(h.admin.execute("UPDATE control.entitlement_grants SET source_ref_id=$1 WHERE tenant_id=$2 AND source='PLAN' AND revoked_at IS NULL", &[&plan, &tenant]).unwrap(), 2);
         let grants: Value = h.admin.query_one("SELECT jsonb_agg(grant_id ORDER BY grant_id) FROM control.entitlement_grants WHERE tenant_id=$1 AND source_ref_id=$2 AND revoked_at IS NULL", &[&tenant, &plan]).unwrap().get(0);
+        if upgrade {
+            h.admin
+                .batch_execute(include_str!(
+                    "../../../migrations/0306_billing_legacy_guard.sql"
+                ))
+                .unwrap();
+        }
         deliver(&mut h, "legacy_late", "canceled", tenant);
         assert!(process(&h, "canceled"));
         let after: Value = h.admin.query_one("SELECT coalesce(jsonb_agg(grant_id ORDER BY grant_id),'[]'::jsonb) FROM control.entitlement_grants WHERE tenant_id=$1 AND source_ref_id=$2 AND revoked_at IS NULL", &[&tenant, &plan]).unwrap().get(0);
