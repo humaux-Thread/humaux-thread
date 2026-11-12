@@ -28,7 +28,7 @@ sha2 = "0.11"
 # §33: SDK and HTTP wire types stay inside the Protocol adapter.
 # Native 2026-07-28 only; no provider/client/auth SDK feature is enabled.
 # why: MCP-over-HTTP server framework this adapter owns; used-by: [protocol::mcp]
-rmcp = { version = "=3.1.4", default-features = false, features = ["server", "transport-streamable-http-server"] }
+rmcp = { version = "=3.9.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 # why: HTTP router the native MCP adapter is built on; used-by: [protocol::mcp, tests]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 # why: object-safe async traits at the rmcp/Axum boundary; used-by: [protocol::mcp, tests]
