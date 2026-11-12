@@ -1,5 +1,5 @@
 //! `maintenance::tests::billing_legacy_migration` — real migrator and legacy PLAN guard.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, tokio, uuid]; services=[PostgreSQL(disposable), subprocess(humaux-maintenance)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_MAINTENANCE_PG_DSN]; modules=[maintenance::tests::support::throwaway]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, postgres, serde_json, tokio, uuid]; services=[PostgreSQL(owner) r=[ops.schema_migrations, control.entitlement_snapshots, control.subscriptions, control.entitlement_grants] w=[control.tenants, control.plans, control.plan_versions, control.subscriptions, control.entitlement_grants] x=[control.billing_apply_subscription], PostgreSQL(role_maintenance), subprocess(humaux-maintenance)]; env=[HUMAUX_MIGRATOR_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::entitlement_repo, adapters::postgres, domain::ids, maintenance::tests::support::throwaway]
 //! Called-by: [cargo-test]
 //! Invariants: [fresh CI database or isolated empty fixture only; no provider calls]
 //! Spec: Baseline §71.3; §76; §79.2
@@ -32,6 +32,7 @@ fn migrate(dsn: &str, through: bool) {
     } else {
         &["migrate"]
     };
+    // dep: subprocess(humaux-maintenance) — production migration CLI on a disposable database.
     let result = throwaway::run(args, &[("HUMAUX_MIGRATOR_PG_DSN", dsn.to_owned())]);
     let stderr = String::from_utf8_lossy(&result.stderr);
     for line in stderr.lines().filter(|l| {
@@ -82,11 +83,13 @@ fn recompute(dsn: &str, tenant: Uuid) -> Value {
         if dsn.contains('?') { '&' } else { '?' }
     );
     rt.block_on(async {
+        // dep: PostgreSQL(role_maintenance) — recompute through the scoped projector.
         let pool = MaintenanceDbPool::connect(&role_dsn).await.unwrap();
         entitlement_repo::recompute(&pool, TenantId(tenant))
             .await
             .unwrap();
     });
+    // dep: PostgreSQL(owner) — read back the disposable fixture snapshot.
     let mut db = Client::connect(dsn, NoTls).unwrap();
     db.query_one(
         "SELECT effective FROM control.entitlement_snapshots WHERE tenant_id=$1",
@@ -121,6 +124,7 @@ fn exercise(db: &mut Client, dsn: &str, tenant: Uuid, free: Uuid, mut ids: Vec<U
 #[test]
 fn fresh_migrator_installed_guard() {
     let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("CI disposable postgres DSN");
+    // dep: PostgreSQL(owner) — CI disposable database, checked before writes.
     let mut db = Client::connect(&dsn, NoTls).unwrap();
     let name: String = db
         .query_one("SELECT current_database()", &[])
