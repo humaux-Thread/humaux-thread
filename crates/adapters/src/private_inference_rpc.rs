@@ -1,6 +1,6 @@
 //! `adapters::private_inference_rpc` — §11.8 ADR-0012-pattern repository for `ops.private_inference_rpc_calls`
 //!   (migration 0143).
-//! Depends-on: crates=[humaux-application, sqlx]; services=[PostgreSQL(any) w=[ops.private_inference_rpc_calls]]; env=[]; modules=[adapters::postgres, application::consolidate]
+//! Depends-on: crates=[humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(any) w=[ops.private_inference_rpc_calls]]; env=[]; modules=[adapters::postgres, application::consolidate, domain::error]
 //! Called-by: [consolidation-worker::inference_client, private-worker::inference_rpc, tests]
 //! Invariants: [the consolidation side only INSERTs/SELECTs its registrations (role_consolidation_worker) and the
 //!   private-worker side only claims/finishes them (role_private_worker); both set humaux.tenant_id first; bad input
@@ -23,6 +23,15 @@ use std::time::Duration;
 
 use crate::postgres::{ConsolidationDbPool, PrivateWorkerDbPool};
 
+/// §39 / §11.8: persist and replay the origin class beside the redacted RPC failure.
+pub fn reasoning_failure(error: &humaux_application::consolidate::PrivateReasoningError) -> String {
+    for code in humaux_domain::error::ErrorCode::ALL {
+        if Some(code.as_str()) == error.class() {
+            return format!("{}: {error}", code.as_str());
+        }
+    }
+    error.to_string()
+}
 #[derive(Debug)]
 pub enum PrivateInferenceRpcError {
     Db(sqlx::Error),
