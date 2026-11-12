@@ -11,9 +11,8 @@
 //!   domain::error, domain::identity, domain::ids, humaux-testkit, projection::serving, projection::stream,
 //!   retrieval::compiler, retrieval::handoff]
 //! Called-by: [cargo-test]
-//! Invariants: [two assemblies of one snapshot must be byte-identical, with snapshot-token equality asserted first (a
-//!   concurrent writer is a precondition failure, not a regression); skip_or_fail turns a missing DB into a failure
-//!   under HUMAUX_REQUIRE_DB]
+//! Invariants: [snapshot byte-identity is checked in the owning-module imported-snapshot test; all other G80
+//!   business assertions stay here; skip_or_fail turns a missing DB into a failure under HUMAUX_REQUIRE_DB]
 //! Spec: ADR-0047; ADR-0050; ADR-0006
 //!
 //! 同快照字节判据迁到 owning-module 的 `context_repo::g8031_snapshot_tests`，通过

@@ -77,8 +77,8 @@ fn same_snapshot_assembles_byte_identical_handoffs_with_the_constraint_present()
         .commit()
         .expect("actor commit acknowledgement between reads");
     eprintln!("G8031 actor xid={xid} committed between independent readers; fixture untouched");
-    // SINGLE_POINT_IMPORT_MUTATION: red ref omits only the second import.
-    let h2 = rt.block_on(imported_read(&f.dsn, f.tenant_id, &snapshot, false));
+    // Both independent reads import the same still-live exported snapshot.
+    let h2 = rt.block_on(imported_read(&f.dsn, f.tenant_id, &snapshot, true));
     exporter
         .commit()
         .expect("exporter release only after both readers commit");
