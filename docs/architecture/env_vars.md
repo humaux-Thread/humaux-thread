@@ -3346,6 +3346,7 @@ modules:
 - `maintenance::roles`
 - `maintenance::serve`
 - `maintenance::switch_visible`
+- `maintenance::tests::billing_slot_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::measure`
 - `maintenance::tests::onboarding`
@@ -4003,6 +4004,7 @@ modules:
 - `maintenance::rls_check`
 - `maintenance::roles`
 - `maintenance::tests::billing_legacy_migration`
+- `maintenance::tests::billing_slot_migration`
 - `maintenance::tests::drill`
 - `maintenance::tests::partitions`
 - `maintenance::tests::retention`
@@ -6225,6 +6227,7 @@ modules:
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
+- `adapters::tests::billing_slot_handover`
 - `adapters::tests::code_rls`
 - `adapters::tests::code_schema`
 - `adapters::tests::confirm_token_retention`
@@ -6343,6 +6346,7 @@ modules:
 - `maintenance::rls_check`
 - `maintenance::switch_visible`
 - `maintenance::tests::billing_legacy_migration`
+- `maintenance::tests::billing_slot_migration`
 - `maintenance::tests::onboarding`
 - `maintenance::tests::reasoning_routes`
 - `maintenance::tests::roles_hygiene`
