@@ -391,6 +391,8 @@ fn acl_scope_and_lasting_reversal() {
             )
             .await;
             assert!(matches!(result, Err(ErrorCode::Forbidden)));
+            tx.rollback().await.unwrap();
+            let mut tx = repo::begin_processor(&h.pool).await.unwrap();
             repo::scope_tenant(&mut tx, tenant).await.unwrap();
             let observation = repo::prepare_slot_in_txn(
                 &mut tx,
