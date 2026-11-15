@@ -3,7 +3,7 @@
 //!   [`affects_for_memories_in_txn`]) every reader shares — the PG hydrate re-check (`read_materialize`), the
 //!   projection worker's payload build, and `memory.get` / `memory.enumerate` / the recall rerank.
 //! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[private.memory_evidence, private.memory_records] w=[private.evidence_affects, private.memory_affects]]; env=[]; modules=[adapters::confirm_token_repo, adapters::memory_governance_repo, adapters::postgres, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::affect, domain::affect, domain::authority, domain::error, domain::identity, domain::subject, projection::stream]
-//! Called-by: [adapters::distill_reasoner, adapters::memory_governance_repo, adapters::projection_worker, adapters::read_materialize, adapters::remember, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, private-worker::distill, tests]
+//! Called-by: [adapters::distill_reasoner, adapters::memory_governance_repo, adapters::projection_worker, adapters::read_materialize, adapters::remember, gateway::mcp_application, gateway::memory, gateway::recall, private-worker::distill, tests]
 //! Invariants: [affect rows are INSERT-only through the one row issuer insert_rows (declared rows via insert_in_txn,
 //!   inferred DISTILL rows via insert_inferred_in_txn) and never decayed on write; the one read lets an EXPLICIT row
 //!   shadow every DISTILL row of its memory; everything runs under
@@ -62,16 +62,8 @@ pub struct AffectRow {
     pub half_life: Option<MoodHalfLife>,
 }
 
-/// One annotation to append (`memory.annotate_affect.affects[]` / `memory.correct.affects[]`).
-/// `target_subject_key` is an exact trusted key resolved under RLS (rule 2); the annotation's own
-/// `target_subject` is an explicit id (rule 1). At most one of the two.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AffectInput {
-    pub annotation: AffectAnnotation,
-    /// Absent ⇒ `now()` at write time.
-    pub observed_at: Option<OffsetDateTime>,
-    pub target_subject_key: Option<SubjectKey>,
-}
+/// Application-owned annotation input (§8.5.1).
+pub use humaux_application::remember::AffectInput;
 
 /// Result of [`annotate`]: the new immutable rows and the re-projection ticket they issued.
 #[derive(Debug, Clone, PartialEq, Eq)]

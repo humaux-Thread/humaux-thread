@@ -1,12 +1,9 @@
 //! `adapters::remember` — T3.2 `remember` (§34 / §34.1 / §60 transaction B).
-//! Depends-on: crates=[humaux-domain, humaux-projection, serde_json, sqlx]; services=[PostgreSQL(role_gateway)
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, sqlx]; services=[PostgreSQL(role_gateway)
 //!   r=[control.private_reasoning_domains, ops.outbox, private.evidence_sources, projection.stream_log] w=[private.events, private.evidence_projects, private.evidence_sources,
 //!   private.evidence_task_runs, private.ingest_tickets] x=[private.declared_project_visible]];
-//!   env=[]; modules=[adapters::affect_repo, adapters::coord_repo, adapters::evidence_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres,
-//!   adapters::retrieve,
-//!   adapters::stream_repo, adapters::subject_repo, domain::affect, domain::attribution, domain::continuity,
-//!   domain::error, domain::evidence, domain::identity, domain::ids, domain::source, domain::subject, projection::stream]
-//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::projection_worker, gateway::guard, gateway::remember, tests]
+//!   env=[]; modules=[adapters::affect_repo, adapters::coord_repo, adapters::evidence_repo, adapters::memory_repo, adapters::note_repo, adapters::operation_receipt, adapters::postgres, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::remember, domain::attribution, domain::continuity, domain::coordination, domain::error, domain::evidence, domain::identity, domain::ids, domain::source, projection::stream]
+//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::projection_worker, gateway::guard, tests]
 //! Invariants: [role_gateway's single Evidence write path, one transaction in §60 order; ingest tickets are only
 //!   UPDATEd (no INSERT grant); the stream ticket and its outbox row come only from stream_repo::issue_ticket_in_txn
 //!   (M09 D1), after the Evidence and note writes; an exhausted batch or non-future token expiry is a RememberError
@@ -35,18 +32,16 @@ use sqlx::Row;
 use sqlx::types::Uuid;
 use sqlx::types::time::OffsetDateTime;
 
-use humaux_domain::affect::MoodHalfLife;
 use humaux_domain::attribution::SourceKind;
 use humaux_domain::continuity::ProjectId;
 use humaux_domain::error::ErrorCode;
-use humaux_domain::evidence::{EvidenceOriginClass, EvidencePayloadSha256};
+use humaux_domain::evidence::EvidencePayloadSha256;
 use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::TenantId;
 use humaux_domain::source::{SourceIdentity, classify_source};
-use humaux_domain::subject::SubjectDeclaration;
 use humaux_projection::stream::StreamKey;
 
-use crate::affect_repo::{self, AffectInput, AffectParent};
+use crate::affect_repo::{self, AffectParent};
 use crate::coord_repo::VerifiedTaskRun;
 use crate::evidence_repo::{self, NewEvidence, OccurredAt};
 use crate::memory_repo::MemoryAttribution;
@@ -138,85 +133,8 @@ impl std::fmt::Display for RememberError {
 
 impl std::error::Error for RememberError {}
 
-/// `remember()` input — already-resolved/validated fields for `private.evidence_objects` +
-/// `private.events`, one call = one `evidence_kind = 'EVENT'` row pair (the only subtype this
-/// task's `remember` MCP contract produces, §34; `'ARTIFACT'` rows are a different write path,
-/// out of scope). Mapping raw MCP `remember(content, kind, source, ...)` input into this shape
-/// (client-facing `kind` string -> one of the 9 `event_kind` CHECK values, `source.type` ->
-/// [`EvidenceOriginClass`], etc.) is the MCP handler / `application::remember`'s job, not this
-/// module's — §60's own pseudocode also starts from an opaque `cmd`, not raw JSON.
-#[derive(Debug, Clone)]
-pub struct RememberCommand {
-    pub tenant_id: Uuid,
-    /// Authenticated actor from the trusted gateway request context. This is deliberately
-    /// distinct from `visibility_user_id`: workspace-shared Evidence has no visibility user,
-    /// but RLS still needs the acting member in `humaux.user_id`.
-    pub authorization_user_id: Option<Uuid>,
-    /// `projection.stream_log` / `stream_checkpoints` locator (§15.1's other five PK columns,
-    /// beyond `tenant_id`) — which pipeline this Evidence's stream_seq is issued against.
-    pub scope_kind: String,
-    pub scope_id: Uuid,
-    pub domain: String,
-    pub projection_kind: String,
-    pub projection_version: String,
-    /// Explicit policy/configuration input for §15.5's token `expiry or policy` field.
-    /// It is validated against the one issuance clock captured by [`remember`] before any DB
-    /// write. This is an API break: callers must provide their own configured/policy expiry;
-    /// the adapter intentionally has no business TTL default.
-    pub consistency_token_expires_at: OffsetDateTime,
-    /// `Some` = batch write (redeem one ticket, §34.1 row 1); `None` = single sync write, ticket
-    /// untouched (§34.1 row 3, `expected_source = "none"`).
-    pub batch_id: Option<Uuid>,
-    /// §48.0① sole-constructor anchor — accepted as the already-hashed
-    /// [`EvidencePayloadSha256`] (never a raw `[u8; 32]`) so this command struct cannot be
-    /// built with a digest that skipped `evidence::payload_sha256`'s "no trim/NFC/NFKC/
-    /// transcode" contract; the type has no `pub` field and no second constructor, so the only
-    /// way a caller has one to put here is to have called that function.
-    pub payload_sha256: EvidencePayloadSha256,
-    pub data_class: String,
-    pub origin_class: EvidenceOriginClass,
-    pub origin_principal_id: Option<Uuid>,
-    pub origin_connector_id: Option<Uuid>,
-    pub visibility_class: String,
-    pub visibility_user_id: Option<Uuid>,
-    pub visibility_workspace_id: Option<Uuid>,
-    pub reasoning_domain_id: Uuid,
-    pub occurred_at: Option<OffsetDateTime>,
-    pub event_kind: String,
-    pub event_payload: serde_json::Value,
-    /// §6.1.3 rules 1/2 (ADR-0028): the explicit `subject_ids` / `subject_keys` this Evidence is
-    /// about. Resolved under the tenant's RLS before the first write and recorded on
-    /// `private.evidence_subjects` in the same transaction; an unknown id/key is
-    /// [`RememberError::Subject`]`(INVALID_INPUT)` and nothing is written.
-    pub subjects: SubjectDeclaration,
-    /// §8.5.1 (ADR-0030 D-C): the affects declared at `remember.put`. Their `target_subject`
-    /// ids/keys are resolved with `subjects` BEFORE the first write; the rows land on
-    /// `private.evidence_affects` in this same transaction (0157) and reach every memory born
-    /// from this Evidence through the `memory_evidence` PRIMARY trigger. Empty = none.
-    pub affects: Vec<AffectInput>,
-    /// The frozen MOOD half-life policy stamped onto MOOD rows; required only when `affects`
-    /// carries a MOOD ([`RememberError::Affect`]`(DEPENDENCY_UNAVAILABLE)` otherwise).
-    pub mood_half_life: Option<MoodHalfLife>,
-}
-
-/// `remember()`'s accepted result (§34 / §15.5, verbatim field set).
-#[derive(Debug, Clone)]
-pub struct RememberAccepted {
-    pub evidence_id: Uuid,
-    /// §34: "通过 processing_handle / memory / context 查询处理结果" — opaque to the caller,
-    /// currently just the evidence id's string form (one Evidence : one handle, §34's own
-    /// "一个 Evidence 后续可产生多条 memory_id" is a *query-time* fan-out, not something this
-    /// handle itself encodes).
-    pub processing_handle: String,
-    /// §15.5 opaque read-your-writes token, emitted only after the Evidence transaction commits.
-    /// Its one encoder is [`crate::retrieve::issue_consistency_token`]; it is not an
-    /// authentication token, and `recall` validates tenant/workspace against the authenticated
-    /// request context separately.
-    pub consistency_token: String,
-    pub ticket_ordinal: Option<i32>,
-    pub batch_remaining: Option<i64>,
-    pub status: &'static str,
-}
+/// Application-owned intake and accepted response (§34 / §58).
+pub use humaux_application::remember::{RememberAccepted, RememberCommand};
 
 /// Installs both RLS GUCs for this transaction. The user setting is always overwritten so a
 /// pooled connection never inherits a prior request; a headless write uses the UUID sentinel
@@ -829,6 +747,57 @@ pub fn classify_sourced_command(
     }
     cmd.data_class = classified.data_class.as_str().to_owned();
     Ok(owner)
+}
+
+/// PostgreSQL composition for the whole remember operation (§34.0.1 / §60).
+pub struct PostgresRememberStore<'a> {
+    pool: &'a RuntimeDbPool,
+}
+
+impl<'a> PostgresRememberStore<'a> {
+    /// Bind the runtime role; transaction ownership remains inside operation_receipt (§60).
+    pub fn new(pool: &'a RuntimeDbPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait::async_trait]
+impl humaux_application::remember::RememberStore for PostgresRememberStore<'_> {
+    async fn store(
+        &self,
+        authorization: &AuthorizationScope,
+        request: humaux_application::remember::AtomicRememberRequest,
+        task_run: Option<(
+            humaux_domain::coordination::TaskRunId,
+            humaux_domain::coordination::FencingToken,
+        )>,
+        project: Option<ProjectId>,
+        source: Option<SourceIdentity>,
+    ) -> Result<
+        humaux_application::remember::AtomicRememberResult,
+        humaux_application::remember::SourcedPutError,
+    > {
+        match source {
+            Some(source) => {
+                crate::operation_receipt::remember_sourced_atomically(
+                    self.pool,
+                    authorization,
+                    request,
+                    &source,
+                )
+                .await
+            }
+            None => crate::operation_receipt::remember_for_task_run_atomically(
+                self.pool,
+                authorization,
+                request,
+                task_run,
+                project,
+            )
+            .await
+            .map_err(Into::into),
+        }
+    }
 }
 
 /// Public one-shot wrapper. It preserves the original accepted response and owns the commit;

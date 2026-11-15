@@ -1,8 +1,5 @@
 //! `gateway::remember` — Guarded gateway entry point for one authenticated `remember` operation.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, serde_json, time,
-//!   uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::remember,
-//!   domain::affect, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids,
-//!   domain::source, domain::subject, projection::stream]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, time, uuid]; services=[]; env=[]; modules=[application::remember, domain::affect, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::source, domain::subject, projection::stream]
 //! Called-by: [gateway::bootstrap, gateway::context, gateway::mcp_application, tests]
 //! Invariants: [the protocol layer decodes wire input and the request guard produces the AuthorizationScope; this module never deserializes either boundary itself]
 //! Spec: Baseline §11.2.1; §15.5; §78.2; ADR-0020; ADR-0032; ADR-0054
@@ -12,8 +9,8 @@
 
 use std::time::Duration;
 
-use humaux_adapters::affect_repo::AffectInput;
-use humaux_adapters::remember::RememberCommand;
+use humaux_application::remember::AffectInput;
+use humaux_application::remember::RememberCommand;
 use humaux_domain::affect::MoodHalfLife;
 use humaux_domain::dataclass::DataClass;
 use humaux_domain::error::ErrorCode;

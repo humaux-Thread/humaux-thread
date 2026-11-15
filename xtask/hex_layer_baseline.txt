@@ -19,7 +19,6 @@ bins/gateway/src/guard.rs:humaux_adapters::operation_receipt::AtomicRememberRequ
 bins/gateway/src/guard.rs:humaux_adapters::operation_receipt::AtomicRememberResult
 bins/gateway/src/guard.rs:humaux_adapters::operation_receipt::SourcedPutError
 bins/gateway/src/guard.rs:humaux_adapters::quota_repo::QuotaReservation
-bins/gateway/src/guard.rs:humaux_adapters::remember::RememberCommand
 bins/gateway/src/guard.rs:humaux_adapters::request_guard_repo::AuditTenant
 bins/gateway/src/guard.rs:humaux_adapters::request_guard_repo::EffectiveEntitlementFacts
 bins/gateway/src/mcp_application.rs:humaux_adapters::confirm_token_repo::ConfirmationClaim
@@ -90,5 +89,3 @@ bins/gateway/src/recall.rs:humaux_adapters::retrieve::PointSlots
 bins/gateway/src/recall.rs:humaux_adapters::retrieve::QueryHmac
 bins/gateway/src/recall.rs:humaux_adapters::retrieve::RetrieveError
 bins/gateway/src/recall.rs:humaux_adapters::serving_repo::UnservedLedger
-bins/gateway/src/remember.rs:humaux_adapters::affect_repo::AffectInput
-bins/gateway/src/remember.rs:humaux_adapters::remember::RememberCommand

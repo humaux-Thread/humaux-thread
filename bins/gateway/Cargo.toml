@@ -9,7 +9,7 @@ publish.workspace = true
 edition = "core"
 
 [dependencies]
-# why: typed PG pools, repositories and wire adapters this package drives; used-by: [gateway::auth, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, tests]
+# why: typed PG pools, repositories and wire adapters this package drives; used-by: [gateway::auth, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::retrieval_embedding_client, tests]
 humaux-adapters = { path = "../../crates/adapters" }
 # why: use-case layer (ports + orchestration) this package wires; used-by: [gateway::bootstrap, gateway::continuity, gateway::guard, gateway::recall, gateway::retrieval_embedding_client, tests]
 humaux-application = { path = "../../crates/application" }

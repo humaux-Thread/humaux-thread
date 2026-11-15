@@ -1,7 +1,7 @@
 //! `adapters::operation_receipt` — §34.0.1 local `remember.put`: one transaction for business, BMO, audit, and
 //!   receipt.
-//! Depends-on: crates=[hex, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::authority, domain::confirm, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source]
-//! Called-by: [gateway::guard, gateway::mcp_application, tests]
+//! Depends-on: crates=[hex, humaux-application, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::authority, domain::confirm, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source]
+//! Called-by: [adapters::remember, gateway::guard, gateway::mcp_application, tests]
 //! Invariants: [receipts are written in the operation's own transaction; a failed COMMIT response is an unknown
 //!   outcome, never permission to repeat the write; tenant/visibility failures are TenantBoundary/NotFound; a note
 //!   replacement checks its receipt before it locks the note head, and consumes its token only under that lock
@@ -19,10 +19,8 @@
 //!
 //! A failed COMMIT response is an unknown outcome, never permission to repeat a write.
 
-use std::time::Duration;
-
 use humaux_domain::{
-    audit::{AuditEvent, AuditEventId, McpAuditAction},
+    audit::{AuditEventId, McpAuditAction},
     authority::MemoryId,
     confirm::DestructiveOp,
     continuity::ProjectId,
@@ -48,7 +46,7 @@ use crate::{
     quota_repo::{self, ReservationStatus, ReserveResult},
     read_gate::visibility_readable,
     read_materialize,
-    remember::{self, RememberAccepted, RememberCommand, RememberError},
+    remember::{self, RememberAccepted, RememberError},
     request_guard_repo::{self, AuditTenant},
     retrieve::{TokenClaims, issue_consistency_token},
 };
@@ -70,46 +68,10 @@ type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 /// spelling. The set lives here once, next to the one statement that reads it.
 pub const TENANT_SHARED_WRITER_ROLES: [&str; 2] = ["OWNER", "ADMIN"];
 
-/// Trusted application inputs. This is not a deserializable MCP request or a credential.
-#[derive(Clone)]
-pub struct AtomicRememberRequest {
-    pub request_id: Uuid,
-    pub idempotency_key: String,
-    pub request_fingerprint: String,
-    pub workspace_id: Option<WorkspaceId>,
-    pub reservation_ttl: Duration,
-    pub replay_ttl: Duration,
-    pub command: RememberCommand,
-    pub finished_audit: AuditEvent,
-}
-
-/// Whether a sourced put wrote new Evidence or pointed its receipt at the Evidence its source identity already held
-/// (ADR-0098 D1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Dedupe {
-    /// This call wrote the Evidence (every unsourced put, and a replay of any key).
-    New,
-    /// The identity already held an Evidence with the same bytes: this call wrote a receipt, an operation and its audit
-    /// rows, and no Evidence, ticket or outbox row.
-    Existing,
-}
-
-#[derive(Debug)]
-pub struct AtomicRememberResult {
-    pub accepted: RememberAccepted,
-    pub replayed: bool,
-    /// [`Dedupe::Existing`] only on a fresh dedupe hit. A replay reports [`Dedupe::New`]: `replayed` is its answer.
-    // ponytail: a replay of a dedupe-hit key does not recompute `Existing`; upgrade path is reading the Evidence's
-    // origin principal against the receipt's when the wire (M06-2) needs the distinction.
-    pub dedupe: Dedupe,
-    /// ADR-0067: the Memory the same transaction wrote (or, on a replay, wrote originally) for a `memory.note_put`;
-    /// `None` for `remember.put`.
-    pub memory_id: Option<Uuid>,
-    /// §18.2: the stored Evidence is `SECRET_MATERIAL` (no card, no vector). On a replay it is read from the stored
-    /// row, so a changed gateway default cannot change the answer for the same idempotency key (PR #7 Codex P2).
-    /// Resolved for `memory.note_put` only; always `false` for `remember.put`.
-    pub secret_material: bool,
-}
+/// Application-owned receipt contract (§34.0.1 / §58).
+pub use humaux_application::remember::{
+    AtomicRememberRequest, AtomicRememberResult, Dedupe, SourcedPutError,
+};
 
 /// ADR-0067 D-J: a `memory.note_put` replacement's own inputs, on top of a create's request and [`NoteIntake`].
 #[derive(Debug, Clone)]
@@ -133,26 +95,6 @@ pub enum NoteReplaceOutcome {
     Confirmable,
     /// `supersedes` is not the note's head: `STALE_NOTE_VERSION`. Nothing was written.
     StaleVersion,
-}
-
-/// Why a sourced put was refused (ADR-0098 D1): the terminal [`ErrorCode`] plus, for a `CONFLICT`, the §52 D-B
-/// sub-reason. It adds no code of its own, so `ErrorCode` stays at 18 codes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SourcedPutError {
-    /// The terminal code; the transaction rolled back.
-    pub code: ErrorCode,
-    /// `Some(SOURCE_VERSION_CONFLICT)` when the source identity already holds different bytes, else `None`. The stored
-    /// bytes are untouched and the idempotency key is left unused.
-    pub conflict_reason: Option<ConflictReason>,
-}
-
-impl From<ErrorCode> for SourcedPutError {
-    fn from(code: ErrorCode) -> Self {
-        Self {
-            code,
-            conflict_reason: None,
-        }
-    }
 }
 
 /// The coordinates a receipt row repeats from the Evidence's accepted ticket (0114/0265 trigger).
