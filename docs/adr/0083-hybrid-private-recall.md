@@ -52,6 +52,8 @@ one correct Memory each.
   without a reranker was replaced the same day by a local rerank lane (see Alternatives rejected for the measurements
   that were recorded here).
 
+> Errata 2026-11-15 (independent-707 P011-F4): the first sentence above ("Rerank is not part of this design") describes the pre-2026-10-22 design only; the same-day ADR-0084 local rerank lane replaced the no-rerank record, so the current design is ADR-0084 (D-A/D-G), not this bullet. See ADR-0084.
+
 Caveats that bound these numbers:
 
 1. The 198 questions are a **development set**: they tuned the old system. They justify building the leg; they do not
@@ -247,6 +249,8 @@ source of truth, and a lost `bm25` vector is rebuilt like any other point (ADR-0
 | T-RET-6a | This ADR; Baseline §17.6, §23.3, §33, §55.6; the T-RET-6 row and the D-E checks of ADR-0081 (docs only) | none |
 | T-RET-6b | Indexing and backfill (D-B): collection body and generation, `collection ensure` adds `bm25`, named-vector upsert, rebuild backfill and verifier. **Before T-RET-6c.** Names the policy source (U4) | the provisioning sentinel and the rebuild-verify test, extended |
 | T-RET-6c | Recall, configuration and lanes (D-C to D-E): the registry entries (four in T-RET-6c-1, `sparse_timeout_ms` in T-RET-6c-2), the sparse leg, RRF, lanes, the `DegradeCode`, deleting the local IDF. Settles U1, U2, U5, U6, U7. Needs the T-RET-6b backfill read on the stream it enables. **Split:** T-RET-6c-1 (registry entries, fingerprint, envelope check, G55-6 ① names, `SparseLaneUnavailable`; no recall wiring) is implemented; T-RET-6c-2 (the sparse leg, RRF, lanes, deleting the local IDF, the real-path fault test, `sparse_timeout_ms`) is implemented (PR #157) | G-RET-3 (extended), G-RET-7, G-RET-8, G-RET-9, G-RET-10 |
+
+> Errata 2026-11-15 (independent-707 P011-F3)：上面 T-RET-6c 行的「Settles U1, U2, U5, U6, U7」不适用于 U6——U6 行未标 settled，`sparse_leg_enabled` 仍默认关，须等 T-RET-6b backfill 读到 zero missing 且 ADR-0068 的 `memory_id` backfill 读到 `strays = 0` 才能翻转；U7 只 settled 了 CI fixture 的数字，生产规模的 corpus-scoped IDF / 分组成本仍是 UNKNOWN。见 ADR-0083 U6 / U7。
 
 ## Alternatives rejected
 

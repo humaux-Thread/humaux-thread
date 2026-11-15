@@ -185,6 +185,8 @@ Deleting `reserve_private_call` from either reasoner fails to compile (the `rese
 feeds finalize); deleting `finalize_private_call` leaves the row `RESERVED` and the
 `status = SUCCEEDED` assertion red; deleting BOTH makes `rows == 1` read 0 and go red.
 
+> Errata 2026-11-15 (independent-707 P006-P2-1)：D-G 在本文件出现两次——前面一处是 consolidation hop 的 `model_call_id` 仍指披露 id，本节这一处是一票投影 Evidence 的全部 memory。两处都不改号，交叉引用请写明「D-G（ledger / model_call_id）」或「D-G（投影 / 全部 memory）」；见 ADR-0042 D-G。
+
 **D-G — One ticket projects EVERY memory its Evidence carries (card 9's folded debt).**
 A `projection.stream_log` ticket binds an EVIDENCE, not a memory: `ops.outbox.evidence_id` is
 the only link it has. One Evidence routinely carries N memories — `distill_repo::persist` writes

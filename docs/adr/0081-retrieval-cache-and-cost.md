@@ -197,6 +197,8 @@ changes at once**:
 
 ### D-F (D-RET-6) Rerank scores are cached per (query × single document) pair (no card yet; after E-RET-5)
 
+> Errata 2026-11-15 (independent-707 P011-F2)：本 D-F 的 pair-score cache **没有**获推进——本文「Cards」表 Later 行明写 "The D-F pair cache: not pursued; reopen only with a new owner decision"。在 owner 重新决定之前，不得把本节当作已批准实现；见 ADR-0081 D-F。
+
 - **Key** = (tenant, hash of the query's final input, hash of the document's final input, reranker fingerprint
   (weights / tokenizer / quantisation / runtime version), truncation-policy version).
 - The value holds the **score only, never the text**. The cache is a bounded moka cache; a hit still passes the

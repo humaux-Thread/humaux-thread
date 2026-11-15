@@ -1407,7 +1407,7 @@ Named plainly, because the alternative is a report that reads as complete and is
   (≥800 items, resolution ≤ 2, `frozen_by` written) and running with a second version is what
   would exercise it. **The delivery ships without an observed real promotion**, stated here
   rather than implied by an absent row.
-- **The soak28 `memory.get` p50 regression (+27% vs soak27) is unexplained** — see §4.
+- **The soak28 `memory.enumerate` p50 regression (+27% vs soak27) is unexplained** — see §4. (This bullet used to read `memory.get`; the soak bucket was `memory.enumerate` all along — §4.5, card 30's rename — so no `memory.get` route ever had this regression.)
 - **The serial ignored-tier lane passes as a gate** (`serial_lane` EXIT 0 in this chain), but
   card 23's last full inventory run — 110 tests, 75 passed, 34 failed, 1 not run — has not been
   triaged to completion. The failures cluster in the Phase-9 public/anonymous and contribution
@@ -1428,7 +1428,8 @@ cargo xtask migrate          # 0 = applied, drift 0
 cargo xtask rls-check        # §6.2.2 matrix, row for row
 cargo xtask architecture-check
 
-# The rehearsal (docs/ops/rehearse.sh, 36 assertions; SOAK_SECS enables the soak lane, acceptance
+# The rehearsal (docs/ops/rehearse.sh, 41 assertions with the soak lane — the pre-review 36-assertion
+# count is superseded, see §8.2; SOAK_SECS enables the soak lane, acceptance
 # item (5)). It builds the five binaries itself into $CARGO_TARGET_DIR, seeds two tenants on the
 # dev database, and prints `REHEARSAL VERDICT: N passed, M failed` (exit 1 on any failure).
 #   SOAK_SECS=380 SOAK_SESSIONS=1 SOAK_THINK_MS=10000 SOAK_DRAIN=200 SOAK_CHAOS_SECS=90 \
@@ -1468,6 +1469,7 @@ the conflict. Never free a port by force — see §5.1.
 files and the probe meanings; `docs/ops/soak.md` has the sizing rules; `docs/ops/e2e-seed.md`
 has tenant provisioning.
 
-**Activation.** After the projection catches up, the first serving version must be activated
-explicitly: `cargo xtask projection-serve` (ADR-0017 — the no-serving-version rule). Later
-version upgrades go through the §16.2 two-version comparison, subject to §6.1 above.
+**Activation.** Onboarding performs the first activation itself with `VerifiedEmpty` evidence
+(ADR-0017 amended; §6.13), so a fresh pair needs no manual `projection-serve` — that command
+prints "already serving" for it and is only for version upgrades of a family. Later version
+upgrades go through the §16.2 two-version comparison, subject to §6.1 above.

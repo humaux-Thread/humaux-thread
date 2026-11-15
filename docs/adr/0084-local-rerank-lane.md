@@ -3,6 +3,10 @@
 - Status: Accepted (2026-10-22). Card T-RET-7a (docs only). Decisions D-A to D-G are the design lead's, taken from the
   owner's decision of 2026-10-22 and from E-RET-5g and the N1 timing; the facts under "What was verified" are this
   card's. The code lands in T-RET-7b to T-RET-7d; until then every sentence below about behaviour is **planned**.
+- Errata 2026-11-15 (independent-707 P011-F1): the "until then ... planned" clause above is the T-RET-7a 时点 statement
+  only. T-RET-7c has implemented G-RET-11/G-RET-14, and T-RET-7d-1/-2 have implemented G-RET-12/13/15 with their CI
+  red/green records (see the T-RET-7c / T-RET-7d-1 / T-RET-7d-2 records below and D-G); read those, not the Status line,
+  for what exists today. See ADR-0084 D-G.
 - Amended 2026-10-22 (card T-RET-7c, the lead's decision): **the five rerank registry entries (D-E) move from T-RET-7d to
   T-RET-7c.** The worker needs `rerank_enabled` (load the model or not, D-B) and `rerank_threads` (the session build, D-B)
   from its own registry read before any call, so the entries must exist when the worker lands. T-RET-7d keeps the gateway

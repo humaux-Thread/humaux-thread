@@ -110,6 +110,8 @@ owner 再也不会回来的 PROCESSING 行；租约到期后另一个进程重�
   `check_derived_work_dispatch_boundary`：R3 那道闸是 `control.*` schema + 单执行者形状，塞不下 `ops.*` +
   双执行者而不破坏它自己的契约。断言内容（owner / definer / search_path / 精确 EXECUTE / PUBLIC 撤销）逐条对齐。
 
+> Errata 2026-11-15 (independent-707 P005-P2-1)：本文件 D4/D5 各出现两次——「## 决策」下的 D4（租约必须会过期、`--run-once` 必须会退出）与 D5（consolidation 的 route binding 按租户解析），以及本节起的评审轮 D4（publish 与 job 结清同事务）与 D5（「租户还没就绪」不是失败）。两处编号都不复用，交叉引用请写明「决策 D4/D5」或「评审轮 D4/D5」；见 ADR-0036 D4/D5。
+
 ## D4 — publish 与 job 结清同事务（exactly-once 是结构性的，不是时序运气）
 
 评审发现：`settle_derived_in_txn` 原来带 `AND lease_expires_at > clock_timestamp()`。那条谓词**没有**加上

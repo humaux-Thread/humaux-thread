@@ -152,6 +152,8 @@ agents keep working after a restore (note :254).
 "agents get new API keys" (note :130-131) beside the Q3 answer, which has the export carrying API-key hashes
 (note :254). The exclusion and the answer are both recorded here; this ADR does not resolve the tension.
 
+> Errata 2026-11-15 (independent-707 P012-F4)：该 lead question 至今**仍未裁决**（owner-only）。恢复后 agent 是否保留 API key 没有单一现行答案：Q3 答复说 export 携带 API-key hashes，而 D-A/D9 仍把 credentials 列为 excluded；运维按「未决」处理，不得只引用其中一句来规划 restore。要收敛需 owner 裁决（本卡不代决）；见 ADR-0121 D-I。
+
 ### D-J Schedule: `dr serve` inside the compose bundle
 
 The nightly export + verify + drill + swap and the daily `deploy-check --running` drift check run from `dr serve` in
