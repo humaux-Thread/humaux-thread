@@ -1,13 +1,10 @@
 //! `adapters::read_materialize` — Final PostgreSQL body materialization after authorization and token-ledger
 //!   validation.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, sha2, sqlx, time];
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde_json, sha2, sqlx, time];
 //!   services=[PostgreSQL(role_gateway) r=[ops.outbox, private.events, private.evidence_objects,
 //!   private.evidence_subjects, private.identity_note_materializations, private.memory_evidence,
-//!   private.memory_records, private.memory_subjects, private.memory_text_v, projection.stream_log]]; env=[]; modules=[adapters::affect_repo,
-//!   adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::retrieve, application::affect, domain::affect,
-//!   domain::authority, domain::error, domain::memory, domain::identity, domain::ids, domain::note, domain::subject,
-//!   projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::signals]
-//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::exact_census, adapters::grep_repo, adapters::operation_receipt, adapters::read_gate, adapters::retrieve, gateway::context, gateway::mcp_application, gateway::memory, gateway::recall, tests]
+//!   private.memory_records, private.memory_subjects, private.memory_text_v, projection.stream_log]]; env=[]; modules=[adapters::affect_repo, adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::retrieve, application::affect, domain::affect, domain::authority, domain::error, domain::identity, domain::ids, domain::memory, domain::note, domain::subject, projection::serving, projection::stream, retrieval::completeness, retrieval::signals]
+//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::exact_census, adapters::grep_repo, adapters::operation_receipt, adapters::read_gate, adapters::retrieve, gateway::context, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [read-only on role_gateway under RLS; an invisible or unknown source is NotFound/Forbidden, never
 //!   partially materialized; a PG error is DependencyUnavailable; the recall/context entry points take no
 //!   [`Lifecycle`] and always run [`Lifecycle::CURRENT`] (ADR-0067 D-J2)]
@@ -26,11 +23,7 @@ use humaux_domain::note::NoteKind;
 use humaux_domain::subject::SubjectId;
 use humaux_projection::serving::StreamFamily;
 use humaux_projection::stream::StreamKey;
-use humaux_retrieval::{
-    completeness::FreshnessClass,
-    envelope::FreshnessBlock,
-    signals::{compute_freshness, summarize_freshness},
-};
+use humaux_retrieval::{completeness::FreshnessClass, signals::compute_freshness};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use sqlx::types::Uuid;
@@ -44,89 +37,10 @@ use crate::retrieve::{OverlayCandidate, ProcessingState};
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MaterializationSnapshot {
-    pub context_snapshot_seq: i64,
-    pub snapshot_token_sha256: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum MaterializedItem {
-    Memory {
-        memory_id: Uuid,
-        content: serde_json::Value,
-    },
-    TemporaryEvidence {
-        evidence_id: Uuid,
-        stream_seq: i64,
-        processing_state: ProcessingState,
-        payload: serde_json::Value,
-        linked_memory_ids: Vec<Uuid>,
-    },
-    ArtifactUnavailable {
-        evidence_id: Uuid,
-        stream_seq: i64,
-        processing_state: ProcessingState,
-        linked_memory_ids: Vec<Uuid>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MaterializedBodies {
-    pub snapshot: MaterializationSnapshot,
-    pub items: Vec<MaterializedItem>,
-    /// §21.5 / ADR-0111: annotations for admitted items, independent of their content shape.
-    pub freshness: HashMap<Uuid, ItemFreshness>,
-}
-
-/// §21.5: the sole classifier's annotation, with §23.3 RFC 3339 Evidence time.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub struct ItemFreshness {
-    /// ADR-0111 D-C: independent of completeness and ranking.
-    pub class: FreshnessClass,
-    /// §50: the values file identity used by the classifier.
-    pub policy_id: Option<&'static str>,
-    /// §50: the values file version.
-    pub policy_version: Option<u32>,
-    /// §9: only backing Evidence occurred_at; absent for legacy missing Evidence.
-    pub latest_evidence_at: Option<String>,
-    /// §21.5: age against the transaction's database clock, absent when unknown.
-    pub state_age_seconds: Option<u64>,
-}
-
-impl MaterializedBodies {
-    /// ADR-0111 D-C: summarize only returned items, after any truncation or reranking.
-    pub fn freshness_summary(&self) -> FreshnessBlock {
-        let readings: Vec<_> = self
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                MaterializedItem::Memory { memory_id, .. } => self.freshness.get(memory_id),
-                MaterializedItem::TemporaryEvidence { evidence_id, .. }
-                | MaterializedItem::ArtifactUnavailable { evidence_id, .. } => {
-                    self.freshness.get(evidence_id)
-                }
-            })
-            .collect();
-        FreshnessBlock {
-            class: summarize_freshness(readings.iter().map(|reading| reading.class)),
-            latest_evidence_at: readings
-                .iter()
-                .filter_map(|reading| reading.latest_evidence_at.as_ref())
-                .filter_map(|at| {
-                    OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339)
-                        .ok()
-                        .map(|parsed| (parsed, at))
-                })
-                .max_by_key(|(parsed, _)| *parsed)
-                .map(|(_, at)| at.clone()),
-            state_age_seconds: readings
-                .iter()
-                .filter_map(|reading| reading.state_age_seconds)
-                .max(),
-        }
-    }
-}
+// ponytail: compatibility export for existing readers; remove in SLICE-2b.
+pub use humaux_application::recall_read::{
+    ItemFreshness, MaterializationSnapshot, MaterializedBodies, MaterializedItem,
+};
 
 fn item_freshness(row: &sqlx::postgres::PgRow) -> Result<ItemFreshness, ErrorCode> {
     let kind: String = row
