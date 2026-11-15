@@ -360,6 +360,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::pin`
 
+#### `application::recall_read`
+
 #### `application::remember`
 
 #### `application::signed_token`
@@ -1877,6 +1879,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::pin`
 
+#### `application::recall_read`
+
 #### `application::remember`
 
 #### `application::signed_token`
@@ -2469,6 +2473,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::oauth`
 
 #### `application::pin`
+
+#### `application::recall_read`
 
 #### `application::remember`
 
@@ -3291,6 +3297,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::entitlement`
 
 #### `application::pin`
+
+#### `application::recall_read`
 
 #### `application::remember`
 
@@ -4388,6 +4396,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::pin`
 
+#### `application::recall_read`
+
 #### `application::remember`
 
 #### `application::signed_token`
@@ -5095,6 +5105,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::correct`
 
 #### `application::pin`
+
+#### `application::recall_read`
 
 #### `application::remember`
 
@@ -14278,6 +14290,7 @@ modules naming it:
 - `adapters::forget_repo`
 - `adapters::login_repo`
 - `adapters::memory_governance_repo`
+- `adapters::memory_repo`
 - `adapters::model_call_ledger`
 - `adapters::operation_receipt`
 - `adapters::private_inference_rpc`
@@ -14421,6 +14434,7 @@ modules naming it:
 - `adapters::projection_worker`
 - `adapters::rebuild`
 - `adapters::remember`
+- `adapters::retrieve`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::contribution_execution_repo_0131`
 - `adapters::tests::contribution_reasoner`
@@ -14589,7 +14603,6 @@ modules naming it:
 - `adapters::processing_status`
 - `adapters::project_rollup`
 - `adapters::provisioning`
-- `adapters::read_materialize`
 - `adapters::reasoning_route_onboarding`
 
 ### humaux-adapters → `sha2` (normal)
@@ -15366,6 +15379,7 @@ modules naming it:
 - `application::oauth`
 - `application::pin`
 - `application::processing_status`
+- `application::recall_read`
 - `application::referral`
 - `application::remember`
 - `application::retrieval_embedding_port`
@@ -15378,8 +15392,15 @@ why: assemble_handoff's return type crosses into retrieval::handoff
 
 modules naming it:
 - `application::continuity`
+- `application::recall_read`
 - `application::retrieve`
 - `tests`
+
+### humaux-application → `humaux-projection` (normal)
+why: trusted recall stream family and card slot identity
+
+modules naming it:
+- `application::recall_read`
 
 ### humaux-application → `argon2` (normal)
 why: password hashing for auth.rs's H2 state machine
@@ -15440,6 +15461,7 @@ why: wire/DTO (de)serialization for continuity handoff and notify payloads
 modules naming it:
 - `application::continuity`
 - `application::notify`
+- `application::recall_read`
 
 ### humaux-application → `serde_json` (normal)
 why: JSON payload construction for continuity/contribution_execution/entitlement/notify
@@ -15449,6 +15471,7 @@ modules naming it:
 - `application::contribution_execution`
 - `application::entitlement`
 - `application::notify`
+- `application::recall_read`
 - `application::remember`
 - `tests`
 
@@ -15465,6 +15488,7 @@ modules naming it:
 - `application::consolidate`
 - `application::continuity`
 - `application::contribute`
+- `application::recall_read`
 - `application::remember`
 - `application::retrieval_embedding_port`
 - `tests`
@@ -15484,6 +15508,7 @@ modules naming it:
 - `application::forget`
 - `application::oauth`
 - `application::pin`
+- `application::recall_read`
 - `application::remember`
 - `application::retrieval_embedding_port`
 - `application::session`
@@ -15496,11 +15521,12 @@ modules naming it:
 - `application::oauth`
 
 ### humaux-application → `time` (normal)
-why: OffsetDateTime expiry/ceiling arithmetic of grants
+why: OffsetDateTime grants and RFC3339 freshness readings
 
 modules naming it:
 - `application::billing`
 - `application::oauth`
+- `application::recall_read`
 - `application::remember`
 
 ### humaux-application → `tokio` (dev)
@@ -20669,7 +20695,7 @@ default run:
 - `crates/adapters/tests/contribution_execution_repo.rs:39` [table-undeclared] (line) — static source-text guard; no DB connection
 - `crates/adapters/tests/contribution_execution_repo.rs:41` [table-write] (line) — static source-text guard; no DB connection
 - `crates/adapters/tests/contribution_execution_repo.rs:42` [table-undeclared] (line) — static source-text guard; no DB connection
-- `crates/application/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
+- `crates/application/Cargo.toml:41` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
 - `crates/protocol/Cargo.toml:44` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/public-pool/src/completeness.rs:379` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module

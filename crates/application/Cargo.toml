@@ -19,6 +19,8 @@ humaux-domain = { path = "../domain" }
 # retrieval 只依赖 domain+telemetry，无环。
 # why: assemble_handoff's return type crosses into retrieval::handoff; used-by: [application::continuity, application::retrieve]
 humaux-retrieval = { path = "../retrieval" }
+# why: trusted recall stream family and card slot identity; used-by: [application::recall_read]
+humaux-projection = { path = "../projection" }
 # why: password hashing for auth.rs's H2 state machine; used-by: [application::auth]
 argon2 = "0.5"
 # why: token/RNG source for auth, referral codes and supersede confirm tokens; used-by: [application::auth, application::referral, application::signed_token, application::supersede]
@@ -53,8 +55,8 @@ uuid = "1.25.0"
 # why: unpadded base64url encoding of the PKCE S256 digest; used-by: [application::oauth]
 base64 = "0.22"
 # OAuth expiries are instants the caller passes in (pure state machine, no clock reads); same pin as `humaux-domain`.
-# why: OffsetDateTime expiry/ceiling arithmetic of grants; used-by: [application::oauth]
-time = "0.3"
+# why: OffsetDateTime grants and RFC3339 freshness readings; used-by: [application::oauth, application::recall_read]
+time = { version = "0.3", features = ["parsing"] }
 
 [dev-dependencies]
 # T4.6/T4.7 `consolidate.rs` tests: `PrivateReasoningPort::infer` is `async fn`, so its fake

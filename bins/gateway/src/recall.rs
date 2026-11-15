@@ -1,6 +1,5 @@
 //! `gateway::recall` — Native authenticated semantic recall wiring.
-//! Depends-on: crates=[async-trait, humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell,
-//!   humaux-contracts, humaux-projection, humaux-protocol, humaux-retrieval, serde_json, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::memory_repo, adapters::placement_repo, adapters::postgres, adapters::projection_worker, adapters::qdrant, adapters::read_materialize, adapters::retrieval_query_log, adapters::retrieve, adapters::serving_repo, application::affect, application::retrieval_embedding_port, application::retrieve, contracts::retrieval_config, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, gateway::context, gateway::rerank_client, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::note_chunks, projection::sparse, projection::stream, protocol::mcp, protocol::mcp_catalog, retrieval::completeness, retrieval::envelope, retrieval::planner, retrieval::request, retrieval::rerank]
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-infra-cell, humaux-projection, humaux-protocol, humaux-retrieval, serde_json, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::placement_repo, adapters::postgres, adapters::projection_worker, adapters::qdrant, adapters::retrieval_query_log, adapters::retrieve, adapters::serving_repo, application::affect, application::recall_read, application::retrieval_embedding_port, application::retrieve, contracts::retrieval_config, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, gateway::context, gateway::rerank_client, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::note_chunks, projection::sparse, projection::stream, protocol::mcp, protocol::mcp_catalog, retrieval::completeness, retrieval::envelope, retrieval::planner, retrieval::request, retrieval::rerank]
 //! Called-by: [gateway::bootstrap, gateway::context, gateway::mcp_application, tests]
 //! Invariants: [this module owns no alternate search or body fallback path; a Qdrant or provider failure surfaces as the typed retrieval error, never a degraded silent result; Qdrant is asked for leg_depth Memories per leg for this request's workspace stream only, the dense and the sparse leg concurrently with one filter (ADR-0083 D-C), and the memory-level RRF of the two legs is cut to cand_k before the PG gate, which runs on that fused list unchanged; the sparse leg alone is bounded by the registered sparse_timeout_ms and its elapse is a sparse failure; a sparse-leg failure answers from the dense leg through retrieval::envelope::sparse_lane_unavailable (emitted in accepted_output, never before the hydrate gate) and never fails the recall, a dense-leg failure is the typed error as before; memory items are cut to top_k after the PG gate, the mood rerank permutes only that visible set (ADR-0030 D-D), then limit shortens it; every planner class is answered by dense (LANE_SUBSTITUTED unless the caller named a mode), only an explicit undelivered mode refuses; stage_ms partitions answer() exhaustively and is reported only when every lap followed LAP_SEQUENCE, with qdrant_sparse as a sub-timing contained in qdrant (present only when the sparse leg ran); search() hands the query-hash log row to a bounded, supervised spawn after answer() returns, once per answered recall, and never awaits the insert, so no lap, no LAP_SEQUENCE entry, no response byte and no handler deadline depends on it, and a failed or dropped insert never fails the recall (ADR-0081 D-A); when the profile turns the local rerank lane on and tenant policy allows in-Cell text processing, the texts of the lane are read by the hydrate transaction for the Memories that passed its gate and for no others, only those are sent to the worker, the rerank is order only (retrieval::rerank), and a timeout, a failure or another model's answer keeps the fused order and reports RERANK_PROVIDER_TIMEOUT / RERANK_MODEL_MISMATCH from accepted_output with a cannot_establish rerank_model_id (ADR-0084 D-C, D-D)]
 //! Spec: Baseline §17.3; §17.6; §19.1; §23.3; §33; §48.1; §55.1; §78.1; ADR-0029; ADR-0031; ADR-0055; ADR-0056; ADR-0081; ADR-0083; ADR-0084
@@ -17,7 +16,6 @@ use std::{
 
 use humaux_adapters::{
     affect_repo,
-    memory_repo::MemoryText,
     placement_repo::tenant_placement,
     postgres::RuntimeDbPool,
     projection_worker::in_cell_text_processing_allowed,
@@ -26,18 +24,20 @@ use humaux_adapters::{
         QdrantTransportError, RetrievalFamily, ha_profile_for, query_dense,
         query_dense_groups_bounded, query_sparse_groups,
     },
-    read_materialize::{ItemFreshness, MaterializedItem},
     retrieval_query_log::QueryLogCounts,
     retrieve::{
-        GatedTexts, IndexFace, MaterializedPrivateReadServing, PointSlots, QueryHmac,
-        RetrieveError, grouped_recall, materialize_private_read_serving_about, query_hmac,
-        query_log_limits, record_recall_query, tombstoned_source_seqs, visible_index_count,
+        IndexFace, QueryHmac, RetrieveError, grouped_recall, query_hmac, query_log_limits,
+        record_recall_query, tombstoned_source_seqs, visible_index_count,
     },
     serving_repo::{UnservedLedger, family_read_state},
 };
 use tokio::sync::Semaphore;
 
 use humaux_application::affect::rerank_by_mood;
+use humaux_application::recall_read::{
+    GatedTexts, ItemFreshness, MaterializedItem, MaterializedPrivateReadServing, MemoryText,
+    PointSlots, RecallCandidate, RecallHydrationRequest, RecallPoint, hydrate_recall,
+};
 use humaux_application::{
     retrieval_embedding_port::{
         RetrievalEmbeddingInput, RetrievalEmbeddingOutcome, RetrievalEmbeddingPort,
@@ -813,21 +813,33 @@ async fn answer(
         retrieval.cand_k() as usize,
     );
     clock.lap(Stage::Qdrant);
-    let mut materialized = materialize_private_read_serving_about(
-        &pool,
-        input.consistency_token.as_deref(),
-        &authorization,
-        &family,
-        &projection_version,
-        &runtime.embedding_version,
-        &candidates,
-        &input.subject_ids,
-        input.affect.as_ref(),
-        // ADR-0084 D-C 3: the texts come from the hydrate transaction itself, for the Memories that passed its gate.
-        if rerank_selected {
-            GatedTexts::Read
-        } else {
-            GatedTexts::Skip
+    let hydration_candidates: Vec<_> = candidates
+        .iter()
+        .map(|candidate| RecallCandidate {
+            point_id: match candidate.point_id {
+                PointId::Num(id) => RecallPoint::Num(id),
+                PointId::Uuid(id) => RecallPoint::Uuid(id),
+            },
+            score: candidate.score,
+            memory_id: candidate.memory_id,
+        })
+        .collect();
+    let mut materialized = hydrate_recall(
+        pool.as_ref(),
+        RecallHydrationRequest {
+            authorization: &authorization,
+            consistency_token: input.consistency_token.as_deref(),
+            family: &family,
+            projection_version: &projection_version,
+            embedding_version: &runtime.embedding_version,
+            candidates: &hydration_candidates,
+            subject_ids: &input.subject_ids,
+            affect: input.affect.as_ref(),
+            texts: if rerank_selected {
+                GatedTexts::Read
+            } else {
+                GatedTexts::Skip
+            },
         },
     )
     .await

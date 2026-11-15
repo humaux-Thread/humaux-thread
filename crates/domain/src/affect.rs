@@ -1,6 +1,6 @@
 //! `domain::affect` — the §8.5.1 affect annotation axis (ADR-0030, card E1).
 //! Depends-on: crates=[uuid]; services=[]; env=[]; modules=[domain::error, domain::subject]
-//! Called-by: [adapters::affect_repo, adapters::distill_reasoner, adapters::memory_governance_repo, adapters::projection_worker, adapters::qdrant, adapters::read_materialize, adapters::retrieve, application::affect, application::remember, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, projection::dense, tests, xtask::architecture_check]
+//! Called-by: [adapters::affect_repo, adapters::distill_reasoner, adapters::memory_governance_repo, adapters::projection_worker, adapters::qdrant, adapters::read_materialize, adapters::retrieve, application::affect, application::recall_read, application::remember, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, projection::dense, tests, xtask::architecture_check]
 //! Invariants: []
 //! Spec: Baseline §8.5.1; §33.10; §59; ADR-0030; ADR-0058
 //!

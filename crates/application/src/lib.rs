@@ -37,3 +37,6 @@ pub mod scheduler;
 pub mod session;
 pub mod signed_token;
 pub mod supersede;
+
+/// Recall hydration use case and complete snapshot read port (ADR-0130).
+pub mod recall_read;

@@ -1142,6 +1142,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "humaux-domain",
+ "humaux-projection",
  "humaux-retrieval",
  "rand 0.9.5",
  "serde",
