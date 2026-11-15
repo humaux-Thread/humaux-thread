@@ -10184,7 +10184,7 @@ replication
 offsite
 ```
 
-Artifact 原件不能从 Memory 推导回来，因此其 DR 等级高于 Qdrant。（已由 ADR-0115 D-A/D-B 局部取代：知识上传的原件在 PUBLISH 前丢弃、`object_locator` 置 NULL，Evidence 由规范抽取文本生成；本句只对仍保留原件的路径成立，见 §29。）
+Artifact 原件不能从 Memory 推导回来，因此其 DR 等级高于 Qdrant。（已由 ADR-0115 D-A/D-B 局部取代：知识上传的原件与派生物是单 session 临时前缀下的有期限临时资产，不按 content-addressed 保留；PUBLISH 事务只把 `private.artifacts.object_locator` 置 NULL 并由规范抽取文本生成 Evidence，原件 bytes 的清理时机按 D-A 分两种——N=0 时在 PUBLISH commit 的同事务 enqueue purge，review-window session 到 deadline 才 purge；本句只对仍保留原件的路径成立，见 §29。）
 
 ## Restore Drill
 
