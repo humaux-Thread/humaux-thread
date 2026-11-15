@@ -71,7 +71,7 @@
 2. 现有安全与版别围栏（core/cloud、egress/cell、typed pool）按分层生效；先拆业务 crate 会让两套围栏同时改。
 3. 局部纵切可审查、可回退；同事务原子性不因目录移动被拆开。
 
-本 ADR **不新增 crate、不改 Cargo member**。模块与 crate 的对应见 `modules.toml` 的 `may_depend_on` 与 `docs/architecture/module_ownership.toml` 的 crate 行；一个 crate 可承载多个上下文，反之不成立（上下文不跨 crate 做写主）。
+本 ADR **不新增 crate、不改 Cargo member**。上下文与 crate 是多对多：一个上下文按层分布在多个分层 crate 里（例如 `work_attribution` 横跨 domain/application/adapters/gateway，见 `docs/architecture/module_ownership.toml` 的注释），一个 crate 也承载多个上下文。crate home 只是管理归属，不是业务写权；表写主在上下文层面定（D4），持久化仍在 PG adapter。`modules.toml` 的 `may_depend_on` 表达的是上下文之间的应用端口依赖，不是模块→crate 映射。
 
 ### D4 — 表唯一写主
 
@@ -99,13 +99,13 @@ M01..M29 在 `modules.toml` 的 `legacy_m` 里逐一保留；既有执行卡的 
 
 1. **同事务原子性在 PG adapter**：事实、receipt、额度、审计、stream 的一道完整动作在一个 PostgreSQL 事务内完成（§58 的单库边界）。ADR-0106 D-D 只定唯一验收存储，事务归属仍是 PG adapter；模块划分不构成拆事务的理由。
 2. **唯一 read gate**：`crates/adapters/src/read_gate.rs:1-33` 的六条件、all-backing-evidence 闭包与同一 REPEATABLE READ snapshot。每个只读业务的返回都必须经过它；gate 不复制到各模块，也不按模块各判一次可见性。
-3. **六个唯一构造点**（断言写精确计数，不写 `<=`；pin 上有两处不是全局 `== 1`，照现行闸原样保留）：`Authority::new`（§59.1，`xtask/src/architecture_check.rs:932`）、`evidence::payload_sha256`（`:3617`，**`== 2`**：唯一哈希构造 + 不做哈希的受控 read-back `EvidencePayloadSha256::from_stored_digest`，第三处或模块外任一处仍红）、`retrieval::build_request`（`:3318`）、`abstain()`（§53.1，Baseline `:11198`）、`ledger::close`（§22.5，`:7495`）、`classify()` 按 `ClassifiedMemoryId` 与 `CompletenessClass` 两个关注点**各自** 1（`:5582`，不把两者合计）。
+3. **六个唯一构造点**（断言写精确计数，不写 `<=`；pin 上有两处不是全局 `== 1`，照现行闸原样保留）：`Authority::new`（§59.1，`xtask/src/architecture_check.rs:932`）、`evidence::payload_sha256`（`:3617`，**`== 2`**：唯一哈希构造 + 不做哈希的受控 read-back `EvidencePayloadSha256::from_stored_digest`，第三处或模块外任一处仍红）、`retrieval::build_request`（`:3318`）、`abstain()`（§53.1，Baseline `:11198`）、A1 判定式全库唯一实现（§22.5，`:7495` 的 `g22_5_a1_sole_implementation`：`retrieval::completeness::ledger::close` 与 `projection::stream::advance_prefix` 必须调用 `domain/ledger.rs` 的同一判定，测的是算式唯一实现，不是构造点计数）、`classify()` 按 `ClassifiedMemoryId` 与 `CompletenessClass` 两个关注点**各自** 1（`:5582`，不把两者合计）。
 4. **两个错误枚举**：`ErrorCode`（终止）与 `DegradeCode`（降级），互斥，禁开第三个（§52、§52.2）。
 5. **单一验收存储**：`private.run_acceptances`（ADR-0106 D-D），不是 `coord.gate_decisions`，不是第二张 acceptances 表。
 
 ### D7a — 依赖无环的范围：只针对应用端口
 
-`may_depend_on` 只表达 application 层跨模块端口依赖，这张图必须无环。一道 PG 事务内的同事务协作（例如 remember 中 `knowledge_lifecycle` 的事实门与 `coordination` 的验证门在同一事务里互相调用）不是应用端口依赖，属于 PG adapter 内部的具名窄门；它可以双向，单独列在 `modules.toml` 的 `in_txn_doors` 里，不计入无环判定，也不得借它在 application 层建立反向依赖。
+`may_depend_on` 只表达 application 层跨模块端口依赖，这张图必须无环。一道 PG 事务内的同事务协作（例如 remember 中 `knowledge_lifecycle` 的事实门与 `coordination` 的验证门在同一事务里互相调用）不是应用端口依赖，属于 PG adapter 内部的具名窄门；它可以双向，单独列在 `modules.toml` 的 `in_txn_door` 里，不计入无环判定，也不得借它在 application 层建立反向依赖。
 
 ### D8 — 机器可读目录 `docs/architecture/modules.toml`
 
@@ -145,7 +145,13 @@ M01..M29 在 `modules.toml` 的 `legacy_m` 里逐一保留；既有执行卡的 
 | 0 | **已完成（PR #514）**：统一 M 号合法集合（`M01..M29`）与 `MODULE_ID_MAX` 的过渡；先做存量集合比对，确认无遗漏再动文件 | M29 合法正例通过；M00 / M30 / 缺一归属反例各判红后恢复绿；旧 gate 继续绿；不放宽成任意字符串，不删 M29 专用门 |
 | 1 | 实现四类最小边界闸并取得「注错→红→恢复→绿」记录 | `HEX-LAYER`：application 导入 adapter DTO 或 sqlx → 红；`HEX-CONTEXT`：`knowledge_lifecycle → retrieval_read_model` 与反向边同时存在 → `CycleError` → 红；`HEX-WRITER`：第二处 `private.context_bindings` INSERT → 红；`HEX-COVERAGE`：删一个 owner 或加一个无归属文件 → 红。四条各自恢复后绿。**没有这份记录，闸不算存在（§80.1）** |
 | 2 | 首纵切 `knowledge_lifecycle` / remember：业务命令与入站用例进 application，PG 端口封装完整事务，gateway 只映射应用命令，bins 装配 adapter | 同输入下 receipt/stream/额度/幂等与错误码前后一致；重复不同 bytes、COMMIT 未知、lease 过期原 PG 反例仍红/绿；gateway 不再直接引用 adapter 命令类型 |
-| 3 | 按 `may_depend_on` 的拓扑序推进其余纵切，每步绑该步新 SHA | 其余顺序即 `modules.toml` 的拓扑序：`contract_kernel` → `identity_access` → `operations_platform` → `commercial` → `provider_execution` → `retrieval_read_model`（唯一 read gate 叶子化，六条件与 all-backing-evidence 原判据不变）→ `work_attribution` → `data_rights` → `coordination` → `document_acquisition` → `public_knowledge` → `knowledge_backup` → `knowledge_curation` → `code_intelligence` → `job_execution` → `knowledge_association` → `project_continuity` → `protocol_integration`（`knowledge_lifecycle` 已作为第 2 步先行）；每步的既有 gate 继续绿，旧证据随新 SHA 作废 |
+| 3 | `retrieval_read_model` 读纵切：唯一 final read gate 收敛为叶依赖，剥离 context 读取的跨层引用 | 六条件 + all-backing-evidence + 同一 snapshot 原门；隐藏一条 Evidence 不得返回 Memory；无 checkpoint 仍为 null 而非 0 |
+| 4 | `work_attribution` + `coordination` + `project_continuity`：各一次窄门纵切，保持 registry、层级、适用性三语义 | 跨租户关系 FK、CAS 冲突、过期 run fence、子项目独立授权；目录拆分不破坏同事务归属 |
+| 5 | `knowledge_curation` / `provider_execution` / `public_knowledge` / `document_acquisition` / `code_intelligence`：按原卡稳定入口逐个迁移，provider DTO 留在 adapter | ADR-0112 core/cloud、受控出境与披露原子、匿名贡献、document locator、ACTIVE snapshot 各原门 |
+| 6 | `identity_access` / `commercial` / `data_rights` / `knowledge_backup`：前述调用面稳定后再窄化端口；M04 须取当时真实 head 与正式 C2 证据 | 钱/权限/删除/恢复走真实 PG/HTTP 原门与独立复核，不以 trait mock 签收 |
+| 7 | `job_execution` / `operations_platform` / `protocol_integration`（含 legacy 迁移）：清除剩余层间泄漏，协议 registry 保持单一、17 个旧工具兼容期不变 | 全受影响 MCP/REST/legacy 模式与原 module gates；worker loop 与切换回执分别验证 |
+
+顺序依据是调用面稳定度与风险（钱/权限/删除最后窄化），不是 `may_depend_on` 拓扑序：remember 本身就先于其依赖迁移。
 
 约束：第 0、1 步通过前不得移动任何文件；文件移动后 M 号仍是历史别名、卡 ID 不变；本 ADR 不注册新任务队列、不关闭任何产品卡、不把设计写成已实施。
 
