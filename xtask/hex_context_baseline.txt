@@ -85,7 +85,6 @@ crates/adapters/src/candidate_repo.rs:knowledge_curation->contract_kernel:humaux
 crates/adapters/src/candidate_repo.rs:knowledge_curation->contract_kernel:humaux_domain::error::ErrorCode::InvalidInput
 crates/adapters/src/candidate_repo.rs:knowledge_curation->contract_kernel:humaux_domain::error::ErrorCode::Unauthorized
 crates/adapters/src/candidate_repo.rs:knowledge_curation->identity_access:humaux_domain::identity::AuthorizationScope
-crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->contract_kernel:humaux_adapters
 crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode
 crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode::Conflict
 crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode::DependencyUnavailable
@@ -99,7 +98,6 @@ crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->contract_kernel:h
 crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::AuditEvent
 crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction
 crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction::McpRequestFinished
-crates/adapters/src/consolidate_repo.rs:knowledge_curation->contract_kernel:humaux_adapters
 crates/adapters/src/consolidate_repo.rs:knowledge_curation->contract_kernel:humaux_domain::error::ErrorCode
 crates/adapters/src/consolidate_repo.rs:knowledge_curation->contract_kernel:humaux_domain::ids::TenantId
 crates/adapters/src/consolidate_repo.rs:knowledge_curation->contract_kernel:humaux_domain::ticket_family::TicketFamily
@@ -108,7 +106,6 @@ crates/adapters/src/consolidate_repo.rs:knowledge_curation->job_execution:humaux
 crates/adapters/src/consolidate_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::JobsError
 crates/adapters/src/consolidate_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::JobsError::Db
 crates/adapters/src/consolidate_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::settle_derived_done_in_txn
-crates/adapters/src/consolidation_reasoner.rs:knowledge_curation->contract_kernel:humaux_adapters
 crates/adapters/src/consolidation_reasoner.rs:knowledge_curation->contract_kernel:humaux_domain::dataclass::DataClass
 crates/adapters/src/consolidation_reasoner.rs:knowledge_curation->contract_kernel:humaux_domain::dataclass::DataClass::parse_or_secret
 crates/adapters/src/consolidation_reasoner.rs:knowledge_curation->contract_kernel:humaux_domain::dataclass::join_data_class
@@ -146,7 +143,6 @@ crates/adapters/src/contribution_eligibility.rs:public_knowledge->contract_kerne
 crates/adapters/src/contribution_eligibility.rs:public_knowledge->contract_kernel:humaux_domain::error::ErrorCode::Forbidden
 crates/adapters/src/contribution_eligibility.rs:public_knowledge->contract_kernel:humaux_domain::error::ErrorCode::Internal
 crates/adapters/src/contribution_eligibility.rs:public_knowledge->contract_kernel:humaux_domain::ids::TenantId
-crates/adapters/src/contribution_entry_repo.rs:public_knowledge->contract_kernel:humaux_adapters
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->contract_kernel:humaux_domain::error::ErrorCode
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->contract_kernel:humaux_domain::error::ErrorCode::Conflict
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->contract_kernel:humaux_domain::error::ErrorCode::DependencyUnavailable
@@ -183,7 +179,6 @@ crates/adapters/src/contribution_entry_repo.rs:public_knowledge->retrieval_read_
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->retrieval_read_model:humaux_adapters::stream_repo::next_commit_seq
 crates/adapters/src/contribution_execution_ingress.rs:public_knowledge->contract_kernel:humaux_domain::error::ErrorCode
 crates/adapters/src/contribution_execution_ingress.rs:public_knowledge->contract_kernel:humaux_domain::error::ErrorCode::InvalidInput
-crates/adapters/src/contribution_execution_repo.rs:public_knowledge->contract_kernel:humaux_adapters
 crates/adapters/src/contribution_execution_repo.rs:public_knowledge->contract_kernel:humaux_domain::dataclass::DataClass
 crates/adapters/src/contribution_execution_repo.rs:public_knowledge->knowledge_curation:humaux_adapters::reasoning_route_admission::ReasoningAdmissionLocator
 crates/adapters/src/contribution_execution_repo.rs:public_knowledge->knowledge_curation:humaux_application::consolidate::ContentSha256
@@ -194,7 +189,6 @@ crates/adapters/src/contribution_execution_repo.rs:public_knowledge->knowledge_c
 crates/adapters/src/contribution_execution_repo.rs:public_knowledge->knowledge_curation:humaux_application::consolidate::PrivateReasoningPurpose::Distill
 crates/adapters/src/contribution_execution_repo.rs:public_knowledge->knowledge_curation:humaux_application::consolidate::PrivateReasoningPurpose::Vision
 crates/adapters/src/contribution_execution_repo.rs:public_knowledge->knowledge_curation:humaux_application::consolidate::ReasoningIntentSha256
-crates/adapters/src/contribution_reasoner.rs:public_knowledge->contract_kernel:humaux_adapters
 crates/adapters/src/contribution_reasoner.rs:public_knowledge->contract_kernel:humaux_domain::dataclass::DataClass
 crates/adapters/src/contribution_reasoner.rs:public_knowledge->contract_kernel:humaux_domain::dataclass::DataClass::parse_or_secret
 crates/adapters/src/contribution_reasoner.rs:public_knowledge->contract_kernel:humaux_domain::dataclass::join_data_class
@@ -245,7 +239,6 @@ crates/adapters/src/coord_repo.rs:coordination->contract_kernel:humaux_domain::e
 crates/adapters/src/coord_repo.rs:coordination->contract_kernel:humaux_domain::error::ErrorCode::InvalidInput
 crates/adapters/src/coord_repo.rs:coordination->contract_kernel:humaux_domain::error::ErrorCode::NotFound
 crates/adapters/src/coord_repo.rs:coordination->contract_kernel:humaux_domain::ids::TaskId
-crates/adapters/src/coord_task_repo.rs:coordination->contract_kernel:humaux_adapters
 crates/adapters/src/coord_task_repo.rs:coordination->contract_kernel:humaux_domain::error::ErrorCode
 crates/adapters/src/coord_task_repo.rs:coordination->contract_kernel:humaux_domain::error::ErrorCode::Conflict
 crates/adapters/src/coord_task_repo.rs:coordination->contract_kernel:humaux_domain::error::ErrorCode::DependencyUnavailable
@@ -283,7 +276,6 @@ crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:hum
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::fail
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::provider_failure_line
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::provider_matches_admission
-crates/adapters/src/distill_repo.rs:knowledge_curation->contract_kernel:humaux_adapters
 crates/adapters/src/distill_repo.rs:knowledge_curation->contract_kernel:humaux_adapters::Counter
 crates/adapters/src/distill_repo.rs:knowledge_curation->contract_kernel:humaux_adapters::Counter::new
 crates/adapters/src/distill_repo.rs:knowledge_curation->contract_kernel:humaux_domain::error::ConflictReason
@@ -309,7 +301,6 @@ crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_ada
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::DistillLease
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::JobsError::Db
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::finish_distill_in_txn
-crates/adapters/src/evidence_repo.rs:knowledge_lifecycle->contract_kernel:humaux_adapters
 crates/adapters/src/evidence_repo.rs:knowledge_lifecycle->contract_kernel:humaux_domain::dataclass::DataClass
 crates/adapters/src/evidence_repo.rs:knowledge_lifecycle->contract_kernel:humaux_domain::dataclass::DataClass::ALL
 crates/adapters/src/exact_census.rs:retrieval_read_model->project_continuity:humaux_domain::continuity::ProjectId
@@ -344,7 +335,6 @@ crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:hu
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::ReserveResult::Existing
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::finish_reservation_in_txn
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::reserve_bmo_in_txn
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->contract_kernel:humaux_adapters
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ConflictReason
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ConflictReason::ALREADY_IN_STATE
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode
@@ -365,12 +355,10 @@ crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->provider_exec
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction::McpQuotaConsumed
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction::McpQuotaReserved
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction::McpRequestFinished
-crates/adapters/src/memory_repo.rs:knowledge_lifecycle->contract_kernel:humaux_adapters
 crates/adapters/src/model_call_ledger.rs:provider_execution->knowledge_curation:humaux_adapters::reasoning_route_admission::ReasoningAdmissionLocator
 crates/adapters/src/model_call_ledger.rs:provider_execution->knowledge_curation:humaux_application::consolidate::ContributionReasoningCallKind
 crates/adapters/src/model_call_ledger.rs:provider_execution->knowledge_curation:humaux_application::consolidate::LogicalReasoningCallId
 crates/adapters/src/model_call_ledger.rs:provider_execution->knowledge_curation:humaux_application::consolidate::ReasoningIntentSha256
-crates/adapters/src/note_repo.rs:knowledge_lifecycle->contract_kernel:humaux_adapters
 crates/adapters/src/note_repo.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode
 crates/adapters/src/note_repo.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode::Conflict
 crates/adapters/src/note_repo.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode::Forbidden
@@ -516,11 +504,9 @@ crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycl
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::note::NoteKind
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::note::NoteKind::parse_wire
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::subject::SubjectId
-crates/adapters/src/reasoning_route_admission.rs:knowledge_curation->contract_kernel:humaux_adapters
 crates/adapters/src/reasoning_route_onboarding.rs:knowledge_curation->identity_access:humaux_adapters::membership_repo::AdminAction
 crates/adapters/src/rebuild.rs:retrieval_read_model->job_execution:humaux_adapters::maintenance_repo
 crates/adapters/src/rebuild.rs:retrieval_read_model->job_execution:humaux_adapters::maintenance_repo::tenant_page
-crates/adapters/src/relation_repo.rs:work_attribution->contract_kernel:humaux_adapters
 crates/adapters/src/relation_repo.rs:work_attribution->contract_kernel:humaux_domain::error::ErrorCode
 crates/adapters/src/relation_repo.rs:work_attribution->contract_kernel:humaux_domain::error::ErrorCode::Conflict
 crates/adapters/src/relation_repo.rs:work_attribution->contract_kernel:humaux_domain::error::ErrorCode::DependencyUnavailable
@@ -687,7 +673,6 @@ crates/domain/src/source.rs:knowledge_lifecycle->contract_kernel:humaux_domain::
 crates/domain/src/source.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode::InvalidInput
 crates/domain/src/subject.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode
 crates/domain/src/subject.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode::InvalidInput
-crates/domain/src/temporal.rs:knowledge_lifecycle->contract_kernel:humaux_domain
 crates/local-secret-scan/src/lib.rs:provider_execution->knowledge_lifecycle:humaux_domain::evidence::EvidencePayloadSha256
 crates/local-secret-scan/src/lib.rs:provider_execution->knowledge_lifecycle:humaux_domain::evidence::payload_sha256
 crates/local-secret-scan/src/lib.rs:provider_execution->knowledge_lifecycle:humaux_domain::note

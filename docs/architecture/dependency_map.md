@@ -935,7 +935,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.register_continuity_project`
 - reads `private.subjects`
 - reads `public.entities`
-- writes `control.users`
+- writes `control.boundary_writer_fixture`
 - writes `coord.tasks`
 - writes `private.context_bindings`
 - writes `private.evidence_objects`
@@ -5707,6 +5707,14 @@ written by:
 executed by:
 - (no process): `adapters::tests::reasoning_route_shadow_bootstrap`
 
+### `control.boundary_writer_fixture`
+read by:
+
+written by:
+- process(cargo-xtask): `xtask::architecture_check`
+
+executed by:
+
 ### `control.bump_user_security_epoch`
 read by:
 
@@ -7638,7 +7646,6 @@ written by:
 - (no process): `public-pool::tests::notice`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - process(cargo-xtask): `maintenance::switch_visible`
-- process(cargo-xtask): `xtask::architecture_check`
 - process(cargo-xtask): `xtask::e2e_seed`
 - process(humaux-maintenance): `maintenance::switch_visible`
 - process(humaux-retrieval-worker): `retrieval-provider::adapters`

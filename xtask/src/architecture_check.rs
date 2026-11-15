@@ -1,5 +1,5 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, humaux-protocol, proc-macro2, serde_json, syn, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.curation_candidate_targets, private.curation_candidates, private.memory_projects, private.memory_projects_live, private.nodes, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.subjects, public.entities] w=[control.users, coord.tasks, private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.i4_authority_scan, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, CARGO_TARGET_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::known_red, xtask::serial_lane]
+//! Depends-on: crates=[humaux-domain, humaux-protocol, proc-macro2, serde_json, syn, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.curation_candidate_targets, private.curation_candidates, private.memory_projects, private.memory_projects_live, private.nodes, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.subjects, public.entities] w=[control.boundary_writer_fixture, coord.tasks, private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.i4_authority_scan, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, CARGO_TARGET_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::known_red, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main, xtask::vocab_check]
 //! Invariants: [each sub-check reports pass/fail/not_applicable independently except HEX-COVERAGE/LAYER/CONTEXT/WRITER which are two-state and fail on named missing inputs (ADR-0130 / #520); not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails; G-M23-3 / G-M23-3b read docs/architecture/db_objects.md and backup_catalog.toml and fail, never not_applicable, on a missing file or an inventory without foreign-key blocks; G-M23-3b also fails unless every D5_RESTORE_DEPENDENCIES entry is a KNOWLEDGE catalog row (M23 D5)]
 //! Spec: Baseline §53.3; §55.1; §59.1; §65; §78.3; §78; §78.1; §78.4; §52.4; §22.1; §23.1④; ADR-0110 D-B; ADR-0110 D-C; ADR-0121 D-A; ADR-0123 D3
@@ -1515,9 +1515,9 @@ fn hex_exact(
         .collect();
     let expected: BTreeSet<_> = rows.iter().map(|s| s.to_string()).collect();
     let mut errors = Vec::new();
-    if rows.len() > ceiling {
+    if rows.len() != ceiling {
         errors.push(format!(
-            "{label}: baseline row ceiling {ceiling} exceeded: {}",
+            "{label}: baseline row count {}, expected exactly ceiling {ceiling}",
             rows.len()
         ));
     }
@@ -1609,6 +1609,8 @@ struct HexRefs {
     aliases: BTreeMap<String, Vec<String>>,
 }
 impl<'ast> syn::visit::Visit<'ast> for HexRefs {
+    // ADR-0130 D5: access restrictions name visibility scopes, not dependencies.
+    fn visit_visibility(&mut self, _: &'ast syn::Visibility) {}
     fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
         if !hex_test_attrs(&item.attrs) {
             self.scope.push(item.ident.to_string());
@@ -1931,7 +1933,7 @@ fn hex_boundary_gate(root: &Path, writer: bool) -> Verdict {
     let (file, ceiling, label) = if writer {
         ("xtask/hex_writer_baseline.txt", 46, "HEX-WRITER")
     } else {
-        ("xtask/hex_context_baseline.txt", 808, "HEX-CONTEXT")
+        ("xtask/hex_context_baseline.txt", 793, "HEX-CONTEXT")
     };
     let actual = if writer {
         hex_writer_actual(root)
@@ -13820,6 +13822,124 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         }
     }
 
+    #[test]
+    fn hex_boundary_visibility_and_reexport_disk() {
+        let source = real_root();
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("hex-visibility-fixture-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        hex_copy_boundary_fixture(&source, &root);
+        let catalog_path = root.join(HEX_MODULES);
+        let mut catalog: toml::Value =
+            toml::from_str(&fs::read_to_string(&catalog_path).unwrap()).unwrap();
+        let module = catalog["module"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|m| m["id"].as_str() == Some("work_attribution"))
+            .unwrap();
+        let name = "crates/adapters/src/boundary_visibility.rs";
+        module["files"]
+            .as_array_mut()
+            .unwrap()
+            .push(toml::Value::String(name.into()));
+        fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+        let path = root.join(name);
+        let visible = "pub(crate) struct CrateVisible; pub(super) struct SuperVisible; mod nested {pub(in crate) struct Scoped;}";
+        fs::write(&path, visible).unwrap();
+        let gate = || hex_boundary_gate(&root, false);
+        let green = gate();
+        assert!(
+            matches!(green, Verdict::Pass),
+            "visibility is not a dependency: {green:?}"
+        );
+        println!("CONTEXT new single-context pub(crate)/pub(super)/pub(in crate): GREEN");
+        fs::write(
+            &path,
+            format!("{visible}\nuse humaux_domain::continuity::ProjectId;"),
+        )
+        .unwrap();
+        let red = gate();
+        assert!(
+            matches!(&red,Verdict::Fail(lines) if lines.iter().any(|l|l.contains("work_attribution->project_continuity"))),
+            "{red:?}"
+        );
+        println!("CONTEXT real use after visibility: RED {red:?}");
+        fs::write(&path, visible).unwrap();
+        assert!(matches!(gate(), Verdict::Pass));
+        println!("CONTEXT real use restored: GREEN");
+        let bridge = root.join("crates/adapters/src/credential_repo.rs");
+        let original = fs::read_to_string(&bridge).unwrap();
+        fs::write(
+            &bridge,
+            format!("{original}\npub use humaux_domain::error::ErrorCode as BoundaryAlias;\n"),
+        )
+        .unwrap();
+        assert!(matches!(gate(), Verdict::Pass));
+        println!("CONTEXT identity_access exports allowed contract_kernel type: GREEN");
+        fs::write(
+            &path,
+            format!("{visible}\nuse humaux_adapters::credential_repo::BoundaryAlias as Hidden;"),
+        )
+        .unwrap();
+        let red = gate();
+        assert!(
+            matches!(&red,Verdict::Fail(lines) if lines.iter().any(|l|l.contains("boundary_visibility.rs:work_attribution->contract_kernel:"))),
+            "{red:?}"
+        );
+        println!(
+            "CONTEXT discriminating identity_access re-export to contract_kernel: RED {red:?}"
+        );
+        fs::write(&path, visible).unwrap();
+        fs::write(bridge, original).unwrap();
+        assert!(matches!(gate(), Verdict::Pass));
+        println!("CONTEXT discriminating re-export restored: GREEN");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hex_boundary_removed_debt_requires_ceiling_decrease() {
+        for label in ["HEX-CONTEXT", "HEX-WRITER", "HEX-LAYER"] {
+            let actual = BTreeSet::from([String::from("remaining")]);
+            let errors = hex_exact(&actual, "remaining\n", 2, label);
+            assert!(
+                !errors.is_empty(),
+                "{label}: removing debt without lowering ceiling must fail"
+            );
+            println!("{label} removed real debt without lowering ceiling: RED {errors:?}");
+            assert!(hex_exact(&actual, "remaining\n", 1, label).is_empty());
+            println!("{label} decreased ceiling restored: GREEN");
+        }
+    }
+
+    fn hex_disk_foreign_writer(root: &Path, mutate: &impl Fn(i32, &str, &str, &str)) {
+        let path = root.join(HEX_MODULES);
+        let original = fs::read_to_string(&path).unwrap();
+        let mut catalog: toml::Value = toml::from_str(&original).unwrap();
+        let owner = catalog["module"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|m| m["id"].as_str() == Some("identity_access"))
+            .unwrap();
+        owner["owned_tables"]
+            .as_array_mut()
+            .unwrap()
+            .push(toml::Value::String(
+                "control.boundary_writer_fixture".into(),
+            ));
+        fs::write(&path, toml::to_string(&catalog).unwrap()).unwrap();
+        mutate(
+            1,
+            "crates/adapters/src/affect_repo.rs",
+            "const BOUNDARY_SQL: &str = \"UPDATE control.boundary_writer_fixture SET id = id\";",
+            "WRITER foreign fixture table",
+        );
+        fs::write(path, original).unwrap();
+    }
+
     fn hex_copy_boundary_fixture(source: &Path, root: &Path) {
         let mut inputs = walk_files(&source.join("crates"), &["rs", "toml"]);
         inputs.extend(walk_files(&source.join("bins"), &["rs", "toml"]));
@@ -13914,12 +14034,7 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             "const BOUNDARY_SQL: &str = \"INSERT INTO private.context_bindings DEFAULT VALUES\";",
             "WRITER second context_bindings INSERT",
         );
-        mutate(
-            1,
-            "crates/adapters/src/affect_repo.rs",
-            "const BOUNDARY_SQL: &str = \"UPDATE control.users SET id = id\";",
-            "WRITER foreign table",
-        );
+        hex_disk_foreign_writer(&root, &mutate);
         mutate(
             1,
             "crates/adapters/src/applicability_repo.rs",
@@ -14070,7 +14185,12 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             .join("\n");
         let errors = hex_layer_difference(&actual, &shortened);
         println!("HEX-LAYER removed baseline row: fail {errors:?}");
-        assert_eq!(errors.len(), 1);
+        assert_eq!(errors.len(), 2);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("expected exactly ceiling"))
+        );
         assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
         println!("HEX-LAYER removed baseline row restored: pass");
         let mut fixed = actual.clone();
