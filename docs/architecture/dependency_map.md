@@ -18160,6 +18160,7 @@ modules naming it:
 why: parse migration manifests and dep-map header lists
 
 modules naming it:
+- `tests`
 - `xtask::architecture_check`
 - `xtask::dep_map`
 - `xtask::known_red`

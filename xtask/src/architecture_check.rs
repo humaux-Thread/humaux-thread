@@ -13304,6 +13304,8 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             let errors = hex_coverage_problems(&toml::to_string(&value).unwrap(), &tables);
             println!("HEX-COVERAGE injected {case}: fail {errors:?}");
             assert!(!errors.is_empty(), "{case}");
+            assert!(hex_coverage_problems(&original, &tables).is_empty());
+            println!("HEX-COVERAGE {case} restored: pass");
         }
         assert!(matches!(hex_coverage_gate(&root), Verdict::Pass));
         println!("HEX-COVERAGE restored: pass");
@@ -13334,6 +13336,8 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         let errors = hex_layer_difference(&injected, &baseline);
         println!("HEX-LAYER injected gateway use: fail {errors:?}");
         assert_eq!(errors.len(), 2);
+        assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
+        println!("HEX-LAYER gateway use restored: pass");
         let shortened = actual
             .iter()
             .skip(1)
@@ -13343,6 +13347,8 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         let errors = hex_layer_difference(&actual, &shortened);
         println!("HEX-LAYER removed baseline row: fail {errors:?}");
         assert_eq!(errors.len(), 1);
+        assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
+        println!("HEX-LAYER removed baseline row restored: pass");
         let mut fixed = actual.clone();
         fixed.pop_first();
         assert_eq!(hex_layer_difference(&fixed, &baseline).len(), 1);
