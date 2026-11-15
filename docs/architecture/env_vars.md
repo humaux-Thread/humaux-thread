@@ -301,6 +301,7 @@ processes:
 - process(cargo-xtask)
 
 modules:
+- `xtask::architecture_check`
 - `xtask::e2e_onboard`
 - `xtask::serial_lane`
 

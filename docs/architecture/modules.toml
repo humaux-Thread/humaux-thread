@@ -18,6 +18,40 @@
 
 [[module]]
 id = "knowledge_lifecycle"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "bins/worker/src/main.rs",
+  "crates/adapters/src/affect_repo.rs",
+  "crates/adapters/src/confirm_token_repo.rs",
+  "crates/adapters/src/dedup_repo.rs",
+  "crates/adapters/src/evidence_repo.rs",
+  "crates/adapters/src/memory_governance_repo.rs",
+  "crates/adapters/src/memory_repo.rs",
+  "crates/adapters/src/note_repo.rs",
+  "crates/adapters/src/operation_receipt.rs",
+  "crates/adapters/src/processing_status.rs",
+  "crates/adapters/src/subject_repo.rs",
+  "crates/application/src/affect.rs",
+  "crates/application/src/archive.rs",
+  "crates/application/src/confirm.rs",
+  "crates/application/src/correct.rs",
+  "crates/application/src/ingest.rs",
+  "crates/application/src/pin.rs",
+  "crates/application/src/processing_status.rs",
+  "crates/application/src/supersede.rs",
+  "crates/domain/src/affect.rs",
+  "crates/domain/src/authority.rs",
+  "crates/domain/src/confirm.rs",
+  "crates/domain/src/evidence.rs",
+  "crates/domain/src/grounding.rs",
+  "crates/domain/src/knowledge.rs",
+  "crates/domain/src/lifecycle.rs",
+  "crates/domain/src/memory.rs",
+  "crates/domain/src/note.rs",
+  "crates/domain/src/source.rs",
+  "crates/domain/src/subject.rs",
+  "crates/domain/src/temporal.rs",
+]
 kind = "core"
 legacy_m = ["M06", "M07"]
 owned_tables = [
@@ -56,6 +90,13 @@ may_depend_on = [
 
 [[module]]
 id = "work_attribution"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "crates/adapters/src/attribution_repo.rs",
+  "crates/adapters/src/relation_repo.rs",
+  "crates/domain/src/attribution.rs",
+  "crates/domain/src/relation.rs",
+]
 kind = "core"
 legacy_m = ["M29"]
 owned_tables = [
@@ -74,6 +115,16 @@ may_depend_on = [
 
 [[module]]
 id = "project_continuity"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "crates/adapters/src/applicability_repo.rs",
+  "crates/adapters/src/continuity_read.rs",
+  "crates/adapters/src/continuity_repo.rs",
+  "crates/application/src/continuity.rs",
+  "crates/domain/src/applicability.rs",
+  "crates/domain/src/context.rs",
+  "crates/domain/src/continuity.rs",
+]
 kind = "core"
 legacy_m = ["M14"]
 owned_tables = [
@@ -94,6 +145,14 @@ may_depend_on = [
 
 [[module]]
 id = "coordination"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "crates/adapters/src/coord_repo.rs",
+  "crates/adapters/src/coord_task_repo.rs",
+  "crates/adapters/src/coord_tree_repo.rs",
+  "crates/domain/src/coordination.rs",
+  "crates/domain/src/project_tree.rs",
+]
 kind = "core"
 legacy_m = ["M18"]
 owned_tables = [
@@ -116,6 +175,27 @@ may_depend_on = [
 
 [[module]]
 id = "identity_access"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "crates/adapters/src/credential_repo.rs",
+  "crates/adapters/src/email/mod.rs",
+  "crates/adapters/src/email/outbox.rs",
+  "crates/adapters/src/email/sink.rs",
+  "crates/adapters/src/email/smtp.rs",
+  "crates/adapters/src/email/test_double.rs",
+  "crates/adapters/src/login_repo.rs",
+  "crates/adapters/src/membership_repo.rs",
+  "crates/adapters/src/oauth_repo.rs",
+  "crates/adapters/src/request_guard_repo.rs",
+  "crates/adapters/src/session_repo.rs",
+  "crates/application/src/auth.rs",
+  "crates/application/src/login.rs",
+  "crates/application/src/oauth.rs",
+  "crates/application/src/session.rs",
+  "crates/application/src/signed_token.rs",
+  "crates/domain/src/identity.rs",
+  "crates/domain/src/policy.rs",
+]
 kind = "support"
 legacy_m = ["M02", "M03"]
 owned_tables = [
@@ -157,6 +237,33 @@ may_depend_on = [
 
 [[module]]
 id = "commercial"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "bins/billing-worker/src/creem.rs",
+  "bins/billing-worker/src/fake_creem.rs",
+  "bins/billing-worker/src/lib.rs",
+  "bins/billing-worker/src/main.rs",
+  "bins/billing-worker/src/mode.rs",
+  "bins/billing-worker/src/normalize.rs",
+  "bins/billing-worker/src/process.rs",
+  "bins/billing-worker/src/signature.rs",
+  "bins/billing-worker/tests/cancel.rs",
+  "bins/billing-worker/tests/fetch.rs",
+  "bins/billing-worker/tests/mode_gate.rs",
+  "bins/billing-worker/tests/normalization.rs",
+  "bins/billing-worker/tests/process.rs",
+  "bins/billing-worker/tests/signature.rs",
+  "crates/adapters/src/billing_processor_repo.rs",
+  "crates/adapters/src/billing_repo.rs",
+  "crates/adapters/src/entitlement_repo.rs",
+  "crates/adapters/src/plan_repo.rs",
+  "crates/adapters/src/quota_repo.rs",
+  "crates/application/src/billing.rs",
+  "crates/application/src/entitlement.rs",
+  "crates/application/src/referral.rs",
+  "crates/domain/src/billing.rs",
+  "crates/domain/src/plan.rs",
+]
 kind = "support"
 legacy_m = ["M04"]
 owned_tables = [
@@ -184,6 +291,29 @@ may_depend_on = [
 
 [[module]]
 id = "knowledge_curation"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "bins/consolidation-worker/src/dsn.rs",
+  "bins/consolidation-worker/src/inference_client.rs",
+  "bins/consolidation-worker/src/lib.rs",
+  "bins/consolidation-worker/src/main.rs",
+  "bins/consolidation-worker/tests/consolidation_hop_e2e.rs",
+  "bins/consolidation-worker/tests/derived_dispatch_e2e.rs",
+  "bins/consolidation-worker/tests/exit_codes.rs",
+  "bins/consolidation-worker/tests/ops_listener.rs",
+  "bins/consolidation-worker/tests/run_once_e2e.rs",
+  "crates/adapters/src/candidate_repo.rs",
+  "crates/adapters/src/consolidate_repo.rs",
+  "crates/adapters/src/consolidation_reasoner.rs",
+  "crates/adapters/src/distill_reasoner.rs",
+  "crates/adapters/src/distill_repo.rs",
+  "crates/adapters/src/project_rollup.rs",
+  "crates/adapters/src/reasoning_route_admission.rs",
+  "crates/adapters/src/reasoning_route_onboarding.rs",
+  "crates/application/src/consolidate.rs",
+  "crates/application/src/distill.rs",
+  "crates/domain/src/consolidate.rs",
+]
 kind = "core"
 legacy_m = ["M15"]
 owned_tables = [
@@ -225,6 +355,10 @@ may_depend_on = [
 
 [[module]]
 id = "code_intelligence"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "crates/domain/src/code.rs",
+]
 kind = "core"
 legacy_m = ["M16"]
 owned_tables = [
@@ -246,6 +380,12 @@ may_depend_on = [
 
 [[module]]
 id = "document_acquisition"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "crates/adapters/src/object_store/fs.rs",
+  "crates/adapters/src/object_store/mod.rs",
+  "crates/adapters/src/s3.rs",
+]
 kind = "core"
 legacy_m = ["M17"]
 owned_tables = [
@@ -260,6 +400,11 @@ may_depend_on = [
 
 [[module]]
 id = "data_rights"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "crates/adapters/src/forget_repo.rs",
+  "crates/application/src/forget.rs",
+]
 kind = "support"
 legacy_m = ["M19"]
 owned_tables = [
@@ -277,6 +422,46 @@ may_depend_on = [
 
 [[module]]
 id = "public_knowledge"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "bins/public-worker/src/main.rs",
+  "bins/public-worker/tests/readyz_probe.rs",
+  "crates/adapters/src/contribution_eligibility.rs",
+  "crates/adapters/src/contribution_entry_repo.rs",
+  "crates/adapters/src/contribution_execution_ingress.rs",
+  "crates/adapters/src/contribution_execution_repo.rs",
+  "crates/adapters/src/contribution_reasoner.rs",
+  "crates/adapters/src/contribution_repo.rs",
+  "crates/adapters/src/contribution_scan.rs",
+  "crates/application/src/contribute.rs",
+  "crates/application/src/contribution_execution.rs",
+  "crates/domain/src/public.rs",
+  "crates/public-pool/src/admission/deid.rs",
+  "crates/public-pool/src/admission/mod.rs",
+  "crates/public-pool/src/completeness.rs",
+  "crates/public-pool/src/lib.rs",
+  "crates/public-pool/src/notice.rs",
+  "crates/public-pool/src/policy.rs",
+  "crates/public-pool/src/public_evolve.rs",
+  "crates/public-pool/src/public_projection.rs",
+  "crates/public-pool/src/public_provenance.rs",
+  "crates/public-pool/src/public_repo.rs",
+  "crates/public-pool/src/vocab/model.rs",
+  "crates/public-pool/src/vocab.rs",
+  "crates/public-pool/tests/admission_deid.rs",
+  "crates/public-pool/tests/completeness.rs",
+  "crates/public-pool/tests/mechanism_observation.rs",
+  "crates/public-pool/tests/notice.rs",
+  "crates/public-pool/tests/public_projection.rs",
+  "crates/public-pool/tests/public_provenance.rs",
+  "crates/public-pool/tests/public_provenance_revocation_eval.rs",
+  "crates/public-pool/tests/public_runtime.rs",
+  "crates/public-pool/tests/public_runtime_qdrant.rs",
+  "crates/public-pool/tests/public_trust.rs",
+  "crates/public-pool/tests/support/public_anonymous_seam.rs",
+  "crates/public-pool/tests/support/public_qdrant_fixture.rs",
+  "crates/public-pool/tests/vocab.rs",
+]
 kind = "core"
 legacy_m = ["M20"]
 owned_tables = [
@@ -332,6 +517,7 @@ may_depend_on = [
 
 [[module]]
 id = "knowledge_association"
+files = []
 kind = "core"
 legacy_m = ["M28"]
 owned_tables = [
@@ -348,6 +534,67 @@ may_depend_on = [
 
 [[module]]
 id = "retrieval_read_model"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "crates/adapters/src/batch.rs",
+  "crates/adapters/src/exact_census.rs",
+  "crates/adapters/src/grep_repo.rs",
+  "crates/adapters/src/placement_repo.rs",
+  "crates/adapters/src/private_projection_registry.rs",
+  "crates/adapters/src/projection_worker.rs",
+  "crates/adapters/src/qdrant.rs",
+  "crates/adapters/src/read_gate.rs",
+  "crates/adapters/src/read_materialize.rs",
+  "crates/adapters/src/rebuild.rs",
+  "crates/adapters/src/retrieval_query_log.rs",
+  "crates/adapters/src/retrieval_query_source.rs",
+  "crates/adapters/src/retrieve.rs",
+  "crates/adapters/src/selection_repo.rs",
+  "crates/adapters/src/serving_repo.rs",
+  "crates/adapters/src/stream_repo.rs",
+  "crates/adapters/src/valkey.rs",
+  "crates/application/src/recall_read.rs",
+  "crates/application/src/retrieval_embedding_port.rs",
+  "crates/application/src/retrieve.rs",
+  "crates/cache/src/bounded.rs",
+  "crates/cache/src/key.rs",
+  "crates/cache/src/lib.rs",
+  "crates/cache/tests/bounds.rs",
+  "crates/cache/tests/embedding_key.rs",
+  "crates/cache/tests/failure.rs",
+  "crates/cache/tests/isolation.rs",
+  "crates/cache/tests/singleflight.rs",
+  "crates/domain/src/selection.rs",
+  "crates/projection/src/card.rs",
+  "crates/projection/src/code.rs",
+  "crates/projection/src/dense.rs",
+  "crates/projection/src/embedding_fingerprint.rs",
+  "crates/projection/src/fingerprint.rs",
+  "crates/projection/src/graph.rs",
+  "crates/projection/src/lib.rs",
+  "crates/projection/src/note_chunks.rs",
+  "crates/projection/src/serving.rs",
+  "crates/projection/src/sparse.rs",
+  "crates/projection/src/stream.rs",
+  "crates/projection/tests/no_handwritten_filter_scan.rs",
+  "crates/retrieval/src/brief.rs",
+  "crates/retrieval/src/candidate.rs",
+  "crates/retrieval/src/compiler.rs",
+  "crates/retrieval/src/completeness.rs",
+  "crates/retrieval/src/envelope.rs",
+  "crates/retrieval/src/fusion.rs",
+  "crates/retrieval/src/handoff.rs",
+  "crates/retrieval/src/lib.rs",
+  "crates/retrieval/src/planner.rs",
+  "crates/retrieval/src/predicate_eval.rs",
+  "crates/retrieval/src/predicate_registry.rs",
+  "crates/retrieval/src/request.rs",
+  "crates/retrieval/src/rerank.rs",
+  "crates/retrieval/src/signals.rs",
+  "crates/retrieval/tests/freshness.rs",
+  "crates/retrieval/tests/planner_predicate_eval.rs",
+  "crates/retrieval/tests/rerank_provenance_constructor.rs",
+]
 kind = "support"
 legacy_m = ["M08", "M09", "M10", "M11", "M12", "M13"]
 owned_tables = [
@@ -380,6 +627,62 @@ may_depend_on = [
 
 [[module]]
 id = "provider_execution"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "crates/adapters/src/audit_sink.rs",
+  "crates/adapters/src/byok/ssrf.rs",
+  "crates/adapters/src/byok.rs",
+  "crates/adapters/src/cost_repo.rs",
+  "crates/adapters/src/dashscope.rs",
+  "crates/adapters/src/disclosure.rs",
+  "crates/adapters/src/egress_policy.rs",
+  "crates/adapters/src/model_call_ledger.rs",
+  "crates/adapters/src/openbao.rs",
+  "crates/adapters/src/private_inference_rpc.rs",
+  "crates/adapters/src/provider_budget.rs",
+  "crates/adapters/src/provisioning.rs",
+  "crates/adapters/src/retrieval_embedding_rpc.rs",
+  "crates/adapters/src/role_hygiene.rs",
+  "crates/domain/src/audit.rs",
+  "crates/domain/src/boundary.rs",
+  "crates/domain/src/egress.rs",
+  "crates/domain/src/ledger.rs",
+  "crates/infra-cell/src/lib.rs",
+  "crates/infra-cell/src/permit.rs",
+  "crates/infra-cell/src/resource.rs",
+  "crates/infra-cell/src/transport.rs",
+  "crates/infra-cell/src/uds.rs",
+  "crates/infra-cell/tests/intra_cell_topology_ui.rs",
+  "crates/infra-cell/tests/mainline_ssrf_probe.rs",
+  "crates/infra-cell/tests/ui/fail_resource_from_raw_url_string.rs",
+  "crates/infra-cell/tests/ui/pass_qdrant_rest_variant.rs",
+  "crates/infra-egress/src/http.rs",
+  "crates/infra-egress/src/lib.rs",
+  "crates/infra-egress/src/raw.rs",
+  "crates/infra-egress/src/resolver.rs",
+  "crates/infra-network/src/http.rs",
+  "crates/infra-network/src/lib.rs",
+  "crates/local-secret-scan/src/lib.rs",
+  "crates/local-secret-scan/tests/seal_rules.rs",
+  "crates/retrieval-provider/src/adapters.rs",
+  "crates/retrieval-provider/src/admission.rs",
+  "crates/retrieval-provider/src/contract.rs",
+  "crates/retrieval-provider/src/cost.rs",
+  "crates/retrieval-provider/src/failover.rs",
+  "crates/retrieval-provider/src/health.rs",
+  "crates/retrieval-provider/src/lib.rs",
+  "crates/retrieval-provider/src/metrics.rs",
+  "crates/retrieval-provider/src/pricing.rs",
+  "crates/retrieval-provider/src/router.rs",
+  "crates/retrieval-provider/tests/contract_tests.rs",
+  "crates/retrieval-provider/tests/dashscope_live_smoke.rs",
+  "crates/retrieval-provider/tests/router_rls_integration.rs",
+  "crates/retrieval-provider/tests/sealed_type_gate_ui.rs",
+  "crates/retrieval-provider/tests/ui/fail_construct_query_provenance.rs",
+  "crates/retrieval-provider/tests/ui/fail_construct_query_wire_binding.rs",
+  "crates/retrieval-provider/tests/ui/fail_construct_sealed_query.rs",
+  "crates/retrieval-provider/tests/ui/fail_embed_queries_raw_string.rs",
+]
 kind = "support"
 legacy_m = ["M05"]
 owned_tables = [
@@ -414,6 +717,28 @@ may_depend_on = [
 
 [[module]]
 id = "contract_kernel"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "crates/adapters/src/lib.rs",
+  "crates/application/src/lib.rs",
+  "crates/contracts/src/config_registry.rs",
+  "crates/contracts/src/feature_registry.rs",
+  "crates/contracts/src/freshness.rs",
+  "crates/contracts/src/lib.rs",
+  "crates/contracts/src/mechanism_registry.rs",
+  "crates/contracts/src/retrieval_config.rs",
+  "crates/contracts/tests/feature_registry_contract.rs",
+  "crates/contracts/tests/freshness.rs",
+  "crates/domain/src/dataclass.rs",
+  "crates/domain/src/error.rs",
+  "crates/domain/src/ids.rs",
+  "crates/domain/src/lib.rs",
+  "crates/domain/src/ticket_family.rs",
+  "crates/fail-closed-macro/src/lib.rs",
+  "crates/fail-closed-macro/tests/compile_fail.rs",
+  "crates/telemetry/src/degrade.rs",
+  "crates/telemetry/src/direction.rs",
+]
 kind = "platform"
 legacy_m = ["M01"]
 owned_tables = []
@@ -421,6 +746,22 @@ may_depend_on = []
 
 [[module]]
 id = "protocol_integration"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "crates/protocol/src/edge.rs",
+  "crates/protocol/src/error_map.rs",
+  "crates/protocol/src/lib.rs",
+  "crates/protocol/src/mcp.rs",
+  "crates/protocol/src/mcp_catalog.rs",
+  "crates/protocol/src/mcp_profile.rs",
+  "crates/protocol/src/page.rs",
+  "crates/protocol/src/rest.rs",
+  "crates/protocol/tests/mcp_http.rs",
+  "crates/protocol/tests/mcp_profile.rs",
+  "crates/protocol/tests/note_kind_contract.rs",
+  "crates/protocol/tests/page_budget.rs",
+  "crates/protocol/tests/remember_source_contract.rs",
+]
 kind = "integration"
 legacy_m = ["M25", "M26", "M27"]
 owned_tables = []
@@ -439,6 +780,13 @@ may_depend_on = [
 
 [[module]]
 id = "job_execution"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "crates/adapters/src/jobs.rs",
+  "crates/adapters/src/maintenance_repo.rs",
+  "crates/adapters/src/scheduler.rs",
+  "crates/application/src/scheduler.rs",
+]
 kind = "support"
 legacy_m = ["M21"]
 owned_tables = [
@@ -455,6 +803,101 @@ may_depend_on = [
 
 [[module]]
 id = "operations_platform"
+# ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
+files = [
+  "bins/admin/build.rs",
+  "bins/admin/src/cell_resources.rs",
+  "bins/admin/src/main.rs",
+  "bins/admin/src/mechanism.rs",
+  "bins/admin/src/ops_status.rs",
+  "bins/admin/src/probe.rs",
+  "bins/admin/src/render.rs",
+  "bins/admin/src/tls_expiry.rs",
+  "bins/admin/tests/exit_codes.rs",
+  "bins/admin/tests/probes.rs",
+  "crates/adapters/src/health.rs",
+  "crates/adapters/src/mechanism_observation.rs",
+  "crates/application/src/notify.rs",
+  "crates/telemetry/src/admission.rs",
+  "crates/telemetry/src/cache.rs",
+  "crates/telemetry/src/dr.rs",
+  "crates/telemetry/src/health.rs",
+  "crates/telemetry/src/host.rs",
+  "crates/telemetry/src/lib.rs",
+  "crates/telemetry/src/metrics.rs",
+  "crates/testkit/src/disposable.rs",
+  "crates/testkit/src/dod.rs",
+  "crates/testkit/src/fixture_purge.rs",
+  "crates/testkit/src/lib.rs",
+  "crates/testkit/src/reaped.rs",
+  "crates/testkit/tests/disposable_guard.rs",
+  "crates/testkit/tests/fault/completeness_unknown.rs",
+  "crates/testkit/tests/fault/egress_denied.rs",
+  "crates/testkit/tests/fault/embed_provider_timeout.rs",
+  "crates/testkit/tests/fault/graph_expand_capped.rs",
+  "crates/testkit/tests/fault/lane_substituted.rs",
+  "crates/testkit/tests/fault/projection_invisible_loss.rs",
+  "crates/testkit/tests/fault/projection_lag.rs",
+  "crates/testkit/tests/fault/rerank_model_mismatch.rs",
+  "crates/testkit/tests/fault/rerank_provider_timeout.rs",
+  "crates/testkit/tests/fault/sparse_lane_unavailable.rs",
+  "crates/testkit/tests/fault/state_pin_ambiguous.rs",
+  "crates/testkit/tests/fault/state_pin_missing.rs",
+  "crates/testkit/tests/fault_main.rs",
+  "crates/testkit/tests/metrics/admission_rejected_total.rs",
+  "crates/testkit/tests/metrics/authority_i4_violations.rs",
+  "crates/testkit/tests/metrics/backup_budget_headroom_bytes.rs",
+  "crates/testkit/tests/metrics/backup_disk_free_bytes.rs",
+  "crates/testkit/tests/metrics/backup_last_success_timestamp_seconds.rs",
+  "crates/testkit/tests/metrics/backup_repo_bytes.rs",
+  "crates/testkit/tests/metrics/cache_bytes.rs",
+  "crates/testkit/tests/metrics/cache_evictions_total.rs",
+  "crates/testkit/tests/metrics/cache_requests_total.rs",
+  "crates/testkit/tests/metrics/cache_singleflight_waiters.rs",
+  "crates/testkit/tests/metrics/data_disclosures_finalized_total.rs",
+  "crates/testkit/tests/metrics/data_disclosures_reserved_unfinalized.rs",
+  "crates/testkit/tests/metrics/degrade_total.rs",
+  "crates/testkit/tests/metrics/dns_pin_deferred_total.rs",
+  "crates/testkit/tests/metrics/host_cpu_busy_ratio.rs",
+  "crates/testkit/tests/metrics/host_memory_available_bytes.rs",
+  "crates/testkit/tests/metrics/host_pressure_ratio.rs",
+  "crates/testkit/tests/metrics/humaux_retrieval_requests_total.rs",
+  "crates/testkit/tests/metrics/jobs_dead.rs",
+  "crates/testkit/tests/metrics/jobs_pending.rs",
+  "crates/testkit/tests/metrics/jobs_processing.rs",
+  "crates/testkit/tests/metrics/jobs_waiting_key.rs",
+  "crates/testkit/tests/metrics/maintenance_task_rows_total.rs",
+  "crates/testkit/tests/metrics/maintenance_task_runs_total.rs",
+  "crates/testkit/tests/metrics/oldest_pending_age_seconds.rs",
+  "crates/testkit/tests/metrics/partition_horizon_months.rs",
+  "crates/testkit/tests/metrics/private_distill_outputs_total.rs",
+  "crates/testkit/tests/metrics/private_distill_runs_total.rs",
+  "crates/testkit/tests/metrics/private_reasoning_usage_total.rs",
+  "crates/testkit/tests/metrics/processing_gap_count.rs",
+  "crates/testkit/tests/metrics/projection_lag_events.rs",
+  "crates/testkit/tests/metrics/quota_window_horizon_seconds.rs",
+  "crates/testkit/tests/metrics/restore_drill_last_success_timestamp_seconds.rs",
+  "crates/testkit/tests/metrics/retrieval_completeness_total.rs",
+  "crates/testkit/tests/metrics/retrieval_provider_cost_total.rs",
+  "crates/testkit/tests/metrics/retrieval_provider_latency_seconds.rs",
+  "crates/testkit/tests/metrics/retrieval_provider_requests_total.rs",
+  "crates/testkit/tests/metrics/retrieval_provider_tokens_total.rs",
+  "crates/testkit/tests/metrics/stage_last_error_class.rs",
+  "crates/testkit/tests/metrics/stage_last_output_timestamp_seconds.rs",
+  "crates/testkit/tests/metrics/stage_last_run_timestamp_seconds.rs",
+  "crates/testkit/tests/metrics/stage_last_success_timestamp_seconds.rs",
+  "crates/testkit/tests/metrics/stage_output_count.rs",
+  "crates/testkit/tests/metrics/stage_processed_count.rs",
+  "crates/testkit/tests/metrics/stage_state.rs",
+  "crates/testkit/tests/metrics/tenants_active_1d.rs",
+  "crates/testkit/tests/metrics/tenants_active_7d.rs",
+  "crates/testkit/tests/metrics/wal_archive_failing.rs",
+  "crates/testkit/tests/pair/cannot_establish_completeness_degraded.rs",
+  "crates/testkit/tests/pair/cannot_establish_completeness_terminal.rs",
+  "crates/testkit/tests/pair/projection_lag_degraded.rs",
+  "crates/testkit/tests/pair/projection_lag_terminal.rs",
+  "crates/testkit/tests/pair_main.rs",
+]
 kind = "platform"
 legacy_m = ["M22", "M24"]
 owned_tables = [
@@ -470,6 +913,7 @@ may_depend_on = [
 
 [[module]]
 id = "knowledge_backup"
+files = []
 kind = "support"
 legacy_m = ["M23"]
 owned_tables = [
@@ -490,3 +934,1141 @@ may_depend_on = [
 modules = ["knowledge_lifecycle", "coordination"]
 use_case = "remember"
 note = "M07 fact door and M18 verification collaborate in one PG transaction"
+
+# Shared source ownership is explicit; it grants no guest table write permission.
+
+[[shared_file]]
+path = "bins/gateway/build.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/admission.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/auth.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/auth_pages.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/billing_webhook.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/bootstrap.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/cached_embedding.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/context.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/continuity.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/guard.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/lib.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/limiter.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/main.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/mcp_application.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/memory.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/oauth_http.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/recall.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/remember.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/rerank_client.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/retrieval_embedding_client.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/src/status.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/admission.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/as_metadata.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/auth_pages.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/billing_webhook.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/console_csrf.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/continuity_get.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/coordinate_task.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/cross_tenant_canary.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/exit_codes.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/limiter.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/mcp_forget.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/mcp_gateway.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/memory_get_frontier.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/no_memory_text_reader.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/oauth_flow.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/ops_listener.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/query_embedding_rpc.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/read_decoupling.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/recall_embedding_cache.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/semantic_recall_wiring.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/service_credentials.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/singleton.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/support/guard_limiter.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/gateway/tests/support/singleton_env.rs"
+contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/maintenance/build.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/backup.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/deploy_check.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/drill.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/health_serve.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/lib.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/main.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/member.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/migrate.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/migration_manifest.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/projection_serve.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/rebuild_cli.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/resident.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/retention.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/rls_check.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/roles.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/serve.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/switch_visible.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/throwaway.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/backup.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/billing_legacy_migration.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/billing_slot_migration.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/drill.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/exit_codes.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/health_serve.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/i4_scan.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/measure.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/onboarding.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/partition_pg_facts.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/partitions.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/reasoning_routes.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/rebuild_cli.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/retention.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/roles_hygiene.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/serve.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/spike.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/stage_liveness.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/support/containers.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/tests/support/throwaway.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/private-worker/src/distill.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/src/dsn.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/src/inference_rpc.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/src/lib.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/src/main.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/src/route_providers.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/src/stages.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/tests/contribution_execution_runner.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/tests/derived_dispatch_e2e.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/tests/distill_hop_e2e.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/tests/exit_codes.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/tests/m29_attribution_e2e.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/tests/ops_listener.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/tests/same_uid_boot.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/tests/start_manual_contribution_command_0131.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/tests/support/dispatch_fence.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/tests/support/distill_lane.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/tests/support/double_spend.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/tests/support/live_minimax.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/private-worker/tests/support/live_provider.rs"
+contexts = ["knowledge_curation", "provider_execution"]
+
+[[shared_file]]
+path = "bins/retrieval-worker/src/lib.rs"
+contexts = ["provider_execution", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/retrieval-worker/src/main.rs"
+contexts = ["provider_execution", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/retrieval-worker/src/rerank.rs"
+contexts = ["provider_execution", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/retrieval-worker/src/rpc.rs"
+contexts = ["provider_execution", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/retrieval-worker/tests/exit_codes.rs"
+contexts = ["provider_execution", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/retrieval-worker/tests/ops_listener.rs"
+contexts = ["provider_execution", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/retrieval-worker/tests/readyz_probe.rs"
+contexts = ["provider_execution", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/retrieval-worker/tests/rerank_parity.rs"
+contexts = ["provider_execution", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/retrieval-worker/tests/rerank_pin.rs"
+contexts = ["provider_execution", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/retrieval-worker/tests/rerank_route.rs"
+contexts = ["provider_execution", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/retrieval-worker/tests/rpc_readyz.rs"
+contexts = ["provider_execution", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/retrieval-worker/tests/same_uid_boot.rs"
+contexts = ["provider_execution", "retrieval_read_model"]
+
+[[shared_file]]
+path = "bins/retrieval-worker/tests/serve_drain.rs"
+contexts = ["provider_execution", "retrieval_read_model"]
+
+[[shared_file]]
+path = "crates/adapters/src/context_repo/g8031_snapshot_tests.rs"
+contexts = ["knowledge_lifecycle", "project_continuity", "retrieval_read_model"]
+
+[[shared_file]]
+path = "crates/adapters/src/context_repo.rs"
+contexts = ["knowledge_lifecycle", "project_continuity", "retrieval_read_model"]
+
+[[shared_file]]
+path = "crates/adapters/src/postgres.rs"
+contexts = ["code_intelligence", "commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_association", "knowledge_backup", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "protocol_integration", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/src/remember.rs"
+contexts = ["coordination", "knowledge_lifecycle", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/a2_point_identity.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/applicability.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/auth_contract.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/auth_scope_rls.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/authority_g59_5.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/billing_doors.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/billing_repo.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/billing_slot_handover.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/byok_egress_rebinding.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/candidates.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/code_rls.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/code_schema.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/confirm_token_retention.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/console_session.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/consolidate_snapshot.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/continuity_publish.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/contribution_authorization.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/contribution_eligibility.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/contribution_execution_0131.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/contribution_execution_disclosure_sources_0131.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/contribution_execution_ingress_0131.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/contribution_execution_repo.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/contribution_execution_repo_0131.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/contribution_pipeline.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/contribution_policy_lifecycle_0132.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/contribution_reasoner.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/contribution_repo.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/contribution_scan.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/contribution_self_principal_authority_0133.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/coord_rls.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/coord_task_project.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/coord_task_run.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/core_never_auto.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/cost_repo.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/credential_grants.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/dedup.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/disclosure_ledger.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/distill_dispatch_v2.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/email_outbox.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/entitlement_projector.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/enumerate_scale.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/evidence_sources.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/evidence_sources_dedupe.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/evidence_task_runs.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/exact_census_project.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/exact_completeness_eval.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/facet_contract.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/forget_confirm.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/forget_preview.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/forget_race.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/forget_repo.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/freshness.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/g80_31_handoff.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/health_snapshot.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/hot_path_indexes.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ingest_ticket_expiry.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/jobs_claim.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ledger_append_only.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ledger_frontier.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/login_challenge.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/maintenance_doors.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/mandatory_context_lane.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/membership_lifecycle.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/memory_affects.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/memory_attribution.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/memory_evidence_grounding.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/memory_in_project.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/memory_security_lifecycle_eval.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/memory_subjects_link.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/minimax_live_smoke.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/model_call_ledger.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/note_chunk_count_parity.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/note_history.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/note_put.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/note_reads.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/note_replace.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/note_text_once.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/oauth_persistence.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/object_store_contract.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/offset_pagination_positive_control.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/operation_receipts.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/outbox_batch_remember.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/phase9_assessed_contract.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/phase9_exact_assessed_storage_binding.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/phase9_independence_attestation.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/plan_catalog.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/pool_typestate.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/private_projection_registry.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/processing_runs_fingerprint_rerun.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/processing_status.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/project_continuity_0136.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/project_continuity_read_0137.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/project_continuity_read_0137_acceptance.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/project_rollup.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/project_tree.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/projection_claim.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/projection_lag.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/projection_worker.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/provider_budget.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/public_contribution_contract.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/qdrant_contract.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/qdrant_live.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/quota_and_rate.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/read_gate_closure.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/reasoning_route_foundation.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/reasoning_route_health_admission.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/reasoning_route_runtime.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/reasoning_route_shadow_bootstrap.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/rebuild.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/recall_envelope_g23.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/relation_kernel.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/request_guard.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/retrieval_query_sources.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/retrieve_no_hidden_generative_recall.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/retrieve_read_your_writes.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/scheduler_exactly_once.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/selection_snapshot.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/serving_repo.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/stream_repo.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/subject_registry_rls.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/support/a2_fixture.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/support/continuity_0137_cleanup.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/support/continuity_0137_fixture.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/support/contribution_fixture.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/support/g8031_snapshot_fixture.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/support/governance_ops.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/support/operation_receipt_fixture.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/support/private_route.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/support/project_tree_fixture.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/support/scratch_qdrant.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/support/throwaway_db.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/support/token_keys.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/support/truncate_probe.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/switch_user_private.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/task_grant_contract.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/tenant_placements_migration.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/token_keys_unset.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ui/fail_begin_batch_with_runtime_pool.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ui/fail_consolidation_with_private_pool.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ui/fail_contribution_cross_roles.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ui/fail_deref_inner.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ui/fail_pool_cross_from.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ui/fail_raw_pool_field.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ui/fail_remember_with_batch_pool.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ui/fail_stream_count_filter_in_dense_search.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ui/pass_batch_pool.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ui/pass_consolidation_pool.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ui/pass_private_pool.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ui/pass_public_pool.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/ui/pass_runtime_pool.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/adapters/tests/visible_index_count.rs"
+contexts = ["commercial", "contract_kernel", "coordination", "data_rights", "document_acquisition", "identity_access", "job_execution", "knowledge_curation", "knowledge_lifecycle", "operations_platform", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/application/src/remember.rs"
+contexts = ["coordination", "knowledge_lifecycle", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/domain/tests/authority_policy_g59_6.rs"
+contexts = ["code_intelligence", "commercial", "contract_kernel", "coordination", "identity_access", "knowledge_curation", "knowledge_lifecycle", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/domain/tests/consolidate_typestate.rs"
+contexts = ["code_intelligence", "commercial", "contract_kernel", "coordination", "identity_access", "knowledge_curation", "knowledge_lifecycle", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/domain/tests/context_authorize.rs"
+contexts = ["code_intelligence", "commercial", "contract_kernel", "coordination", "identity_access", "knowledge_curation", "knowledge_lifecycle", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/domain/tests/egress_topology_ui.rs"
+contexts = ["code_intelligence", "commercial", "contract_kernel", "coordination", "identity_access", "knowledge_curation", "knowledge_lifecycle", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/domain/tests/temporal_semantics.rs"
+contexts = ["code_intelligence", "commercial", "contract_kernel", "coordination", "identity_access", "knowledge_curation", "knowledge_lifecycle", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/domain/tests/ui/fail_bound_to_auto_mutable.rs"
+contexts = ["code_intelligence", "commercial", "contract_kernel", "coordination", "identity_access", "knowledge_curation", "knowledge_lifecycle", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/domain/tests/ui/fail_confirmed_user_actor_literal.rs"
+contexts = ["code_intelligence", "commercial", "contract_kernel", "coordination", "identity_access", "knowledge_curation", "knowledge_lifecycle", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/domain/tests/ui/fail_egress_permit_issue_call.rs"
+contexts = ["code_intelligence", "commercial", "contract_kernel", "coordination", "identity_access", "knowledge_curation", "knowledge_lifecycle", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/domain/tests/ui/fail_egress_permit_struct_literal.rs"
+contexts = ["code_intelligence", "commercial", "contract_kernel", "coordination", "identity_access", "knowledge_curation", "knowledge_lifecycle", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/domain/tests/ui/pass_authorize_mints_permit.rs"
+contexts = ["code_intelligence", "commercial", "contract_kernel", "coordination", "identity_access", "knowledge_curation", "knowledge_lifecycle", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]
+
+[[shared_file]]
+path = "crates/domain/tests/ui/pass_auto_mutable_from_unbound.rs"
+contexts = ["code_intelligence", "commercial", "contract_kernel", "coordination", "identity_access", "knowledge_curation", "knowledge_lifecycle", "project_continuity", "provider_execution", "public_knowledge", "retrieval_read_model", "work_attribution"]

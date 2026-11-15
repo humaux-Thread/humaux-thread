@@ -1,0 +1,47 @@
+# ponytail: syntax-only legacy debt; upgrade to compiler/SQL AST when macros/dynamic SQL own contracts.
+crates/adapters/src/batch.rs:insert into private.ingest_tickets:1
+crates/adapters/src/context_repo.rs:insert into private.context_bindings:1
+crates/adapters/src/context_repo.rs:insert into private.task_binding_grants:1
+crates/adapters/src/context_repo.rs:update ops.selection_snapshots:1
+crates/adapters/src/context_repo.rs:update private.context_bindings:2
+crates/adapters/src/context_repo.rs:update private.task_binding_grants:1
+crates/adapters/src/contribution_entry_repo.rs:insert into ops.outbox:2
+crates/adapters/src/contribution_repo.rs:insert into ops.outbox:3
+crates/adapters/src/cost_repo.rs:insert into ops.tenant_cost_events:1
+crates/adapters/src/distill_repo.rs:update ops.outbox:2
+crates/adapters/src/forget_repo.rs:update projection.stream_log:1
+crates/adapters/src/jobs.rs:update ops.jobs:7
+crates/adapters/src/maintenance_repo.rs:insert into ops.backup_receipts:1
+crates/adapters/src/maintenance_repo.rs:insert into ops.backup_sets:1
+crates/adapters/src/maintenance_repo.rs:insert into ops.restore_drills:1
+crates/adapters/src/maintenance_repo.rs:insert into ops.restore_witnesses:1
+crates/adapters/src/maintenance_repo.rs:insert into ops.wal_archive_failures:1
+crates/adapters/src/maintenance_repo.rs:update control.partition_registry:1
+crates/adapters/src/model_call_ledger.rs:insert into ops.tenant_cost_events:1
+crates/adapters/src/private_inference_rpc.rs:insert into ops.private_inference_rpc_calls:1
+crates/adapters/src/private_inference_rpc.rs:update ops.private_inference_rpc_calls:3
+crates/adapters/src/remember.rs:insert into private.events:1
+crates/adapters/src/remember.rs:insert into private.evidence_projects:1
+crates/adapters/src/remember.rs:insert into private.evidence_sources:1
+crates/adapters/src/remember.rs:insert into private.evidence_task_runs:1
+crates/adapters/src/remember.rs:update private.ingest_tickets:1
+crates/adapters/src/retrieval_query_log.rs:insert into ops.retrieval_query_log:1
+crates/adapters/src/retrieval_query_source.rs:insert into private.retrieval_query_sources:1
+crates/adapters/src/retrieval_query_source.rs:update private.retrieval_query_sources:1
+crates/adapters/src/scheduler.rs:insert into ops.jobs:1
+crates/adapters/src/scheduler.rs:insert into ops.scheduler_leases:1
+crates/adapters/src/stream_repo.rs:update private.ingest_tickets:1
+crates/public-pool/src/public_repo.rs:insert into public.claim_trust_evaluation_sources:1
+crates/public-pool/src/public_repo.rs:insert into public.claim_trust_evaluations:1
+crates/public-pool/src/public_repo.rs:insert into public.claims:1
+crates/public-pool/src/public_repo.rs:insert into public.poisoning_signals:1
+crates/public-pool/src/public_repo.rs:insert into public.provenance_edges:1
+crates/public-pool/src/public_repo.rs:insert into public.source_closure:1
+crates/public-pool/src/public_repo.rs:insert into public.sources:1
+crates/public-pool/src/public_repo.rs:update public.claims:3
+crates/public-pool/src/public_repo.rs:update public.syntheses:1
+crates/public-pool/src/vocab.rs:insert into public.concept_labels:1
+crates/public-pool/src/vocab.rs:insert into public.concept_relations:1
+crates/public-pool/src/vocab.rs:insert into public.concepts:1
+crates/public-pool/src/vocab.rs:update public.concept_labels:1
+crates/testkit/src/fixture_purge.rs:delete from control.tenants:1

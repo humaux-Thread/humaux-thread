@@ -1,3 +1,4 @@
+# ponytail: syntax-only legacy debt; upgrade to compiler HIR if macros own contracts.
 # §78 / ADR-0130 step 1. Exact file:symbol set; remove rows as vertical slices migrate.
 # ponytail: frozen migration debt ceiling, never add rows; remember slice removes AffectInput and RememberCommand first.
 bins/gateway/src/auth.rs:humaux_adapters::credential_repo::CredentialRecord
@@ -83,3 +84,8 @@ bins/gateway/src/recall.rs:humaux_adapters::retrieve::IndexFace
 bins/gateway/src/recall.rs:humaux_adapters::retrieve::QueryHmac
 bins/gateway/src/recall.rs:humaux_adapters::retrieve::RetrieveError
 bins/gateway/src/recall.rs:humaux_adapters::serving_repo::UnservedLedger
+
+bins/gateway/src/guard.rs:humaux_adapters::quota_repo::BMO_ENTITLEMENT
+bins/gateway/src/guard.rs:humaux_adapters::remember::PostgresRememberStore
+bins/gateway/src/memory.rs:humaux_adapters::forget_repo::ForgetRepoError
+bins/gateway/src/memory.rs:humaux_adapters::subject_repo::SubjectListing

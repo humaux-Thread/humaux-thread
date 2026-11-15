@@ -935,6 +935,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.register_continuity_project`
 - reads `private.subjects`
 - reads `public.entities`
+- writes `control.boundary_writer_fixture`
 - writes `coord.tasks`
 - writes `private.context_bindings`
 - writes `private.evidence_objects`
@@ -956,6 +957,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.publish_continuity_facet`
 - executes `private.read_continuity_project_storage_v1`
 - env `CARGO_MANIFEST_DIR`
+- env `CARGO_TARGET_DIR`
 - env `GITHUB_ACTIONS`
 - env `HUMAUX_NO_PYTHON_COMPOSE_JSON`
 - env `HUMAUX_REQUIRE_DOCKER`
@@ -5704,6 +5706,14 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::reasoning_route_shadow_bootstrap`
+
+### `control.boundary_writer_fixture`
+read by:
+
+written by:
+- process(cargo-xtask): `xtask::architecture_check`
+
+executed by:
 
 ### `control.bump_user_security_epoch`
 read by:
