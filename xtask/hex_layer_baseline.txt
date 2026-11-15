@@ -10,10 +10,6 @@ bins/gateway/src/context.rs:humaux_adapters::read_materialize::MaterializedItem
 bins/gateway/src/context.rs:humaux_adapters::serving_repo::FamilyReadState
 bins/gateway/src/context.rs:humaux_adapters::serving_repo::UnservedLedger
 bins/gateway/src/continuity.rs:humaux_adapters::continuity_read::PostgresContinuityReadPort
-bins/gateway/src/continuity.rs:humaux_adapters::continuity_repo::ContinuityEvidenceSource
-bins/gateway/src/continuity.rs:humaux_adapters::continuity_repo::ContinuityMemorySource
-bins/gateway/src/continuity.rs:humaux_adapters::continuity_repo::PublishContinuityFacet
-bins/gateway/src/continuity.rs:humaux_adapters::continuity_repo::PublishFacetOutcome
 bins/gateway/src/guard.rs:humaux_adapters::confirm_token_repo::ConfirmationClaim
 bins/gateway/src/guard.rs:humaux_adapters::note_repo::NoteIntake
 bins/gateway/src/guard.rs:humaux_adapters::operation_receipt::AtomicRememberRequest
@@ -23,8 +19,6 @@ bins/gateway/src/guard.rs:humaux_adapters::quota_repo::QuotaReservation
 bins/gateway/src/guard.rs:humaux_adapters::request_guard_repo::AuditTenant
 bins/gateway/src/guard.rs:humaux_adapters::request_guard_repo::EffectiveEntitlementFacts
 bins/gateway/src/mcp_application.rs:humaux_adapters::confirm_token_repo::ConfirmationClaim
-bins/gateway/src/mcp_application.rs:humaux_adapters::continuity_repo::ContinuityEvidenceSource
-bins/gateway/src/mcp_application.rs:humaux_adapters::continuity_repo::ContinuityMemorySource
 bins/gateway/src/mcp_application.rs:humaux_adapters::distill_repo::ConfirmOutcome
 bins/gateway/src/mcp_application.rs:humaux_adapters::distill_repo::RejectOutcome
 bins/gateway/src/mcp_application.rs:humaux_adapters::memory_governance_repo::ArchiveResult

@@ -1,8 +1,6 @@
 //! `application::continuity` — §25.3 continuity 产品的装配入口（G80-31 的被测调用路径）。
-//! Depends-on: crates=[async-trait, hex, humaux-domain, humaux-retrieval, serde, serde_json, sha2, uuid];
-//!   services=[]; env=[]; modules=[domain::context, domain::continuity, domain::error, domain::identity, domain::ids,
-//!   retrieval::handoff]
-//! Called-by: [adapters::context_repo, adapters::continuity_read, gateway::continuity, tests]
+//! Depends-on: crates=[async-trait, hex, humaux-domain, humaux-retrieval, serde, serde_json, sha2, uuid]; services=[]; env=[]; modules=[domain::context, domain::continuity, domain::error, domain::identity, domain::ids, retrieval::handoff]
+//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, gateway::continuity, gateway::mcp_application, tests]
 //! Invariants: [facet_completeness is the one FACET_COMPLETE predicate: only ContinuityStatus::Current covers a
 //!   required facet, and an empty required profile fails closed (§22.0, ADR-0110 D-D)]
 //! Spec: §25.3; §25.3.1; §22.2; §22.0; ADR-0110
@@ -16,8 +14,10 @@
 //! application 侧保证就是这个签名形状。
 
 use humaux_domain::context::{ContextBudget, FrozenReads};
-use humaux_domain::continuity::{ContinuityFacetKind, ProjectId};
-use humaux_domain::error::ErrorCode;
+use humaux_domain::continuity::{
+    ContinuityFacetKind, ContinuityPublishResult, ContinuityPublishState, ProjectId,
+};
+use humaux_domain::error::{ConflictReason, ErrorCode};
 use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::{Scope, WorkspaceId};
 use humaux_retrieval::handoff::{Handoff, assemble};
@@ -1069,4 +1069,67 @@ mod w2_tests {
             .collect::<Vec<_>>();
         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinuityMemorySource {
+    pub memory_id: Uuid,
+    pub content_sha256: [u8; 32],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinuityEvidenceSource {
+    pub evidence_id: Uuid,
+    pub payload_sha256: [u8; 32],
+}
+
+/// One `continuity.publish` input. The expected slot version is deliberately absent: it is the
+/// door's own in-transaction read, never a caller value (ADR-0094 D-C).
+#[derive(Debug, Clone)]
+pub struct PublishContinuityFacet<'a> {
+    /// §50 / ADR-0094 D-D: positive total attempts, parsed once by process bootstrap.
+    pub list_merge_attempts: usize,
+    pub workspace_id: WorkspaceId,
+    pub project_id: ProjectId,
+    pub facet_kind: ContinuityFacetKind,
+    pub published_state: ContinuityPublishState,
+    pub body: &'a Value,
+    pub memories: &'a [ContinuityMemorySource],
+    pub evidence: &'a [ContinuityEvidenceSource],
+    /// `source_id`s dropped after the union; empty for every scalar facet.
+    pub removals: &'a [String],
+}
+
+/// The outcome of one facet publication. `Conflict` is success-shaped (nothing was written): the
+/// caller gets the typed §52 D-B sub-reason and the slot version to merge against, so it can retry
+/// without a second error registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublishFacetOutcome {
+    /// The immutable version, its links and the slot compare-and-swap committed.
+    Published(ContinuityPublishResult),
+    /// The slot did not hold the version the door read; `current_slot_version` is what it holds now.
+    Conflict {
+        reason: ConflictReason,
+        current_slot_version: i64,
+    },
+}
+
+/// Whole publication operation, including slot read, CAS, source links and commit (§25.3.1).
+#[async_trait::async_trait]
+pub trait FacetPublicationPort: Send + Sync {
+    /// Publish in a single adapter-owned transaction (ADR-0094 D-C).
+    async fn publish_facet(
+        &self,
+        authorization: &AuthorizationScope,
+        command: &PublishContinuityFacet<'_>,
+    ) -> Result<PublishFacetOutcome, ErrorCode>;
+}
+
+/// Publish a facet through the transaction-owning adapter (§25.3.1).
+pub async fn publish_facet(
+    port: &dyn FacetPublicationPort,
+    authorization: &AuthorizationScope,
+    command: &PublishContinuityFacet<'_>,
+) -> Result<PublishFacetOutcome, ErrorCode> {
+    port.publish_facet(authorization, command).await
 }

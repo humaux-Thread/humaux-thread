@@ -40,3 +40,6 @@ pub mod supersede;
 
 /// Recall hydration use case and complete snapshot read port (ADR-0130).
 pub mod recall_read;
+
+/// Task lease acquisition (§30.2).
+pub mod coordination;
