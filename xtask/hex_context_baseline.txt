@@ -545,7 +545,6 @@ crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:hu
 crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::McpAuditAction::McpQuotaReserved
 crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::McpAuditAction::McpRequestFinished
 crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::SYSTEM_TENANT_ID
-crates/adapters/src/retrieve.rs:retrieval_read_model->knowledge_lifecycle:humaux_adapters::memory_repo::MemoryText
 crates/adapters/src/retrieve.rs:retrieval_read_model->knowledge_lifecycle:humaux_adapters::memory_repo::memory_texts_in_txn
 crates/adapters/src/retrieve.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
 crates/adapters/src/retrieve.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::subject::SubjectId
@@ -608,6 +607,8 @@ crates/application/src/processing_status.rs:knowledge_lifecycle->contract_kernel
 crates/application/src/processing_status.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode::InvalidInput
 crates/application/src/processing_status.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode::RateLimited
 crates/application/src/processing_status.rs:knowledge_lifecycle->contract_kernel:humaux_domain::ids::TenantId
+crates/application/src/recall_read.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
+crates/application/src/recall_read.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::subject::SubjectId
 crates/application/src/supersede.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode
 crates/application/src/supersede.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode::Conflict
 crates/application/src/supersede.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode::InvalidInput
