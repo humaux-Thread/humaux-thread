@@ -1,17 +1,13 @@
 //! `adapters::retrieve` — §15.5 Read-your-writes (`consistency_token` issue/decode/scope-check) and the PostgreSQL
 //!   delta overlay `recall`/`context` fall back to when serving Qdrant has not yet caught up to a token's write
 //!   (T3.8).
-//! Depends-on: crates=[hex, hmac, humaux-application, humaux-domain, humaux-infra-cell, humaux-projection, humaux-retrieval, sha2, sqlx];
+//! Depends-on: crates=[async-trait, hex, hmac, humaux-application, humaux-domain, humaux-infra-cell, humaux-projection, humaux-retrieval, sha2, sqlx];
 //!   services=[PostgreSQL(role_gateway) r=[ops.outbox, private.evidence_objects, private.memory_evidence,
 //!   private.memory_records, projection.card_profile_policies, projection.rebuild_tickets, projection.stream_checkpoints,
 //!   projection.stream_log]];
 //!   env=[CARGO_MANIFEST_DIR];
-//!   modules=[adapters::context_repo, adapters::memory_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant,
-//!   adapters::read_materialize, adapters::retrieval_query_log, adapters::serving_repo, adapters::stream_repo,
-//!   application::signed_token, domain::affect, domain::error,
-//!   domain::identity, domain::ids, domain::subject, infra-cell::permit, infra-cell::transport, projection::dense, projection::note_chunks, projection::serving,
-//!   projection::stream, retrieval::completeness, retrieval::envelope]
-//! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::provisioning, adapters::read_materialize, adapters::remember, adapters::stream_repo, gateway::bootstrap, gateway::recall, tests, maintenance::deploy_check, maintenance::switch_visible]
+//!   modules=[adapters::context_repo, adapters::memory_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant, adapters::read_materialize, adapters::retrieval_query_log, adapters::serving_repo, adapters::stream_repo, application::recall_read, application::signed_token, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, infra-cell::permit, infra-cell::transport, projection::dense, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope]
+//! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::provisioning, adapters::read_materialize, adapters::remember, adapters::stream_repo, gateway::bootstrap, gateway::recall, maintenance::deploy_check, maintenance::switch_visible, tests]
 //! Invariants: [read-your-writes on role_gateway: an expired token, cross-tenant/workspace scope or a changed serving
 //!   projection is a typed RetrieveError, never a stale answer passed off as caught up; the read-route visible count
 //!   is caller-scoped (family_probe), the visibility-free stream count serves ops callers only (ADR-0057 D-C);
@@ -56,13 +52,14 @@ use humaux_domain::ids::{TenantId, WorkspaceId};
 use humaux_domain::subject::SubjectId;
 use humaux_infra_cell::{CellAccessPermit, IntraCellHttpTransport};
 use humaux_projection::dense::build_stream_count_filter;
+#[cfg(test)]
 use humaux_projection::note_chunks::CardSlot;
 use humaux_projection::serving::StreamFamily;
 use humaux_projection::stream::StreamKey;
 use humaux_retrieval::completeness::LedgerClosure;
 use humaux_retrieval::envelope::GroundingBlock;
 
-use crate::context_repo::{StreamPipelineCounts, stream_pipeline_counts_in_txn};
+use crate::context_repo::stream_pipeline_counts_in_txn;
 use crate::memory_repo::{MemoryText, memory_texts_in_txn};
 use crate::postgres::RuntimeDbPool;
 use crate::private_projection_registry::{
@@ -219,79 +216,8 @@ impl From<PrivateProjectionRegistryError> for RetrieveError {
 
 impl std::error::Error for RetrieveError {}
 
-/// §15.1 ten-state closed set, reused here as the wire value returned to callers under
-/// `processing_state` for an Evidence that has not finished distillation (§15.5: "允许把该
-/// Evidence 作为带 `processing_state` 的临时上下文候选返回...但不能冒充已完成 Memory").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProcessingState {
-    Issued,
-    Processing,
-    WaitingKey,
-    RetryWait,
-    Lost,
-    Done,
-    SkippedByPolicy,
-    Failed,
-    Tombstoned,
-    /// §15.2 amendment (migration `0167`, ADR-0042): an exhausted `Failed` ticket that
-    /// `role_maintenance` retired through `projection.retire_failed_ticket`, DLQ-style. Terminal
-    /// and settled; the failure itself survives in `error_class` + `retired_at`/`retired_by`.
-    RetiredFailed,
-}
-
-impl ProcessingState {
-    pub const ALL: [ProcessingState; 10] = [
-        Self::Issued,
-        Self::Processing,
-        Self::WaitingKey,
-        Self::RetryWait,
-        Self::Lost,
-        Self::Done,
-        Self::SkippedByPolicy,
-        Self::Failed,
-        Self::Tombstoned,
-        Self::RetiredFailed,
-    ];
-
-    pub fn as_db_str(self) -> &'static str {
-        match self {
-            Self::Issued => "ISSUED",
-            Self::Processing => "PROCESSING",
-            Self::WaitingKey => "WAITING_KEY",
-            Self::RetryWait => "RETRY_WAIT",
-            Self::Lost => "LOST",
-            Self::Done => "DONE",
-            Self::SkippedByPolicy => "SKIPPED_BY_POLICY",
-            Self::Failed => "FAILED",
-            Self::Tombstoned => "TOMBSTONED",
-            Self::RetiredFailed => "RETIRED_FAILED",
-        }
-    }
-
-    pub(crate) fn parse(s: &str) -> Result<Self, RetrieveError> {
-        Self::ALL
-            .into_iter()
-            .find(|v| v.as_db_str() == s)
-            .ok_or_else(|| RetrieveError::UnknownProcessingState(s.to_string()))
-    }
-
-    /// §15.2/§15.4 `SETTLED_OK = DONE | SKIPPED_BY_POLICY | TOMBSTONED | RETIRED_FAILED` — an
-    /// Evidence in one of these states is safe to present as if it were a completed Memory
-    /// candidate (still carrying `processing_state` per §15.5's "不能冒充已完成 Memory", but no
-    /// longer *only* a temporary placeholder).
-    ///
-    /// `RetiredFailed` is in the set by the §15.2 amendment migration `0167` carries: retirement
-    /// is the audited act of declaring an exhausted failure settled, and the whole point of it is
-    /// that §15.4's prefix stops treating that seq as a gap. It is the one member that never had
-    /// a record to show — see that migration's header for why that makes retirement an
-    /// EXECUTE-gated operator action and not something the worker that failed can do to itself.
-    pub fn is_settled_ok(self) -> bool {
-        matches!(
-            self,
-            Self::Done | Self::SkippedByPolicy | Self::Tombstoned | Self::RetiredFailed
-        )
-    }
-}
+// ponytail: compatibility export for existing readers; remove in SLICE-2b.
+pub use humaux_application::recall_read::ProcessingState;
 
 /// §15.5 `consistency_token` claims. All fields the token binds (tenant/workspace/pipeline
 /// stream key/stream_seq/commit_seq/issued_at/expires_at) — verbatim field list from the
@@ -845,7 +771,8 @@ pub(crate) async fn pg_delta_overlay_in_txn(
         let candidate = OverlayCandidate {
             stream_seq: row.try_get("stream_seq")?,
             evidence_id: row.try_get("evidence_id")?,
-            processing_state: ProcessingState::parse(&state)?,
+            processing_state: ProcessingState::parse(&state)
+                .map_err(RetrieveError::UnknownProcessingState)?,
             memory_ids: row
                 .try_get::<Option<Vec<Uuid>>, _>("memory_ids")?
                 .unwrap_or_default(),
@@ -913,43 +840,8 @@ pub struct PrivateReadServingCandidates {
     pub serving_version: Option<String>,
 }
 
-/// ADR-0084 D-C 3: the card slot of the best candidate point of each Memory a hydrate resolved; `None` as a value is a
-/// point whose profile this build does not know.
-pub type PointSlots = BTreeMap<Uuid, Option<CardSlot>>;
-
-/// Whether the hydrate transaction also reads the canonical text of the Memories that pass its gate (ADR-0084 D-C 3).
-/// The read is part of the gate's own transaction and takes its ids from the gated items, so the text of a Memory the gate
-/// refused (archived, superseded, secret-backed, tombstoned, outside the subject or affect filter) is never read (G-RET-13).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GatedTexts {
-    /// Read nothing: [`MaterializedPrivateReadServing::gated_texts`] is empty.
-    Skip,
-    /// Read `(title, body)` of every Memory item the gate returned, in the same snapshot.
-    Read,
-}
-
-/// One private semantic result whose bodies, ledger closure, and conservative grounding report
-/// were all produced under the same PostgreSQL repeatable-read snapshot.
-#[derive(Debug, Clone)]
-pub struct MaterializedPrivateReadServing {
-    pub bodies: MaterializedBodies,
-    /// ADR-0084 D-C 3: for every Memory a candidate point resolved to, the card slot of the FIRST candidate point that
-    /// resolved to it (the caller's candidate order is the leg order, so that is the best leg hit), from the same
-    /// registry read that gated the point. `None` as a value: the point's profile is unknown to this build. A Memory
-    /// the hydrate gate then dropped is still listed; the caller looks up only the Memories of `bodies`.
-    pub point_slots: PointSlots,
-    /// ADR-0084 D-C 3: the canonical text (`private.memory_text_v`, ADR-0085) of exactly the Memories in `bodies`,
-    /// read in this same snapshot after the gate when the caller asked for [`GatedTexts::Read`]; empty otherwise. A
-    /// Memory the gate dropped has no entry, by construction: there is no other way to obtain a text from this module.
-    pub gated_texts: BTreeMap<Uuid, MemoryText>,
-    pub ledger: LedgerClosure,
-    /// §23.3④ `stream_ledger` pipeline readings for the same six-column `StreamKey` the ledger
-    /// closed on, taken in the same snapshot (ADR-0041 D-H). Not an `Option`: no census travels
-    /// with it and `classify()` maps this route's `PlannerDecision::Class(_)` to
-    /// `SemanticBounded`, so §22.0's exact-without-a-predicate trap is not on this path.
-    pub pipeline: StreamPipelineCounts,
-    pub grounding: GroundingBlock,
-}
+// ponytail: compatibility export for existing readers; remove in SLICE-2b.
+pub use humaux_application::recall_read::{GatedTexts, MaterializedPrivateReadServing, PointSlots};
 
 /// Carries an already-authorized RYW decision to the final materializer without making Qdrant
 /// a source of truth.
@@ -1038,6 +930,50 @@ pub async fn materialize_private_read_serving(
 /// re-checked at the same gate per annotation on the read-time effective intensity.
 #[allow(clippy::too_many_arguments)] // Same fixed argument set as the unscoped entry + two axes.
 pub async fn materialize_private_read_serving_about(
+    pool: &RuntimeDbPool,
+    consistency_token: Option<&str>,
+    authorization: &AuthorizationScope,
+    family: &StreamFamily,
+    projection_version: &str,
+    embedding_version: &str,
+    semantic: &[DenseCandidate],
+    subject_ids: &[SubjectId],
+    affect: Option<&AffectFilter>,
+    texts: GatedTexts,
+) -> Result<MaterializedPrivateReadServing, RetrieveError> {
+    use humaux_application::recall_read::{
+        RecallCandidate, RecallHydrationRequest, RecallPoint, hydrate_recall,
+    };
+    let candidates: Vec<_> = semantic
+        .iter()
+        .map(|candidate| RecallCandidate {
+            point_id: match candidate.point_id {
+                PointId::Num(id) => RecallPoint::Num(id),
+                PointId::Uuid(id) => RecallPoint::Uuid(id),
+            },
+            score: candidate.score,
+            memory_id: candidate.memory_id,
+        })
+        .collect();
+    hydrate_recall(
+        pool,
+        RecallHydrationRequest {
+            authorization,
+            consistency_token,
+            family,
+            projection_version,
+            embedding_version,
+            candidates: &candidates,
+            subject_ids,
+            affect,
+            texts,
+        },
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)] // The existing transaction boundary keeps all authenticated read axes.
+async fn hydrate_recall_snapshot(
     pool: &RuntimeDbPool,
     consistency_token: Option<&str>,
     authorization: &AuthorizationScope,
@@ -2143,5 +2079,41 @@ mod contract_tests {
             result,
             Err(RetrieveError::SemanticCandidateProjectionRegistryUnavailable)
         ));
+    }
+}
+
+#[async_trait::async_trait]
+impl humaux_application::recall_read::RecallHydrationReadPort for RuntimeDbPool {
+    type Error = RetrieveError;
+    async fn hydrate(
+        &self,
+        request: humaux_application::recall_read::RecallHydrationRequest<'_>,
+    ) -> Result<MaterializedPrivateReadServing, RetrieveError> {
+        use humaux_application::recall_read::RecallPoint;
+        let candidates: Vec<_> = request
+            .candidates
+            .iter()
+            .map(|candidate| DenseCandidate {
+                point_id: match candidate.point_id {
+                    RecallPoint::Num(id) => PointId::Num(id),
+                    RecallPoint::Uuid(id) => PointId::Uuid(id),
+                },
+                score: candidate.score,
+                memory_id: candidate.memory_id,
+            })
+            .collect();
+        hydrate_recall_snapshot(
+            self,
+            request.consistency_token,
+            request.authorization,
+            request.family,
+            request.projection_version,
+            request.embedding_version,
+            &candidates,
+            request.subject_ids,
+            request.affect,
+            request.texts,
+        )
+        .await
     }
 }

@@ -71,7 +71,6 @@ bins/gateway/src/oauth_http.rs:humaux_adapters::oauth_repo::OAuthTxn
 bins/gateway/src/oauth_http.rs:humaux_adapters::oauth_repo::RevokeReason
 bins/gateway/src/oauth_http.rs:humaux_adapters::oauth_repo::RotateOutcome
 bins/gateway/src/oauth_http.rs:humaux_adapters::oauth_repo::SecretHash
-bins/gateway/src/recall.rs:humaux_adapters::memory_repo::MemoryText
 bins/gateway/src/recall.rs:humaux_adapters::qdrant::DenseCandidate
 bins/gateway/src/recall.rs:humaux_adapters::qdrant::DenseQuery
 bins/gateway/src/recall.rs:humaux_adapters::qdrant::DenseQueryVersions
@@ -79,13 +78,8 @@ bins/gateway/src/recall.rs:humaux_adapters::qdrant::PointId
 bins/gateway/src/recall.rs:humaux_adapters::qdrant::QdrantOperation
 bins/gateway/src/recall.rs:humaux_adapters::qdrant::QdrantTransportError
 bins/gateway/src/recall.rs:humaux_adapters::qdrant::RetrievalFamily
-bins/gateway/src/recall.rs:humaux_adapters::read_materialize::ItemFreshness
-bins/gateway/src/recall.rs:humaux_adapters::read_materialize::MaterializedItem
 bins/gateway/src/recall.rs:humaux_adapters::retrieval_query_log::QueryLogCounts
-bins/gateway/src/recall.rs:humaux_adapters::retrieve::GatedTexts
 bins/gateway/src/recall.rs:humaux_adapters::retrieve::IndexFace
-bins/gateway/src/recall.rs:humaux_adapters::retrieve::MaterializedPrivateReadServing
-bins/gateway/src/recall.rs:humaux_adapters::retrieve::PointSlots
 bins/gateway/src/recall.rs:humaux_adapters::retrieve::QueryHmac
 bins/gateway/src/recall.rs:humaux_adapters::retrieve::RetrieveError
 bins/gateway/src/recall.rs:humaux_adapters::serving_repo::UnservedLedger

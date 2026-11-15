@@ -44,7 +44,7 @@ use humaux_domain::selection::{AUTHORIZED_MEMORY_ENUMERATION_V1, Cursor};
 use humaux_projection::serving::StreamFamily;
 use humaux_projection::stream::StreamKey;
 use humaux_retrieval::compiler::{ContextItem, ContextOutcome};
-use humaux_retrieval::envelope::{CountScope, EvidenceBlock, GroundingBlock, KnowledgeBlock};
+use humaux_retrieval::envelope::GroundingBlock;
 use humaux_retrieval::handoff::{Handoff, assemble_with_context};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -1130,36 +1130,8 @@ pub struct EnumerationCensus {
 // GRANT and two fixtures). Upgrade path: when the distill/projection workers start advancing
 // those two watermarks, read them here instead — the two blocks then become genuinely
 // independent per-layer readings rather than two statements over one ledger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StreamPipelineCounts {
-    pub evidence_persisted: u64,
-    pub knowledge_eligible: u64,
-    pub knowledge_processed: u64,
-    pub knowledge_waiting_key: u64,
-    pub knowledge_failed: u64,
-}
-
-impl StreamPipelineCounts {
-    /// The §23.3④ wire pair these readings are allowed to fill, minted in ONE place for all
-    /// three read routes. §23.3④ freezes the scope label together with the numbers ("同一块的
-    /// 计数必须来自同一实际全集、同一授权与快照"), so a route that hand-wrote the two blocks
-    /// could pair a `stream_ledger` reading with an `authorized_view` label — a
-    /// `count_scope_mismatch` that no type would catch. `expected` stays `null`: §23.1①, these
-    /// routes carry no `batch_id`, and it is never backfilled from `persisted`.
-    #[must_use]
-    pub fn blocks(self) -> (EvidenceBlock, KnowledgeBlock) {
-        (
-            EvidenceBlock::no_batch(Some(self.evidence_persisted), CountScope::StreamLedger),
-            KnowledgeBlock {
-                eligible: Some(self.knowledge_eligible),
-                processed: Some(self.knowledge_processed),
-                waiting_key: Some(self.knowledge_waiting_key),
-                failed: Some(self.knowledge_failed),
-                count_scope: CountScope::StreamLedger,
-            },
-        )
-    }
-}
+// ponytail: compatibility export for existing readers; remove in SLICE-2b.
+pub use humaux_application::recall_read::StreamPipelineCounts;
 
 /// §22.1 one-predicate-two-faces for `memory.enumerate`: the FROM + tenant/workspace filter
 /// (`$1` tenant, `$2` workspace) and the predicate that [`crate::read_gate::materialize_memory_enumeration`]'s

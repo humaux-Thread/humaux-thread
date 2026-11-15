@@ -1,8 +1,7 @@
 //! `retrieval::signals` — §21 检索质量信号，按 §21.5 逐条点名的六个轴：Similarity / Relevance / Association / Completeness / Temporal
 //!   Freshness / Grounding State.
-//! Depends-on: crates=[humaux-contracts, humaux-domain, serde, serde_json]; services=[]; env=[]; modules=[contracts::freshness, domain::grounding,
-//!   domain::memory, retrieval::completeness, retrieval::envelope]
-//! Called-by: [adapters::read_materialize, tests]
+//! Depends-on: crates=[humaux-contracts, humaux-domain, serde, serde_json]; services=[]; env=[]; modules=[contracts::freshness, domain::grounding, domain::memory, retrieval::completeness, retrieval::envelope]
+//! Called-by: [adapters::read_materialize, application::recall_read, tests]
 //! Invariants: []
 //! Spec: §21; §21.5; §8.8; §20; §80.1
 //!
