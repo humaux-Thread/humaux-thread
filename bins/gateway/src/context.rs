@@ -1,18 +1,19 @@
 //! `gateway::context` — Authenticated Context result: stable handoff diagnostics plus same-snapshot bodies.
-//! Depends-on: crates=[humaux-adapters, humaux-contracts, humaux-domain, humaux-projection, humaux-retrieval, humaux-telemetry,
-//!   serde, serde_json, uuid]; services=[]; env=[CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME]; modules=[adapters::context_repo, adapters::postgres, adapters::read_materialize, adapters::serving_repo, domain::context, domain::error, domain::identity, domain::ids, gateway::recall, gateway::remember, humaux-telemetry, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, retrieval::request]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-projection, humaux-retrieval, humaux-telemetry, serde, serde_json, uuid]; services=[]; env=[CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME]; modules=[adapters::postgres, adapters::serving_repo, application::recall_read, domain::context, domain::error, domain::identity, domain::ids, gateway::recall, gateway::remember, humaux-telemetry, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, retrieval::request]
 //! Called-by: [gateway::bootstrap, gateway::mcp_application, gateway::memory, gateway::recall, tests]
 //! Invariants: [every field in a returned Context is read from the same snapshot; a partial read never yields a body silently missing a section]
 //! Spec: Baseline §22.0; §23.1; §25; ADR-0024; ADR-0031; ADR-0054; ADR-0066 Review fix 2; ADR-0110 D-A
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use humaux_adapters::{
-    context_repo::{MaterializedContext, assemble_materialized},
-    postgres::RuntimeDbPool,
-    read_materialize::{ItemFreshness, MaterializedItem},
-    serving_repo::{FamilyReadState, UnservedLedger, family_read_state},
-};
+use humaux_adapters::postgres::RuntimeDbPool;
+use humaux_adapters::serving_repo::FamilyReadState;
+use humaux_adapters::serving_repo::UnservedLedger;
+use humaux_adapters::serving_repo::family_read_state;
+use humaux_application::recall_read::ItemFreshness;
+use humaux_application::recall_read::MaterializedContext;
+use humaux_application::recall_read::MaterializedItem;
+use humaux_application::recall_read::assemble_materialized;
 use humaux_domain::{
     context::ContextBudget,
     error::ErrorCode,
@@ -242,7 +243,7 @@ pub async fn assemble<T>(
     let request = build_request(RetrievalIntent::trusted_context(), &bootstrap.profile)
         .map_err(|_| ErrorCode::Internal)?;
     let materialized = assemble_materialized(
-        &pool,
+        pool.as_ref(),
         &authorization,
         &scope,
         bootstrap.budget,

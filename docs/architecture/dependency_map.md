@@ -238,8 +238,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_objects`
 - reads `private.memory_evidence`
 - reads `private.memory_records`
-- reads `private.memory_subjects`
-- reads `private.note_heads`
 - service `PostgreSQL(any)`
 
 #### `adapters::read_materialize`
@@ -252,6 +250,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - reads `private.memory_subjects`
 - reads `private.memory_text_v`
+- reads `private.note_heads`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -1748,8 +1747,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_objects`
 - reads `private.memory_evidence`
 - reads `private.memory_records`
-- reads `private.memory_subjects`
-- reads `private.note_heads`
 - service `PostgreSQL(any)`
 
 #### `adapters::read_materialize`
@@ -1762,6 +1759,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - reads `private.memory_subjects`
 - reads `private.memory_text_v`
+- reads `private.note_heads`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -2337,8 +2335,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_objects`
 - reads `private.memory_evidence`
 - reads `private.memory_records`
-- reads `private.memory_subjects`
-- reads `private.note_heads`
 - service `PostgreSQL(any)`
 
 #### `adapters::read_materialize`
@@ -2351,6 +2347,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - reads `private.memory_subjects`
 - reads `private.memory_text_v`
+- reads `private.note_heads`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -3132,8 +3129,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_objects`
 - reads `private.memory_evidence`
 - reads `private.memory_records`
-- reads `private.memory_subjects`
-- reads `private.note_heads`
 - service `PostgreSQL(any)`
 
 #### `adapters::read_materialize`
@@ -3146,6 +3141,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - reads `private.memory_subjects`
 - reads `private.memory_text_v`
+- reads `private.note_heads`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -4265,8 +4261,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_objects`
 - reads `private.memory_evidence`
 - reads `private.memory_records`
-- reads `private.memory_subjects`
-- reads `private.note_heads`
 - service `PostgreSQL(any)`
 
 #### `adapters::read_materialize`
@@ -4279,6 +4273,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - reads `private.memory_subjects`
 - reads `private.memory_text_v`
+- reads `private.note_heads`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -4968,8 +4963,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_objects`
 - reads `private.memory_evidence`
 - reads `private.memory_records`
-- reads `private.memory_subjects`
-- reads `private.note_heads`
 - service `PostgreSQL(any)`
 
 #### `adapters::read_materialize`
@@ -4982,6 +4975,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - reads `private.memory_subjects`
 - reads `private.memory_text_v`
+- reads `private.note_heads`
 - reads `projection.stream_log`
 - service `PostgreSQL(role_gateway)`
 
@@ -11027,37 +11021,31 @@ read by:
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::context_repo`
 - process(cargo-xtask): `adapters::exact_census`
-- process(cargo-xtask): `adapters::read_gate`
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `adapters::subject_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::context_repo`
 - process(humaux-consolidation-worker): `adapters::exact_census`
-- process(humaux-consolidation-worker): `adapters::read_gate`
 - process(humaux-consolidation-worker): `adapters::read_materialize`
 - process(humaux-consolidation-worker): `adapters::subject_repo`
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::exact_census`
 - process(humaux-gateway): `adapters::projection_worker`
-- process(humaux-gateway): `adapters::read_gate`
 - process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::subject_repo`
 - process(humaux-maintenance): `adapters::context_repo`
 - process(humaux-maintenance): `adapters::exact_census`
 - process(humaux-maintenance): `adapters::projection_worker`
-- process(humaux-maintenance): `adapters::read_gate`
 - process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::subject_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::context_repo`
 - process(humaux-private-worker): `adapters::exact_census`
-- process(humaux-private-worker): `adapters::read_gate`
 - process(humaux-private-worker): `adapters::read_materialize`
 - process(humaux-private-worker): `adapters::subject_repo`
 - process(humaux-retrieval-worker): `adapters::context_repo`
 - process(humaux-retrieval-worker): `adapters::exact_census`
 - process(humaux-retrieval-worker): `adapters::projection_worker`
-- process(humaux-retrieval-worker): `adapters::read_gate`
 - process(humaux-retrieval-worker): `adapters::read_materialize`
 - process(humaux-retrieval-worker): `adapters::subject_repo`
 
@@ -11114,19 +11102,19 @@ read by:
 - (no process): `adapters::tests::note_replace`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::operation_receipt`
-- process(cargo-xtask): `adapters::read_gate`
+- process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::operation_receipt`
-- process(humaux-consolidation-worker): `adapters::read_gate`
+- process(humaux-consolidation-worker): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::operation_receipt`
-- process(humaux-gateway): `adapters::read_gate`
+- process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::operation_receipt`
-- process(humaux-maintenance): `adapters::read_gate`
+- process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::operation_receipt`
-- process(humaux-private-worker): `adapters::read_gate`
+- process(humaux-private-worker): `adapters::read_materialize`
 - process(humaux-retrieval-worker): `adapters::operation_receipt`
-- process(humaux-retrieval-worker): `adapters::read_gate`
+- process(humaux-retrieval-worker): `adapters::read_materialize`
 
 written by:
 - process(cargo-xtask): `adapters::note_repo`
@@ -14233,7 +14221,6 @@ modules naming it:
 - `adapters::continuity_read`
 - `adapters::exact_census`
 - `adapters::processing_status`
-- `adapters::read_gate`
 - `adapters::read_materialize`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
@@ -14294,7 +14281,9 @@ modules naming it:
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
 - `adapters::entitlement_repo`
+- `adapters::exact_census`
 - `adapters::forget_repo`
+- `adapters::grep_repo`
 - `adapters::login_repo`
 - `adapters::memory_governance_repo`
 - `adapters::memory_repo`
@@ -14308,8 +14297,11 @@ modules naming it:
 - `adapters::reasoning_route_onboarding`
 - `adapters::remember`
 - `adapters::retrieve`
+- `adapters::serving_repo`
 - `adapters::session_repo`
+- `adapters::stream_repo`
 - `adapters::tests::auth_contract`
+- `adapters::tests::auth_scope_rls`
 - `adapters::tests::billing_doors`
 - `adapters::tests::billing_slot_handover`
 - `adapters::tests::console_session`
@@ -14321,18 +14313,28 @@ modules naming it:
 - `adapters::tests::contribution_policy_lifecycle_0132`
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::entitlement_projector`
+- `adapters::tests::enumerate_scale`
 - `adapters::tests::forget_confirm`
 - `adapters::tests::forget_preview`
 - `adapters::tests::forget_repo`
+- `adapters::tests::freshness`
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::login_challenge`
 - `adapters::tests::memory_affects`
 - `adapters::tests::model_call_ledger`
+- `adapters::tests::note_history`
+- `adapters::tests::note_reads`
+- `adapters::tests::note_text_once`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
 - `adapters::tests::phase9_independence_attestation`
+- `adapters::tests::private_projection_registry`
 - `adapters::tests::processing_status`
 - `adapters::tests::project_continuity_read_0137`
+- `adapters::tests::read_gate_closure`
 - `adapters::tests::reasoning_route_runtime`
+- `adapters::tests::recall_envelope_g23`
+- `adapters::tests::retrieve_read_your_writes`
+- `adapters::tests::stream_repo`
 - `adapters::tests::support::continuity_0137_fixture`
 - `adapters::tests::support::contribution_fixture`
 - `adapters::tests::support::private_route`
@@ -14355,7 +14357,6 @@ modules naming it:
 - `adapters::projection_worker`
 - `adapters::provisioning`
 - `adapters::qdrant`
-- `adapters::read_gate`
 - `adapters::read_materialize`
 - `adapters::rebuild`
 - `adapters::remember`
@@ -14439,6 +14440,7 @@ modules naming it:
 - `adapters::mechanism_observation`
 - `adapters::memory_repo`
 - `adapters::projection_worker`
+- `adapters::read_materialize`
 - `adapters::rebuild`
 - `adapters::remember`
 - `adapters::retrieve`
@@ -14588,7 +14590,6 @@ modules naming it:
 - `adapters::operation_receipt`
 - `adapters::processing_status`
 - `adapters::quota_repo`
-- `adapters::read_gate`
 - `adapters::read_materialize`
 - `adapters::tests::billing_doors`
 - `adapters::tests::billing_slot_handover`
@@ -17020,8 +17021,10 @@ modules naming it:
 - `gateway::billing_webhook`
 - `gateway::bootstrap`
 - `gateway::cached_embedding`
+- `gateway::context`
 - `gateway::continuity`
 - `gateway::guard`
+- `gateway::mcp_application`
 - `gateway::memory`
 - `gateway::oauth_http`
 - `gateway::recall`
@@ -20706,9 +20709,9 @@ default run:
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
 - `crates/protocol/Cargo.toml:44` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/public-pool/src/completeness.rs:379` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
-- `crates/retrieval/src/envelope.rs:2144` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
-- `crates/retrieval/src/envelope.rs:2963` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
-- `crates/retrieval/src/handoff.rs:461` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
+- `crates/retrieval/src/envelope.rs:2143` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2962` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/handoff.rs:460` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
 - `crates/retrieval/src/planner.rs:314` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_eval.rs:108` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_registry.rs:173` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census

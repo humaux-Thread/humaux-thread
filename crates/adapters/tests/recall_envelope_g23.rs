@@ -1,18 +1,7 @@
 //! `adapters::tests::recall_envelope_g23` — §23.4 G23-2 — "分子取 `visible`" fault injection, against a **real**
 //!   Postgres ledger and a **real** Qdrant index (both required; three-state skip, §79.2/§57.1, prints which object
 //!   is missing rather than silently passing).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-projection, humaux-retrieval,
-//!   humaux-telemetry, humaux-testkit, postgres, serde_json, sqlx, tokio, uuid]; services=[PostgreSQL(owner)
-//!   r=[projection.processing_gaps] w=[control.memberships, control.private_reasoning_domains, control.tenants,
-//!   control.users, ops.jobs, ops.outbox, private.artifacts, private.events, private.evidence_objects,
-//!   private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log],
-//!   PostgreSQL(role_gateway), PostgreSQL(role_maintenance), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN,
-//!   HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::forget_repo, adapters::postgres, adapters::qdrant,
-//!   adapters::remember, adapters::retrieve, adapters::tests::support::token_keys, domain::authority,
-//!   domain::dataclass, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject,
-//!   humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::card,
-//!   projection::serving, projection::sparse, projection::stream, retrieval::completeness, retrieval::envelope,
-//!   telemetry::degrade]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell, humaux-projection, humaux-retrieval, humaux-telemetry, humaux-testkit, postgres, serde_json, sqlx, tokio, uuid]; services=[PostgreSQL(owner) r=[projection.processing_gaps] w=[control.memberships, control.private_reasoning_domains, control.tenants, control.users, ops.jobs, ops.outbox, private.artifacts, private.events, private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_gateway), PostgreSQL(role_maintenance), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::forget_repo, adapters::postgres, adapters::qdrant, adapters::remember, adapters::retrieve, adapters::tests::support::token_keys, application::recall_read, domain::authority, domain::dataclass, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::card, projection::serving, projection::sparse, projection::stream, retrieval::completeness, retrieval::envelope, telemetry::degrade]
 //! Called-by: [cargo-test]
 //! Invariants: [PostgreSQL unreachable or role denied -> the call fails and surfaces the error to the caller; no silent fallback; Qdrant unreachable -> QdrantTransportError to the caller, no fallback search; the token a write returned must surface that write's exact memory_id on the next recall]
 //! Spec: Baseline §15.2; §15.5; §17.4; §17.6; §69
@@ -1193,7 +1182,7 @@ fn g23_4_remember_token_recall_returns_the_exact_memory_id() {
     );
     assert_eq!(
         candidate.processing_state,
-        retrieve::ProcessingState::Issued,
+        humaux_application::recall_read::ProcessingState::Issued,
         "the freshly written row is still ISSUED, not settled"
     );
     assert_eq!(

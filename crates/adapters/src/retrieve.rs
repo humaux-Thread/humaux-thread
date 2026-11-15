@@ -60,19 +60,18 @@ use humaux_retrieval::completeness::LedgerClosure;
 use humaux_retrieval::envelope::GroundingBlock;
 
 use crate::context_repo::stream_pipeline_counts_in_txn;
-use crate::memory_repo::{MemoryText, memory_texts_in_txn};
+use crate::memory_repo::memory_texts_in_txn;
 use crate::postgres::RuntimeDbPool;
 use crate::private_projection_registry::{
     PrivateProjectionRegistryError, ProjectionPointId, ResolvedPrivateMemoryPoint,
     resolve_private_memory_points_in_txn,
 };
 use crate::qdrant::{DenseCandidate, PointId, VisibleCountFilter, count_visible_excluding_seqs};
-use crate::read_materialize::{
-    MaterializedBodies, MaterializedItem, materialize_final_bodies_about_in_txn,
-};
+use crate::read_materialize::materialize_final_bodies_about_in_txn;
 use crate::retrieval_query_log::{self, QueryLogCounts};
 use crate::serving_repo::{self, ServingRepoError};
 use crate::stream_repo::close_ledger_in_txn;
+use humaux_application::recall_read::MemoryText;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
@@ -216,8 +215,7 @@ impl From<PrivateProjectionRegistryError> for RetrieveError {
 
 impl std::error::Error for RetrieveError {}
 
-// ponytail: compatibility export for existing readers; remove in SLICE-2b.
-pub use humaux_application::recall_read::ProcessingState;
+use humaux_application::recall_read::ProcessingState;
 
 /// §15.5 `consistency_token` claims. All fields the token binds (tenant/workspace/pipeline
 /// stream key/stream_seq/commit_seq/issued_at/expires_at) — verbatim field list from the
@@ -772,7 +770,7 @@ pub(crate) async fn pg_delta_overlay_in_txn(
             stream_seq: row.try_get("stream_seq")?,
             evidence_id: row.try_get("evidence_id")?,
             processing_state: ProcessingState::parse(&state)
-                .map_err(RetrieveError::UnknownProcessingState)?,
+                .map_err(|error| RetrieveError::UnknownProcessingState(error.0))?,
             memory_ids: row
                 .try_get::<Option<Vec<Uuid>>, _>("memory_ids")?
                 .unwrap_or_default(),
@@ -840,8 +838,7 @@ pub struct PrivateReadServingCandidates {
     pub serving_version: Option<String>,
 }
 
-// ponytail: compatibility export for existing readers; remove in SLICE-2b.
-pub use humaux_application::recall_read::{GatedTexts, MaterializedPrivateReadServing, PointSlots};
+use humaux_application::recall_read::{GatedTexts, MaterializedPrivateReadServing, PointSlots};
 
 /// Carries an already-authorized RYW decision to the final materializer without making Qdrant
 /// a source of truth.
@@ -930,50 +927,6 @@ pub async fn materialize_private_read_serving(
 /// re-checked at the same gate per annotation on the read-time effective intensity.
 #[allow(clippy::too_many_arguments)] // Same fixed argument set as the unscoped entry + two axes.
 pub async fn materialize_private_read_serving_about(
-    pool: &RuntimeDbPool,
-    consistency_token: Option<&str>,
-    authorization: &AuthorizationScope,
-    family: &StreamFamily,
-    projection_version: &str,
-    embedding_version: &str,
-    semantic: &[DenseCandidate],
-    subject_ids: &[SubjectId],
-    affect: Option<&AffectFilter>,
-    texts: GatedTexts,
-) -> Result<MaterializedPrivateReadServing, RetrieveError> {
-    use humaux_application::recall_read::{
-        RecallCandidate, RecallHydrationRequest, RecallPoint, hydrate_recall,
-    };
-    let candidates: Vec<_> = semantic
-        .iter()
-        .map(|candidate| RecallCandidate {
-            point_id: match candidate.point_id {
-                PointId::Num(id) => RecallPoint::Num(id),
-                PointId::Uuid(id) => RecallPoint::Uuid(id),
-            },
-            score: candidate.score,
-            memory_id: candidate.memory_id,
-        })
-        .collect();
-    hydrate_recall(
-        pool,
-        RecallHydrationRequest {
-            authorization,
-            consistency_token,
-            family,
-            projection_version,
-            embedding_version,
-            candidates: &candidates,
-            subject_ids,
-            affect,
-            texts,
-        },
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)] // The existing transaction boundary keeps all authenticated read axes.
-async fn hydrate_recall_snapshot(
     pool: &RuntimeDbPool,
     consistency_token: Option<&str>,
     authorization: &AuthorizationScope,
@@ -2102,7 +2055,7 @@ impl humaux_application::recall_read::RecallHydrationReadPort for RuntimeDbPool 
                 memory_id: candidate.memory_id,
             })
             .collect();
-        hydrate_recall_snapshot(
+        materialize_private_read_serving_about(
             self,
             request.consistency_token,
             request.authorization,
@@ -2117,3 +2070,5 @@ impl humaux_application::recall_read::RecallHydrationReadPort for RuntimeDbPool 
         .await
     }
 }
+
+use humaux_application::recall_read::{MaterializedBodies, MaterializedItem};

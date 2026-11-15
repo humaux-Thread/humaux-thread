@@ -1,6 +1,6 @@
 //! `projection::serving` — §16.2 换代期读路由 identity + §16.3 无裁量切换判据 (T5.2/T5.3).
 //! Depends-on: crates=[humaux-domain, uuid]; services=[]; env=[]; modules=[domain::ids, projection::stream]
-//! Called-by: [adapters::context_repo, adapters::private_projection_registry, adapters::projection_worker, adapters::provisioning, adapters::read_gate, adapters::read_materialize, adapters::rebuild, adapters::retrieve, adapters::serving_repo, application::recall_read, gateway::context, gateway::memory, maintenance::projection_serve, maintenance::switch_visible, tests, xtask::soak]
+//! Called-by: [adapters::context_repo, adapters::private_projection_registry, adapters::projection_worker, adapters::provisioning, adapters::read_materialize, adapters::rebuild, adapters::retrieve, adapters::serving_repo, application::recall_read, gateway::context, gateway::memory, maintenance::projection_serve, maintenance::switch_visible, tests, xtask::soak]
 //! Invariants: [pure half of the serving switch: the three-criteria evaluator never reuses one query result for two
 //!   independent checks; the SQL and the role_maintenance-only UPDATE live in adapters::serving_repo]
 //! Spec: Baseline §6.2.2

@@ -1,17 +1,6 @@
 //! `adapters::tests::private_projection_registry` — Ignored real-PostgreSQL acceptance for the private Qdrant point
 //!   registry.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-projection, humaux-testkit,
-//!   postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(any) r=[ops.commit_seq_seq,
-//!   projection.tenant_placements] w=[control.memberships,
-//!   control.private_reasoning_domains, control.reasoning_domain_grants, control.tenants, control.users, ops.jobs,
-//!   ops.outbox, private.events, private.evidence_objects, private.memory_evidence, private.memory_records,
-//!   projection.embedding_fingerprints, projection.memory_vectors, projection.private_memory_points,
-//!   projection.stream_checkpoints, projection.stream_log, projection.tenant_placements],
-//!   PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN,
-//!   HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::postgres, adapters::private_projection_registry, adapters::qdrant,
-//!   adapters::read_materialize, adapters::retrieve, adapters::tests::support::token_keys, domain::authority, domain::dataclass, domain::identity,
-//!   domain::ids, domain::memory, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport,
-//!   projection::card, projection::embedding_fingerprint, projection::note_chunks, projection::serving]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell, humaux-projection, humaux-testkit, postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, projection.tenant_placements] w=[control.memberships, control.private_reasoning_domains, control.reasoning_domain_grants, control.tenants, control.users, ops.jobs, ops.outbox, private.events, private.evidence_objects, private.memory_evidence, private.memory_records, projection.embedding_fingerprints, projection.memory_vectors, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log, projection.tenant_placements], PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::postgres, adapters::private_projection_registry, adapters::qdrant, adapters::retrieve, adapters::tests::support::token_keys, application::recall_read, domain::authority, domain::dataclass, domain::identity, domain::ids, domain::memory, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::card, projection::embedding_fingerprint, projection::note_chunks, projection::serving]
 //! Called-by: [cargo-test]
 //! Invariants: [point ids bind to exactly one memory; cross-workspace, collision and unsupported point ids are typed
 //!   errors; the Qdrant round trip needs the isolated migrated PG + Qdrant fixture, so it is an #[ignore] lane test;
@@ -40,11 +29,14 @@ use humaux_adapters::qdrant::{
     TenantPlacementRow, create_collection_body, ha_profile_for, query_dense, tenant_index_body,
     upsert,
 };
-use humaux_adapters::read_materialize::MaterializedItem;
-use humaux_adapters::retrieve::{
-    GatedTexts, ProcessingState, RetrieveError, TokenClaims, issue_consistency_token,
-    materialize_private_read_serving, materialize_private_read_serving_about,
-};
+use humaux_adapters::retrieve::RetrieveError;
+use humaux_adapters::retrieve::TokenClaims;
+use humaux_adapters::retrieve::issue_consistency_token;
+use humaux_adapters::retrieve::materialize_private_read_serving;
+use humaux_adapters::retrieve::materialize_private_read_serving_about;
+use humaux_application::recall_read::GatedTexts;
+use humaux_application::recall_read::MaterializedItem;
+use humaux_application::recall_read::ProcessingState;
 use humaux_domain::authority::{AuthorityClass, AuthorityStatus, MemoryId};
 use humaux_domain::dataclass::DataClass;
 use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId, VisibilityClass};

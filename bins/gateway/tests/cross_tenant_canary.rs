@@ -1,17 +1,6 @@
 //! `gateway::tests::cross_tenant_canary` — G-M08-3 (DOD-023): another tenant's real ids, sent through the gateway on
 //!   every read op, answer exactly as ids that exist nowhere do, and report totals of zero.
-//! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-contracts, humaux-domain,
-//!   humaux-infra-cell, humaux-projection, humaux-protocol, humaux-testkit, postgres, serde_json, tokio, uuid];
-//!   services=[HTTP(gateway), PostgreSQL(owner) w=[coord.tasks, private.evidence_objects, private.memory_records,
-//!   projection.stream_checkpoints, projection.tenant_placements], PostgreSQL(role_gateway)
-//!   x=[private.publish_continuity_facet, private.register_continuity_project]];
-//!   env=[HUMAUX_TEST_DISPOSABLE_CLUSTER, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
-//!   modules=[adapters::context_repo, adapters::continuity_read, adapters::postgres, gateway::limiter,
-//!   adapters::read_gate, adapters::tests::support::operation_receipt_fixture, application::continuity,
-//!   application::retrieval_embedding_port, contracts::retrieval_config, domain::authority, domain::context,
-//!   domain::continuity, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::context, gateway::guard, gateway::mcp_application, gateway::recall,
-//!   gateway::remember, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp,
-//!   protocol::mcp_catalog, projection::serving]
+//! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-infra-cell, humaux-projection, humaux-protocol, humaux-testkit, postgres, serde_json, tokio, uuid]; services=[HTTP(gateway), PostgreSQL(owner) w=[coord.tasks, private.evidence_objects, private.memory_records, projection.stream_checkpoints, projection.tenant_placements], PostgreSQL(role_gateway) x=[private.publish_continuity_facet, private.register_continuity_project]]; env=[HUMAUX_TEST_DISPOSABLE_CLUSTER, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::context_repo, adapters::continuity_read, adapters::postgres, adapters::tests::support::operation_receipt_fixture, application::continuity, application::recall_read, application::retrieval_embedding_port, contracts::retrieval_config, domain::authority, domain::context, domain::continuity, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::recall, gateway::remember, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::serving, protocol::edge, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]
 //! Invariants: [two real fixture tenants, the foreign one owning a memory, a workspace, a task and a continuity
 //!   project that the caller's tenant then names; the caller is a real service credential of its own tenant through
@@ -38,10 +27,10 @@ use std::{
     time::Duration,
 };
 
-use humaux_adapters::{
-    context_repo::fetch_frozen, continuity_read::PostgresContinuityReadPort,
-    postgres::RuntimeDbPool, read_gate::materialize_memory_get,
-};
+use humaux_adapters::context_repo::fetch_frozen;
+use humaux_adapters::continuity_read::PostgresContinuityReadPort;
+use humaux_adapters::postgres::RuntimeDbPool;
+use humaux_application::recall_read::materialize_memory_get;
 use humaux_application::{
     continuity::ContinuityReadPort,
     retrieval_embedding_port::{

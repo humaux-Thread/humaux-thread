@@ -1,13 +1,6 @@
 //! `adapters::tests::note_reads` — ADR-0067 card 40b acceptance for the verbatim note lane's reads (G11-G15, provenance,
 //!   the unchanged default), against a real PostgreSQL and an actual `role_gateway` login.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, serde_json, sha2, sqlx,
-//!   tokio]; services=[PostgreSQL(role_gateway) r=[ops.outbox, private.identity_note_materializations,
-//!   projection.stream_log] w=[private.memory_records, private.memory_subjects, private.subjects]]; env=[];
-//!   modules=[adapters::attribution_repo, adapters::context_repo, adapters::forget_repo, adapters::note_repo, adapters::operation_receipt,
-//!   adapters::postgres, adapters::read_gate, adapters::read_materialize, adapters::remember,
-//!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::authority, domain::error,
-//!   domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, humaux-testkit, projection::serving,
-//!   projection::stream]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-testkit, serde_json, sha2, sqlx, tokio]; services=[PostgreSQL(role_gateway) r=[ops.outbox, private.identity_note_materializations, projection.stream_log] w=[private.memory_records, private.memory_subjects, private.subjects]]; env=[]; modules=[adapters::attribution_repo, adapters::context_repo, adapters::forget_repo, adapters::note_repo, adapters::operation_receipt, adapters::postgres, adapters::read_materialize, adapters::remember, adapters::tests::support::operation_receipt_fixture, application::recall_read, domain::audit, domain::authority, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, humaux-testkit, projection::serving, projection::stream]
 //! Called-by: [cargo-test]
 //! Invariants: [every read under test is a real role_gateway login through the production adapter entry points; the
 //!   owner connection only seeds, rewinds occurred_at, supersedes and reads back this fixture's tenant; every gate
@@ -20,20 +13,23 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
-use humaux_adapters::{
-    context_repo::arm_census_mint_barrier,
-    forget_repo,
-    note_repo::NoteIntake,
-    operation_receipt::{self, AtomicRememberRequest, AtomicRememberResult, NOTE_OPERATION},
-    postgres::RuntimeDbPool,
-    read_gate::{
-        MaterializedMemoryPage, MemoryEnumerationParams, NoteEnumerationFilter,
-        materialize_memory_enumeration_filtered, materialize_memory_get,
-        materialize_memory_get_versioned,
-    },
-    read_materialize::{MaterializedItem, materialize_final_bodies},
-    remember::RememberCommand,
-};
+use humaux_adapters::context_repo::arm_census_mint_barrier;
+use humaux_adapters::forget_repo;
+use humaux_adapters::note_repo::NoteIntake;
+use humaux_adapters::operation_receipt;
+use humaux_adapters::operation_receipt::AtomicRememberRequest;
+use humaux_adapters::operation_receipt::AtomicRememberResult;
+use humaux_adapters::operation_receipt::NOTE_OPERATION;
+use humaux_adapters::postgres::RuntimeDbPool;
+use humaux_adapters::read_materialize::materialize_final_bodies;
+use humaux_adapters::remember::RememberCommand;
+use humaux_application::recall_read::MaterializedItem;
+use humaux_application::recall_read::MaterializedMemoryPage;
+use humaux_application::recall_read::MemoryEnumerationParams;
+use humaux_application::recall_read::NoteEnumerationFilter;
+use humaux_application::recall_read::materialize_memory_enumeration_filtered;
+use humaux_application::recall_read::materialize_memory_get;
+use humaux_application::recall_read::materialize_memory_get_versioned;
 use humaux_domain::{
     audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction},
     authority::MemoryId,
@@ -304,7 +300,7 @@ fn get(
     handle: &Handle,
     memory_id: Uuid,
     include_history: bool,
-) -> Result<humaux_adapters::read_gate::MaterializedMemory, ErrorCode> {
+) -> Result<humaux_application::recall_read::MaterializedMemory, ErrorCode> {
     handle.rt.block_on(materialize_memory_get_versioned(
         &handle.runtime,
         &handle.auth,

@@ -1,7 +1,6 @@
 //! `retrieval::compiler` — §25.4 冻结装配的步骤 6+7。
-//! Depends-on: crates=[humaux-domain]; services=[];
-//!   env=[]; modules=[domain::authority, domain::context, retrieval::candidate]
-//! Called-by: [adapters::context_repo, gateway::context, retrieval::envelope, retrieval::handoff, tests]
+//! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[domain::authority, domain::context, retrieval::candidate]
+//! Called-by: [adapters::context_repo, application::recall_read, gateway::context, retrieval::envelope, retrieval::handoff, tests]
 //! Invariants: []
 //! Spec: §25.4
 //!

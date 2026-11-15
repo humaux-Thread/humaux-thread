@@ -1,5 +1,5 @@
 //! `adapters::exact_census` — §22.1 EXACT enumeration census: the physical IO behind `completeness::CensusResult`.
-//! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, sqlx]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log, public.pool] x=[private.memory_in_project]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::read_materialize, domain::continuity, domain::error, domain::identity, domain::ids, projection::stream, retrieval::completeness, retrieval::predicate_registry]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sqlx]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log, public.pool] x=[private.memory_in_project]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::read_materialize, application::recall_read, domain::continuity, domain::error, domain::identity, domain::ids, projection::stream, retrieval::completeness, retrieval::predicate_registry]
 //! Called-by: [adapters::context_repo, tests]
 //! Invariants: [total, returned items and the probe snapshot come from ONE REPEATABLE READ transaction (§22.1); total
 //!   is its own count(*), never the recall length; a census failure is trigger 4 (Internal), never a guessed total;
@@ -58,9 +58,11 @@ use sqlx::{Acquire, Row};
 
 use crate::context_repo::set_authorization_local;
 use crate::postgres::RuntimeDbPool;
-use crate::read_gate::{NoteEnumerationFilter, readable_memory_ids};
+use crate::read_gate::readable_memory_ids;
 use crate::read_materialize::GateReadable;
-use crate::read_materialize::Lifecycle;
+use crate::read_materialize::lifecycle_sql;
+use humaux_application::recall_read::Lifecycle;
+use humaux_application::recall_read::NoteEnumerationFilter;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
@@ -263,7 +265,7 @@ pub(crate) fn note_axes(first: u8) -> String {
         OCCURRED_SINCE.replace("{n}", &(first + 1).to_string()),
         OCCURRED_UNTIL.replace("{n}", &(first + 2).to_string()),
         NOTE_ID_IS.replace("{n}", &(first + 3).to_string()),
-        Lifecycle::sql("memory_records", first + 4),
+        lifecycle_sql("memory_records", first + 4),
     )
 }
 

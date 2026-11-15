@@ -1,8 +1,6 @@
 //! `adapters::selection_repo` — §20.4 Stable Selection / Pagination Contract SQL (T6.3, G20-1/G80-32).
-//! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(role_retrieval_worker) r=[private.memory_records]
-//!   w=[ops.selection_snapshot_items, ops.selection_snapshots]]; env=[]; modules=[adapters::postgres, domain::error,
-//!   domain::selection]
-//! Called-by: [adapters::context_repo, adapters::read_gate, tests]
+//! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(role_retrieval_worker) r=[private.memory_records] w=[ops.selection_snapshot_items, ops.selection_snapshots]]; env=[]; modules=[adapters::postgres, domain::error, domain::selection]
+//! Called-by: [adapters::context_repo, adapters::read_materialize, tests]
 //! Invariants: [page 1 materializes the whole enumeration in one REPEATABLE READ transaction; later pages read only
 //!   the immutable manifest behind a MAC-signed cursor; a mismatched query or unknown snapshot is a typed error;
 //!   every page read, gateway and worker path alike, is the one MANIFEST_PAGE_SQL statement, which sees a snapshot

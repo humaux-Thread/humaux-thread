@@ -1,6 +1,6 @@
 //! `adapters::context_repo` — §25.4 Mandatory Context Lane 的 SQL 侧。
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sha2, sqlx]; services=[PostgreSQL(any) r=[coord.tasks, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log] w=[ops.selection_snapshots, private.context_bindings, private.task_binding_grants]]; env=[]; modules=[adapters::confirm_token_repo, adapters::distill_repo, adapters::evidence_repo, adapters::exact_census, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::request_guard_repo, adapters::selection_repo, adapters::stream_repo, application::continuity, application::pin, domain::audit, domain::authority, domain::confirm, domain::context, domain::dataclass, domain::error, domain::evidence, domain::grounding, domain::identity, domain::ids, domain::memory, domain::policy, domain::selection, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff]
-//! Called-by: [adapters::continuity_read, adapters::coord_repo, adapters::exact_census, adapters::forget_repo, adapters::grep_repo, adapters::read_gate, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, gateway::context, gateway::memory, tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sha2, sqlx]; services=[PostgreSQL(any) r=[coord.tasks, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log] w=[ops.selection_snapshots, private.context_bindings, private.task_binding_grants]]; env=[]; modules=[adapters::confirm_token_repo, adapters::distill_repo, adapters::evidence_repo, adapters::exact_census, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::request_guard_repo, adapters::selection_repo, adapters::stream_repo, application::continuity, application::pin, application::recall_read, domain::audit, domain::authority, domain::confirm, domain::context, domain::dataclass, domain::error, domain::evidence, domain::grounding, domain::identity, domain::ids, domain::memory, domain::policy, domain::selection, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff]
+//! Called-by: [adapters::continuity_read, adapters::coord_repo, adapters::exact_census, adapters::forget_repo, adapters::grep_repo, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, gateway::memory, tests]
 //! Invariants: [pure reads on role_gateway; each selector enumerates twice without LIMIT so expected is never derived
 //!   from returned rows; both passes re-check readability through `read_gate::readable_memory_ids` (the read gate and
 //!   its six conjuncts live in `adapters::read_gate`, not restated here); a PG error is
@@ -37,8 +37,8 @@ use humaux_domain::context::{
 use humaux_domain::dataclass::DataClass;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::grounding::{GroundingMode, RowGrounding, SnapshotEdge, classify_in_snapshot};
-use humaux_domain::identity::{AuthorizationScope, VisibilityClass, VisibilityDescriptor};
-use humaux_domain::ids::{Scope, UserId, WorkspaceId};
+use humaux_domain::identity::{AuthorizationScope, VisibilityClass};
+use humaux_domain::ids::{Scope, WorkspaceId};
 use humaux_domain::memory::{MandatoryContextFacet, MemoryType};
 use humaux_domain::selection::{AUTHORIZED_MEMORY_ENUMERATION_V1, Cursor};
 use humaux_projection::serving::StreamFamily;
@@ -57,10 +57,9 @@ use crate::evidence_repo::{self, NewEvidence, OccurredAt};
 use crate::exact_census::{CensusInputs, bind_note_axes, census_in_txn, note_axes};
 use crate::postgres::RuntimeDbPool;
 use crate::quota_repo::{self, ReservationStatus, ReserveResult};
-use crate::read_gate::{MemoryEnumerationParams, NoteEnumerationFilter, readable_memory_ids};
+use crate::read_gate::readable_memory_ids;
 use crate::read_materialize::{
-    GateReadable, MaterializedBodies, MaterializedItem, final_memory_ids_with_readable_in_txn,
-    materialize_final_bodies_in_txn,
+    GateReadable, final_memory_ids_with_readable_in_txn, materialize_final_bodies_in_txn,
 };
 use crate::request_guard_repo::{self, AuditTenant};
 use crate::selection_repo::{
@@ -393,34 +392,7 @@ const REQUIRED_FACETS_WHERE: &str = "m.tenant_id = $1 \
 // 「超没超硬上限」不是「差几个 token」）；真 tokenizer 落地后换掉这一处即可。
 const EST_TOKENS_EXPR: &str = "GREATEST(1, (octet_length(m.content::text) / 4))::int4";
 
-/// Converts the database's closed visibility wire values into the actual descriptor on that
-/// row. The visibility decision itself remains [`humaux_domain::identity::can_read`]'s single implementation.
-pub(crate) fn visibility_from_row(
-    row: &sqlx::postgres::PgRow,
-) -> Result<VisibilityDescriptor, ErrorCode> {
-    let class: String = row
-        .try_get("visibility_class")
-        .map_err(|_| ErrorCode::Internal)?;
-    let class = match class.as_str() {
-        "USER_PRIVATE" => VisibilityClass::UserPrivate,
-        "WORKSPACE_SHARED" => VisibilityClass::WorkspaceShared,
-        "TENANT_SHARED" => VisibilityClass::TenantShared,
-        _ => return Err(ErrorCode::Internal),
-    };
-    let user_id = row
-        .try_get::<Option<Uuid>, _>("visibility_user_id")
-        .map_err(|_| ErrorCode::Internal)?
-        .map(UserId);
-    let workspace_id = row
-        .try_get::<Option<Uuid>, _>("visibility_workspace_id")
-        .map_err(|_| ErrorCode::Internal)?
-        .map(WorkspaceId);
-    Ok(VisibilityDescriptor {
-        class,
-        user_id,
-        workspace_id,
-    })
-}
+pub(crate) use crate::read_gate::visibility_from_row;
 
 fn scope_chain_params(scope: &Scope) -> (Vec<String>, Vec<Uuid>) {
     humaux_domain::context::scope_chain(scope)
@@ -1103,38 +1075,10 @@ pub(crate) async fn fetch_frozen_in_txn(
     })
 }
 
-/// [`crate::read_gate::MaterializedMemoryPage::census`]'s payload: the §22.1 verdict for this page and the
-/// `stream_ledger`-universe pipeline counts read in the same transaction.
-pub struct EnumerationCensus {
-    pub census: humaux_retrieval::completeness::CensusResult,
-    pub pipeline: StreamPipelineCounts,
-}
-
-/// §23.3④ `pipeline.evidence` / `pipeline.knowledge` readings in the **`stream_ledger`**
-/// universe — the request's full six-column [`StreamKey`] ledger, not the caller's authorized
-/// view (§23.3④: "同一块的计数必须来自同一实际全集、同一授权与快照"; the authorized EXACT
-/// census is a different universe and may never fill these, "禁止填 `0`、返回条数、
-/// `issued_highwater` 或其他块的值充数").
-///
-/// Both blocks read `projection.stream_log` rows for that key. §15.1/§60 issue a stream_seq in
-/// the same transaction that persists its Evidence and its `ops.outbox` row, so a row's
-/// existence *is* the "Evidence fully persisted" reading; §15.2's state set is what partitions
-/// the knowledge layer. The equation §23.3④ freezes (`evidence.persisted ==
-/// knowledge.eligible == projection.expected`, and `processed + waiting_key + failed ==
-/// eligible`) therefore discriminates on two real axes: the ledger rows against
-/// `stream_checkpoints.issued_highwater` (a separately-written watermark — a hole in the dense
-/// sequence, or a watermark ahead of its rows, fails it), and the knowledge partition against
-/// its own base (anything still in flight fails it).
-// ponytail: derived from `stream_log` at read time because nothing in the workspace advances
-// `stream_checkpoints.evidence_highwater` / `knowledge_highwater` (grep: migration 0011's
-// GRANT and two fixtures). Upgrade path: when the distill/projection workers start advancing
-// those two watermarks, read them here instead — the two blocks then become genuinely
-// independent per-layer readings rather than two statements over one ledger.
-// ponytail: compatibility export for existing readers; remove in SLICE-2b.
-pub use humaux_application::recall_read::StreamPipelineCounts;
+use humaux_application::recall_read::StreamPipelineCounts;
 
 /// §22.1 one-predicate-two-faces for `memory.enumerate`: the FROM + tenant/workspace filter
-/// (`$1` tenant, `$2` workspace) and the predicate that [`crate::read_gate::materialize_memory_enumeration`]'s
+/// (`$1` tenant, `$2` workspace) and the predicate that [`humaux_application::recall_read::materialize_memory_enumeration`]'s
 /// own candidate query and its census denominator BOTH run. One text, two faces — a second,
 /// hand-written filter is what makes a `coverage` describe a set the page never had.
 ///
@@ -1547,26 +1491,6 @@ pub(crate) async fn mint_segment_in_txn(
     Ok((page, census))
 }
 
-/// Gateway-callable Context manifest and bodies produced from one PostgreSQL snapshot.
-pub struct MaterializedContext {
-    /// Canonical v1 manifest assembled from the frozen lanes.
-    pub handoff: Handoff,
-    /// Compiler outcome that produced the manifest, including mandatory overflow.
-    pub outcome: ContextOutcome,
-    /// Final body rows rechecked in the manifest's transaction snapshot.
-    pub bodies: MaterializedBodies,
-    /// Stream ledger closure read in that same transaction snapshot.
-    pub ledger: humaux_retrieval::completeness::LedgerClosure,
-    /// §23.3④ `stream_ledger` pipeline readings for `validated_key`, taken in that same
-    /// snapshot as the ledger and the bodies (ADR-0041 D-H). Not an `Option`: unlike
-    /// [`crate::read_gate::MaterializedMemoryPage::census`] there is no census travelling with it and
-    /// `classify()` maps this route's `PlannerDecision::Class(_)` to `SemanticBounded`, so
-    /// §22.0's exact-without-a-predicate trap is not on this path.
-    pub pipeline: StreamPipelineCounts,
-    /// Actual §8.8 states retained from compiled mandatory and pinned rows.
-    pub grounding: GroundingBlock,
-}
-
 fn grounding_block(outcome: &ContextOutcome) -> Result<GroundingBlock, ErrorCode> {
     let ContextOutcome::Compiled(compiled) = outcome else {
         return Ok(GroundingBlock::tally([]));
@@ -1646,7 +1570,7 @@ pub(crate) fn materialized_identity(
 }
 
 /// Assembles v1 Handoff and its mandatory/pinned bodies in one RR read-only transaction.
-pub async fn assemble_materialized(
+async fn assemble_materialized_snapshot(
     pool: &RuntimeDbPool,
     authorization: &AuthorizationScope,
     scope: &Scope,
@@ -2792,3 +2716,23 @@ mod g8031_snapshot_fixture;
 #[cfg(test)]
 #[path = "context_repo/g8031_snapshot_tests.rs"]
 mod g8031_snapshot_tests;
+
+#[async_trait::async_trait]
+impl ContextAssemblyReadPort for RuntimeDbPool {
+    async fn assemble_context(
+        &self,
+        request: ContextReadRequest<'_>,
+    ) -> Result<MaterializedContext, ErrorCode> {
+        assemble_materialized_snapshot(
+            self,
+            request.authorization,
+            request.scope,
+            request.budget,
+            request.expected_family,
+            request.validated_key,
+        )
+        .await
+    }
+}
+
+use humaux_application::recall_read::*;

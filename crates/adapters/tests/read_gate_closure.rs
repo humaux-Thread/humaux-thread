@@ -1,12 +1,7 @@
 //! `adapters::tests::read_gate_closure` — G-M08-1: the all-backing-evidence closure holds on every read op. A memory
 //!   with two backing Evidence rows, one of them unreadable to the caller, is absent from get, enumerate, grep, the
 //!   recall materializer, context and continuity, and no count or snippet of it leaks.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, serde_json,
-//!   sqlx]; services=[PostgreSQL(any) w=[private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_checkpoints]];
-//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::context_repo, adapters::grep_repo, adapters::read_gate,
-//!   adapters::read_materialize, adapters::tests::support::continuity_0137_fixture,
-//!   adapters::tests::support::operation_receipt_fixture, domain::authority, domain::context, domain::error,
-//!   domain::ids, humaux-testkit, projection::serving, projection::stream]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-testkit, serde_json, sqlx]; services=[PostgreSQL(any) w=[private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_checkpoints]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::grep_repo, adapters::read_materialize, adapters::tests::support::continuity_0137_fixture, adapters::tests::support::operation_receipt_fixture, application::recall_read, domain::authority, domain::context, domain::error, domain::ids, humaux-testkit, projection::serving, projection::stream]
 //! Called-by: [cargo-test]
 //! Invariants: [every op is the production entry point its gateway route calls, as a real role_gateway login; the
 //!   owner connection only seeds and flips Evidence visibility; the same memory is asserted absent while one backing
@@ -23,12 +18,15 @@ use std::collections::BTreeSet;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use humaux_adapters::{
-    context_repo::assemble_materialized,
-    grep_repo::{GrepQuery, grep},
-    read_gate::{MemoryEnumerationParams, materialize_memory_enumeration, materialize_memory_get},
-    read_materialize::{Lifecycle, MaterializedItem, materialize_final_bodies},
-};
+use humaux_adapters::grep_repo::GrepQuery;
+use humaux_adapters::grep_repo::grep;
+use humaux_adapters::read_materialize::materialize_final_bodies;
+use humaux_application::recall_read::Lifecycle;
+use humaux_application::recall_read::MaterializedItem;
+use humaux_application::recall_read::MemoryEnumerationParams;
+use humaux_application::recall_read::assemble_materialized;
+use humaux_application::recall_read::materialize_memory_enumeration;
+use humaux_application::recall_read::materialize_memory_get;
 use humaux_domain::{
     authority::MemoryId,
     context::ContextBudget,

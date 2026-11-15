@@ -1,14 +1,6 @@
 //! `adapters::tests::g80_31_handoff` — G80-31（§57.1 Phase 8 出场判据）端到端：**同一快照两次装配 handoff 逐字节相同**， 且 Mandatory
 //!   的选取是机械规则、撤销立即生效、pinned 的「钉 3 带 2」可观测。
-//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval,
-//!   postgres, serde_json, tokio, uuid]; services=[PostgreSQL(any) r=[ops.selection_snapshot_items]
-//!   w=[ops.selection_snapshots, private.context_bindings, private.evidence_objects,
-//!   private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log],
-//!   PostgreSQL(owner),
-//!   PostgreSQL(role_gateway)]; env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::context_repo,
-//!   adapters::postgres, adapters::read_gate, adapters::read_materialize, application::continuity, domain::authority, domain::context,
-//!   domain::error, domain::identity, domain::ids, adapters::tests::support::g8031_snapshot_fixture, projection::serving, projection::stream,
-//!   retrieval::compiler, retrieval::handoff]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, postgres, serde_json, tokio, uuid]; services=[PostgreSQL(any) r=[ops.selection_snapshot_items] w=[ops.selection_snapshots, private.context_bindings, private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log], PostgreSQL(owner), PostgreSQL(role_gateway)]; env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::context_repo, adapters::postgres, adapters::tests::support::g8031_snapshot_fixture, application::continuity, application::recall_read, domain::authority, domain::context, domain::error, domain::identity, domain::ids, projection::serving, projection::stream, retrieval::compiler, retrieval::handoff]
 //! Called-by: [cargo-test]
 //! Invariants: [snapshot byte-identity is checked in the owning-module imported-snapshot test; all other G80
 //!   business assertions stay here; skip_or_fail turns a missing DB into a failure under HUMAUX_REQUIRE_DB]
@@ -28,16 +20,16 @@
 //! NA 的唯一主语是 probe 探测的具名缺失对象；字节不同 / mandatory 被淘汰 /
 //! needs_verification 空 **永远是红**，与 NA 零重合（ADR-0006）。
 
-use humaux_adapters::context_repo::{
-    ContextReadAdapter, MaterializedContext, assemble_materialized,
-};
+use humaux_adapters::context_repo::ContextReadAdapter;
 use humaux_adapters::postgres::RuntimeDbPool;
-use humaux_adapters::read_gate::{
-    MaterializedMemory, MemoryEnumerationParams, materialize_memory_enumeration,
-    materialize_memory_get,
-};
-use humaux_adapters::read_materialize::MaterializedItem;
 use humaux_application::continuity::assemble_handoff;
+use humaux_application::recall_read::MaterializedContext;
+use humaux_application::recall_read::MaterializedItem;
+use humaux_application::recall_read::MaterializedMemory;
+use humaux_application::recall_read::MemoryEnumerationParams;
+use humaux_application::recall_read::assemble_materialized;
+use humaux_application::recall_read::materialize_memory_enumeration;
+use humaux_application::recall_read::materialize_memory_get;
 use humaux_domain::authority::MemoryId;
 use humaux_domain::context::ContextBudget;
 use humaux_domain::error::ErrorCode;
@@ -174,7 +166,7 @@ async fn one_enumerated(
     family: &StreamFamily,
     cursor: Option<&str>,
     page_size: u16,
-) -> Result<humaux_adapters::read_gate::MaterializedMemoryPage, ErrorCode> {
+) -> Result<humaux_application::recall_read::MaterializedMemoryPage, ErrorCode> {
     capped_enumerated(dsn, authorization, scope, family, cursor, page_size, 1000).await
 }
 
@@ -188,7 +180,7 @@ async fn capped_enumerated(
     cursor: Option<&str>,
     page_size: u16,
     manifest_cap: usize,
-) -> Result<humaux_adapters::read_gate::MaterializedMemoryPage, ErrorCode> {
+) -> Result<humaux_application::recall_read::MaterializedMemoryPage, ErrorCode> {
     // dep: PostgreSQL(role_gateway) — RuntimeDbPool under test, the runtime role's real pool.
     // dep: PostgreSQL(role_gateway) — opens the role-scoped connection for `one_enumerated`
     let pool = RuntimeDbPool::connect(dsn).await.expect("pool");
@@ -1016,7 +1008,7 @@ fn workspace_enumeration(tenant: Uuid) -> (AuthorizationScope, Scope, StreamFami
     (authorization, scope, family)
 }
 
-fn page_ids(page: &humaux_adapters::read_gate::MaterializedMemoryPage) -> Vec<Uuid> {
+fn page_ids(page: &humaux_application::recall_read::MaterializedMemoryPage) -> Vec<Uuid> {
     page.memory
         .bodies
         .items

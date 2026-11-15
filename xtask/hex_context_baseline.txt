@@ -1,4 +1,10 @@
 # ponytail: syntax-only legacy debt; upgrade to compiler/SQL AST when macros/dynamic SQL own contracts.
+# Relocated debt (SLICE-2b): existing types follow moved code; no new business dependency.
+# read_gate.rs:RowGrounding{,::Judged,::NotJudged} -> read_materialize.rs:same symbols (3 rows).
+# read_gate.rs:MemoryId -> application/recall_read.rs:MemoryId.
+# read_gate.rs:NoteKind -> application/recall_read.rs:NoteKind.
+# retrieval/handoff.rs:ContextBudget -> application/recall_read.rs:ContextBudget; old handoff row remains.
+# Net +1: the existing handoff ContextBudget dependency now has a second consumer in the inbound request.
 bins/billing-worker/src/creem.rs:commercial->provider_execution:humaux_domain::egress
 bins/billing-worker/src/creem.rs:commercial->provider_execution:humaux_domain::egress::AuthorizedEgressPayload
 bins/billing-worker/src/creem.rs:commercial->provider_execution:humaux_domain::egress::AuthorizedEgressPayload::new
@@ -488,17 +494,15 @@ crates/adapters/src/qdrant.rs:retrieval_read_model->knowledge_lifecycle:humaux_d
 crates/adapters/src/qdrant.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::memory::MemoryType::Rejection
 crates/adapters/src/qdrant.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::memory::MemoryType::State
 crates/adapters/src/qdrant.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::subject::SubjectId
-crates/adapters/src/read_gate.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::authority::MemoryId
-crates/adapters/src/read_gate.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding
-crates/adapters/src/read_gate.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding::Judged
-crates/adapters/src/read_gate.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding::NotJudged
-crates/adapters/src/read_gate.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::note::NoteKind
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_adapters::affect_repo
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_adapters::affect_repo::affects_for_memories_in_txn
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_adapters::affect_repo::observed
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_application::affect::memories_matching
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::authority::MemoryId
+crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding
+crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding::Judged
+crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding::NotJudged
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::memory::MemoryType
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::memory::MemoryType::parse_wire
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::note::NoteKind
@@ -594,7 +598,10 @@ crates/application/src/processing_status.rs:knowledge_lifecycle->contract_kernel
 crates/application/src/processing_status.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode::RateLimited
 crates/application/src/processing_status.rs:knowledge_lifecycle->contract_kernel:humaux_domain::ids::TenantId
 crates/application/src/recall_read.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
+crates/application/src/recall_read.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::authority::MemoryId
+crates/application/src/recall_read.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::note::NoteKind
 crates/application/src/recall_read.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::subject::SubjectId
+crates/application/src/recall_read.rs:retrieval_read_model->project_continuity:humaux_domain::context::ContextBudget
 crates/application/src/supersede.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode
 crates/application/src/supersede.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode::Conflict
 crates/application/src/supersede.rs:knowledge_lifecycle->contract_kernel:humaux_domain::error::ErrorCode::InvalidInput
