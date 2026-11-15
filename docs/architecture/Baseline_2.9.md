@@ -730,7 +730,7 @@ HUMAUX                         # brand
 - ReAct runtime；
 - Web search agent；
 - code execution sandbox；
-- audio/video ingestion（Schema 预留 Artifact kind，但不实现处理器）；
+- audio/video ingestion（Schema 预留 Artifact kind，但不实现处理器；audio 已由 ADR-0115 D-E 局部取代：`symphonia` 0.6.1 + ASR 路由，video 仍 REJECTED `video_not_supported_v1`）；
 - 独立图数据库；
 - Query Rewrite / HyDE 默认链路。
 
@@ -830,7 +830,7 @@ Adapters depend on Domain; Domain does not depend on Adapters.
 | 约束 | 实现 | 防的是什么 |
 |---|---|---|
 | 独立进程 | 每 artifact 一次 spawn/exec，退出即回收 | 解析器 panic/段错误带走常驻进程 |
-| **无网络 namespace** | `CLONE_NEWNET`，除 loopback 无任何接口 | SSRF：恶意 PDF 的 remote-fetch、Office 的外部实体/远程模板 |
+| **无网络 namespace** | `CLONE_NEWNET`，除 loopback 无任何接口（已由 ADR-0119 D-A 取代：Landlock + seccomp 禁 `socket(AF_INET*/AF_INET6)`，见本节末 amend 行） | SSRF：恶意 PDF 的 remote-fetch、Office 的外部实体/远程模板 |
 | 只读挂载 | rootfs read-only；输入以 `O_RDONLY` fd 传入；唯一可写为 64 MiB tmpfs | 落地木马、污染共享卷 |
 | 内存上限 | `RLIMIT_AS = 1 GiB` | zip bomb / 超大位图解压 |
 | CPU 上限 | `RLIMIT_CPU = 60s` + cgroup `cpu.max` | 4 核单机被一个畸形文件占满 |
@@ -931,7 +931,7 @@ gateway / retrieval-worker / private-worker / consolidation-worker 四者中任�
 
 | Store | 角色 | 是否权威 | 丢失后的处理 |
 |---|---|---:|---|
-| PostgreSQL 18.6 | 业务真源 | 是 | 从备份/PITR 恢复 |
+| PostgreSQL 18.6 | 业务真源 | 是 | 从备份/PITR 恢复（已由 ADR-0121 D-J 取代：恢复改为 latest verified knowledge export；WAL/PITR 与 pgBackRest 在首个 verified export 后由卡 M23-7 owner-gated 退役，见 §44） |
 | Qdrant 1.19 | Retrieval Projection | 否 | 从 PG 全量重建 |
 | Valkey 9.1.1 | 可丢失 Cache / 分布式 rate-limit acceleration | 否 | 清空后继续服务，性能退化；OTP/验证码权威状态仍在 PostgreSQL |
 | S3-compatible | Raw Artifact | 是（Artifact bytes） | 从副本恢复 |
@@ -3868,7 +3868,7 @@ release revoked
 
 Legacy 撤销事务 append `ops.public_release_revocations(release_id,revoke_event_id)`；assessed 撤销事务与 REVOKED 状态原子写 `PUBLIC_ANONYMOUS_REVOKE`，其 owner trigger 同事务 append `ops.anonymous_public_revocations(anonymous_source_id,candidate_envelope_sha256,revoke_event_id)`。两种事实均不可删除/改写，delivery 清理不得使它们失效。匿名 fence 不含 tenant、release、contributor 或正文；public serving 只读该 fence，public worker 只能用 job 中的匿名三元组调用精确 definer 函数。新读快照在撤销 commit 之后即拒绝相关对象，不等待异步 worker；已开始的旧快照不在这一保证内。
 
-影响分析沿现有 source_closure。零有效根的对象变 REVOKED；仍有根的对象进入 UNDER_REVIEW，必须针对剩余根重新验证正文。含被撤销内容的旧 synthesis 不得通过删一条 edge 重新 SUPPORTED；需要新正文时创建替代对象。Phase 9 只登记明确的 PUBLIC_SYNTHESIS_REBUILD 待办，Phase 10 未启用时不领取、不谎报重建成功。每次公共状态变更同事务发 §14 的对象事件，projection 使用对象+revision 的独立 identity，旧任务不能删除/覆盖新 revision。
+影响分析沿现有 source_closure。零有效根的对象变 REVOKED；仍有根的对象不进入任何审核队列（UNDER_REVIEW、QUARANTINED 作为队列状态已退役，见 §12.1.1 / §12.6、ADR-0090），但必须针对剩余根重新验证正文。含被撤销内容的旧 synthesis 不得通过删一条 edge 重新 SUPPORTED；需要新正文时创建替代对象。Phase 9 只登记明确的 PUBLIC_SYNTHESIS_REBUILD 待办，Phase 10 未启用时不领取、不谎报重建成功。每次公共状态变更同事务发 §14 的对象事件，projection 使用对象+revision 的独立 identity，旧任务不能删除/覆盖新 revision。
 
 ---
 
@@ -4650,8 +4650,8 @@ model
 model_revision
 input_tokens
 output_tokens
-provider_cache_read_tokens
-provider_cache_write_tokens
+provider_cache_read_tokens（计划列，随 T-RET-1a 落地，迁移 0257；见本节下方 cache accounting 段）
+provider_cache_write_tokens（计划列，随 T-RET-1a 落地，迁移 0257；见本节下方 cache accounting 段）
 billable_tokens
 candidate_count
 candidate_tokens
@@ -6037,7 +6037,7 @@ completeness_ratio = visible / (expected - deleted)
 
 健康态下两个口径读数相同，只在上述防线失效时分叉 —— 这是量具应有的性质，不是冗余。
 
-索引 count 取不到时输出 `visible: null` 且 `completeness.class = "cannot_establish"`，**禁止用 `done - deleted` 回填**（同 ① 的「恒等值不许输出数字充数」）。分母不变，仍是 `expected - deleted`。
+索引 count 取不到时输出 `visible: null` 且 `completeness.class = "cannot_establish"`，**禁止用 `done - deleted` 回填**（同 ① 的「恒等值不许输出数字充数」）。分母不变，仍是 `expected - deleted`（ADR-0057 D-A 修订后为 `points_expected`，见本节 6013）。
 
 只保留这一个比值，不设第二个「账本口径」比值。分叉改由两条闭合断言表达，二者处置不同且不可互换：
 
@@ -6072,7 +6072,7 @@ A1 不成立、或索引 count 取不到（`visible: null`）⇒ `current = fals
 
 `skipped` = `count(state = 'SKIPPED_BY_POLICY')`，与 `done` / `deleted` 同取自 `projection.stream_log`。**这一项不可省，省了 A2 就是恒假**：`SKIPPED_BY_POLICY` 按 §15.2 的 `SETTLED_OK` 计入 `done`，而按 §7.2 / §18 它**按定义永不进入 PLATFORM_RETRIEVAL 索引**（`data_class=SECRET_MATERIAL` 不生成卡、只走本地 literal lane）⇒ 只要租户有一条禁止外发的策略，`visible + deleted == done` 就永久不成立、`current` 永久 `false`、`PROJECTION_INVISIBLE_LOSS` 永久亮着。**在健康系统上恒红的闸与恒真的闸是同一个病的两面：都不再随注入变化。** 三个 `SETTLED_OK` 终态各有唯一去处 —— `DONE` ⇒ 计入 `visible`、`TOMBSTONED` ⇒ 计入 `deleted`、`SKIPPED_BY_POLICY` ⇒ 计入 `skipped`，A2 就是这个划分的闭合；剩下的差额才是「账本说结清了、索引里却没有」。
 
-`skipped` **不进分母**：分母仍是 `expected - deleted`。策略排除掉的条目用户确实看不到，就该把比值压低 —— 与 §22.1「`excluded_secret` > 0 时 `coverage` 相应扣减，不许静默少给」是同一条纪律；把 `skipped` 也从分母减掉，等于让策略排除静默消失在分母里。
+`skipped` **不进分母**：分母仍是 `expected - deleted`（ADR-0057 D-A 修订后为 `points_expected`，见本节 6013）。策略排除掉的条目用户确实看不到，就该把比值压低 —— 与 §22.1「`excluded_secret` > 0 时 `coverage` 相应扣减，不许静默少给」是同一条纪律；把 `skipped` 也从分母减掉，等于让策略排除静默消失在分母里。
 
 A1 违反 = 两路账本互相矛盾，不知道真值是哪个；A2 `<` 侧违反 = 账本与索引矛盾，真值就是索引那个，如实报低。**把 A2 的 `<` 侧也判成 `cannot_establish`，等于把真实的丢失藏进「测不出来」里。**`>` 侧则相反：它是每次正常写入都会出现的在途态，判红才是把噪声当故障；只有超出 `pending`（索引里有账本没发过票的点）才与 A1 同判 `cannot_establish`。**一个只会往一个方向红的闸，才可能同时做到「注入必红」与「健康必绿」。**
 
@@ -6295,7 +6295,7 @@ Exact，以及 schema/结算/审计失败的零指标对照；此入口不代表
   - **注入 1（对准物理删）**：`begin_batch(100)` → 100 条全部提交且 search-visible 已确认 → 绕过 `retention::tombstone`（§37.2）直接从 Qdrant 删 10 个 point。`visible` `100 → 90`，`done` 保持 `100`，`deleted` 保持 `0` ⇒ `completeness_ratio` `1.0 → 0.90`、`current` `true → false`、`degradations` 出现 `PROJECTION_INVISIBLE_LOSS`。
   - **注入 2（对准 §17.4）**：把 adapter 的 visibility verify 换成直接 ack，写 100 条、其中 7 条未落段即丢 ⇒ `done=100, deleted=0, visible=93`，比值 `1.0 → 0.93`，A2 红。
   - **反向证伪（不可省）**：同一注入下旧口径 `(done - deleted) / (expected - deleted)` 读数恒为 `1.0`、一动不动 ⇒ 这条断言只有在分子 = `visible` 时才可能变红。旧 G23-2「把 `deleted` 从 10 改成 0」改的是测试夹具常量，不触发任何代码路径，且旧口径下 `(100-0)/(100-0)` 仍是 `1.0` —— 恒绿。
-  - **分母侧仍需单测**：`completeness_ratio` 的分母恒为 `expected - deleted`，用 §23.2 三个对照 JSON 作为夹具，第三例读数必须是 `0.9`，读到 `1.0` 即口径没改动。
+  - **分母侧仍需单测**：`completeness_ratio` 的分母恒为 `expected - deleted`（ADR-0057 D-A 修订后为 `points_expected`，见 §23.1②），用 §23.2 三个对照 JSON 作为夹具，第三例读数必须是 `0.9`，读到 `1.0` 即口径没改动。
   - **合法删除对照（不可省，与两条注入共用夹具）**：`begin_batch(100)` → 100 条全部 search-visible → 走完整 `DeletionPlan`（§37）删 10 条，在**每一步边界**各取一次 envelope。全程 A2 必须闭合（`90 + 10 + 0 == 100`）、`completeness_ratio` 恒 `1.0`（`90 / (100 - 10)`）、`current` 恒 `true`、`PROJECTION_INVISIBLE_LOSS` 一次都不许出现。**同一批采样点上各跑一次检索**（dense / sparse / literal / §22.1 的 PostgreSQL EXACT 通道各一次），被 tombstone 的那 10 条一次都不许出现在 `items` 里 —— 包括第 5 步物理 purge 还没跑的那些采样点。这一半是 §23.1② overlay 谓词挂在检索面上的注错点：把 overlay 退回成「只在 `count()` 里减」，第 1 步与第 5 步之间的采样必然把已删的 10 条检索出来（envelope 却全程绿）⇒ 本条红。把 tombstone 移回收尾（旧顺序）后，第 4 步与第 8 步之间的采样点必然读到 `done=100, deleted=0, visible=90` 并点亮该降级 ⇒ 本条红。**它与上面两条注入方向相反：注入要它红、合法删除要它绿，同一判据两侧都被钉住，才堵掉「把闸调钝就全绿」这条退路。**
 - **G23-3 三方证伪**：直接改视图底表让 `done + open_gaps + pending ≠ expected`，envelope 必须输出 `cannot_establish`，不得照算比值。
   - **计数全集负测**（判据见 §23.1④）：同 workspace 增加他人 private Evidence，当前用户的授权 count 不随之增加，不与全流数混算，实际 gaps 不变；必要读数为 `null` 时不回填；授权 EXACT 结果正确而全流无法核验时，完整 envelope 仍不能报告全链闭合。已知同口径计数被改成不相等，也必须判不可建立，而非隐去矛盾。
@@ -9202,7 +9202,8 @@ planner/pipeline 腿决定，而 `lane_failed` 回来就意味着又有 selector
 的 `min_authority = ExplicitTaskContext`，而 §10.1 的 origin 天花板表里**没有**任何 origin
 够得到这个 class，所以在 §10.1 rule 2 的产出者被裁决之前，它的 admitted set 是**结构性空集**
 （跑完、返回空，不是失败；见 ADR-0045「Open debt this card did NOT close」，DOD-035 仍
-`[phase=14]`）。
+`[phase=14]`）。**已由 ADR-0046 D-H 取代**：`task_explicit_context_v1` 已退役，v2 以
+`VerifiedCurrentTaskBinding` 为准入对象（§25.4.B(1)/(2)）；本段保留为退役前的诊断形状，不再据它重开 selector。
 
 `contracts/mcp/memory.output.schema.json` 的顶层 `description` 同步写明这一条，避免读 schema
 的人把 null 计数读成未实现。
@@ -9621,7 +9622,7 @@ coord history · public staging · temporary parser outputs · retrieval caches
 
 删除会让某个 `commit_seq` 对应的对象消失，但 **`projection.stream_log` 里那一行必须仍然存在**。否则扫描时该 seq 既可能是"不属于这条流"也可能是"漏扫了"（A1 同款歧义）：前缀要么断裂，要么被误判成洞。
 
-`projection.stream_log.state` 终态集合：`DONE` · `SKIPPED_BY_POLICY` · `FAILED` · `TOMBSTONED`。**列名以 §15.1 权威 DDL 为准，就是 `state`；本节旧写法 `status` 作废** —— `stream_log` 从来没有过 `status` 列，照旧写法落下去的 SQL 一律 `column "status" does not exist`。
+`projection.stream_log.state` 终态集合：`DONE` · `SKIPPED_BY_POLICY` · `FAILED` · `TOMBSTONED` · `RETIRED_FAILED`（末者由 0167 按 §15.2.1 补入，与 §23.1② 的终态口径一致）。**列名以 §15.1 权威 DDL 为准，就是 `state`；本节旧写法 `status` 作废** —— `stream_log` 从来没有过 `status` 列，照旧写法落下去的 SQL 一律 `column "status" does not exist`。
 
 `TOMBSTONED` 的双重身份是这一节的全部要点：
 
@@ -10183,7 +10184,7 @@ replication
 offsite
 ```
 
-Artifact 原件不能从 Memory 推导回来，因此其 DR 等级高于 Qdrant。
+Artifact 原件不能从 Memory 推导回来，因此其 DR 等级高于 Qdrant。（已由 ADR-0115 D-A/D-B 局部取代：知识上传的原件与派生物是单 session 临时前缀下的有期限临时资产，不按 content-addressed 保留；PUBLISH 事务只把 `private.artifacts.object_locator` 置 NULL 并由规范抽取文本生成 Evidence，原件 bytes 的清理时机按 D-A 分两种——N=0 时在 PUBLISH commit 的同事务 enqueue purge，review-window session 到 deadline 才 purge；本句只对仍保留原件的路径成立，见 §29。）
 
 ## Restore Drill
 
@@ -13311,7 +13312,7 @@ baseline_min: 旧生产同 198 题、同内容锚（§55.2）、重复 3 次的�
               首次取数 2026-08-27 得 state min = 134 题（min(135,134,134)），未采信（同 spread_tol：未过降级筛查）。
               可达条件校验（benchset-declaration-check::continuation_reachability_violation）在 baseline_min/
               spread_tol/Δ 三数齐备时独立重算 ①②；首次取数下 ①(5>max(4,1)) ②(134+5≤178 且 134≥5) 均成立，
-              但因 state 层 resolution 未分层实测（本节 11214）+ spread_tol 未过降级筛查，整闸仍 NOT_DECLARED
+              但因 state 层 resolution 未分层实测（见本节 Continuation Gate 的 `resolution` 条）+ spread_tol 未过降级筛查，整闸仍 NOT_DECLARED
 ```
 
 - **`resolution` 与 `spread_tol` 是两个不同的量，不许互相顶替**（此前块内同时留着 `2` 和 `4`，就是把它们当同一个数在用）：
@@ -13425,7 +13426,7 @@ Runtime 解冻后的机制仍保留在这张历史 Manifest 中，因为这里�
 
 ## Benchmark 集合分母声明（§55.3 落地，10 个集合逐行）
 
-**本章冻结**：§55 列出的 9 个集合在本表**有且仅有一行**；**七个字段**（清单见 §55.3）缺任一 ⇒ 该集合判 `NOT_DECLARED`，其相关条目不得勾选、不得表述为通过（§55.3 已冻结「没有固定分母的集合不许进 §69 DoD」）。
+**本章冻结**：§55 列出的 10 个集合在本表**有且仅有一行**；**七个字段**（清单见 §55.3）缺任一 ⇒ 该集合判 `NOT_DECLARED`，其相关条目不得勾选、不得表述为通过（§55.3 已冻结「没有固定分母的集合不许进 §69 DoD」）。
 
 声明模板（字段名与 §55.3 一致）：
 
@@ -13440,7 +13441,7 @@ set_id=<id> · fixed_denominator=<N>=<层1 n1 + 层2 n2> · decision_depth=<top_
 
 | set_id | §55 名称 | fixed_denominator | decision_depth | resolution / spread_tol | measured_at / frozen_by | 判定 |
 |---|---|---|---|---|---|---|
-| `continuation_198_v2` | Humaux 真实 continuation set | 198 = state 178 + fact 20 | top_k=5 | `resolution`：全集 4 题（实测，§1 前言「现实分母」）· state / fact **分层均未实测**（本节 11214 明定：全集读数未分层「本身即 NOT_DECLARED 一项」，禁用全集上界顶替 state 层）；`spread_tol`：首次取数得 state 极差 1 题（旧生产 3 seed run{1,2,3} pass_items 135/134/134），但**未通过降级筛查**——旧生产 `continuation_eval.py` json_out 不落 `degraded` 标记，无法自证三次无 rerank 降级污染（run2/3 翻转题 rank 5→None 与降级签名同型），按 §55.3「禁止估值」不采信 | 2026-08-27 首次取数 / 待重取 | `NOT_DECLARED`（缺：state 层 `resolution` 实测、经降级筛查的 `spread_tol`/`baseline_min`、`frozen_by`。返工清单：① 重取只收 exit=0 的干净 run，spread 按逐题 Hamming 取（ADR-0007）；② state 178 题固定集按 recency 权重局部扰动族实测 resolution（stable_flip 口径，见 Continuation Gate 块 resolution 行）） |
+| `continuation_198_v2` | Humaux 真实 continuation set | 198 = state 178 + fact 20 | top_k=5 | `resolution`：全集 4 题（实测，§1 前言「现实分母」）· state / fact **分层均未实测**（本节 Continuation Gate 的 `resolution` 条明定：全集读数未分层「本身即 NOT_DECLARED 一项」，禁用全集上界顶替 state 层）；`spread_tol`：首次取数得 state 极差 1 题（旧生产 3 seed run{1,2,3} pass_items 135/134/134），但**未通过降级筛查**——旧生产 `continuation_eval.py` json_out 不落 `degraded` 标记，无法自证三次无 rerank 降级污染（run2/3 翻转题 rank 5→None 与降级签名同型），按 §55.3「禁止估值」不采信 | 2026-08-27 首次取数 / 待重取 | `NOT_DECLARED`（缺：state 层 `resolution` 实测、经降级筛查的 `spread_tol`/`baseline_min`、`frozen_by`。返工清单：① 重取只收 exit=0 的干净 run，spread 按逐题 Hamming 取（ADR-0007）；② state 178 题固定集按 recency 权重局部扰动族实测 resolution（stable_flip 口径，见 Continuation Gate 块 resolution 行）） |
 | `longmemeval_style` | LongMemEval-style long-term set | 未声明 | 未声明 | 未实测 | — | `NOT_DECLARED` · owner=Private Memory（Phase 4+） |
 | `agent_workflow_outcome` | agent workflow/outcome set | 未声明 | 未声明 | 未实测 | — | `NOT_DECLARED` · owner=Continuity（Phase 8+） |
 | `code_retrieval` | code retrieval set | 未声明 | 未声明 | 未实测 | — | `NOT_DECLARED` · owner=Code（Phase 11+） |
@@ -16275,7 +16276,7 @@ G80-24  gate-registry-coverage（PR）
           再把 G80-31 同时写进 Phase 7/8 ⇒ ③ 计数 1 -> 2 ⇒ 红。
 ```
 
-**这两道闸在冻结时就是绿的**：绑定表十四行的 `A \ (B ∪ Rt)` 全部为空，两列所有锚都解析成功。对照被 G80-24 取代的 G80-21 —— 按它自身算法 `S \ T = {6, 37}`，落地当天拦住所有 PR。**一道闸落地即红、只能靠调松定义活下去，和一道恒真闸是同一个病**（§55.4 已就此冻结口径）。
+**这两道闸在冻结时就是绿的**：绑定表二十四行的 `A \ (B ∪ Rt)` 全部为空，两列所有锚都解析成功。对照被 G80-24 取代的 G80-21 —— 按它自身算法 `S \ T = {6, 37}`，落地当天拦住所有 PR。**一道闸落地即红、只能靠调松定义活下去，和一道恒真闸是同一个病**（§55.4 已就此冻结口径）。
 
 ## 80.2 `metrics-registry-check`：Registry / Code / Witness 三方证伪
 
@@ -16422,7 +16423,7 @@ actual_canonical_block_ids
 contract-impact-map 第一列
 ```
 
-少一、多一都红。以后新增第 8 个承重 registry，必须同 PR 增加 impact-map row；
+少一、多一都红。以后新增第 11 个承重块，必须同 PR 增加 impact-map row；
 否则不会出现“新 registry 根本没进入影响分析”的静默空洞。
 
 ### G80-42 注错
@@ -16440,7 +16441,7 @@ C. 在 §50 新增第二个 canonical block id FEATURE_REGISTRY_V2，
    -> actual block ids \ map ids 非空 -> 红
 
 D. 把 impact-map matcher 写坏导致 actual block ids = ∅
-   -> 正哨兵要求恰好 7 个 -> 红
+   -> 正哨兵要求恰好 10 个 -> 红
 ```
 
 这道闸解决的是**变更闭包**，不替代 G80-6/26/40/41 等具体闸。
@@ -16821,7 +16822,7 @@ scim_connections
 auth_events
 
 ip_policies
-api_credentials
+api_keys
 repository_connections
 rate_buckets
 
@@ -16853,6 +16854,8 @@ notification_preferences
 cells
 tenant_placements
 ```
+
+凭证表只有 `control.api_keys` 一个名字（§73.5.1 的唯一可写真源）；此前的 `api_credentials` 旧名作废，不另建 credential-to-scope 权威。
 
 ## public.*
 
