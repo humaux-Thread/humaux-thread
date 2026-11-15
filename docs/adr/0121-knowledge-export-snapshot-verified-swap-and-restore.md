@@ -48,6 +48,8 @@ or re-indexable), images/binaries/caches and Qdrant (note :83-87). Every catalog
 the table's owner module in M23-2 (note :87-88). Rejected: a physical full (owner: not the whole system) and a
 schema-wide dump (drags derived data) (note :88).
 
+> Resolution 2026-11-15: the `credentials/sessions/challenges` exclusion above has exactly one exception — API-key **hashes** (`control.api_keys.key_hash`, never plaintext, never the pepper); sessions, challenges and every other credential stay excluded. Full text in D-I.
+
 **Lead ruling (2026-10-26, issue #332; draft authority, the owner may revise):** the catalog is closed under foreign
 keys. For every NOT NULL foreign key from a KNOWLEDGE table, the referenced table is KNOWLEDGE too, or the
 referencing table leaves KNOWLEDGE; the catalog row records which. `private.processing_runs` moves to KNOWLEDGE:
@@ -152,7 +154,9 @@ agents keep working after a restore (note :254).
 "agents get new API keys" (note :130-131) beside the Q3 answer, which has the export carrying API-key hashes
 (note :254). The exclusion and the answer are both recorded here; this ADR does not resolve the tension.
 
-> Errata 2026-11-15 (independent-707 P012-F4)：该 lead question 至今**仍未裁决**（owner-only）。恢复后 agent 是否保留 API key 没有单一现行答案：Q3 答复说 export 携带 API-key hashes，而 D-A/D9 仍把 credentials 列为 excluded；运维按「未决」处理，不得只引用其中一句来规划 restore。要收敛需 owner 裁决（本卡不代决）；见 ADR-0121 D-I。
+> Resolution 2026-11-15 (R3; owner Q3 choice 2026-10-22, memory `9f4d3305-f6a2-4b93-a4b9-362ed5b29b80`「按推荐」— the option text was drafted by the agent and the owner's verbatim is the choice itself, see OWNER_RULINGS_RECONCILE §3 U1): the credential exclusion of D-A/D9 has exactly one exception — API-key **hashes**, i.e. the hash column of `control.api_keys` (`key_hash`, the keyed HMAC-SHA256 verifier at `migrations/0037_edge_security.sql:27`), never plaintext and never the pepper. D-G's "agents get new API keys" (note :131) is the old default and is superseded by that answer; sessions, challenges and every other credential stay excluded. For the hashes to verify after a restore, the restore host must hold the same pepper secret (from the deployment secret store, never the export) and the export must also carry the non-secret pepper epoch row `control.credential_pepper_state`; moving both `backup_catalog.toml` rows (`control.api_keys`, `control.credential_pepper_state`) off EXCLUDED is an M02 follow-up card.
+
+> Errata 2026-11-15 (independent-707 P012-F4)：该 lead question 当时按「未裁决（owner-only）」登记；现由上面的 Resolution 2026-11-15 收敛，不再按「未决」处理——restore 规划以该 Resolution 为准（credentials 排除的唯一例外是 `control.api_keys` 的哈希列，不含明文/pepper；会话/挑战等其余凭据仍排除；D-G 的「agents get new API keys」为旧默认、已被取代）。D-A/D-G 正文不改写；`docs/architecture/backup_catalog.toml` 的 `control.api_keys` 行仍标 EXCLUDED，按该 Resolution 调整属 M02 的后续卡。
 
 ### D-J Schedule: `dr serve` inside the compose bundle
 
@@ -193,7 +197,8 @@ PGDATA; encrypt if a copy ever leaves the host) (note :143-144).
 - Cost: RPO grows to the last verified export and PITR is gone (note :137-139); peak disk is old + candidate +
   drill scratch (note :111); a restore is owner-run and needs a re-embed before the semantic lane serves
   (note :104-105, :127-130). The owner's Q3 answer has the export carrying API-key hashes (note :254); the conflict
-  with D-A's credential exclusion and D-G's re-key step is listed above as a lead question.
+  with D-A's credential exclusion and D-G's re-key step is listed above as a lead question and resolved 2026-11-15 in
+  D-I (API-key hashes only).
 - Neutral for this card: no code, DDL, config key or gate is added; the gates below belong to later cards.
 
 ## Gates
