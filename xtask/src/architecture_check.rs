@@ -1099,6 +1099,314 @@ const EDITIONS: [&str; 2] = [EDITION_CORE, EDITION_CLOUD];
 /// Highest module id in the design notes (ADR-0078 adds M29).
 const MODULE_ID_MAX: u8 = 29;
 
+/// ADR-0130 D4/D6; §78: the existing DB inventory parser is shared with G-M23-3.
+const HEX_MODULES: &str = "docs/architecture/modules.toml";
+const HEX_BASELINE: &str = "xtask/hex_layer_baseline.txt";
+
+struct HexModule {
+    id: String,
+    legacy_m: Vec<String>,
+    owned_tables: Vec<String>,
+    may_depend_on: Vec<String>,
+}
+
+struct HexDoor {
+    modules: Vec<String>,
+}
+
+struct HexCatalog {
+    module: Vec<HexModule>,
+    in_txn_door: Vec<HexDoor>,
+}
+
+fn hex_verdict(problems: Vec<String>) -> Verdict {
+    if problems.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Fail(problems)
+    }
+}
+
+/// ADR-0130 D7a; §78: only application edges participate in cycle detection.
+fn hex_visit<'a>(
+    id: &'a str,
+    graph: &BTreeMap<&'a str, &'a [String]>,
+    active: &mut BTreeSet<&'a str>,
+    done: &mut BTreeSet<&'a str>,
+    problems: &mut Vec<String>,
+) {
+    if done.contains(id) {
+        return;
+    }
+    if !active.insert(id) {
+        problems.push(format!(
+            "CycleError: may_depend_on cycle at `{id}` ({active:?})"
+        ));
+        return;
+    }
+    if let Some(edges) = graph.get(id) {
+        for target in *edges {
+            hex_visit(target, graph, active, done, problems);
+        }
+    }
+    active.remove(id);
+    done.insert(id);
+}
+
+fn hex_strings(value: Option<&toml::Value>, field: &str) -> Result<Vec<String>, String> {
+    value
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| format!("missing/invalid {field}"))?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("invalid {field}: {v}"))
+        })
+        .collect()
+}
+
+fn hex_parse_catalog(text: &str) -> Result<HexCatalog, String> {
+    let value: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
+    let rows = value
+        .get("module")
+        .and_then(toml::Value::as_array)
+        .ok_or("missing module array")?;
+    let mut module = Vec::new();
+    for row in rows {
+        let id = row
+            .get("id")
+            .and_then(toml::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or("missing module id")?;
+        module.push(HexModule {
+            id: id.to_owned(),
+            legacy_m: hex_strings(row.get("legacy_m"), &format!("{id}.legacy_m"))?,
+            owned_tables: hex_strings(row.get("owned_tables"), &format!("{id}.owned_tables"))?,
+            may_depend_on: hex_strings(row.get("may_depend_on"), &format!("{id}.may_depend_on"))?,
+        });
+    }
+    let mut in_txn_door = Vec::new();
+    if let Some(doors) = value.get("in_txn_door") {
+        for door in doors.as_array().ok_or("invalid in_txn_door array")? {
+            in_txn_door.push(HexDoor {
+                modules: hex_strings(door.get("modules"), "in_txn_door.modules")?,
+            });
+        }
+    }
+    Ok(HexCatalog {
+        module,
+        in_txn_door,
+    })
+}
+
+fn hex_coverage_problems(text: &str, tables: &[DbTable]) -> Vec<String> {
+    let catalog = match hex_parse_catalog(text) {
+        Ok(catalog) => catalog,
+        Err(error) => return vec![format!("{HEX_MODULES}: {error}")],
+    };
+    let mut problems = Vec::new();
+    let mut ids = BTreeSet::new();
+    let mut legacy = BTreeMap::<&str, usize>::new();
+    let mut owners = BTreeMap::<&str, &str>::new();
+    for module in &catalog.module {
+        if !ids.insert(module.id.as_str()) {
+            problems.push(format!("duplicate module id `{}`", module.id));
+        }
+        for m in &module.legacy_m {
+            *legacy.entry(m).or_default() += 1;
+            if !is_module_id(m) {
+                problems.push(format!("{}: invalid legacy_m `{m}`", module.id));
+            }
+        }
+        for table in &module.owned_tables {
+            if let Some(owner) = owners.insert(table, &module.id) {
+                problems.push(format!(
+                    "table `{table}`: duplicate owner `{owner}` and `{}`",
+                    module.id
+                ));
+            }
+        }
+    }
+    for n in 1..=MODULE_ID_MAX {
+        let m = format!("M{n:02}");
+        let count = legacy.get(m.as_str()).copied().unwrap_or(0);
+        if count != 1 {
+            problems.push(format!("legacy_m `{m}` count {count}, expected == 1"));
+        }
+    }
+    let actual: BTreeSet<&str> = tables.iter().map(|t| t.name.as_str()).collect();
+    let owned: BTreeSet<&str> = owners.keys().copied().collect();
+    for table in actual.difference(&owned) {
+        problems.push(format!("table `{table}`: missing owner"));
+    }
+    for table in owned.difference(&actual) {
+        problems.push(format!("owned table `{table}`: absent from {DB_OBJECTS}"));
+    }
+    for module in &catalog.module {
+        for target in &module.may_depend_on {
+            if !ids.contains(target.as_str()) {
+                problems.push(format!("{}: unknown may_depend_on `{target}`", module.id));
+            }
+        }
+    }
+    for door in &catalog.in_txn_door {
+        for target in &door.modules {
+            if !ids.contains(target.as_str()) {
+                problems.push(format!("in_txn_door: unknown module `{target}`"));
+            }
+        }
+    }
+    let graph = catalog
+        .module
+        .iter()
+        .map(|m| (m.id.as_str(), m.may_depend_on.as_slice()))
+        .collect();
+    let mut done = BTreeSet::new();
+    for id in ids {
+        hex_visit(id, &graph, &mut BTreeSet::new(), &mut done, &mut problems);
+    }
+    problems
+}
+
+// §78 / ADR-0130 D4: inventory freshness guaranteed by dep-map --check.
+// ponytail: reuse the migration-generated db_objects contract; expose dep_map's parser in a
+// separate card if coverage must run independently of db_objects and its CI freshness gate.
+fn hex_coverage_gate(root: &Path) -> Verdict {
+    let result = (|| {
+        let modules = fs::read_to_string(root.join(HEX_MODULES))
+            .map_err(|e| vec![format!("{HEX_MODULES}: {e}")])?;
+        let inventory = fs::read_to_string(root.join(DB_OBJECTS))
+            .map_err(|e| vec![format!("{DB_OBJECTS}: {e}")])?;
+        let tables = parse_db_tables(&inventory)?;
+        Ok::<_, Vec<String>>(hex_coverage_problems(&modules, &tables))
+    })();
+    hex_verdict(result.unwrap_or_else(|errors| errors))
+}
+
+/// §78 / ADR-0130 step 1: syntax-only use imports, including grouped and renamed types.
+// ponytail: uppercase imports approximate DTOs (including errors); postgres pools are composition,
+// not business DTOs. Module aliases/qualified paths need name resolution when HEX-CONTEXT lands.
+fn hex_use_types(tree: &syn::UseTree, prefix: &str, found: &mut BTreeSet<String>) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            hex_use_types(&path.tree, &format!("{prefix}{}::", path.ident), found)
+        }
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                hex_use_types(item, prefix, found);
+            }
+        }
+        syn::UseTree::Name(name) => hex_type_leaf(prefix, &name.ident.to_string(), found),
+        syn::UseTree::Rename(name) => hex_type_leaf(prefix, &name.ident.to_string(), found),
+        syn::UseTree::Glob(_) => hex_type_leaf(prefix, "*", found),
+    }
+}
+
+fn hex_type_leaf(prefix: &str, name: &str, found: &mut BTreeSet<String>) {
+    if prefix.starts_with("humaux_adapters::")
+        && !prefix.starts_with("humaux_adapters::postgres::")
+        && (name == "*" || name.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
+    {
+        found.insert(format!("{prefix}{name}"));
+    }
+}
+
+fn hex_test_attrs(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg")
+            && attr
+                .parse_args::<syn::Path>()
+                .is_ok_and(|path| path.is_ident("test"))
+    })
+}
+
+fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
+    struct Imports(BTreeSet<String>);
+    impl<'ast> syn::visit::Visit<'ast> for Imports {
+        fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+            if !hex_test_attrs(&item.attrs) {
+                hex_use_types(&item.tree, "", &mut self.0);
+            }
+        }
+        fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+            if !hex_test_attrs(&item.attrs) {
+                syn::visit::visit_item_mod(self, item);
+            }
+        }
+    }
+    let file = syn::parse_file(source).map_err(|e| e.to_string())?;
+    let mut imports = Imports(BTreeSet::new());
+    syn::visit::Visit::visit_file(&mut imports, &file);
+    Ok(imports.0)
+}
+
+fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
+    let expected: BTreeSet<String> = baseline
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_owned)
+        .collect();
+    actual
+        .difference(&expected)
+        .map(|v| format!("new adapter DTO use: {v}"))
+        .chain(
+            expected
+                .difference(actual)
+                .map(|v| format!("stale adapter DTO baseline: {v}")),
+        )
+        .collect()
+}
+
+// §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
+// files' module responsibility headers; recall/guard/mcp_application remain request handlers.
+const HEX_LAYER_EXCLUDED: &[&str] = &[
+    "bins/gateway/src/main.rs", // Process entry and listener assembly (§4.2).
+    "bins/gateway/src/bootstrap.rs", // Process-wide config and adapter assembly (§34.0.1).
+    "bins/gateway/src/cached_embedding.rs", // Outbound embedding cache port (§51).
+    "bins/gateway/src/rerank_client.rs", // Outbound rerank RPC port (ADR-0084).
+    "bins/gateway/src/retrieval_embedding_client.rs", // Outbound embedding RPC port (ADR-0012).
+];
+
+fn hex_layer_source(path: &str) -> bool {
+    (path.starts_with("bins/gateway/src/") || path.starts_with("crates/protocol/src/"))
+        && !HEX_LAYER_EXCLUDED.contains(&path)
+        && !path.split('/').any(|part| part == "tests")
+}
+
+fn hex_layer_gate(root: &Path) -> Verdict {
+    let mut actual = BTreeSet::new();
+    let mut problems = Vec::new();
+    for directory in ["bins/gateway/src", "crates/protocol/src"] {
+        let files = walk_files(&root.join(directory), &["rs"]);
+        if files.is_empty() {
+            problems.push(format!("missing source object `{directory}`"));
+        }
+        for path in files {
+            if !hex_layer_source(&display(root, &path)) {
+                continue;
+            }
+            let result = fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|s| hex_layer_symbols(&s));
+            match result {
+                Ok(symbols) => actual.extend(
+                    symbols
+                        .into_iter()
+                        .map(|symbol| format!("{}:{symbol}", display(root, &path))),
+                ),
+                Err(error) => problems.push(format!("{}: {error}", display(root, &path))),
+            }
+        }
+    }
+    match fs::read_to_string(root.join(HEX_BASELINE)) {
+        Ok(baseline) => problems.extend(hex_layer_difference(&actual, &baseline)),
+        Err(error) => problems.push(format!("{HEX_BASELINE}: {error}")),
+    }
+    hex_verdict(problems)
+}
+
 /// `Mnn` with `nn` in `01..=MODULE_ID_MAX`.
 fn is_module_id(s: &str) -> bool {
     s.len() == 3
@@ -12492,6 +12800,11 @@ pub fn run(_args: &[String]) -> i32 {
     let root = workspace_root();
     let mut checks: Vec<(&str, Verdict)> = vec![
         (
+            "HEX-COVERAGE (ADR-0130 D4/D6/D7a)",
+            hex_coverage_gate(&root),
+        ),
+        ("HEX-LAYER (ADR-0130 step 1)", hex_layer_gate(&root)),
+        (
             "M03 D1 / G-M03-2 (retired PostgreSQL rate names in non-migration code == 0)",
             m03_2_no_pg_rate_path(&root),
         ),
@@ -12928,6 +13241,163 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         format!(
             "deploy/compose/prod.yml: compose service `{service}` runs the Python command `{token}` in its `{key}:` but its `profiles:` is not limited to rehearsal/test; the system is Rust (T-LANG-1)"
         )
+    }
+
+    /// §80.1: injected catalog failures must name the broken boundary, then restore green.
+    #[test]
+    fn hex_boundary_coverage_red_green() {
+        let root = workspace_root();
+        let original = fs::read_to_string(root.join(HEX_MODULES)).unwrap();
+        let tables = parse_db_tables(&fs::read_to_string(root.join(DB_OBJECTS)).unwrap()).unwrap();
+        assert_eq!(
+            hex_coverage_problems(&original, &tables),
+            Vec::<String>::new()
+        );
+        for case in [
+            "missing owner",
+            "duplicate owner",
+            "missing M29",
+            "cycle",
+            "duplicate id",
+            "unknown dependency",
+            "unknown door",
+        ] {
+            let mut value: toml::Value = toml::from_str(&original).unwrap();
+            let modules = value["module"].as_array_mut().unwrap();
+            match case {
+                "missing owner" => {
+                    modules[0]["owned_tables"].as_array_mut().unwrap().remove(0);
+                }
+                "duplicate owner" => {
+                    let t = modules[0]["owned_tables"][0].clone();
+                    modules[1]["owned_tables"].as_array_mut().unwrap().push(t);
+                }
+                "missing M29" => {
+                    for m in modules {
+                        m["legacy_m"]
+                            .as_array_mut()
+                            .unwrap()
+                            .retain(|m| m.as_str() != Some("M29"));
+                    }
+                }
+                "cycle" => {
+                    let id = modules[0]["id"].clone();
+                    modules[0]["may_depend_on"].as_array_mut().unwrap().push(id);
+                }
+                "duplicate id" => {
+                    modules[1]["id"] = modules[0]["id"].clone();
+                }
+                "unknown dependency" => {
+                    modules[0]["may_depend_on"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push("missing_context".into());
+                }
+                "unknown door" => {
+                    value["in_txn_door"][0]["modules"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push("missing_context".into());
+                }
+                _ => unreachable!(),
+            }
+            let errors = hex_coverage_problems(&toml::to_string(&value).unwrap(), &tables);
+            println!("HEX-COVERAGE injected {case}: fail {errors:?}");
+            assert!(!errors.is_empty(), "{case}");
+            assert!(hex_coverage_problems(&original, &tables).is_empty());
+            println!("HEX-COVERAGE {case} restored: pass");
+        }
+        assert!(matches!(hex_coverage_gate(&root), Verdict::Pass));
+        println!("HEX-COVERAGE restored: pass");
+    }
+
+    #[test]
+    fn hex_boundary_layer_red_green() {
+        let root = workspace_root();
+        assert!(
+            matches!(hex_layer_gate(&root), Verdict::Pass),
+            "{:?}",
+            hex_layer_gate(&root)
+        );
+        let baseline = fs::read_to_string(root.join(HEX_BASELINE)).unwrap();
+        let actual: BTreeSet<String> = baseline
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.is_empty())
+            .map(str::to_owned)
+            .collect();
+        let source = "use humaux_adapters::{remember::RememberCommand as Command, affect_repo::AffectInput};";
+        assert_eq!(hex_layer_symbols(source).unwrap().len(), 2);
+        assert!(hex_layer_symbols("// use humaux_adapters::remember::RememberCommand;\nuse humaux_adapters::postgres::RuntimeDbPool;").unwrap().is_empty());
+        let path = "bins/gateway/src/boundary_injection.rs";
+        let mut injected = actual.clone();
+        for symbol in hex_layer_symbols(source).unwrap() {
+            injected.insert(format!("{path}:{symbol}"));
+        }
+        let errors = hex_layer_difference(&injected, &baseline);
+        println!("HEX-LAYER injected gateway use: fail {errors:?}");
+        assert_eq!(errors.len(), 2);
+        assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
+        println!("HEX-LAYER gateway use restored: pass");
+        let shortened = actual
+            .iter()
+            .skip(1)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let errors = hex_layer_difference(&actual, &shortened);
+        println!("HEX-LAYER removed baseline row: fail {errors:?}");
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
+        println!("HEX-LAYER removed baseline row restored: pass");
+        let mut fixed = actual.clone();
+        fixed.pop_first();
+        assert_eq!(hex_layer_difference(&fixed, &baseline).len(), 1);
+        assert!(
+            matches!(hex_layer_gate(&root), Verdict::Pass),
+            "{:?}",
+            hex_layer_gate(&root)
+        );
+        println!("HEX-LAYER restored: pass ({} baseline rows)", actual.len());
+    }
+
+    #[test]
+    fn hex_boundary_wiring_and_inputs() {
+        let source = fs::read_to_string(real_root().join(SELF_FILE)).unwrap();
+        let run = source
+            .split("pub fn run(")
+            .nth(1)
+            .unwrap()
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        for prefix in ["hex_coverage_", "hex_layer_"] {
+            assert_eq!(run.matches(&format!("{prefix}gate(&root)")).count(), 1);
+        }
+        assert!(!hex_coverage_problems("not toml", &[]).is_empty());
+        for path in HEX_LAYER_EXCLUDED {
+            assert!(!hex_layer_source(path), "{path}");
+        }
+        assert!(!hex_layer_source("bins/maintenance/src/main.rs"));
+        assert!(!hex_layer_source("bins/private-worker/src/lib.rs"));
+        assert!(hex_layer_source("bins/gateway/src/remember.rs"));
+        assert!(hex_layer_source("bins/gateway/src/boundary_injection.rs"));
+        assert!(hex_layer_source("crates/protocol/src/edge.rs"));
+        assert!(matches!(
+            hex_coverage_gate(Path::new("/missing-boundary-fixture")),
+            Verdict::Fail(_)
+        ));
+        assert!(matches!(
+            hex_layer_gate(Path::new("/missing-boundary-fixture")),
+            Verdict::Fail(_)
+        ));
+        assert_eq!(
+            hex_layer_symbols(
+                "#[cfg(test)] mod tests { use humaux_adapters::remember::RememberCommand; }"
+            )
+            .unwrap()
+            .len(),
+            0
+        );
     }
 
     /// `run()` must list the gate exactly once (a deleted call tuple leaves a gate that never runs).
