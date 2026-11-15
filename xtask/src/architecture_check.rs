@@ -1269,6 +1269,9 @@ fn hex_coverage_problems(text: &str, tables: &[DbTable]) -> Vec<String> {
     problems
 }
 
+// §78 / ADR-0130 D4: inventory freshness guaranteed by dep-map --check.
+// ponytail: reuse the migration-generated db_objects contract; expose dep_map's parser in a
+// separate card if coverage must run independently of db_objects and its CI freshness gate.
 fn hex_coverage_gate(root: &Path) -> Verdict {
     let result = (|| {
         let modules = fs::read_to_string(root.join(HEX_MODULES))
@@ -1356,16 +1359,32 @@ fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String
         .collect()
 }
 
+// §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
+// files' module responsibility headers; recall/guard/mcp_application remain request handlers.
+const HEX_LAYER_EXCLUDED: &[&str] = &[
+    "bins/gateway/src/main.rs", // Process entry and listener assembly (§4.2).
+    "bins/gateway/src/bootstrap.rs", // Process-wide config and adapter assembly (§34.0.1).
+    "bins/gateway/src/cached_embedding.rs", // Outbound embedding cache port (§51).
+    "bins/gateway/src/rerank_client.rs", // Outbound rerank RPC port (ADR-0084).
+    "bins/gateway/src/retrieval_embedding_client.rs", // Outbound embedding RPC port (ADR-0012).
+];
+
+fn hex_layer_source(path: &str) -> bool {
+    (path.starts_with("bins/gateway/src/") || path.starts_with("crates/protocol/src/"))
+        && !HEX_LAYER_EXCLUDED.contains(&path)
+        && !path.split('/').any(|part| part == "tests")
+}
+
 fn hex_layer_gate(root: &Path) -> Verdict {
     let mut actual = BTreeSet::new();
     let mut problems = Vec::new();
-    for directory in ["bins", "crates/protocol/src"] {
+    for directory in ["bins/gateway/src", "crates/protocol/src"] {
         let files = walk_files(&root.join(directory), &["rs"]);
         if files.is_empty() {
             problems.push(format!("missing source object `{directory}`"));
         }
         for path in files {
-            if path.components().any(|c| c.as_os_str() == "tests") {
+            if !hex_layer_source(&display(root, &path)) {
                 continue;
             }
             let result = fs::read_to_string(&path)
@@ -13349,6 +13368,14 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             assert_eq!(run.matches(&format!("{prefix}gate(&root)")).count(), 1);
         }
         assert!(!hex_coverage_problems("not toml", &[]).is_empty());
+        for path in HEX_LAYER_EXCLUDED {
+            assert!(!hex_layer_source(path), "{path}");
+        }
+        assert!(!hex_layer_source("bins/maintenance/src/main.rs"));
+        assert!(!hex_layer_source("bins/private-worker/src/lib.rs"));
+        assert!(hex_layer_source("bins/gateway/src/remember.rs"));
+        assert!(hex_layer_source("bins/gateway/src/boundary_injection.rs"));
+        assert!(hex_layer_source("crates/protocol/src/edge.rs"));
         assert!(matches!(
             hex_coverage_gate(Path::new("/missing-boundary-fixture")),
             Verdict::Fail(_)
