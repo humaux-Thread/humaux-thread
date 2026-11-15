@@ -5495,7 +5495,6 @@ written by:
 - (no process): `public-pool::tests::notice`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - process(cargo-xtask): `maintenance::switch_visible`
-- process(cargo-xtask): `xtask::architecture_check`
 - process(cargo-xtask): `xtask::e2e_seed`
 - process(humaux-maintenance): `maintenance::switch_visible`
 - process(humaux-retrieval-worker): `retrieval-provider::adapters`
