@@ -1,7 +1,7 @@
 //! `xtask::architecture_check` — CI gate family for §53.3 / §55.1 / §48.0① / §59.1 / §78.3 architecture boundary lints.
-//! Depends-on: crates=[humaux-domain, humaux-protocol, proc-macro2, serde_json, syn, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.curation_candidate_targets, private.curation_candidates, private.memory_projects, private.memory_projects_live, private.nodes, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.subjects, public.entities] w=[coord.tasks, private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.i4_authority_scan, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::known_red, xtask::serial_lane]
+//! Depends-on: crates=[humaux-domain, humaux-protocol, proc-macro2, serde_json, syn, toml]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.model_call_ledger, ops.provider_health_current, ops.reasoning_account_health_observations, ops.reasoning_provider_health_observations, private.continuity_facet_evidence_links, private.continuity_facet_memory_links, private.continuity_facet_slots, private.continuity_facet_versions, private.continuity_projects, private.curation_candidate_targets, private.curation_candidates, private.memory_projects, private.memory_projects_live, private.nodes, private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project, private.subjects, public.entities] w=[control.users, coord.tasks, private.context_bindings, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_evidence, private.memory_projects, private.memory_records, private.processing_runs, private.task_binding_grants, projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze, control.resolve_user_reasoning_admission, ops.i4_authority_scan, ops.reasoning_health_observation_reject_mutation, ops.reasoning_model_call_validate, private.memory_in_project, private.publish_continuity_facet, private.read_continuity_project_storage_v1], subprocess(cargo)]; env=[CARGO_MANIFEST_DIR, CARGO_TARGET_DIR, GITHUB_ACTIONS, HUMAUX_NO_PYTHON_COMPOSE_JSON, HUMAUX_REQUIRE_DOCKER]; modules=[domain::affect, domain::confirm, domain::plan, domain::subject, protocol::mcp_catalog, xtask::known_red, xtask::serial_lane]
 //! Called-by: [xtask::direction_table, xtask::known_red, xtask::main, xtask::vocab_check]
-//! Invariants: [each sub-check reports pass/fail/not_applicable independently; not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails; G-M23-3 / G-M23-3b read docs/architecture/db_objects.md and backup_catalog.toml and fail, never not_applicable, on a missing file or an inventory without foreign-key blocks; G-M23-3b also fails unless every D5_RESTORE_DEPENDENCIES entry is a KNOWLEDGE catalog row (M23 D5)]
+//! Invariants: [each sub-check reports pass/fail/not_applicable independently except HEX-COVERAGE/LAYER/CONTEXT/WRITER which are two-state and fail on named missing inputs (ADR-0130 / #520); not_applicable names the missing object (§57.1); exit 1 iff any sub-check fails; G-M23-3 / G-M23-3b read docs/architecture/db_objects.md and backup_catalog.toml and fail, never not_applicable, on a missing file or an inventory without foreign-key blocks; G-M23-3b also fails unless every D5_RESTORE_DEPENDENCIES entry is a KNOWLEDGE catalog row (M23 D5)]
 //! Spec: Baseline §53.3; §55.1; §59.1; §65; §78.3; §78; §78.1; §78.4; §52.4; §22.1; §23.1④; ADR-0110 D-B; ADR-0110 D-C; ADR-0121 D-A; ADR-0123 D3
 //! dep-map: allow table-undeclared — the G-M23-3 / G-M23-3b fixtures name schema objects in strings
 //!
@@ -15,7 +15,7 @@
 //! C-M23-0, ADR-0121 D-A and its M23-2 fix 1 amendment, #332).
 //! G-M04-20 pins seven billing/plan tables as KNOWLEDGE inside G-M23-3b (ADR-0128; §44 / §71 Plan Versioning).
 //!
-//! Every sub-check below is independent and prints its own three-state verdict
+//! HEX gates fail on missing inputs (two-state; ADR-0130 / #520). Other sub-checks print their three-state verdict
 //! (`pass` / `fail` / `not_applicable`); `not_applicable` always names the missing object
 //! (§57.1 第2条). The process exit code is 1 iff at least one sub-check `fail`ed —
 //! `not_applicable` never fails the build, it is a legitimate state for an object whose
@@ -1101,6 +1101,7 @@ const MODULE_ID_MAX: u8 = 29;
 
 /// ADR-0130 D4/D6; §78: the existing DB inventory parser is shared with G-M23-3.
 const HEX_MODULES: &str = "docs/architecture/modules.toml";
+/// ADR-0130 step 1: exact legacy layer debt.
 const HEX_BASELINE: &str = "xtask/hex_layer_baseline.txt";
 
 struct HexModule {
@@ -1108,15 +1109,18 @@ struct HexModule {
     legacy_m: Vec<String>,
     owned_tables: Vec<String>,
     may_depend_on: Vec<String>,
+    files: Vec<String>,
 }
 
 struct HexDoor {
     modules: Vec<String>,
+    files: Vec<String>,
 }
 
 struct HexCatalog {
     module: Vec<HexModule>,
     in_txn_door: Vec<HexDoor>,
+    shared_files: Vec<(String, Vec<String>)>,
 }
 
 fn hex_verdict(problems: Vec<String>) -> Verdict {
@@ -1181,6 +1185,7 @@ fn hex_parse_catalog(text: &str) -> Result<HexCatalog, String> {
             .ok_or("missing module id")?;
         module.push(HexModule {
             id: id.to_owned(),
+            files: hex_strings(row.get("files"), &format!("{id}.files"))?,
             legacy_m: hex_strings(row.get("legacy_m"), &format!("{id}.legacy_m"))?,
             owned_tables: hex_strings(row.get("owned_tables"), &format!("{id}.owned_tables"))?,
             may_depend_on: hex_strings(row.get("may_depend_on"), &format!("{id}.may_depend_on"))?,
@@ -1191,15 +1196,34 @@ fn hex_parse_catalog(text: &str) -> Result<HexCatalog, String> {
         for door in doors.as_array().ok_or("invalid in_txn_door array")? {
             in_txn_door.push(HexDoor {
                 modules: hex_strings(door.get("modules"), "in_txn_door.modules")?,
+                files: door
+                    .get("files")
+                    .map(|v| hex_strings(Some(v), "in_txn_door.files"))
+                    .transpose()?
+                    .unwrap_or_default(),
             });
+        }
+    }
+    let mut shared_files = Vec::new();
+    if let Some(rows) = value.get("shared_file") {
+        for row in rows.as_array().ok_or("invalid shared_file array")? {
+            shared_files.push((
+                row.get("path")
+                    .and_then(toml::Value::as_str)
+                    .ok_or("missing shared_file.path")?
+                    .to_owned(),
+                hex_strings(row.get("contexts"), "shared_file.contexts")?,
+            ));
         }
     }
     Ok(HexCatalog {
         module,
         in_txn_door,
+        shared_files,
     })
 }
 
+/// ADR-0130 D4/D6/D7a: table, legacy alias and dependency contracts.
 fn hex_coverage_problems(text: &str, tables: &[DbTable]) -> Vec<String> {
     let catalog = match hex_parse_catalog(text) {
         Ok(catalog) => catalog,
@@ -1279,7 +1303,10 @@ fn hex_coverage_gate(root: &Path) -> Verdict {
         let inventory = fs::read_to_string(root.join(DB_OBJECTS))
             .map_err(|e| vec![format!("{DB_OBJECTS}: {e}")])?;
         let tables = parse_db_tables(&inventory)?;
-        Ok::<_, Vec<String>>(hex_coverage_problems(&modules, &tables))
+        let catalog = hex_parse_catalog(&modules).map_err(|e| vec![e])?;
+        let (_, mut errors) = hex_file_owners(root, &catalog);
+        errors.extend(hex_coverage_problems(&modules, &tables));
+        Ok::<_, Vec<String>>(errors)
     })();
     hex_verdict(result.unwrap_or_else(|errors| errors))
 }
@@ -1338,25 +1365,31 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
     let file = syn::parse_file(source).map_err(|e| e.to_string())?;
     let mut imports = Imports(BTreeSet::new());
     syn::visit::Visit::visit_file(&mut imports, &file);
+    let mut refs = HexRefs {
+        scope: vec!["layer".into()],
+        paths: Vec::new(),
+        exports: Vec::new(),
+        aliases: BTreeMap::new(),
+    };
+    refs.items(&file.items);
+    for path in refs.paths {
+        if let Some(n) = path
+            .iter()
+            .position(|s| s.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
+        {
+            hex_type_leaf(
+                &format!("{}::", path[..n].join("::")),
+                &path[n],
+                &mut imports.0,
+            );
+        }
+    }
     Ok(imports.0)
 }
 
+/// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    let expected: BTreeSet<String> = baseline
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(str::to_owned)
-        .collect();
-    actual
-        .difference(&expected)
-        .map(|v| format!("new adapter DTO use: {v}"))
-        .chain(
-            expected
-                .difference(actual)
-                .map(|v| format!("stale adapter DTO baseline: {v}")),
-        )
-        .collect()
+    hex_exact(actual, baseline, 93, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -1405,6 +1438,519 @@ fn hex_layer_gate(root: &Path) -> Verdict {
         Err(error) => problems.push(format!("{HEX_BASELINE}: {error}")),
     }
     hex_verdict(problems)
+}
+
+/// ADR-0130 D4/D5: exact file ownership, including intentionally shared sources.
+fn hex_file_owners(
+    root: &Path,
+    catalog: &HexCatalog,
+) -> (BTreeMap<String, Vec<String>>, Vec<String>) {
+    let mut owners = BTreeMap::<String, Vec<Vec<String>>>::new();
+    for module in &catalog.module {
+        for path in &module.files {
+            owners
+                .entry(path.clone())
+                .or_default()
+                .push(vec![module.id.clone()]);
+        }
+    }
+    for (path, contexts) in &catalog.shared_files {
+        owners
+            .entry(path.clone())
+            .or_default()
+            .push(contexts.clone());
+    }
+    let mut problems = Vec::new();
+    let ids: BTreeSet<_> = catalog.module.iter().map(|m| &m.id).collect();
+    let actual: BTreeSet<_> = ["crates", "bins"]
+        .into_iter()
+        .flat_map(|d| walk_files(&root.join(d), &["rs"]))
+        .map(|p| display(root, &p))
+        .collect();
+    if actual.is_empty() {
+        problems.push("missing source objects crates/**, bins/**".into());
+    }
+    for path in &actual {
+        if owners.get(path).map_or(0, Vec::len) != 1 {
+            problems.push(format!("{path}: expected exactly one file owner"));
+        }
+    }
+    for (path, entries) in &owners {
+        if !actual.contains(path) {
+            problems.push(format!("{path}: missing mapped source object"));
+        }
+        for contexts in entries {
+            if contexts.is_empty()
+                || contexts.iter().collect::<BTreeSet<_>>().len() != contexts.len()
+            {
+                problems.push(format!("{path}: invalid contexts {contexts:?}"));
+            }
+            for context in contexts {
+                if !ids.contains(context) {
+                    problems.push(format!("{path}: unknown context {context}"));
+                }
+            }
+        }
+    }
+    (
+        owners
+            .into_iter()
+            .filter_map(|(p, mut c)| (c.len() == 1).then(|| (p, c.remove(0))))
+            .collect(),
+        problems,
+    )
+}
+
+/// ADR-0130: both directions are mandatory; a baseline edit cannot hide new debt.
+fn hex_exact(
+    actual: &BTreeSet<String>,
+    baseline: &str,
+    ceiling: usize,
+    label: &str,
+) -> Vec<String> {
+    let rows: Vec<_> = baseline
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    let expected: BTreeSet<_> = rows.iter().map(|s| s.to_string()).collect();
+    let mut errors = Vec::new();
+    if rows.len() > ceiling {
+        errors.push(format!(
+            "{label}: baseline row ceiling {ceiling} exceeded: {}",
+            rows.len()
+        ));
+    }
+    if rows.len() != expected.len() {
+        errors.push(format!("{label}: duplicate baseline row"));
+    }
+    errors.extend(
+        actual
+            .difference(&expected)
+            .map(|s| format!("{label}: new violation {s}")),
+    );
+    errors.extend(
+        expected
+            .difference(actual)
+            .map(|s| format!("{label}: stale baseline {s}")),
+    );
+    errors
+}
+
+/// Flatten grouped imports without losing rename destinations (ADR-0130 D5).
+fn hex_imports(tree: &syn::UseTree, prefix: Vec<String>, out: &mut Vec<(String, Vec<String>)>) {
+    match tree {
+        syn::UseTree::Path(p) => {
+            let mut prefix = prefix;
+            prefix.push(p.ident.to_string());
+            hex_imports(&p.tree, prefix, out);
+        }
+        syn::UseTree::Group(g) => {
+            for t in &g.items {
+                hex_imports(t, prefix.clone(), out);
+            }
+        }
+        syn::UseTree::Name(n) => {
+            let mut p = prefix;
+            if n.ident != "self" {
+                p.push(n.ident.to_string());
+            }
+            out.push((p.last().cloned().unwrap_or_default(), p));
+        }
+        syn::UseTree::Rename(n) => {
+            let mut p = prefix;
+            if n.ident != "self" {
+                p.push(n.ident.to_string());
+            }
+            out.push((n.rename.to_string(), p));
+        }
+        syn::UseTree::Glob(_) => out.push(("*".into(), prefix)),
+    }
+}
+
+fn hex_absolute(
+    path: &[String],
+    scope: &[String],
+    aliases: &BTreeMap<String, Vec<String>>,
+) -> Vec<String> {
+    if path.is_empty() {
+        return Vec::new();
+    }
+    let mut p = path.to_vec();
+    if let Some(alias) = aliases.get(&p[0]) {
+        let mut a = alias.clone();
+        a.extend_from_slice(&p[1..]);
+        p = a;
+    }
+    if p[0] == "crate" {
+        let mut a = vec![scope[0].clone()];
+        a.extend_from_slice(&p[1..]);
+        return a;
+    }
+    if p[0] == "self" || p[0] == "super" {
+        let mut a = scope.to_vec();
+        let mut i = 0;
+        while i < p.len() && (p[i] == "self" || p[i] == "super") {
+            if p[i] == "super" && a.len() > 1 {
+                a.pop();
+            }
+            i += 1;
+        }
+        a.extend_from_slice(&p[i..]);
+        return a;
+    }
+    p
+}
+
+struct HexRefs {
+    scope: Vec<String>,
+    paths: Vec<Vec<String>>,
+    exports: Vec<(String, Vec<String>)>,
+    aliases: BTreeMap<String, Vec<String>>,
+}
+impl<'ast> syn::visit::Visit<'ast> for HexRefs {
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if !hex_test_attrs(&item.attrs) {
+            self.scope.push(item.ident.to_string());
+            let aliases = self.aliases.clone();
+            if let Some((_, items)) = &item.content {
+                self.items(items);
+            }
+            self.aliases = aliases;
+            self.scope.pop();
+        }
+    }
+    fn visit_item_use(&mut self, _: &'ast syn::ItemUse) {}
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        self.paths.push(hex_absolute(
+            &path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect::<Vec<_>>(),
+            &self.scope,
+            &self.aliases,
+        ));
+        syn::visit::visit_path(self, path);
+    }
+}
+impl HexRefs {
+    fn items(&mut self, items: &[syn::Item]) {
+        use syn::visit::Visit;
+        for item in items {
+            let syn::Item::Use(u) = item else {
+                continue;
+            };
+            if hex_test_attrs(&u.attrs) {
+                continue;
+            }
+            let mut imports = Vec::new();
+            hex_imports(&u.tree, Vec::new(), &mut imports);
+            for (alias, path) in imports {
+                let path = hex_absolute(&path, &self.scope, &self.aliases);
+                self.aliases.insert(alias.clone(), path.clone());
+                self.paths.push(path.clone());
+                if matches!(u.vis, syn::Visibility::Public(_)) {
+                    self.exports
+                        .push((format!("{}::{alias}", self.scope.join("::")), path));
+                }
+            }
+        }
+        for item in items {
+            self.visit_item(item);
+        }
+    }
+}
+
+/// ponytail: syntax index, not rustc resolution; no macro expansion or dynamic SQL. Resolve
+/// file modules, inline uses, aliases and public re-exports; upgrade to rustc HIR if macros own contracts.
+struct HexIndex {
+    owners: BTreeMap<String, Vec<String>>,
+    modules: BTreeMap<String, String>,
+    exports: BTreeMap<String, Vec<String>>,
+    references: BTreeMap<String, Vec<Vec<String>>>,
+}
+impl HexIndex {
+    fn resolve(&self, path: &[String], seen: &mut BTreeSet<String>, out: &mut BTreeSet<String>) {
+        let key = path.join("::");
+        if !seen.insert(key) {
+            return;
+        }
+        for n in (1..=path.len()).rev() {
+            let prefix = path[..n].join("::");
+            if let Some(export) = self.exports.get(&prefix) {
+                let mut target = export.clone();
+                target.extend_from_slice(&path[n..]);
+                self.resolve(&target, seen, out);
+                return;
+            }
+            let glob = format!("{prefix}::*");
+            if let Some(export) = self.exports.get(&glob) {
+                let mut target = export.clone();
+                target.extend_from_slice(&path[n..]);
+                self.resolve(&target, seen, out);
+            }
+            if let Some(file) = self.modules.get(&prefix) {
+                out.insert(file.clone());
+                return;
+            }
+        }
+    }
+}
+fn hex_index(root: &Path, catalog: &HexCatalog) -> Result<HexIndex, Vec<String>> {
+    let (owners, mut errors) = hex_file_owners(root, catalog);
+    let mut index = HexIndex {
+        owners,
+        modules: BTreeMap::new(),
+        exports: BTreeMap::new(),
+        references: BTreeMap::new(),
+    };
+    for path in index.owners.keys() {
+        let Some((pkg, tail)) = path.split_once("/src/") else {
+            continue;
+        };
+        let result = (|| {
+            let manifest: toml::Value = toml::from_str(
+                &fs::read_to_string(root.join(pkg).join("Cargo.toml"))
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            let name = manifest["package"]["name"]
+                .as_str()
+                .ok_or("missing package name")?
+                .replace('-', "_");
+            let mut scope = vec![name];
+            let suffix = tail.trim_end_matches(".rs");
+            scope.extend(
+                suffix
+                    .split('/')
+                    .filter(|s| !matches!(*s, "lib" | "main" | "mod"))
+                    .map(str::to_owned),
+            );
+            let file =
+                syn::parse_file(&fs::read_to_string(root.join(path)).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            Ok::<_, String>((scope, file))
+        })();
+        match result {
+            Ok((scope, file)) => {
+                index.modules.insert(scope.join("::"), path.clone());
+                let mut refs = HexRefs {
+                    scope,
+                    paths: Vec::new(),
+                    exports: Vec::new(),
+                    aliases: BTreeMap::new(),
+                };
+                refs.items(&file.items);
+                index.exports.extend(refs.exports);
+                index.references.insert(path.clone(), refs.paths);
+            }
+            Err(e) => errors.push(format!("{path}: {e}")),
+        }
+    }
+    if errors.is_empty() {
+        Ok(index)
+    } else {
+        Err(errors)
+    }
+}
+
+fn hex_context_actual(root: &Path) -> Result<BTreeSet<String>, Vec<String>> {
+    let text = fs::read_to_string(root.join(HEX_MODULES))
+        .map_err(|e| vec![format!("{HEX_MODULES}: {e}")])?;
+    let catalog = hex_parse_catalog(&text).map_err(|e| vec![format!("{HEX_MODULES}: {e}")])?;
+    let index = hex_index(root, &catalog)?;
+    let mut actual = BTreeSet::new();
+    for (file, paths) in &index.references {
+        let from = &index.owners[file];
+        if from.len() != 1 {
+            continue;
+        }
+        let module = catalog.module.iter().find(|m| m.id == from[0]).unwrap();
+        for path in paths {
+            let mut targets = BTreeSet::new();
+            index.resolve(path, &mut BTreeSet::new(), &mut targets);
+            for target in targets {
+                let to = &index.owners[&target];
+                if to.len() != 1 || to == from {
+                    continue;
+                }
+                let door = file.starts_with("crates/adapters/")
+                    && catalog
+                        .in_txn_door
+                        .iter()
+                        .any(|d| d.modules.contains(&from[0]) && d.modules.contains(&to[0]));
+                if !module.may_depend_on.contains(&to[0]) && !door {
+                    actual.insert(format!("{file}:{}->{}:{}", from[0], to[0], path.join("::")));
+                }
+            }
+        }
+    }
+    Ok(actual)
+}
+
+/// ADR-0130 D4: retain production items after test modules; the older sole-door prefix
+/// cut cannot see a second writer appended after #[cfg(test)]. Reuse its SQL matcher.
+fn hex_writer_sources(root: &Path) -> Result<Vec<(String, String)>, Vec<String>> {
+    struct Tests(Vec<std::ops::Range<usize>>);
+    impl<'ast> syn::visit::Visit<'ast> for Tests {
+        fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+            if hex_test_attrs(&item.attrs) {
+                if let Some((brace, _)) = &item.content {
+                    self.0.push(
+                        item.attrs[0].pound_token.span.byte_range().start
+                            ..brace.span.close().byte_range().end,
+                    );
+                }
+            } else {
+                syn::visit::visit_item_mod(self, item);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    for path in ["crates", "bins"]
+        .into_iter()
+        .flat_map(|d| walk_files(&root.join(d), &["rs"]))
+    {
+        let name = display(root, &path);
+        if door_is_test_tree(&name) {
+            continue;
+        }
+        let source = fs::read_to_string(&path).map_err(|e| vec![format!("{name}: {e}")])?;
+        let tree = syn::parse_file(&source).map_err(|e| vec![format!("{name}: {e}")])?;
+        let mut tests = Tests(Vec::new());
+        syn::visit::Visit::visit_file(&mut tests, &tree);
+        let mut bytes = source.into_bytes();
+        for range in tests.0 {
+            for b in &mut bytes[range] {
+                if *b != b'\n' {
+                    *b = b' ';
+                }
+            }
+        }
+        files.push((name, String::from_utf8(bytes).unwrap()));
+    }
+    Ok(files)
+}
+
+fn hex_writer_actual(root: &Path) -> Result<BTreeSet<String>, Vec<String>> {
+    let text = fs::read_to_string(root.join(HEX_MODULES))
+        .map_err(|e| vec![format!("{HEX_MODULES}: {e}")])?;
+    let catalog = hex_parse_catalog(&text).map_err(|e| vec![e])?;
+    let (owners, errors) = hex_file_owners(root, &catalog);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let mut actual = BTreeSet::new();
+    let files = hex_writer_sources(root)?;
+    for (path, source) in &files {
+        if !path.starts_with("crates/") && !path.starts_with("bins/") {
+            continue;
+        }
+        let contexts = owners
+            .get(path)
+            .ok_or_else(|| vec![format!("{path}: missing file owner")])?;
+        let text = t07_normalised(source);
+        let statements = catalog.module.iter().flat_map(|m| {
+            m.owned_tables
+                .iter()
+                .flat_map(move |t| ["insert into", "update", "delete from"].map(|v| (m, t, v)))
+        });
+        for (module, table, verb) in statements {
+            let needle = format!("{verb} {table}");
+            let count = text
+                .match_indices(&needle)
+                .filter(|(i, _)| {
+                    let end = i + needle.len();
+                    !text[end..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                })
+                .count();
+            if count == 0 {
+                continue;
+            }
+            let adapter = path.starts_with("crates/adapters/");
+            // Shared guests gain no write authority; only declared adapter collaborations do.
+            let allowed = adapter
+                && (contexts == &vec![module.id.clone()]
+                    || catalog.in_txn_door.iter().any(|d| {
+                        d.files.contains(path)
+                            && d.modules.contains(&module.id)
+                            && contexts.iter().all(|c| d.modules.contains(c))
+                    }));
+            if !allowed
+                || (table == "private.context_bindings"
+                    && contexts == &vec![String::from("project_continuity")])
+            {
+                actual.insert(format!("{path}:{verb} {table}:{count}"));
+            }
+        }
+    }
+    // ADR-0130 step 1 and OPEN-1: INSERT remains exactly one existing fact door.
+    let sites = door_statement_sites(&files, "INSERT INTO private.context_bindings");
+    if sites.iter().map(|(_, n)| n).sum::<usize>() != 1 {
+        return Err(vec![format!(
+            "private.context_bindings: INSERT count expected == 1, sites {sites:?}"
+        )]);
+    }
+    Ok(actual)
+}
+
+/// ADR-0130 D7a: legacy observations remain debt; new edges must also preserve the DAG.
+fn hex_context_cycles(root: &Path, actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
+    let Ok(catalog) = fs::read_to_string(root.join(HEX_MODULES))
+        .and_then(|s| hex_parse_catalog(&s).map_err(std::io::Error::other))
+    else {
+        return Vec::new();
+    };
+    let expected: BTreeSet<_> = baseline.lines().collect();
+    let mut graph: BTreeMap<String, Vec<String>> = catalog
+        .module
+        .into_iter()
+        .map(|m| (m.id, m.may_depend_on))
+        .collect();
+    for row in actual.iter().filter(|r| !expected.contains(r.as_str())) {
+        if let Some(edge) = row.split(':').nth(1)
+            && let Some((from, to)) = edge.split_once("->")
+        {
+            graph.entry(from.into()).or_default().push(to.into());
+        }
+    }
+    let refs = graph
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_slice()))
+        .collect();
+    let mut done = BTreeSet::new();
+    let mut errors = Vec::new();
+    for id in graph.keys() {
+        hex_visit(id, &refs, &mut BTreeSet::new(), &mut done, &mut errors);
+    }
+    errors
+}
+
+fn hex_boundary_gate(root: &Path, writer: bool) -> Verdict {
+    let (file, ceiling, label) = if writer {
+        ("xtask/hex_writer_baseline.txt", 46, "HEX-WRITER")
+    } else {
+        ("xtask/hex_context_baseline.txt", 807, "HEX-CONTEXT")
+    };
+    let actual = if writer {
+        hex_writer_actual(root)
+    } else {
+        hex_context_actual(root)
+    };
+    match actual {
+        Err(errors) => hex_verdict(errors),
+        Ok(actual) => match fs::read_to_string(root.join(file)) {
+            Ok(text) => {
+                let mut errors = hex_exact(&actual, &text, ceiling, label);
+                if !writer && !errors.is_empty() {
+                    errors.extend(hex_context_cycles(root, &actual, &text));
+                }
+                hex_verdict(errors)
+            }
+            Err(e) => hex_verdict(vec![format!("{file}: {e}")]),
+        },
+    }
 }
 
 /// `Mnn` with `nn` in `01..=MODULE_ID_MAX`.
@@ -12804,6 +13350,8 @@ pub fn run(_args: &[String]) -> i32 {
             hex_coverage_gate(&root),
         ),
         ("HEX-LAYER (ADR-0130 step 1)", hex_layer_gate(&root)),
+        ("HEX-CONTEXT (ADR-0130 D5)", hex_boundary_gate(&root, false)),
+        ("HEX-WRITER (ADR-0130 D4)", hex_boundary_gate(&root, true)),
         (
             "M03 D1 / G-M03-2 (retired PostgreSQL rate names in non-migration code == 0)",
             m03_2_no_pg_rate_path(&root),
@@ -13244,6 +13792,182 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
     }
 
     /// §80.1: injected catalog failures must name the broken boundary, then restore green.
+    fn hex_disk_baseline_faults(
+        root: &Path,
+        gate: &impl Fn(i32) -> Verdict,
+        mutate: &impl Fn(i32, &str, &str, &str),
+    ) {
+        for (kind, file) in [
+            (0, "xtask/hex_context_baseline.txt"),
+            (1, "xtask/hex_writer_baseline.txt"),
+            (3, HEX_BASELINE),
+        ] {
+            let path = root.join(file);
+            let original = fs::read_to_string(&path).unwrap();
+            let mut lines: Vec<_> = original.lines().collect();
+            let n = lines
+                .iter()
+                .position(|l| !l.starts_with('#') && !l.is_empty())
+                .unwrap();
+            lines.remove(n);
+            fs::write(&path, lines.join("\n")).unwrap();
+            assert!(matches!(gate(kind), Verdict::Fail(_)));
+            println!("{file}: deleted baseline row RED");
+            fs::write(&path, &original).unwrap();
+            assert!(matches!(gate(kind), Verdict::Pass));
+            println!("{file}: restored GREEN");
+            mutate(kind, file, "injected ceiling row", "baseline ceiling");
+        }
+    }
+
+    fn hex_copy_boundary_fixture(source: &Path, root: &Path) {
+        let mut inputs = walk_files(&source.join("crates"), &["rs", "toml"]);
+        inputs.extend(walk_files(&source.join("bins"), &["rs", "toml"]));
+        inputs.extend(
+            [
+                HEX_MODULES,
+                DB_OBJECTS,
+                HEX_BASELINE,
+                "xtask/hex_context_baseline.txt",
+                "xtask/hex_writer_baseline.txt",
+            ]
+            .map(|p| source.join(p)),
+        );
+        for path in inputs {
+            let dest = root.join(display(source, &path));
+            fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            fs::copy(path, dest).unwrap();
+        }
+    }
+
+    /// ADR-0130 / §80.1: mutations touch disk, enter the production gates and restore to green.
+    #[test]
+    fn hex_boundary_disk_red_green() {
+        let source = real_root();
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("hex-boundary-fixture-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        hex_copy_boundary_fixture(&source, &root);
+        let gate = |kind| match kind {
+            0 => hex_boundary_gate(&root, false),
+            1 => hex_boundary_gate(&root, true),
+            2 => hex_coverage_gate(&root),
+            _ => hex_layer_gate(&root),
+        };
+        let check = |kind| {
+            let verdict = gate(kind);
+            assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
+        };
+        for kind in 0..4 {
+            check(kind);
+        }
+        let mutate = |kind, path: &str, extra: &str, label: &str| {
+            let path = root.join(path);
+            let original = fs::read_to_string(&path).unwrap();
+            fs::write(&path, format!("{original}\n{extra}\n")).unwrap();
+            let verdict = gate(kind);
+            assert!(matches!(verdict, Verdict::Fail(_)), "{label}: {verdict:?}");
+            if label.contains("CycleError") {
+                assert!(
+                    matches!(&verdict,Verdict::Fail(lines) if lines.iter().any(|l| l.contains("CycleError")))
+                );
+            }
+            println!("{label}: RED {verdict:?}");
+            fs::write(path, original).unwrap();
+            check(kind);
+            println!("{label}: restored GREEN");
+        };
+        mutate(
+            0,
+            "crates/domain/src/plan.rs",
+            "use humaux_domain::subject::Subject;",
+            "CONTEXT undeclared use",
+        );
+        // A newly exposed adapter re-export retains the source context through the syntax index.
+        let bridge = root.join("crates/adapters/src/affect_repo.rs");
+        let original = fs::read_to_string(&bridge).unwrap();
+        fs::write(
+            &bridge,
+            format!("{original}\npub use humaux_domain::subject::Subject as BoundaryAlias;\n"),
+        )
+        .unwrap();
+        mutate(
+            0,
+            "crates/domain/src/plan.rs",
+            "use humaux_adapters::affect_repo::BoundaryAlias as Hidden;",
+            "CONTEXT pub use re-export alias",
+        );
+        fs::write(bridge, original).unwrap();
+        check(0);
+        mutate(
+            0,
+            "crates/retrieval/src/lib.rs",
+            "use humaux_domain::subject::Subject;",
+            "CONTEXT reverse edge CycleError",
+        );
+        hex_disk_baseline_faults(&root, &gate, &mutate);
+        mutate(
+            1,
+            "crates/adapters/src/affect_repo.rs",
+            "const BOUNDARY_SQL: &str = \"INSERT INTO private.context_bindings DEFAULT VALUES\";",
+            "WRITER second context_bindings INSERT",
+        );
+        mutate(
+            1,
+            "crates/adapters/src/affect_repo.rs",
+            "const BOUNDARY_SQL: &str = \"UPDATE control.users SET id = id\";",
+            "WRITER foreign table",
+        );
+        mutate(
+            1,
+            "crates/adapters/src/applicability_repo.rs",
+            "const BOUNDARY_SQL: &str = \"UPDATE private.context_bindings SET id = id\";",
+            "WRITER OPEN-1 zero writable columns",
+        );
+        mutate(
+            3,
+            "bins/gateway/src/guard.rs",
+            "use humaux_adapters as bypass; fn boundary() { let _: bypass::affect_repo::BoundaryDto; }",
+            "LAYER qualified alias bypass",
+        );
+        let orphan = root.join("crates/domain/src/boundary_orphan.rs");
+        fs::write(&orphan, "fn orphan() {}\n").unwrap();
+        let red = gate(2);
+        assert!(
+            matches!(red,Verdict::Fail(ref lines) if lines.iter().any(|l|l.contains("boundary_orphan.rs")))
+        );
+        println!("COVERAGE orphan: RED {red:?}");
+        fs::remove_file(orphan).unwrap();
+        check(2);
+        println!("COVERAGE orphan: restored GREEN");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hex_boundary_missing_names() {
+        let root = Path::new("/missing-boundary-fixture");
+        for (gate, object) in [
+            (hex_coverage_gate(root), HEX_MODULES),
+            (hex_layer_gate(root), HEX_BASELINE),
+            (hex_boundary_gate(root, false), HEX_MODULES),
+            (hex_boundary_gate(root, true), HEX_MODULES),
+        ] {
+            assert!(
+                matches!(gate,Verdict::Fail(ref lines) if lines.iter().any(|l|l.contains(object))),
+                "{gate:?}"
+            );
+        }
+        let source =
+            "use humaux_adapters as a; use a::remember as r; fn f() { let _: r::RememberCommand; }";
+        assert!(
+            hex_layer_symbols(source)
+                .unwrap()
+                .contains("humaux_adapters::remember::RememberCommand")
+        );
+    }
+
     #[test]
     fn hex_boundary_coverage_red_green() {
         let root = workspace_root();

@@ -933,6 +933,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.register_continuity_project`
 - reads `private.subjects`
 - reads `public.entities`
+- writes `control.users`
 - writes `coord.tasks`
 - writes `private.context_bindings`
 - writes `private.evidence_objects`
@@ -954,6 +955,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.publish_continuity_facet`
 - executes `private.read_continuity_project_storage_v1`
 - env `CARGO_MANIFEST_DIR`
+- env `CARGO_TARGET_DIR`
 - env `GITHUB_ACTIONS`
 - env `HUMAUX_NO_PYTHON_COMPOSE_JSON`
 - env `HUMAUX_REQUIRE_DOCKER`
@@ -7624,6 +7626,7 @@ written by:
 - (no process): `public-pool::tests::notice`
 - (no process): `retrieval-provider::tests::dashscope_live_smoke`
 - process(cargo-xtask): `maintenance::switch_visible`
+- process(cargo-xtask): `xtask::architecture_check`
 - process(cargo-xtask): `xtask::e2e_seed`
 - process(humaux-maintenance): `maintenance::switch_visible`
 - process(humaux-retrieval-worker): `retrieval-provider::adapters`
