@@ -1,12 +1,16 @@
 # Crate -> home module rows (M01 D1, ADR-0074). `cargo xtask architecture-check` G-M01-1 requires this table's keys to
 # equal the `cargo metadata --no-deps` workspace member set (a new crate lands with its row in the same PR) and every
-# value to be a module id M01..M28 (module design notes; module_map_v3 numbers M01..M26 today, so the gate's ceiling
-# accepts M27/M28 while no row in this table names one yet).
+# value to be a module id M01..M29 (ADR-0078 adds M29).
 #
 # Home module = the module whose boundary section names the crate as a whole; a crate that hosts several modules'
 # files carries the module that owns its crate-level contract and is marked `shared` below. The file-level map
 # (every .rs file -> exactly one module) is card M01-5 and replaces the `shared` rows; until then a `shared` row
 # is a placeholder, not a ruling on who owns a given file.
+
+# M29 (work_attribution, ADR-0078) spans context modules in domain/application/adapters/gateway.
+# Context boundaries live within layered crates; their existing crate homes remain unchanged.
+# Attribution types and ports live in domain, use cases in application, persistence in adapters,
+# and protocol entry points in gateway. This shared contribution does not create a new crate home.
 
 [crates]
 # L0 kernel (M01).

@@ -1096,8 +1096,8 @@ const EDITION_CLOUD: &str = "cloud";
 /// The closed vocabulary of `[package.metadata.humaux] edition` (ADR-0073 D-A, ADR-0074 D-A).
 const EDITIONS: [&str; 2] = [EDITION_CORE, EDITION_CLOUD];
 
-/// Highest module id the ownership rows may name (M01 design note: M01..M28).
-const MODULE_ID_MAX: u8 = 28;
+/// Highest module id in the design notes (ADR-0078 adds M29).
+const MODULE_ID_MAX: u8 = 29;
 
 /// `Mnn` with `nn` in `01..=MODULE_ID_MAX`.
 fn is_module_id(s: &str) -> bool {
@@ -12175,12 +12175,7 @@ fn parse_db_tables(text: &str) -> Result<Vec<DbTable>, Vec<String>> {
 
 /// `M01`..`M29` exactly (the module numbering of the design notes, ADR-0078 added M29).
 fn is_module_owner(owner: &str) -> bool {
-    owner.len() == 3
-        && owner.starts_with('M')
-        && owner[1..].bytes().all(|b| b.is_ascii_digit())
-        && owner[1..]
-            .parse::<u8>()
-            .is_ok_and(|n| (1..=29).contains(&n))
+    is_module_id(owner)
 }
 
 /// The non-empty trimmed string at `key`, if the row has one.
@@ -12230,7 +12225,7 @@ fn catalog_row(table: &str, entry: &toml::Value) -> Result<CatalogRow, Vec<Strin
     };
     if !catalog_text(fields, "owner").is_some_and(is_module_owner) {
         problems.push(format!(
-            "catalog row `{table}`: `owner` must be one of M01..M29"
+            "catalog row `{table}`: `owner` must be one of M01..M{MODULE_ID_MAX}"
         ));
     }
     if catalog_text(fields, "basis").is_none() {
@@ -15228,14 +15223,23 @@ runs:
     }
 
     #[test]
+    fn g_m01_1_accepts_m29_ownership() {
+        let doc = ed_doc(&[ed_pkg("a", Some("core"), vec![])]);
+        assert_eq!(
+            workspace_members_from(&doc, "[crates]\na = \"M29\"\n"),
+            Verdict::Pass
+        );
+    }
+
+    #[test]
     fn g_m01_1_fails_on_a_row_whose_module_is_not_a_module_id() {
         let doc = ed_doc(&[
             ed_pkg("a", Some("core"), vec![]),
             ed_pkg("b", Some("core"), vec![]),
         ]);
-        let rows = "[crates]\na = \"M29\"\nb = \"core\"\n";
+        let rows = "[crates]\na = \"M30\"\nb = \"core\"\n";
         let out = fail_lines(workspace_members_from(&doc, rows));
-        assert!(out.contains("row `a` has module \"M29\""), "{out}");
+        assert!(out.contains("row `a` has module \"M30\""), "{out}");
         assert!(out.contains("row `b` has module \"core\""), "{out}");
     }
 
@@ -15400,11 +15404,11 @@ runs:
     }
 
     #[test]
-    fn is_module_id_accepts_m01_to_m28_only() {
-        for ok in ["M01", "M09", "M28"] {
+    fn is_module_id_accepts_m01_to_m29_only() {
+        for ok in ["M01", "M09", "M28", "M29"] {
             assert!(is_module_id(ok), "{ok}");
         }
-        for bad in ["M00", "M29", "M1", "M100", "m01", "X01", "M+1", "M0a", ""] {
+        for bad in ["M00", "M30", "M1", "M100", "m01", "X01", "M+1", "M0a", ""] {
             assert!(!is_module_id(bad), "{bad}");
         }
     }
