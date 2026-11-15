@@ -16395,6 +16395,7 @@ CONTINUITY_AUTHORITY §25.3.1 Project Continuity authority/completeness
 2. 为 changed block 计算 mandatory checker set；
 3. CI job manifest 中缺任一 checker -> 红；
 4. checker 自己未执行 / skipped / no_data -> 红（Phase 0 明确允许的 no_data 例外需由 checker 自己声明）；
+   例外（ADR-0129，2026-11-15）：映射到但尚未实现的 checker -> not_applicable 并必须打印缺失 checker id 与交付卡（§57.1 第 2 条）；已实现的 checker 仍按本步骤判红。
 5. 输出 changed block -> executed checker 的闭包报告，作为 CI artifact。
 ```
 
