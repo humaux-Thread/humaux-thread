@@ -1,0 +1,492 @@
+# docs/architecture/modules.toml — 机器可读的模块目录（限界上下文契约）。
+#
+# 职责：把 ADR-0130 的 19 个限界上下文、类型、历史 M 号、唯一写主的表与允许的依赖方向写成一份
+#   机器可读清单。判据正文只在 docs/adr/0130-bounded-context-modules-ddd-hexagonal.md 与
+#   Baseline_2.9.md；本文件是清单，不是第二份规范。
+# 谁读它：后续「边界闸」卡（architecture-check 的 HEX-CONTEXT / HEX-WRITER / HEX-COVERAGE 臂）；
+#   xtask 与 CI 只读不写。
+# 不变量（ADR-0130 D4/D5/D6）：
+#   1. 表唯一写主：owned_tables 的并集无重复，一张表恰在一个模块里出现。
+#   2. 依赖无环：may_depend_on 组成的目标应用依赖图必须无环；它不宣称当前源码已经无环。
+#   3. 历史 M 号全覆盖：M01..M29 在 legacy_m 里各恰出现一次，任务卡 ID 永不重编号。
+#   2a. 同事务协作不是应用依赖：in_txn_doors 列出 PG adapter 内的具名窄门（可双向），不计入无环判定（ADR-0130 D7a）。
+#   4. 派生而非手写：由 19 模块目录与表写权派生；改清单先改源头再重生成，手改表行等于
+#      制造第二份写主真相。
+#
+# 状态：Accepted 2026-11-15（ADR-0130）。private.run_acceptances 是
+#   ACCEPTED_DESIGN_NOT_ASSERTED_DEPLOYED（ADR-0106 D-D），DDL 落地前不进 owned_tables。
+
+[[module]]
+id = "knowledge_lifecycle"
+kind = "core"
+legacy_m = ["M06", "M07"]
+owned_tables = [
+  "control.confirm_tokens",
+  "control.operation_receipts",
+  "ops.memory_lifecycle_events",
+  "private.context_bindings",
+  "private.conversations",
+  "private.event_identity",
+  "private.events",
+  "private.evidence_affects",
+  "private.evidence_edges",
+  "private.evidence_objects",
+  "private.evidence_sources",
+  "private.evidence_subjects",
+  "private.evidence_task_runs",
+  "private.identity_note_materializations",
+  "private.ingest_tickets",
+  "private.memory_affects",
+  "private.memory_evidence",
+  "private.memory_records",
+  "private.memory_subject_mentions",
+  "private.memory_subject_presence",
+  "private.memory_subjects",
+  "private.messages",
+  "private.note_heads",
+  "private.observations",
+  "private.subject_keys",
+  "private.subject_roles",
+  "private.subjects",
+]
+may_depend_on = [
+  "identity_access",
+  "retrieval_read_model",
+]
+
+[[module]]
+id = "work_attribution"
+kind = "core"
+legacy_m = ["M29"]
+owned_tables = [
+  "private.continuity_projects",
+  "private.evidence_projects",
+  "private.memory_project_revocations",
+  "private.memory_projects",
+  "private.project_subject_relations",
+  "private.project_task_relations",
+  "private.subject_relations",
+]
+may_depend_on = [
+  "identity_access",
+  "retrieval_read_model",
+]
+
+[[module]]
+id = "project_continuity"
+kind = "core"
+legacy_m = ["M14"]
+owned_tables = [
+  "private.continuity_facet_evidence_links",
+  "private.continuity_facet_memory_links",
+  "private.continuity_facet_slots",
+  "private.continuity_facet_versions",
+  "private.memory_applicability",
+  "private.task_binding_grants",
+]
+may_depend_on = [
+  "coordination",
+  "knowledge_association",
+  "knowledge_lifecycle",
+  "retrieval_read_model",
+  "work_attribution",
+]
+
+[[module]]
+id = "coordination"
+kind = "core"
+legacy_m = ["M18"]
+owned_tables = [
+  "coord.canvas_elements",
+  "coord.canvases",
+  "coord.handoffs",
+  "coord.leases",
+  "coord.locks",
+  "coord.task_runs",
+  "coord.tasks",
+  "coord.workspace_unfiled_projects",
+  "private.project_facets",
+]
+may_depend_on = [
+  "identity_access",
+  "knowledge_lifecycle",
+  "retrieval_read_model",
+  "work_attribution",
+]
+
+[[module]]
+id = "identity_access"
+kind = "support"
+legacy_m = ["M02", "M03"]
+owned_tables = [
+  "control.agents",
+  "control.api_keys",
+  "control.auth_events",
+  "control.authenticators",
+  "control.credential_pepper_state",
+  "control.credentials",
+  "control.email_challenges",
+  "control.email_change_requests",
+  "control.identity_connections",
+  "control.memberships",
+  "control.oauth_authorization_codes",
+  "control.oauth_client_registrations",
+  "control.oauth_grants",
+  "control.oauth_refresh_tokens",
+  "control.password_credentials",
+  "control.password_reset_challenges",
+  "control.recovery_codes",
+  "control.sessions",
+  "control.support_access_requests",
+  "control.team_invitations",
+  "control.tenants",
+  "control.user_emails",
+  "control.users",
+  "control.webauthn_credentials",
+  "control.workspace_memberships",
+  "control.workspaces",
+  "ops.email_delivery_events",
+  "ops.email_domains",
+  "ops.email_outbox",
+  "ops.email_provider_health",
+  "ops.email_suppressions",
+]
+may_depend_on = [
+  "contract_kernel",
+]
+
+[[module]]
+id = "commercial"
+kind = "support"
+legacy_m = ["M04"]
+owned_tables = [
+  "control.billing_customers",
+  "control.billing_inbox",
+  "control.billing_payments",
+  "control.credit_ledger",
+  "control.entitlement_grants",
+  "control.entitlement_snapshots",
+  "control.plan_versions",
+  "control.plans",
+  "control.quota_windows",
+  "control.referral_attributions",
+  "control.referral_codes",
+  "control.referral_rewards",
+  "control.subscription_events",
+  "control.subscriptions",
+  "control.usage_reservations",
+  "ops.tenant_cost_events",
+]
+may_depend_on = [
+  "contract_kernel",
+  "identity_access",
+]
+
+[[module]]
+id = "knowledge_curation"
+kind = "core"
+legacy_m = ["M15"]
+owned_tables = [
+  "control.memory_automation_policies",
+  "control.private_reasoning_domains",
+  "control.reasoning_credential_bindings",
+  "control.reasoning_domain_grants",
+  "control.reasoning_profiles",
+  "control.reasoning_route_bindings",
+  "control.reasoning_route_candidates",
+  "control.reasoning_route_domain_receipts",
+  "control.reasoning_route_policies",
+  "control.reasoning_route_profile_receipts",
+  "control.user_reasoning_profiles",
+  "ops.distill_calls",
+  "ops.distill_tenant_scheduler",
+  "ops.private_inference_rpc_calls",
+  "ops.provider_arbiters",
+  "ops.provider_slots",
+  "ops.reasoning_account_health_observations",
+  "ops.reasoning_provider_health_observations",
+  "private.curation_candidate_targets",
+  "private.curation_candidates",
+  "private.distill_candidates",
+  "private.memory_consolidation_inputs",
+  "private.memory_consolidation_runs",
+  "private.memory_rollup_sources",
+  "private.memory_rollup_subjects",
+  "private.memory_rollups",
+  "private.processing_runs",
+]
+may_depend_on = [
+  "commercial",
+  "coordination",
+  "knowledge_lifecycle",
+  "provider_execution",
+  "retrieval_read_model",
+]
+
+[[module]]
+id = "code_intelligence"
+kind = "core"
+legacy_m = ["M16"]
+owned_tables = [
+  "control.repositories",
+  "control.repository_connections",
+  "private.code_active_snapshots",
+  "private.code_edges",
+  "private.code_files",
+  "private.code_snapshots",
+  "private.code_symbols",
+  "private.worktree_overlays",
+]
+may_depend_on = [
+  "coordination",
+  "knowledge_lifecycle",
+  "retrieval_read_model",
+  "work_attribution",
+]
+
+[[module]]
+id = "document_acquisition"
+kind = "core"
+legacy_m = ["M17"]
+owned_tables = [
+  "private.artifact_parts",
+  "private.artifacts",
+]
+may_depend_on = [
+  "data_rights",
+  "knowledge_lifecycle",
+  "provider_execution",
+]
+
+[[module]]
+id = "data_rights"
+kind = "support"
+legacy_m = ["M19"]
+owned_tables = [
+  "control.deletion_requests",
+  "control.deletion_targets",
+  "control.partition_registry",
+  "control.retention_policies",
+  "ops.deletion_plan_steps",
+]
+may_depend_on = [
+  "identity_access",
+  "knowledge_lifecycle",
+  "retrieval_read_model",
+]
+
+[[module]]
+id = "public_knowledge"
+kind = "core"
+legacy_m = ["M20"]
+owned_tables = [
+  "control.anonymous_claim_trust_authorities",
+  "control.anonymous_source_lineage",
+  "control.contribution_confirmations",
+  "control.contribution_notice_events",
+  "control.contribution_notices",
+  "control.contribution_policies",
+  "control.public_moderator_grants",
+  "ops.anonymous_public_revocations",
+  "ops.contribution_execution_job_links",
+  "ops.public_anonymous_dispatches",
+  "ops.public_release_revocations",
+  "ops.source_acquisition_jobs",
+  "private.contribution_execution_sources",
+  "private.contribution_executions",
+  "private.contribution_exports",
+  "public.anonymous_claim_trust_receipts",
+  "public.anonymous_source_authority_events",
+  "public.anonymous_source_lifecycle_events",
+  "public.claim_independence_attestations",
+  "public.claim_trust_evaluation_sources",
+  "public.claim_trust_evaluations",
+  "public.claims",
+  "public.concept_labels",
+  "public.concept_relations",
+  "public.concepts",
+  "public.knowledge_gaps",
+  "public.poisoning_signals",
+  "public.provenance_edges",
+  "public.relations",
+  "public.source_closure",
+  "public.sources",
+  "public.syntheses",
+  "public.synthesis_inputs",
+  "public.topics",
+  "public.unit_conditions",
+  "public.unit_fields",
+  "public.units",
+  "staging.contribution_candidate_phase9_assessments",
+  "staging.contribution_candidate_sources",
+  "staging.contribution_candidates",
+  "staging.contribution_release_sources",
+  "staging.contribution_releases",
+  "staging.sanitized_public_candidates",
+]
+may_depend_on = [
+  "data_rights",
+  "knowledge_lifecycle",
+  "provider_execution",
+]
+
+[[module]]
+id = "knowledge_association"
+kind = "core"
+legacy_m = ["M28"]
+owned_tables = [
+  "private.entities",
+  "private.relations",
+]
+may_depend_on = [
+  "code_intelligence",
+  "knowledge_curation",
+  "knowledge_lifecycle",
+  "retrieval_read_model",
+  "work_attribution",
+]
+
+[[module]]
+id = "retrieval_read_model"
+kind = "support"
+legacy_m = ["M08", "M09", "M10", "M11", "M12", "M13"]
+owned_tables = [
+  "ops.consistency_reports",
+  "ops.jobs",
+  "ops.outbox",
+  "ops.scheduler_leases",
+  "ops.selection_snapshot_items",
+  "ops.selection_snapshots",
+  "ops.stage_runs",
+  "projection.card_profile_policies",
+  "projection.embedding_fingerprints",
+  "projection.family_activations",
+  "projection.index_runs",
+  "projection.memory_vectors",
+  "projection.private_memory_points",
+  "projection.rebuild_runs",
+  "projection.rebuild_tickets",
+  "projection.retrieval_cards",
+  "projection.stream_checkpoints",
+  "projection.stream_log",
+  "projection.tenant_placements",
+  "projection.ticket_reissues",
+]
+may_depend_on = [
+  "contract_kernel",
+  "identity_access",
+  "provider_execution",
+]
+
+[[module]]
+id = "provider_execution"
+kind = "support"
+legacy_m = ["M05"]
+owned_tables = [
+  "control.audit_event_identity",
+  "control.audit_events",
+  "control.egress_policies",
+  "control.processor_models",
+  "control.provider_accounts",
+  "control.provider_billing_accounts",
+  "control.provider_billing_instruments",
+  "control.provider_endpoints",
+  "control.provider_pricing_versions",
+  "control.retrieval_predicates",
+  "control.retrieval_provider_admission_limits",
+  "control.retrieval_provider_routes",
+  "ops.audit_batches",
+  "ops.data_disclosure_sources",
+  "ops.data_disclosures",
+  "ops.model_call_identity",
+  "ops.model_call_ledger",
+  "ops.retrieval_embedding_rpc_calls",
+  "ops.retrieval_provider_budget_allocations",
+  "ops.retrieval_provider_budget_reservations",
+  "ops.retrieval_query_log",
+  "private.retrieval_query_sources",
+]
+may_depend_on = [
+  "commercial",
+  "contract_kernel",
+  "identity_access",
+]
+
+[[module]]
+id = "contract_kernel"
+kind = "platform"
+legacy_m = ["M01"]
+owned_tables = []
+may_depend_on = []
+
+[[module]]
+id = "protocol_integration"
+kind = "integration"
+legacy_m = ["M25", "M26", "M27"]
+owned_tables = []
+may_depend_on = [
+  "code_intelligence",
+  "commercial",
+  "contract_kernel",
+  "coordination",
+  "data_rights",
+  "document_acquisition",
+  "identity_access",
+  "knowledge_lifecycle",
+  "project_continuity",
+  "public_knowledge",
+]
+
+[[module]]
+id = "job_execution"
+kind = "support"
+legacy_m = ["M21"]
+owned_tables = [
+  "ops.column_vitality",
+  "ops.maintenance_receipts",
+  "ops.repair_findings",
+]
+may_depend_on = [
+  "contract_kernel",
+  "data_rights",
+  "knowledge_backup",
+  "knowledge_curation",
+]
+
+[[module]]
+id = "operations_platform"
+kind = "platform"
+legacy_m = ["M22", "M24"]
+owned_tables = [
+  "control.notification_preferences",
+  "control.notifications",
+  "ops.mechanism_e2e_runs",
+  "ops.mechanism_observations",
+  "ops.notification_deliveries",
+]
+may_depend_on = [
+  "contract_kernel",
+]
+
+[[module]]
+id = "knowledge_backup"
+kind = "support"
+legacy_m = ["M23"]
+owned_tables = [
+  "ops.backup_receipts",
+  "ops.backup_sets",
+  "ops.restore_drills",
+  "ops.restore_witnesses",
+  "ops.wal_archive_failures",
+]
+may_depend_on = [
+  "contract_kernel",
+  "data_rights",
+]
+
+# ADR-0130 D7a: same-transaction collaboration inside the PG adapter. Bidirectional by design;
+# excluded from the may_depend_on acyclicity check and never a licence for an application-layer edge.
+[[in_txn_door]]
+modules = ["knowledge_lifecycle", "coordination"]
+use_case = "remember"
+note = "M07 fact door and M18 verification collaborate in one PG transaction"
