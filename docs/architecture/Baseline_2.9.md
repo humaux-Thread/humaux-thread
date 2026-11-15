@@ -12163,6 +12163,8 @@ AND cargo_metadata.members contains humaux-infra-network
 三者任一为假，**先红**，再谈“raw client 构造点集合 == 1”。否则 RHS 指向一条文档里有、
 workspace 里根本不存在的幽灵路径，旧系统“扫描 0 次也绿”的病会原样复发。
 
+**Amended by ADR-0130 (M01-DESIGN):** 本节 crate 树与 workspace member 集合不变；19 个限界上下文、模块内 domain→application→adapters 分层与迁移顺序见 `docs/adr/0130-bounded-context-modules-ddd-hexagonal.md`，机器可读模块目录见 `docs/architecture/modules.toml`。
+
 ---
 
 # 59. 核心 Rust 数据类型示例
