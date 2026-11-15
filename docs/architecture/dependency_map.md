@@ -15518,7 +15518,7 @@ modules naming it:
 - `application::oauth`
 
 ### humaux-application → `time` (normal)
-why: OffsetDateTime expiry/ceiling arithmetic of grants
+why: OffsetDateTime grants and RFC3339 freshness readings
 
 modules naming it:
 - `application::billing`
