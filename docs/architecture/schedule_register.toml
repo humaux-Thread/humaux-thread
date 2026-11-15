@@ -40,13 +40,13 @@ not_applicable = { owner = "M21-6", reason = "missing" }
 ["retention"]
 task = "Partitions"
 
-# note :96 "host cron today"; note :210: the host crontab is retired
+# ADR-0123: M23 owns this schedule; the host crontab is retired.
 ["backup verification"]
-not_applicable = { owner = "M23-5", reason = "host cron today" }
+not_applicable = { owner = "M23-5", reason = "outside maintenance Task set; M23-5 owns backup verification and restore drill scheduling (host crontab retired)" }
 
-# note :96 "host cron today"; note :210: the host crontab is retired
+# ADR-0123: M23 owns this schedule; the host crontab is retired.
 ["restore drill scheduling"]
-not_applicable = { owner = "M23-5", reason = "host cron today" }
+not_applicable = { owner = "M23-5", reason = "outside maintenance Task set; M23-5 owns backup verification and restore drill scheduling (host crontab retired)" }
 
 # note :92 says M23-5; follow-up :209-210 moves the row to M23-6
 ["config drift"]
