@@ -177,6 +177,8 @@ retained version.
 
 ### D-J — Note identity and replacement (40c)
 
+> Errata 2026-11-15 (independent-707 P010-F1)：本节是裁决之前的 D-J 草稿（update-first + 延迟自引用 FK、notes 上的通用治理、`IDEMPOTENCY_CONFLICT`），已被下方「D-J as adjudicated」取代：那里没有 `IDEMPOTENCY_CONFLICT`、不新增 ErrorCode（§52.1 仍是 18）、拒绝 update-then-insert 与通用治理。按下方版本执行；见 ADR-0067 D-J。
+
 `idempotency_key` names one call, `note_id` one note, `memory_id` one immutable version. `private.note_heads
 (tenant_id, note_id) → head_memory_id` (+ the immutable visibility scope) and `memory_records.note_id`. Create: a
 fresh key, no `note_id`. Replace: a fresh key + `note_id` + `supersedes` = the expected current `memory_id` (CAS) +

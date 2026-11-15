@@ -1,6 +1,7 @@
 # Crate -> home module rows (M01 D1, ADR-0074). `cargo xtask architecture-check` G-M01-1 requires this table's keys to
 # equal the `cargo metadata --no-deps` workspace member set (a new crate lands with its row in the same PR) and every
-# value to be a module id M01..M28 (module design notes; module_map_v3 numbers M01..M26 today).
+# value to be a module id M01..M28 (module design notes; module_map_v3 numbers M01..M26 today, so the gate's ceiling
+# accepts M27/M28 while no row in this table names one yet).
 #
 # Home module = the module whose boundary section names the crate as a whole; a crate that hosts several modules'
 # files carries the module that owns its crate-level contract and is marked `shared` below. The file-level map

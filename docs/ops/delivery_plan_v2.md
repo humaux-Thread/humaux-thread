@@ -219,6 +219,9 @@ Cards 27, 29/30 and 32/33 may run as two parallel lanes when their file sets are
 - **Scope (from plan B47):** Per research answer R8 (partition vs definer bounded delete, given Baseline:1181 and immutable migrations). Expected: an ADR declaring monthly partitions for audit_events and model_call_ledger via new partitioned tables plus a cut-over migration, and definer bounded purge past the watermark for queues. The purge jobs are wired into card 42's daemon, and control.retention_policies is actually read.
 - **Out of scope:** Archival export to WORM (§DOD-069).
 - **Model plan:** Research R8 (cheap). Design/ADR: heavy. Implement: medium. Review: heavy. Verify: cheap.
+
+> Errata 2026-11-15 (independent-707 P020-F1)：本卡（36）的范围以上方 "Scope (from plan B47)" 为准；下面三条（"Scope (from plan A33)"、其后的 "Out of scope: Backup (card 34)…" 与随后的 model plan）是 card 35 的同文误粘（A33 描述 maintenance daemon 与 P1-14），不属于 card 36。
+
 - **Scope (from plan A33):** bins/maintenance: a `--serve` loop with per-task intervals from §78 config. It runs: stream_repo::sweep_lost (stream_repo.rs:409), confirm_sweep (moved from xtask/src/confirm_sweep.rs, OPS-6), and purge of DONE/DEAD jobs past retention, outbox rows below the settled watermark, retrieval_embedding_rpc_calls, expired selection snapshots and items, and stale rate_buckets (SEC-6), all through owner SECURITY DEFINER purge functions in a new migration, reading control.retention_policies (0003:120). Runtime roles still get no DELETE. §48.1 per the ADR: monthly range partitions for control.audit_events and ops.model_call_ledger (and private.events if the research says so), created ahead by maintenance, or an explicit ADR exemption with definer retention. P1-14: context_repo.rs:1672 gains LIMIT and a keyset cursor; selection_repo.rs:200/395 becomes one INSERT…SELECT unnest($ids) WITH ORDINALITY; manifest size capped. Supervision and runbook entries.
 - **Out of scope:** Backup (card 34). Lag classification in recall (closed by card 31: ADR-0057 `PROJECTION_LAG_SECONDS` → `cannot_establish` / `projection_lag`; card 38 ruling R-11).
 - **Model plan:** Research (partition vs retention) → web GPT. Design/ADR: heavy. Implement: medium for the loop, heavy for the partition migration. Review: heavy (data deletion = data-loss risk). Fault: medium. Docs: light.
@@ -384,6 +387,7 @@ Cards 27, 29/30 and 32/33 may run as two parallel lanes when their file sets are
 - **Acceptance gate:** A claude.ai custom connector completes the OAuth flow against the gateway and calls memory_search/memory_store through the facade; Claude Code and Codex reach the same gateway with API keys; the §33.8 smoke matrix (3 clients × 5 core tools) passes on live providers; a revoked user/session is refused on the next call (security_epoch).
 - **Main-line amendments:**
   - NEW (critic): MCP OAuth per §33.7 (authorization server + protected-resource metadata over control.users/api_keys) so claude.ai custom connectors can move; Claude Code / Codex keep bearer API keys. §33.8 client conformance smoke for the three clients the user runs.
+- **Scope / Out of scope / Model plan: MISSING** — this card carries no per-card scope blocks (every other card has them): they need the plan A50/B50 source or an owner ruling and are not authored here (independent-707 P020-F6, 2026-11-15; NEEDS_RULING).
 
 ### Card 51 — §68 cutover: remember batch ops + replay client + census/classification/4-way reconciliation + public-source ingest (public_browse) + shadow-write/rollback
 - **Closes:** gap: replacement data migration, cutover / rollback procedure

@@ -765,6 +765,8 @@ pins the §15.4 prefix. Version upgrades go through the §16.2 two-version compa
 `docs/ops/delivery_point_report.md` §6.1: a tenant with any live projected `USER_PRIVATE` point makes the switch
 refuse with `VisibleUnavailable`.
 
+> Errata 2026-11-15 (independent-707 P022-P2-1): the `VisibleUnavailable` refusal above is **superseded** — ADR-0057 D-C removed it (ADR-0057:9 lists it under `Amends: ADR-0040 D-J`, "the switch's USER_PRIVATE refusal is superseded"). A version upgrade no longer waits for that refusal; do not read a successful switch as a defect.
+
 ## 7. Verify it is up (V1–V3)
 
 <!-- step: V1 expect: 0 match: PROBES ok -->
@@ -1497,6 +1499,8 @@ database's. Measured on this deployment: **0.229 Evidence/s** (n = 140 `processi
 resident distill dispatcher). Ingest above that number builds a backlog no amount of correct code will drain. Size
 for `tenants × sessions / (think_secs + round_trip_secs) < 0.229`, and **re-measure that line whenever the provider
 or model changes**. `docs/ops/soak.md` §"Size the load to the distill hop's capacity" has the full rule.
+
+> Errata 2026-11-15 (independent-707 P022-P2-2): the **0.229 Evidence/s** line above was measured with one serial distill dispatcher. ADR-0058 has since moved `--distill-serve` to 4 in-flight seats (`HUMAUX_PRIVATE_WORKER_DISTILL_IN_FLIGHT`, the `ops.provider_slots` count) with hard-deadline resend; the current capacity numbers are ADR-0058 §Measurements (1 vs 4 in-flight), as `docs/ops/soak.md` already notes. The old line is conservative (it under-sizes), but do not treat it as the current capacity.
 
 On the A5 host the load phases run from the `loadgen` image (no toolchain): `deploy/release/a5_load_remeasure.sh`
 (ADR-0066 D-S) deploys by this runbook's first-install steps (§1–§3 and §7), seeds two load tenants and runs the card-38 phase set with

@@ -13,7 +13,7 @@
 - **Excluded by path, not by exemption:** `*/tests/ui/*.rs` (24 trybuild fixtures). They are not modules of
   any crate (trybuild compiles each standalone) and their `.stderr` snapshots pin line numbers, so a header
   would break the snapshot. The generated map lists them under "excluded fixtures" with their count.
-- Every `Cargo.toml` of a workspace member (24) — `[dependencies]`, `[dev-dependencies]`,
+- Every `Cargo.toml` of a workspace member (27 — the 17 `crates/*`, 9 `bins/*` globs plus `xtask`; do not quote an older count) — `[dependencies]`, `[dev-dependencies]`,
   `[build-dependencies]`, and `[target.'…'.dependencies]` tables.
 
 ## 1. Module header (every file, rule ids `header-*`)

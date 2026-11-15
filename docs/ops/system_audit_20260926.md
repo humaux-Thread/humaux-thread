@@ -1,5 +1,7 @@
 # 系统体检报告（humaux-thread @ 72bdfa7，2026-09-26）
 
+> Errata 2026-11-15 (independent-707 P023-F3)：本报告是 **@72bdfa7 / 2026-09-26 的时点快照**，不是现状。仓库其后已按 ADR-0050 D-G 的 2026-10-03 修订加入 `rust-toolchain.toml` 并把工具链钉到 1.99.0（Baseline §70）；下文「没有 `rust-toolchain.toml` / 构建机 1.97.1 / 基线 1.98」只在该时点成立，引用前请先看 `rust-toolchain.toml`。
+
 ## 1. 结论
 
 1. **架构基线：是按最新基线开发的。** 代码依据的是仓库内的 `docs/architecture/Baseline_2.9.md`（17,160 行，最后一次修改是 card 24 的提交 3cad38f，2026-09-26）和 `docs/adr/` 下的 46 个 ADR。外部的 Baseline 2.10 在 §11.2.2（约第 2445 行）中被写明为"只是上游设计输入，不是第二个真源"，并按 ADR-0008 的规则逐条合并进 2.9。这和你 2026-08-28 的决定一致（Humaux 记忆：唯一架构真源是 Baseline_2.9.md）。仓库的 `PHASE` 标记为 9（§57 共 Phase 0–17），Phase 10 由 ADR-0009 明确关闭。

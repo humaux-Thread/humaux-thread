@@ -69,6 +69,9 @@ where an oracle that reads a *global* queue or a global profile table belongs �
 isolated by a fixture, only by a database nobody else has written — and it is the one resource
 provisioned once per **target** rather than once per group, because a global scan is not isolated
 from the target that ran before it in its own group.
+
+> Errata 2026-11-15 (independent-707 P022-P2-3): the "never dropped / removing them is a human decision" sentence above now covers only databases the lane did **not** create. Every database this lane creates is dropped `WITH (FORCE)` when its group ends (per target for `disposable`), again when the lane returns or unwinds — see "Dropping what the lane created (card 36 review, 2026-10-05)" below.
+
 A test that runs DDL on the shared catalog (`RENAME`/`ADD`/`DROP COLUMN`, `ALTER ROLE`/`SYSTEM`/`DATABASE`, `LOCK TABLE … ACCESS EXCLUSIVE`) belongs here too: `cargo xtask architecture-check` (M24-7b, #145) is red for such a statement outside a `lane(a:disposable)` test unless its binary is a row of `SHARED_CATALOG_DDL_EXEMPT`.
 
 ## Running it
@@ -210,6 +213,8 @@ The lane never kills a process it did not spawn and never frees a port by force 
 the shared `humaux-thread-pg` / `humaux-thread-qdrant` containers, and it never drops a
 database — `ensure_database` creates and migrates, additively, and leaves removal to a human.
 
+> Errata 2026-11-15 (independent-707 P022-P2-3): "never drops a database" is no longer exact — the lane drops the databases **it created** when their group ends / on return / on unwind (`WITH (FORCE)`); the fixed-name and pre-existing databases it did not create are still never dropped. See "Dropping what the lane created" below.
+
 ## Self-test
 
 `cargo test -p xtask serial_lane` runs the gate's own tests (xtask is a binary crate — there is no `--lib` target):
@@ -262,6 +267,8 @@ with `lane(a:qdrant): 2` and `lane(c): 7`.
 
 
 ## Reaping the databases a run provisions
+
+> Errata 2026-11-15 (independent-707 P022-P2-3): this section's "never drops them / `--drop-provisioned` makes that decision" contract is **superseded** by "Dropping what the lane created (card 36 review, 2026-10-05)" below: the lane always drops what it created, and `--drop-provisioned` is still accepted but changes nothing. Kept for history.
 
 Each run provisions its throwaway databases (`humaux_thread_{request_guard,qdrant,disposable,
 pre0132,prov_fault}_<unix stamp>`) and, by default, never drops them — dropping is a decision

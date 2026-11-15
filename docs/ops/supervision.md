@@ -307,7 +307,9 @@ acquire timeout (~30 s observed) before it can report. Set the supervisor's prob
 that, or you will read "probe timed out" instead of the named missing object the probe was about
 to print.
 
-**Ctrl-C is handled exactly like SIGTERM** in all five processes, and both handlers are installed
+**Ctrl-C is handled exactly like SIGTERM** in every resident unit — all eight resident modes of
+§1/§3, including `humaux-maintenance health serve` and `humaux-maintenance --serve` (`humaux-public-worker`
+is a one-shot and has no resident loop) — and both handlers are installed
 before any work starts (`SignalKind::interrupt()`, not `tokio::signal::ctrl_c()` — the latter
 registers on first poll, which in these loops is after the first pass has already returned). An
 operator's Ctrl-C on a foreground worker therefore drains rather than killing a pass that holds a
