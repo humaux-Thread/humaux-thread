@@ -1,8 +1,8 @@
 //! `adapters::role_hygiene` — deploy-time PostgreSQL role credentials: client-side SCRAM verifiers, one-transaction
 //!   rotation, the read-only deploy-check probes (ADR-0059 D-A, D-E, D-F), and opening/closing the API-key pepper
 //!   rehash window (D-H).
-//! Depends-on: crates=[base64, hmac, rand, sha2, sqlx]; services=[PostgreSQL(owner), PostgreSQL(role_maintenance)
-//!   r=[ops.schema_migrations] x=[control.credential_pepper_epoch_advance, control.credential_pepper_epoch_close], PostgreSQL(any)]; env=[]; modules=[adapters::postgres, adapters::provisioning]
+//! Depends-on: crates=[async-trait, humaux-application, base64, hmac, rand, sha2, sqlx]; services=[PostgreSQL(owner), PostgreSQL(role_maintenance)
+//!   r=[ops.schema_migrations] x=[control.credential_pepper_epoch_advance, control.credential_pepper_epoch_close], PostgreSQL(any)]; env=[]; modules=[application::role_rotation, adapters::postgres, adapters::provisioning]
 //! Called-by: [maintenance::main, maintenance::roles, tests]
 //! Invariants: [a plaintext password never reaches PostgreSQL, a log or an error: ALTER/CREATE ROLE carry a
 //!   SCRAM-SHA-256 verifier computed here; every rotation is one transaction (a crash or a missing role changes
@@ -744,5 +744,35 @@ mod tests {
             check_env_dsn_placeholders(&env[2..], &placeholders).status,
             CheckStatus::Pass
         );
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl humaux_application::role_rotation::RoleRotationPort for MigratorDbPool {
+    type Error = ProvisioningError;
+
+    async fn rotate_roles(
+        &self,
+        request: &humaux_application::role_rotation::RotateRoles<'_>,
+    ) -> Result<(), Self::Error> {
+        let targets: Vec<(String, RolePassword)> = request
+            .targets
+            .iter()
+            .map(|target| {
+                (
+                    target.role.to_owned(),
+                    RolePassword::new(target.password.to_owned()),
+                )
+            })
+            .collect();
+        rotate_in_txn(
+            self,
+            &RotateRequest {
+                targets: &targets,
+                owner: request.owner,
+                create_missing: request.create_missing,
+            },
+        )
+        .await
     }
 }

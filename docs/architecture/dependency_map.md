@@ -3310,6 +3310,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::remember`
 
+#### `application::role_rotation`
+
 #### `application::signed_token`
 
 #### `application::supersede`
@@ -14318,6 +14320,7 @@ modules naming it:
 - `adapters::remember`
 - `adapters::retrieval_embedding_rpc`
 - `adapters::retrieve`
+- `adapters::role_hygiene`
 - `adapters::serving_repo`
 - `adapters::session_repo`
 - `adapters::stream_repo`
@@ -14472,6 +14475,7 @@ modules naming it:
 - `adapters::remember`
 - `adapters::retrieval_embedding_rpc`
 - `adapters::retrieve`
+- `adapters::role_hygiene`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::contribution_execution_repo_0131`
 - `adapters::tests::contribution_reasoner`
@@ -15538,6 +15542,7 @@ modules naming it:
 - `application::recall_read`
 - `application::remember`
 - `application::retrieval_embedding_port`
+- `application::role_rotation`
 - `tests`
 
 ### humaux-application → `uuid` (normal)
@@ -17571,6 +17576,7 @@ why: operational health sampling use case
 
 modules naming it:
 - `maintenance::health_serve`
+- `maintenance::roles`
 
 ### humaux-maintenance → `humaux-adapters` (normal)
 why: the onboarding library (provisioning), typed maintenance pool, quota window and membership admin path
