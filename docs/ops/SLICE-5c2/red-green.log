@@ -11,4 +11,10 @@ RESTORED exit=0: HEX-LAYER actual=ceiling=209; 1 test passed.
 worker cargo check exit=0; worker clippy --all-targets -D warnings exit=0.
 application unit tests: 2 passed using --features time/formatting (standalone app tests otherwise encounter existing recall_read.rs:731 missing format feature).
 architecture-check exit=0, HEX-COVERAGE/LAYER/CONTEXT/WRITER pass; compose rendering NOT_APPLICABLE locally.
-PG transaction negative control: PENDING CI. Live provider NOT_RUN.
+PG existing test: adapters::tests::dashscope_query_sut_commits_exact_batch_provenance_before_transport (deterministic transport, real PG; unchanged assertions).
+GREEN run43823389275 at e61a67f8fc0809b9f5b9e6a9242e40ad32a26626: 1 passed, exit0.
+RED run43823677221 at d44d480523a908180fcb8eff814097d5f6d5b1a6: move disclosure into independent transaction while source transaction remains uncommitted; test fails adapters.rs:1932 actual query SUT succeeds through deterministic transport: Internal; PG ERROR retrieval query source is absent, revoked, or expired; 1 failed, exit101.
+Coverage limit: initial commit-sources-first split at f9de554efbca6aa1fe5c0bcb8d23402ade143740 run43823382762 was GREEN (1 passed). Existing test does not detect this alternative split; no broader atomicity certification claimed.
+Runs: https://github.com/humaux-Thread/humaux-thread/actions/runs/43823389275 and /43823677221 and /43823382762.
+Baselines non-comment rows: context464→464; writer46→46; layer214→209. Local dep-map generated with 0 violations; db_objects NOT_RUN locally due missing PG DSN. Full PR CI and independent review remain required.
+Live provider NOT_RUN.
