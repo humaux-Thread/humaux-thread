@@ -2,7 +2,7 @@
 //!   MANUAL contribution command.
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-testkit, postgres, tokio, uuid];
 //!   services=[PostgreSQL(owner) r=[ops.contribution_execution_job_links, ops.jobs,
-//!   private.contribution_executions]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::contribution_execution_repo,
+//!   private.contribution_executions]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::contribution_execution_ingress, adapters::contribution_execution_repo,
 //!   adapters::contribution_reasoner, adapters::tests::support::contribution_fixture, application::contribute,
 //!   humaux-private-worker, humaux-testkit]
 //! Called-by: [cargo-test]
@@ -23,6 +23,7 @@ use std::sync::Mutex;
 
 use contribution_fixture::ContributionFixture;
 use humaux_adapters::{
+    contribution_execution_ingress::ContributionExecutionIngress,
     contribution_execution_repo::EnqueuedContributionExecution,
     contribution_reasoner::{assessment_prompt_contract, coverage_prompt_contract},
 };
@@ -77,7 +78,8 @@ fn command_owns_contracts_and_serializes_concurrent_first_creators() {
     let _serial = SERIAL.lock().expect("serialize private-worker DB gate");
 
     let mut fixture = ContributionFixture::new();
-    let command = StartManualContributionCommand::new(&fixture.private);
+    let ingress = ContributionExecutionIngress::new(&fixture.private);
+    let command = StartManualContributionCommand::new(&ingress);
     let request: ContributionPreparationInput = (&fixture.request()).into();
     let tenant_id = fixture.auth.tenant_id().0;
     let key = format!("private-worker-command-{}", Uuid::new_v4());

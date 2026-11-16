@@ -1,6 +1,6 @@
 //! `application::contribution_execution` — Phase 9 R4 application contract for one durable two-stage contribution
 //!   execution.
-//! Depends-on: crates=[humaux-domain, serde_json, sha2, uuid]; services=[];
+//! Depends-on: crates=[async-trait, humaux-domain, serde_json, sha2, uuid]; services=[];
 //!   env=[]; modules=[application::consolidate, application::contribute, domain::error, domain::evidence]
 //! Called-by: [adapters::contribution_execution_ingress, adapters::contribution_execution_repo, adapters::contribution_reasoner, humaux-private-worker, tests]
 //! Invariants: []
@@ -785,6 +785,36 @@ impl AssessmentCompletion {
     pub const fn value(&self) -> &AssessmentCompletionValue {
         &self.value
     }
+}
+
+/// Durable enqueue receipt, without a database capability (ADR-0130 D2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnqueuedContributionExecution {
+    pub execution_id: ContributionExecutionId,
+    pub job_id: Uuid,
+    pub logical_call_ids: ContributionLogicalCallIds,
+    pub candidate_id: Uuid,
+    pub created: bool,
+}
+
+/// Atomic MANUAL preparation and enqueue door; implementations own the whole transaction.
+#[async_trait::async_trait]
+pub trait ManualContributionPort: Send + Sync {
+    /// Freeze trusted preparation and enqueue before any provider execution (ADR-0130 D7a).
+    async fn start_manual(
+        &self,
+        request: crate::contribute::ContributionPreparationInput,
+        idempotency_key: String,
+    ) -> Result<EnqueuedContributionExecution, ErrorCode>;
+}
+
+/// Admit an explicit contribution through the transaction-owning private boundary.
+pub async fn start_manual_contribution(
+    port: &dyn ManualContributionPort,
+    request: crate::contribute::ContributionPreparationInput,
+    idempotency_key: String,
+) -> Result<EnqueuedContributionExecution, ErrorCode> {
+    port.start_manual(request, idempotency_key).await
 }
 
 #[cfg(test)]

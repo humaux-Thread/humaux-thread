@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 204, "HEX-LAYER")
+    hex_exact(actual, baseline, 201, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -14221,6 +14221,25 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
         };
         check();
+        // SLICE-5d: restoring any removed MANUAL ingress dependency must fail at the real entry.
+        for symbol in [
+            "humaux_adapters::contribution_execution_ingress::ContributionExecutionIngress",
+            "humaux_adapters::contribution_execution_ingress::ContributionExecutionIngressError",
+            "humaux_adapters::contribution_execution_repo::EnqueuedContributionExecution",
+        ] {
+            let path = root.join("bins/private-worker/src/lib.rs");
+            let original = fs::read_to_string(&path).unwrap();
+            fs::write(&path, format!("{original}\nuse {symbol};\n")).unwrap();
+            let verdict = hex_layer_gate(&root);
+            assert!(
+                matches!(&verdict, Verdict::Fail(lines) if lines.iter().any(|line| line.contains(symbol))),
+                "{verdict:?}"
+            );
+            println!("SLICE-5d MANUAL injection {symbol}: {verdict:?}");
+            fs::write(path, original).unwrap();
+            check();
+            println!("SLICE-5d MANUAL injection {symbol}: restored GREEN");
+        }
         for symbol in [
             "humaux_adapters::remember::RememberCommand",
             "humaux_public_pool::public_repo::PublicRepoEvaluator",
