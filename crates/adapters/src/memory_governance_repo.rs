@@ -1,7 +1,7 @@
 //! `adapters::memory_governance_repo` — §36 `memory.supersede`, the first confirm-gated governance write (ADR-0018,
 //!   D-C).
-//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time, uuid]; services=[PostgreSQL(any) r=[ops.memory_lifecycle_events, ops.outbox, private.evidence_objects, private.memory_evidence, projection.stream_checkpoints, projection.stream_log] w=[private.memory_records] x=[ops.append_memory_lifecycle]]; env=[]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::archive, application::correct, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::lifecycle, domain::memory, domain::subject, projection::stream]
-//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::operation_receipt, gateway::mcp_application, gateway::memory, tests]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time, uuid]; services=[PostgreSQL(any) r=[ops.memory_lifecycle_events, ops.outbox, private.evidence_objects, private.memory_evidence, projection.stream_checkpoints, projection.stream_log] w=[private.memory_records] x=[ops.append_memory_lifecycle]]; env=[]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::archive, application::correct, application::lifecycle_execution, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::lifecycle, domain::memory, domain::subject, projection::stream]
+//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::operation_receipt, gateway::bootstrap, gateway::mcp_application, tests]
 //! Invariants: [one role_gateway transaction: BMO reserve -> confirm token consume -> visibility -> successor rule ->
 //!   conditional UPDATE -> lifecycle ticket; the UPDATE's WHERE is the only status judge (0 rows = Conflict); any
 //!   failure rolls back everything; every status change carries a lifecycle ticket on the target's home stream
@@ -174,12 +174,7 @@ pub struct SupersedeRequest {
     pub undo_window: Duration,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SupersedeOutcome {
-    pub superseded_at: OffsetDateTime,
-    pub stream_seq: i64,
-    pub commit_seq: i64,
-}
+pub use humaux_application::lifecycle_execution::SupersedeOutcome;
 
 fn db_error(error: sqlx::Error) -> ErrorCode {
     match error {
@@ -622,23 +617,13 @@ pub struct RestoreRequest {
 }
 
 /// A successful restore: the memory is `active` again, on a new stream seq, with a new token.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RestoreDone {
-    pub restored_at: OffsetDateTime,
-    pub stream_seq: i64,
-    pub commit_seq: i64,
-    pub consistency_token: String,
-}
+pub use humaux_application::lifecycle_execution::RestoreDone;
 
 /// The outcome of a restore attempt. `Refused` is a business conflict surfaced as
 /// `structuredContent {code:"CONFLICT", reason:<u16>}` (ADR-0020 D-B), not an `ErrorCode`
 /// (§52.1 keeps 18): the transaction rolled back, nothing mutated, the token stays unconsumed.
 /// Genuine infra/visibility failures still return `Err(ErrorCode)` (NotFound, Conflict, ...).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RestoreResult {
-    Restored(RestoreDone),
-    Refused(ConflictReason),
-}
+pub use humaux_application::lifecycle_execution::RestoreResult;
 
 /// Pure input contract, mirroring [`validate`]: the claim is a `memory.restore` on exactly
 /// this target with no successor, the stream is the caller's tenant, and the audit describes
@@ -1021,23 +1006,13 @@ pub struct ArchiveRequest {
 }
 
 /// A successful archive/unarchive: the flag flipped, on a new MEMORY_LIFECYCLE stream seq.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ArchiveDone {
-    /// The instant the flag flipped (`archived_at` for archive; the clear instant for unarchive).
-    pub changed_at: OffsetDateTime,
-    pub stream_seq: i64,
-    pub commit_seq: i64,
-}
+pub use humaux_application::lifecycle_execution::ArchiveDone;
 
 /// The outcome of an archive/unarchive attempt. `Refused(ALREADY_IN_STATE)` is a success-shaped
 /// business conflict (D-B): archive of an archived Memory / unarchive of a live one — the
 /// transaction rolled back, nothing mutated, the token stays unconsumed. Infra/visibility
 /// failures still return `Err(ErrorCode)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArchiveResult {
-    Done(ArchiveDone),
-    Refused(ConflictReason),
-}
+pub use humaux_application::lifecycle_execution::ArchiveResult;
 
 /// Pure input contract, mirroring [`validate_restore`]: the claim is `op` on exactly this
 /// target with no successor, the stream is the caller's tenant, and the audit describes exactly
@@ -1369,24 +1344,7 @@ pub struct CorrectRequest {
     pub mood_half_life: Option<MoodHalfLife>,
 }
 
-#[derive(Debug, Clone)]
-pub struct CorrectDone {
-    /// The new active Memory version, `M2`.
-    pub new_memory_id: MemoryId,
-    /// The corrected (now-superseded) Memory, `M1`.
-    pub superseded: MemoryId,
-    /// The new DirectUserInput Evidence, `E2`.
-    pub evidence_id: Uuid,
-    pub superseded_at: OffsetDateTime,
-    pub stream_seq: i64,
-    pub commit_seq: i64,
-    pub consistency_token: String,
-    /// §6.1.3: every subject `M2` is linked to after the hook ran (inherited from `M1` +
-    /// explicit), in link order.
-    pub subject_ids: Vec<Uuid>,
-    /// §8.5.1: `M2`'s affect rows (the re-supplied annotations), in write order.
-    pub affect_ids: Vec<Uuid>,
-}
+pub use humaux_application::lifecycle_execution::CorrectDone;
 
 /// The `M1` facts a correction copies onto `E2`/`M2` (visibility + reasoning domain + type).
 struct CorrectionSource {
@@ -2163,5 +2121,166 @@ mod tests {
             request_sha256: None,
         };
         assert_eq!(lifecycle_idempotency_key(&claim), "ab".repeat(32));
+    }
+}
+
+/// PostgreSQL whole-transaction lifecycle boundary (§36; ADR-0130).
+pub struct PostgresLifecycleStore<'a> {
+    pool: &'a RuntimeDbPool,
+    attribution: &'a dyn memory_repo::MemoryAttribution,
+}
+impl<'a> PostgresLifecycleStore<'a> {
+    /// Assemble existing PG lifecycle dependencies (§36).
+    pub fn new(
+        pool: &'a RuntimeDbPool,
+        attribution: &'a dyn memory_repo::MemoryAttribution,
+    ) -> Self {
+        Self { pool, attribution }
+    }
+}
+fn lifecycle_parts(
+    audit: humaux_application::lifecycle_execution::LifecycleAudit,
+    confirmation: humaux_application::lifecycle_execution::LifecycleConfirmation,
+) -> Result<(AuditEvent, ConfirmationClaim), ErrorCode> {
+    let a = audit;
+    let mut audit = AuditEvent {
+        event_id: AuditEventId(a.event_id),
+        ts: a.ts,
+        tenant_id: humaux_domain::ids::TenantId(a.tenant_id),
+        actor_type: a.actor_type,
+        actor_id: a.actor_id,
+        action: a.action,
+        resource_type: a.resource_type,
+        resource_id: a.resource_id,
+        result: a.result,
+        request_id: a.request_id,
+        trace_id: a.trace_id,
+        client_ip: a.client_ip,
+        user_agent_hash: a.user_agent_hash,
+        risk_tags: a.risk_tags,
+        before_fingerprint: a.before_fingerprint,
+        after_fingerprint: a.after_fingerprint,
+        metadata: Default::default(),
+    };
+    for (key, value) in a.metadata {
+        audit.metadata.insert(key, value)?;
+    }
+    let c = confirmation;
+    let claim = ConfirmationClaim {
+        op: c.op,
+        target_id: c.target_id,
+        successor_id: c.successor_id,
+        nonce_sha256: c.nonce_sha256,
+        request_sha256: c.request_sha256,
+    };
+    Ok((audit, claim))
+}
+fn lifecycle_stream(stream: humaux_application::lifecycle_execution::LifecycleStream) -> StreamKey {
+    StreamKey {
+        tenant_id: humaux_domain::ids::TenantId(stream.tenant_id),
+        scope_kind: stream.scope_kind,
+        scope_id: stream.scope_id,
+        domain: stream.domain,
+        projection_kind: stream.projection_kind,
+        projection_version: stream.projection_version,
+    }
+}
+#[async_trait::async_trait]
+impl humaux_application::lifecycle_execution::LifecycleStore for PostgresLifecycleStore<'_> {
+    async fn supersede(
+        &self,
+        auth: &AuthorizationScope,
+        command: humaux_application::lifecycle_execution::SupersedeRequest,
+    ) -> Result<SupersedeOutcome, ErrorCode> {
+        let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
+        supersede_atomically(
+            self.pool,
+            auth,
+            SupersedeRequest {
+                request_id: command.request_id,
+                request_fingerprint: command.request_fingerprint,
+                reservation_ttl: command.reservation_ttl,
+                target: command.target,
+                successor: command.successor,
+                stream: lifecycle_stream(command.stream),
+                claim: claim,
+                finished_audit: audit,
+                undo_window: command.undo_window,
+            },
+        )
+        .await
+    }
+    async fn restore(
+        &self,
+        auth: &AuthorizationScope,
+        command: humaux_application::lifecycle_execution::RestoreRequest,
+    ) -> Result<RestoreResult, ErrorCode> {
+        let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
+        restore_atomically(
+            self.pool,
+            auth,
+            RestoreRequest {
+                request_id: command.request_id,
+                request_fingerprint: command.request_fingerprint,
+                reservation_ttl: command.reservation_ttl,
+                target: command.target,
+                stream: lifecycle_stream(command.stream),
+                claim: claim,
+                finished_audit: audit,
+                consistency_token_ttl: command.consistency_token_ttl,
+            },
+        )
+        .await
+    }
+    async fn correct(
+        &self,
+        auth: &AuthorizationScope,
+        command: humaux_application::lifecycle_execution::CorrectRequest,
+    ) -> Result<CorrectDone, ErrorCode> {
+        let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
+        correct_atomically(
+            self.pool,
+            auth,
+            CorrectRequest {
+                request_id: command.request_id,
+                request_fingerprint: command.request_fingerprint,
+                reservation_ttl: command.reservation_ttl,
+                target: command.target,
+                content: command.content,
+                payload_sha256: command.payload_sha256,
+                stream: lifecycle_stream(command.stream),
+                claim: claim,
+                finished_audit: audit,
+                undo_window: command.undo_window,
+                consistency_token_ttl: command.consistency_token_ttl,
+                subjects: command.subjects,
+                affects: command.affects,
+                mood_half_life: command.mood_half_life,
+            },
+            self.attribution,
+        )
+        .await
+    }
+    async fn archive(
+        &self,
+        auth: &AuthorizationScope,
+        command: humaux_application::lifecycle_execution::ArchiveRequest,
+    ) -> Result<ArchiveResult, ErrorCode> {
+        let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
+        archive_or_unarchive_atomically(
+            self.pool,
+            auth,
+            ArchiveRequest {
+                request_id: command.request_id,
+                request_fingerprint: command.request_fingerprint,
+                reservation_ttl: command.reservation_ttl,
+                target: command.target,
+                stream: lifecycle_stream(command.stream),
+                claim: claim,
+                finished_audit: audit,
+                op: command.op,
+            },
+        )
+        .await
     }
 }

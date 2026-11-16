@@ -31,6 +31,7 @@ files = [
   "crates/adapters/src/operation_receipt.rs",
   "crates/adapters/src/processing_status.rs",
   "crates/adapters/src/subject_repo.rs",
+  "crates/application/src/lifecycle_execution.rs",
   "crates/application/src/affect.rs",
   "crates/application/src/archive.rs",
   "crates/application/src/confirm.rs",
