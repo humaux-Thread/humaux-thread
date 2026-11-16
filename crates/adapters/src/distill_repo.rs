@@ -1524,6 +1524,15 @@ impl humaux_application::distill::CandidateDecisionStore for PostgresCandidateDe
 
 /// §78.2: the read-side origin mapping is pinned against the same migration CHECK list
 /// `remember::contract_tests` pins the write side against.
+/// Existing process-owned route-health diagnostics, injected by the composition root.
+pub type DistillHealthObserver =
+    for<'p> fn(
+        &'p PrivateWorkerDbPool,
+        Uuid,
+        Uuid,
+        bool,
+        i64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'p>>;
 /// Concrete Distill capabilities assembled only by bins and test fixtures.
 pub struct DistillRuntime<'a, A> {
     pub(crate) pool: &'a PrivateWorkerDbPool,
@@ -1531,6 +1540,7 @@ pub struct DistillRuntime<'a, A> {
     pub(crate) dispatch: &'a humaux_application::distill_execution::DistillDispatchConfig,
     pub(crate) attribution: A,
     candidate_ttl: fn() -> Result<i64, ErrorCode>,
+    pub(crate) health_observer: DistillHealthObserver,
 }
 impl<'a, A: memory_repo::MemoryAttribution + Copy> DistillRuntime<'a, A> {
     /// Bind the existing provider instance, pool and same-transaction attribution hook.
@@ -1540,6 +1550,7 @@ impl<'a, A: memory_repo::MemoryAttribution + Copy> DistillRuntime<'a, A> {
         dispatch: &'a humaux_application::distill_execution::DistillDispatchConfig,
         attribution: A,
         candidate_ttl: fn() -> Result<i64, ErrorCode>,
+        health_observer: DistillHealthObserver,
     ) -> Self {
         Self {
             pool,
@@ -1547,6 +1558,7 @@ impl<'a, A: memory_repo::MemoryAttribution + Copy> DistillRuntime<'a, A> {
             dispatch,
             attribution,
             candidate_ttl,
+            health_observer,
         }
     }
 }

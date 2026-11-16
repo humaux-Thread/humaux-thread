@@ -1,6 +1,6 @@
 //! `humaux-private-worker` — Bounded Phase 9 private contribution worker orchestration.
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json, sha2, uuid]; services=[PostgreSQL(role_private_worker)]; env=[]; modules=[adapters::byok, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::contribution_scan, adapters::jobs, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, application::contribute, application::contribution_execution, domain::error, domain::evidence]
-//! Called-by: [crate(humaux-consolidation-worker), private-worker::inference_rpc, tests]
+//! Called-by: [crate(humaux-consolidation-worker), private-worker::inference_rpc, private-worker::route_providers, tests]
 //! Invariants: [a routed call's health observation (ruling E3 (b)) is best effort: it is logged with a static class
 //!   and never fails or re-settles a job]
 //! Spec: ADR-0012; ADR-0016; ADR-0060 E3

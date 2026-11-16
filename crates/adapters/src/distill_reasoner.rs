@@ -1044,26 +1044,14 @@ impl<A: crate::memory_repo::MemoryAttribution + Copy>
         credential_rejected: bool,
         valid_for_seconds: i64,
     ) {
-        // dep: PostgreSQL(role_private_worker) — control.observe_reasoning_route_health (0206/0209, E3)
-        match crate::reasoning_route_admission::observe_route_health(
+        (self.health_observer)(
             self.pool,
             tenant_id,
             model_call_id,
             credential_rejected,
             valid_for_seconds,
         )
-        .await
-        {
-            Ok((None, None)) => {}
-            Ok((provider, account)) => eprintln!(
-                "humaux-private-worker: route health observed tenant={tenant_id} model_call_id={model_call_id} credential_rejected={credential_rejected} provider_observation={} account_observation={}",
-                provider.map_or_else(|| "-".to_owned(), |id| id.to_string()),
-                account.map_or_else(|| "-".to_owned(), |id| id.to_string()),
-            ),
-            Err(_) => eprintln!(
-                "humaux-private-worker: route health observe failed tenant={tenant_id} model_call_id={model_call_id} class=WORKER_DB_ERROR"
-            ),
-        }
+        .await;
     }
 }
 

@@ -57,7 +57,7 @@ pub struct DistillLease<'a> {
 }
 
 impl<'a> DistillLease<'a> {
-    /// The lease exactly as [`claim_distill`] handed it back.
+    /// The lease exactly as the job adapter handed it back.
     pub fn of(claim: &DistillClaim, lease_owner: &'a str) -> Self {
         Self {
             job_id: claim.job_id,

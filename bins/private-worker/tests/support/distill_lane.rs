@@ -5,7 +5,7 @@
 //!   control.provider_accounts, control.provider_endpoints, control.reasoning_credential_bindings,
 //!   control.reasoning_profiles, control.reasoning_route_bindings, control.reasoning_route_candidates,
 //!   control.reasoning_route_policies, ops.reasoning_account_health_observations,
-//!   ops.reasoning_provider_health_observations]]; env=[]; modules=[adapters::attribution_repo, adapters::byok, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_reasoner, adapters::distill_repo, adapters::jobs, adapters::postgres, adapters::reasoning_route_admission, humaux-testkit, private-worker::distill, private-worker::tests::support::live_minimax]
+//!   ops.reasoning_provider_health_observations]]; env=[]; modules=[adapters::attribution_repo, adapters::byok, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_reasoner, adapters::distill_repo, adapters::jobs, adapters::postgres, adapters::reasoning_route_admission, humaux-private-worker, humaux-testkit, private-worker::distill, private-worker::tests::support::live_minimax]
 //! Called-by: [private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e, private-worker::tests::m29_attribution_e2e]
 //! Invariants: [test-only, included by #[path] next to `support/live_minimax.rs`; the provider answers in call order
 //!   and panics past its last reply, so an unexpected extra call is never silent; the lane matches the descriptor
@@ -314,6 +314,11 @@ pub async fn dispatch_pass(
         dispatch,
         humaux_adapters::attribution_repo::AttributionLadder,
         humaux_private_worker::distill::candidate_ttl_seconds,
+        |pool, tenant, call, rejected, seconds| {
+            Box::pin(humaux_private_worker::observe_route_health(
+                pool, tenant, call, rejected, seconds,
+            ))
+        },
     );
     humaux_private_worker::distill::dispatch_pass(&runtime, dispatch).await
 }
@@ -338,6 +343,11 @@ pub async fn dispatch_serve(
         dispatch,
         humaux_adapters::attribution_repo::AttributionLadder,
         humaux_private_worker::distill::candidate_ttl_seconds,
+        |pool, tenant, call, rejected, seconds| {
+            Box::pin(humaux_private_worker::observe_route_health(
+                pool, tenant, call, rejected, seconds,
+            ))
+        },
     );
     humaux_private_worker::distill::dispatch_serve(&runtime, dispatch, poll, shutdown).await
 }

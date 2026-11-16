@@ -14248,11 +14248,11 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
 
     /// §80.1 / ADR-0130 D2: worker ingress is guarded, while pure assembly stays legal.
     #[test]
-    fn hex_worker_layer_disk_red_green() {
+    fn hex_distill_entry_disk_red_green() {
         let root = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir)
-            .join(format!("hex-worker-fixture-{}", std::process::id()));
+            .join(format!("hex-distill-fixture-{}", std::process::id()));
         hex_copy_boundary_fixture(&real_root(), &root);
         let check = || {
             let verdict = hex_layer_gate(&root);
@@ -14279,6 +14279,21 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             check();
             println!("SLICE-8a {case} restored GREEN");
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hex_worker_layer_disk_red_green() {
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("hex-worker-fixture-{}", std::process::id()));
+        hex_copy_boundary_fixture(&real_root(), &root);
+        let check = || {
+            let verdict = hex_layer_gate(&root);
+            assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
+        };
+        check();
         // SLICE-5d: restoring any removed MANUAL ingress dependency must fail at the real entry.
         for symbol in [
             "humaux_adapters::contribution_execution_ingress::ContributionExecutionIngress",
