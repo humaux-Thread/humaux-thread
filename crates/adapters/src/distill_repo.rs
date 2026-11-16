@@ -1,8 +1,8 @@
 //! `adapters::distill_repo` — SQL half of the Distill hop (ADR-0016), through [`PrivateWorkerDbPool`] only: take the
 //!   one `EVIDENCE_ACCEPTED` outbox row of a claimed `DERIVED_DISTILL` job (ADR-0058), load that Evidence, record the
 //!   §16.1.1 processing run, insert the authorized memories, settle the job and its outbox row together.
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, ops.outbox, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations, projection.stream_log] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding, private.lock_publish_source]]; env=[CARGO_MANIFEST_DIR]; modules=[application::distill, adapters::confirm_token_repo, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject, humaux-adapters, projection::stream]
-//! Called-by: [adapters::context_repo, gateway::bootstrap, gateway::memory, private-worker::distill, private-worker::main, tests]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-projection, serde_json, sha2, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, ops.outbox, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations, projection.stream_log] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding, private.lock_publish_source]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::distill_reasoner, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::confirm, application::consolidate, application::distill, application::distill_execution, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::policy, domain::subject, humaux-adapters, projection::fingerprint, projection::stream]
+//! Called-by: [adapters::context_repo, adapters::distill_reasoner, adapters::jobs, gateway::bootstrap, gateway::memory, private-worker::main, private-worker::route_providers, tests]
 //! Invariants: [memories, run completion, the job settle and the outbox flip commit in ONE transaction whose first
 //!   statement is the job's generation-fenced finish (ADR-0058 D-E), so a superseded worker's inserts roll back; a job
 //!   only ever takes the outbox row of its own Evidence; every read runs under role_private_worker grants + RLS with the acting
@@ -119,13 +119,8 @@ pub(crate) fn origin_class_from_db_str(s: &str) -> Option<EvidenceOriginClass> {
 }
 
 /// One claimed `ops.outbox` work item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ClaimedEvidence {
-    pub outbox_id: Uuid,
-    pub evidence_id: Uuid,
-    pub commit_seq: i64,
-    pub stream_seq: i64,
-}
+pub use humaux_application::distill_execution::ClaimedEvidence;
+
 /// ADR-0016 D2 (review P2): the Evidence's `origin_principal_id` carries no FK — before it is
 /// used as the acting identity of the §11.1 context it must still be an ACTIVE member of the
 /// tenant; otherwise the caller falls back to the reasoning domain owner.
@@ -167,15 +162,7 @@ async fn set_rls_context(
 }
 
 /// ADR-0058 D-C: what [`take_outbox_row`] found for a claimed job's one Evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TakenOutbox {
-    /// The row is this claim's to work (now `PROCESSING`, leased until the claim's `hard_deadline`).
-    Taken(ClaimedEvidence),
-    /// No open row: the Evidence was already settled (DONE/FAILED) — the job has nothing to do.
-    AlreadySettled,
-    /// The claim's generation was superseded (or the job settled): nothing was touched.
-    LeaseLost,
-}
+pub use humaux_application::distill_execution::TakenOutbox;
 
 /// ADR-0058 D-C: takes exactly the `EVIDENCE_ACCEPTED` row of the job's own Evidence, in a
 /// transaction that first locks the job row under its generation fence — the only door to an
@@ -527,15 +514,7 @@ pub fn private_distill_outputs_total() -> u64 {
 }
 
 /// How a settle leaves the job's one outbox row (ADR-0058 D-C/D-F).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutboxSettle {
-    /// Memories (or "nothing memorable") committed: the ticket resolves.
-    Done,
-    /// Input-bound rejection or DEAD: the ticket ends as `distill_failed` (§15.7 gap).
-    Failed,
-    /// Handed back for a later claim of the same job (retry, not ready, parked).
-    Pending,
-}
+pub use humaux_application::distill_execution::OutboxSettle;
 
 /// Flips the job's taken row, fenced on `status = 'PROCESSING' AND lease_owner`: `false` means
 /// the row is no longer this owner's — the caller rolls back. Runs AFTER
@@ -573,7 +552,7 @@ pub async fn settle_outbox_in_txn(
 pub async fn finish_job_in_txn(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     lease: &crate::jobs::DistillLease<'_>,
-    finish: crate::jobs::DistillFinish,
+    finish: impl Into<crate::jobs::DistillFinish>,
     error_class: Option<&str>,
     backoff_seconds: f64,
     park_seconds: f64,
@@ -581,7 +560,7 @@ pub async fn finish_job_in_txn(
     crate::jobs::finish_distill_in_txn(
         txn,
         lease,
-        finish,
+        finish.into(),
         error_class,
         backoff_seconds,
         park_seconds,
@@ -1545,6 +1524,558 @@ impl humaux_application::distill::CandidateDecisionStore for PostgresCandidateDe
 
 /// §78.2: the read-side origin mapping is pinned against the same migration CHECK list
 /// `remember::contract_tests` pins the write side against.
+/// Existing process-owned route-health diagnostics, injected by the composition root.
+pub type DistillHealthObserver =
+    for<'p> fn(
+        &'p PrivateWorkerDbPool,
+        Uuid,
+        Uuid,
+        bool,
+        i64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'p>>;
+/// Concrete Distill capabilities assembled only by bins and test fixtures.
+pub struct DistillRuntime<'a, A> {
+    pub(crate) pool: &'a PrivateWorkerDbPool,
+    pub(crate) reasoner: crate::distill_reasoner::DistillReasoner<'a>,
+    pub(crate) dispatch: &'a humaux_application::distill_execution::DistillDispatchConfig,
+    pub(crate) attribution: A,
+    candidate_ttl: fn() -> Result<i64, ErrorCode>,
+    pub(crate) health_observer: DistillHealthObserver,
+}
+impl<'a, A: memory_repo::MemoryAttribution + Copy> DistillRuntime<'a, A> {
+    /// Bind the existing provider instance, pool and same-transaction attribution hook.
+    pub fn new(
+        pool: &'a PrivateWorkerDbPool,
+        reasoner: crate::distill_reasoner::DistillReasoner<'a>,
+        dispatch: &'a humaux_application::distill_execution::DistillDispatchConfig,
+        attribution: A,
+        candidate_ttl: fn() -> Result<i64, ErrorCode>,
+        health_observer: DistillHealthObserver,
+    ) -> Self {
+        Self {
+            pool,
+            reasoner,
+            dispatch,
+            attribution,
+            candidate_ttl,
+            health_observer,
+        }
+    }
+}
+/// Adapter-owned read data; provider DTOs never enter application signatures.
+pub struct DistillReadData {
+    pub(crate) admission: crate::distill_reasoner::DistillAdmission,
+    pub(crate) evidence: LoadedEvidence,
+}
+use crate::affect_repo;
+use crate::distill_reasoner::{
+    DISTILL_PARSER_VERSION, DISTILL_PROCESSOR_KIND, DISTILL_PROCESSOR_VERSION, DistillCandidate,
+    DistillInferenceResult, distill_prompt_contract, offers_affects,
+};
+use humaux_application::distill_execution::{self as execution};
+use humaux_domain::{
+    authority::{AuthorityPolicy, NonEmptyVec},
+    evidence::EvidencePayloadSha256,
+    policy::OriginBoundAuthorityPolicy,
+};
+use humaux_projection::fingerprint::{ProcessingInputFingerprintInputs, source_hash};
+use sha2::{Digest, Sha256};
+fn distill_db(error: sqlx::Error) -> DistillError {
+    DistillError::Db(error)
+}
+
+async fn affect_menu(
+    txn: &mut distill_repo::DbTransaction<'_>,
+    tenant_id: Uuid,
+    evidence: &LoadedEvidence,
+) -> Result<bool, DbError> {
+    Ok(offers_affects(evidence.origin_class)
+        && !distill_repo::evidence_has_declared_affects(txn, tenant_id, evidence.evidence_id)
+            .await?)
+}
+
+fn evidence_axis(evidence: &LoadedEvidence) -> Result<EvidencePayloadSha256, DistillError> {
+    EvidencePayloadSha256::from_stored_digest(&evidence.payload_sha256).ok_or_else(|| {
+        DistillError::Reasoning(PrivateReasoningError::classified(
+            "evidence_objects.payload_sha256 is not a 32-byte digest",
+        ))
+    })
+}
+struct ReadReady {
+    admission: DistillAdmission,
+    evidence: LoadedEvidence,
+    processing_run_id: Uuid,
+    /// The contract this run was fingerprinted with offers the affect menu (ADR-0058 D-P).
+    offer_affects: bool,
+}
+
+/// What the read leg found.
+enum ReadLeg {
+    Ready(Box<ReadReady>),
+    /// The Evidence is gone (or not an EVENT): input-bound.
+    Unavailable,
+    /// ADR-0067 D-B: the Evidence has an identity contract — its Memory is the gateway's, nothing is to be derived.
+    IdentityContract,
+    /// Nothing can be dispatched now; the static class says why.
+    NotReady(&'static str),
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one read transaction whose NOT_READY gates (domain, binding, admission and its route instance) must all precede the reservation; ADR-0058 D-H, ADR-0060 D-B"
+)]
+async fn read_leg<A: memory_repo::MemoryAttribution + Copy>(
+    dispatcher: &DistillRuntime<'_, A>,
+    tenant_id: Uuid,
+    reasoning_domain_id: Uuid,
+    evidence_id: Uuid,
+) -> Result<ReadLeg, DistillError> {
+    let mut txn = distill_repo::begin_read_context(dispatcher.pool, tenant_id)
+        .await
+        .map_err(distill_db)?;
+    // ADR-0058 D-D: compare BEFORE any binding of the payload's domain is resolved.
+    match distill_repo::evidence_domain(&mut txn, tenant_id, evidence_id)
+        .await
+        .map_err(distill_db)?
+    {
+        None => {
+            txn.rollback().await.map_err(distill_db)?;
+            return Ok(ReadLeg::Unavailable);
+        }
+        Some(domain) if domain != reasoning_domain_id => {
+            txn.rollback().await.map_err(distill_db)?;
+            return Ok(ReadLeg::NotReady(DOMAIN_MISMATCH));
+        }
+        Some(_) => {}
+    }
+    let Some((binding_id, binding_version)) =
+        distill_repo::resolve_distill_binding(&mut txn, reasoning_domain_id)
+            .await
+            .map_err(distill_db)?
+    else {
+        txn.rollback().await.map_err(distill_db)?;
+        return Ok(ReadLeg::NotReady(NO_DISTILL_BINDING));
+    };
+    let admission = match dispatcher
+        .reasoner
+        .admit(
+            &mut txn,
+            tenant_id,
+            reasoning_domain_id,
+            binding_id,
+            binding_version,
+        )
+        .await
+    {
+        Ok(admission) => admission,
+        Err(error) => {
+            txn.rollback().await.map_err(distill_db)?;
+            return Ok(ReadLeg::NotReady(
+                error
+                    .class()
+                    .unwrap_or("unclassified private reasoning failure"),
+            ));
+        }
+    };
+    let Some(evidence) = distill_repo::load_evidence(
+        &mut txn,
+        tenant_id,
+        reasoning_domain_id,
+        admission.owner_user_id,
+        evidence_id,
+    )
+    .await
+    .map_err(distill_db)?
+    else {
+        txn.rollback().await.map_err(distill_db)?;
+        return Err(DistillError::StaleInput);
+    };
+    // ADR-0067 D-B: before the processing run, the prompt, the budget and any provider reservation.
+    if distill_repo::evidence_has_identity_contract(&mut txn, tenant_id, evidence_id)
+        .await
+        .map_err(distill_db)?
+    {
+        txn.rollback().await.map_err(distill_db)?;
+        return Ok(ReadLeg::IdentityContract);
+    }
+    let context_snapshot_seq = distill_repo::context_snapshot_seq(&mut txn, tenant_id)
+        .await
+        .map_err(distill_db)?;
+
+    // ADR-0048: ONE ceiling, resolved once here, feeds both the rendered contract (the class
+    // menu the model reads) and the envelope's `max_class`; ADR-0058 D-M: the contract is the one
+    // `prepare` sends, for the channel the provider declares.
+    let ceiling = evidence.origin_class.authority_ceiling(MemoryType::Fact);
+    let affects = affect_menu(&mut txn, tenant_id, &evidence)
+        .await
+        .map_err(distill_db)?;
+    let contract = distill_prompt_contract(ceiling, affects, admission.output_channel());
+    let evidence_hashes = [evidence_axis(&evidence)?];
+    let prompt_hash = hex::encode(contract.sha256.0);
+    let prompt_version = contract.version.to_string();
+    let fingerprint = source_hash(&ProcessingInputFingerprintInputs {
+        evidence_payload_sha256: &evidence_hashes,
+        processor_kind: DISTILL_PROCESSOR_KIND,
+        processor_version: DISTILL_PROCESSOR_VERSION,
+        model_provider: &admission.locator.processor_id,
+        model_id: &admission.locator.provider_model_id,
+        model_revision: admission.locator.model_revision.as_deref().unwrap_or(""),
+        prompt_version: &prompt_version,
+        prompt_hash: &prompt_hash,
+        embedding_version: None,
+        parser_version: DISTILL_PARSER_VERSION,
+        card_builder_version: None,
+        context_snapshot_seq: u64::try_from(context_snapshot_seq).unwrap_or_default(),
+    });
+    let processing_run_id = distill_repo::start_processing_run(
+        &mut txn,
+        tenant_id,
+        &ProcessingRunStart {
+            evidence_id: evidence.evidence_id,
+            processor_kind: DISTILL_PROCESSOR_KIND,
+            processor_version: DISTILL_PROCESSOR_VERSION,
+            model_provider: &admission.locator.processor_id,
+            model_id: &admission.locator.provider_model_id,
+            model_revision: admission.locator.model_revision.as_deref().unwrap_or(""),
+            prompt_version: &prompt_version,
+            prompt_hash: &prompt_hash,
+            parser_version: DISTILL_PARSER_VERSION,
+            evidence_payload_sha256: vec![evidence.payload_sha256.clone()],
+            source_hash: fingerprint.as_bytes(),
+            context_snapshot_seq,
+            profile_id: admission.locator.profile_id,
+            profile_version: admission.locator.profile_version,
+        },
+    )
+    .await
+    .map_err(distill_db)?;
+    txn.commit().await.map_err(distill_db)?;
+    Ok(ReadLeg::Ready(Box::new(ReadReady {
+        admission,
+        evidence,
+        processing_run_id,
+        offer_affects: affects,
+    })))
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one transaction: finish first, then every candidate's insert or rejection, the run close and the outbox flip (ADR-0058 D-E)"
+)]
+async fn write_txn<A: memory_repo::MemoryAttribution + Copy>(
+    dispatcher: &DistillRuntime<'_, A>,
+    lease: &DistillLease<'_>,
+    row: &ClaimedEvidence,
+    evidence: &LoadedEvidence,
+    inferred: &DistillInferenceResult,
+    processing_run_id: Uuid,
+    candidates: &[DistillCandidate],
+) -> Result<Option<(u32, u32)>, DistillError> {
+    #[allow(non_snake_case)]
+    let MEMORY_ATTRIBUTION = dispatcher.attribution;
+    let candidate_ttl_seconds = || (dispatcher.candidate_ttl)().map_err(DistillError::Config);
+    let tenant_id = lease.tenant_id;
+    let scope = Scope {
+        tenant_id: TenantId(tenant_id),
+        user_id: evidence.visibility_user_id.map(UserId),
+        workspace_id: evidence.visibility_workspace_id.map(WorkspaceId),
+        repository_id: None,
+        task_id: None,
+        run_id: None,
+        agent_id: None,
+    };
+    let mut txn =
+        distill_repo::begin_write_context(dispatcher.pool, tenant_id, evidence.rls_user_id).await?;
+    // ADR-0058 D-E: the finish is the FIRST statement — it locks the job row under its
+    // generation, so a superseded worker writes nothing.
+    if !distill_repo::finish_job_in_txn(
+        &mut txn,
+        lease,
+        DistillFinish::Done,
+        None,
+        0.0,
+        dispatcher.dispatch.not_ready_park_seconds,
+    )
+    .await?
+    {
+        txn.rollback().await?;
+        return Ok(None);
+    }
+    let mut inserted: i32 = 0;
+    let mut rejected = 0_u32;
+    for candidate in candidates {
+        let basis =
+            NonEmptyVec::new(vec![evidence.origin_class]).expect("one-element basis is non-empty");
+        match OriginBoundAuthorityPolicy.authorize(
+            candidate.class,
+            candidate.memory_type,
+            basis,
+            &scope,
+        ) {
+            Ok(authorized) => {
+                let content = memory_content(&candidate.content);
+                let memory_id = distill_repo::insert_memory(
+                    &mut txn,
+                    tenant_id,
+                    evidence,
+                    &NewMemory {
+                        content: &content,
+                        memory_type: candidate.memory_type,
+                        class: authorized.0,
+                        confidence: candidate.confidence,
+                        note_kind: None,
+                        note_id: None,
+                        attribution: AttributionSource::Primary,
+                        // ADR-0124 D-B: model-produced text, INTERPRETATION.
+                        producer: MemoryProducer::Distill,
+                    },
+                    &MEMORY_ATTRIBUTION,
+                )
+                .await?;
+                // ADR-0058 D-P: inferred affects ride the memory's own write (the one affect row
+                // issuer, origin DISTILL); a rejected candidate has no memory and its affects are
+                // dropped with it.
+                affect_repo::insert_inferred_in_txn(
+                    &mut txn,
+                    tenant_id,
+                    memory_id,
+                    evidence.evidence_id,
+                    &candidate.affects,
+                )
+                .await
+                .map_err(DistillError::Config)?;
+                inserted += 1;
+            }
+            Err(rejection) => {
+                // ponytail: no metrics facility exists in this crate tree yet (grepped:
+                // `memory_candidate_rejections` has no code consumer); this structured line IS
+                // the counter until a §53 emitter lands — same name, same label.
+                eprintln!(
+                    "memory_candidate_rejections_total{{reason=\"{}\"}} 1 tenant={} evidence={} requested={:?} origin={:?}",
+                    rejection_reason(rejection),
+                    tenant_id,
+                    evidence.evidence_id,
+                    candidate.class,
+                    evidence.origin_class,
+                );
+                // ADR-0026 (Card 6): a §10.1-rejected candidate is persisted PENDING (same write
+                // txn as the admitted memories) so a user can promote it via memory.confirm.
+                let ttl_secs = candidate_ttl_seconds()?;
+                let content = memory_content(&candidate.content);
+                let content_bytes = serde_json::to_vec(&content)
+                    .map_err(|_| DistillError::Config(ErrorCode::Internal))?;
+                let sha_bytes = hex::decode(payload_sha256(&content_bytes).to_hex())
+                    .map_err(|_| DistillError::Config(ErrorCode::Internal))?;
+                distill_repo::insert_candidate(
+                    &mut txn,
+                    tenant_id,
+                    evidence,
+                    &distill_repo::NewCandidate {
+                        body: &content,
+                        sha256: &sha_bytes,
+                        rejection,
+                        requested_class: candidate.class,
+                        memory_type: candidate.memory_type,
+                        confidence: candidate.confidence,
+                        ttl_seconds: ttl_secs,
+                    },
+                )
+                .await?;
+                rejected += 1;
+            }
+        }
+    }
+    let output_digest: [u8; 32] = Sha256::digest(&inferred.output_bytes).into();
+    let finished_runs = distill_repo::finish_processing_run(
+        &mut txn,
+        processing_run_id,
+        &output_digest,
+        inserted,
+        Some(&inferred.disclosure_id.to_string()),
+    )
+    .await?
+    .ok_or(DistillError::StaleInput)?;
+    if !distill_repo::settle_outbox_in_txn(
+        &mut txn,
+        row.outbox_id,
+        lease.lease_owner,
+        OutboxSettle::Done,
+    )
+    .await?
+    {
+        txn.rollback().await?;
+        return Ok(None);
+    }
+    let inserted = u32::try_from(inserted).unwrap_or_default();
+    // ADR-0061 card 34b: §41.2 run and outputs counted only once this commit lands (a rollback above counts
+    // nothing, so the job's retry counts once).
+    distill_repo::commit_distill_write(txn, finished_runs, u64::from(inserted)).await?;
+    Ok(Some((inserted, rejected)))
+}
+
+use crate::distill_reasoner::DistillAdmission;
+use crate::jobs::DistillLease;
+const DOMAIN_MISMATCH: &str = "DOMAIN_MISMATCH";
+const NO_DISTILL_BINDING: &str = "no admitted PRIVATE_DISTILL_TEXT route binding";
+
+use crate::distill_repo;
+
+#[async_trait::async_trait(?Send)]
+impl<A: memory_repo::MemoryAttribution + Copy> execution::DistillWorkStore
+    for DistillRuntime<'_, A>
+{
+    async fn take_outbox(
+        &self,
+        lease: &execution::DistillLease<'_>,
+        evidence: Uuid,
+        deadline: time::OffsetDateTime,
+    ) -> Result<execution::TakenOutbox, execution::DistillError> {
+        take_outbox_row(self.pool, lease, evidence, deadline)
+            .await
+            .map_err(|e| {
+                execution::DistillError::Db(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            })
+    }
+    async fn read(
+        &self,
+        tenant: Uuid,
+        domain: Uuid,
+        evidence: Uuid,
+    ) -> Result<execution::ReadLeg<DistillReadData>, execution::DistillError> {
+        Ok(
+            match read_leg(self, tenant, domain, evidence)
+                .await
+                .map_err(DistillError::erase)?
+            {
+                ReadLeg::Ready(ready) => execution::ReadLeg::Ready(Box::new(execution::Ready {
+                    route: ready.admission.locator.route_fields(),
+                    processing_run_id: ready.processing_run_id,
+                    offer_affects: ready.offer_affects,
+                    handle: DistillReadData {
+                        admission: ready.admission,
+                        evidence: ready.evidence,
+                    },
+                })),
+                ReadLeg::Unavailable => execution::ReadLeg::Unavailable,
+                ReadLeg::IdentityContract => execution::ReadLeg::IdentityContract,
+                ReadLeg::NotReady(class) => execution::ReadLeg::NotReady(class),
+            },
+        )
+    }
+    async fn settle(
+        &self,
+        lease: &execution::DistillLease<'_>,
+        outbox: Option<(&execution::ClaimedEvidence, execution::OutboxSettle)>,
+        finish: execution::Finish,
+        class: Option<&'static str>,
+        backoff: f64,
+        park: f64,
+    ) -> Result<bool, execution::DistillError> {
+        let dispatcher = self;
+
+        let mut txn =
+            distill_repo::begin_write_context(dispatcher.pool, lease.tenant_id, Uuid::nil())
+                .await
+                .map_err(|e| {
+                    execution::DistillError::Db(
+                        Box::new(e) as Box<dyn std::error::Error + Send + Sync>
+                    )
+                })?;
+        if !distill_repo::finish_job_in_txn(&mut txn, lease, finish, class, backoff, park)
+            .await
+            .map_err(|e| {
+                execution::DistillError::Db(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            })?
+        {
+            txn.rollback().await.map_err(|e| {
+                execution::DistillError::Db(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            })?;
+            return Ok(false);
+        }
+        if let Some((row, how)) = outbox
+            && !distill_repo::settle_outbox_in_txn(&mut txn, row.outbox_id, lease.lease_owner, how)
+                .await
+                .map_err(|e| {
+                    execution::DistillError::Db(
+                        Box::new(e) as Box<dyn std::error::Error + Send + Sync>
+                    )
+                })?
+        {
+            txn.rollback().await.map_err(|e| {
+                execution::DistillError::Db(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            })?;
+            return Ok(false);
+        }
+        txn.commit().await.map_err(|e| {
+            execution::DistillError::Db(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        })?;
+        Ok(true)
+    }
+    async fn write(
+        &self,
+        lease: &execution::DistillLease<'_>,
+        row: &execution::ClaimedEvidence,
+        ready: &execution::Ready<DistillReadData>,
+        inferred: &DistillInferenceResult,
+        candidates: &[DistillCandidate],
+    ) -> Result<Option<(u32, u32)>, execution::DistillError> {
+        write_txn(
+            self,
+            lease,
+            row,
+            &ready.handle.evidence,
+            inferred,
+            ready.processing_run_id,
+            candidates,
+        )
+        .await
+        .map_err(DistillError::erase)
+    }
+    async fn close_empty(
+        &self,
+        ready: &execution::Ready<DistillReadData>,
+        inferred: &DistillInferenceResult,
+    ) -> Result<(), execution::DistillError> {
+        let abandoned_digest: [u8; 32] = Sha256::digest(&inferred.output_bytes).into();
+        let mut abandoned_txn = begin_write_context(
+            self.pool,
+            ready.handle.admission.locator.tenant_id,
+            ready.handle.evidence.rls_user_id,
+        )
+        .await
+        .map_err(|e| {
+            execution::DistillError::Db(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        })?;
+        let finished_runs = finish_processing_run(
+            &mut abandoned_txn,
+            ready.processing_run_id,
+            &abandoned_digest,
+            0,
+            Some(&inferred.disclosure_id.to_string()),
+        )
+        .await
+        .map_err(|e| {
+            execution::DistillError::Db(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        })?
+        .ok_or(execution::DistillError::StaleInput)?;
+        commit_distill_write(abandoned_txn, finished_runs, 0)
+            .await
+            .map_err(|e| {
+                execution::DistillError::Db(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            })?;
+        Ok(())
+    }
+}
+
+type DistillError = execution::DistillError<sqlx::Error>;
+
+use execution::{memory_content, rejection_reason};
+
+use humaux_application::consolidate::PrivateReasoningError;
+use humaux_domain::ids::{TenantId, UserId};
+
+use execution::Finish as DistillFinish;
+
 #[cfg(test)]
 mod contract_tests {
     use super::*;

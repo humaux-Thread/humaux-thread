@@ -1,7 +1,7 @@
 //! `adapters::jobs` — `ops.jobs` SKIP LOCKED claim, lease heartbeat, and terminal-state transitions (§31 Durable Jobs
 //!   / §61 SKIP LOCKED Claim SQL).
-//! Depends-on: crates=[serde_json, sqlx]; services=[PostgreSQL(any) r=[ops.claim_derived_work] w=[ops.jobs] x=[ops.admit_distill_budget, ops.begin_call, ops.claim_derived_work, ops.claim_derived_work_v2, ops.distill_slots_all_bound, ops.finish_derived_work_v2, ops.renew_lease]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::postgres]
-//! Called-by: [adapters::consolidate_repo, adapters::distill_repo, humaux-consolidation-worker, humaux-private-worker, private-worker::distill, private-worker::main, tests]
+//! Depends-on: crates=[async-trait, humaux-application, serde_json, sqlx]; services=[PostgreSQL(any) r=[ops.claim_derived_work] w=[ops.jobs] x=[ops.admit_distill_budget, ops.begin_call, ops.claim_derived_work, ops.claim_derived_work_v2, ops.distill_slots_all_bound, ops.finish_derived_work_v2, ops.renew_lease]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::distill_repo, adapters::postgres, application::consolidate, application::distill_execution]
+//! Called-by: [adapters::consolidate_repo, adapters::distill_repo, humaux-consolidation-worker, humaux-private-worker, private-worker::main, tests]
 //! Invariants: [one tenant per call: each table-level function opens a transaction and sets humaux.tenant_id before
 //!   touching FORCE-RLS ops.jobs; claims use SKIP LOCKED with a lease; a PG error returns to the caller with no job
 //!   state change; distill claims go only through the four ADR-0058 owner definers, which filter by tenant and job
@@ -472,75 +472,10 @@ impl DistillFinish {
 }
 
 /// One `DERIVED_DISTILL` job as the v2 claim returned it (`PROCESSING` / `CLAIMED`).
-#[derive(Debug, Clone)]
-pub struct DistillClaim {
-    /// The claimed job.
-    pub job_id: Uuid,
-    /// Its tenant; every later read/write installs this tenant (§62).
-    pub tenant_id: Uuid,
-    /// ADR-0058 D-E fencing token of this claim.
-    pub claim_generation: i32,
-    /// Provider requests admitted so far (counted at `begin_call`, never at claim).
-    pub attempt: i32,
-    /// Claims that expired before any request was admitted (D-F pre-dispatch cap).
-    pub abandoned_claims: i32,
-    /// The 0164 enqueue payload (`reasoning_domain_id`, `evidence_id`).
-    pub payload: serde_json::Value,
-    /// Lease end as claimed.
-    pub lease_expires_at: OffsetDateTime,
-    /// End of this claim: the lease never passes it.
-    pub hard_deadline: OffsetDateTime,
-    /// Class of the previous settle, if any.
-    pub last_error_class: Option<String>,
-    /// Since when the job has been not ready (D-H park age), if it is.
-    pub not_ready_since: Option<OffsetDateTime>,
-    /// The ledger row of the claim's last admitted request — after a T6 re-queue, the call whose
-    /// outcome stayed unknown.
-    pub dispatch_model_call_id: Option<Uuid>,
-}
-
-impl DistillClaim {
-    fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self, JobsError> {
-        Ok(Self {
-            job_id: row.try_get("job_id")?,
-            tenant_id: row.try_get("tenant_id")?,
-            claim_generation: row.try_get("claim_generation")?,
-            attempt: row.try_get("attempt")?,
-            abandoned_claims: row.try_get("abandoned_claims")?,
-            payload: row.try_get("payload")?,
-            lease_expires_at: row.try_get("lease_expires_at")?,
-            hard_deadline: row.try_get("hard_deadline")?,
-            last_error_class: row.try_get("last_error_class")?,
-            not_ready_since: row.try_get("not_ready_since")?,
-            dispatch_model_call_id: row.try_get("dispatch_model_call_id")?,
-        })
-    }
-}
+pub use humaux_application::distill_execution::DistillClaim;
 
 /// The exact distill lease a seat holds: identity plus the claim generation (ADR-0058 D-E).
-#[derive(Debug, Clone, Copy)]
-pub struct DistillLease<'a> {
-    /// The claimed job.
-    pub job_id: Uuid,
-    /// Its tenant.
-    pub tenant_id: Uuid,
-    /// This process's `lease_owner`.
-    pub lease_owner: &'a str,
-    /// The generation the claim returned; a superseded one renews, dispatches and settles nothing.
-    pub claim_generation: i32,
-}
-
-impl<'a> DistillLease<'a> {
-    /// The lease exactly as [`claim_distill`] handed it back.
-    pub fn of(claim: &DistillClaim, lease_owner: &'a str) -> Self {
-        Self {
-            job_id: claim.job_id,
-            tenant_id: claim.tenant_id,
-            lease_owner,
-            claim_generation: claim.claim_generation,
-        }
-    }
-}
+pub use humaux_application::distill_execution::DistillLease;
 
 /// ADR-0058 T1: claims at most one `DERIVED_DISTILL` job through the tenant-fair, slot-bounded
 /// owner definer (which also sweeps expired claims). `None` = no free slot or no READY work.
@@ -557,7 +492,7 @@ pub async fn claim_distill(
         .bind(hard_deadline_seconds)
         .fetch_optional(pool.pool())
         .await?;
-    row.as_ref().map(DistillClaim::from_row).transpose()
+    row.as_ref().map(distill_claim_from_row).transpose()
 }
 
 /// ADR-0058 R5: whether every provider slot was bound when read (MVCC, no lock) — the drain's
@@ -595,24 +530,10 @@ pub async fn renew_distill_lease(
 /// (`HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_*`, §78.1), passed into `ops.admit_distill_budget`.
 // ponytail: one deployment-wide window/limit counting requests, not tokens (ADR-0058 L18); per-plan
 // limits from the entitlement snapshot and ledger-token weighting when card 38 adds the breaker.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DistillCallBudget {
-    /// Length of the sliding window, seconds (> 0).
-    pub window_seconds: f64,
-    /// Admitted requests of one tenant allowed inside the window (>= 1).
-    pub max_calls: i32,
-}
+pub use humaux_application::distill_execution::DistillCallBudget;
 
 /// What [`begin_distill_call`] decided about one provider request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallAdmission {
-    /// The request may leave; the job's attempt count after counting it.
-    Admitted(i32),
-    /// The claim's fence refused it (owner, generation, lease, slot or deadline): no request.
-    Refused,
-    /// The tenant's §72.3 budget is spent for now: no request, nothing counted, no row written.
-    OverBudget,
-}
+pub use humaux_application::distill_execution::CallAdmission;
 
 /// ADR-0058 T2 behind the D-T budget: ONE transaction runs `ops.admit_distill_budget` (which holds
 /// the tenant's budget lock to commit) and then `ops.begin_call` (attempt + 1, `DISPATCH_INTENT`,
@@ -1062,6 +983,91 @@ pub async fn resume_from_waiting_key(
 /// §78.2 "DB enum 与 Rust enum 走 contract test 对账": [`JobStatus::ALL`] must list exactly
 /// `ops.jobs_status_check`'s values, in order, both directions. Runs against the real
 /// migration file text, not a live DB, so it always executes.
+impl From<humaux_application::distill_execution::Finish> for DistillFinish {
+    fn from(value: humaux_application::distill_execution::Finish) -> Self {
+        use humaux_application::distill_execution::Finish;
+        match value {
+            Finish::Done => Self::Done,
+            Finish::Retry => Self::Retry,
+            Finish::NotReady => Self::NotReady,
+            Finish::WaitingKey => Self::WaitingKey,
+            Finish::Dead => Self::Dead,
+        }
+    }
+}
+fn distill_job_error(error: JobsError) -> humaux_application::distill_execution::DistillError {
+    use humaux_application::{consolidate::PrivateReasoningError, distill_execution::DistillError};
+    match error {
+        JobsError::Db(e) => DistillError::Db(Box::new(e)),
+        other => DistillError::Reasoning(PrivateReasoningError::new(other.to_string())),
+    }
+}
+#[async_trait::async_trait(?Send)]
+impl<A> humaux_application::distill_execution::DistillJobPort
+    for crate::distill_repo::DistillRuntime<'_, A>
+{
+    async fn claim(
+        &self,
+        config: &humaux_application::distill_execution::DistillDispatchConfig,
+    ) -> Result<Option<DistillClaim>, humaux_application::distill_execution::DistillError> {
+        claim_distill(
+            self.pool,
+            &config.lease_owner,
+            config.lease_seconds,
+            config.hard_deadline_seconds,
+        )
+        .await
+        .map_err(distill_job_error)
+    }
+    async fn all_slots_bound(
+        &self,
+    ) -> Result<bool, humaux_application::distill_execution::DistillError> {
+        distill_slots_all_bound(self.pool)
+            .await
+            .map_err(distill_job_error)
+    }
+    async fn renew(
+        &self,
+        lease: &DistillLease<'_>,
+        seconds: f64,
+    ) -> Result<Option<()>, humaux_application::distill_execution::DistillError> {
+        renew_distill_lease(self.pool, lease, seconds)
+            .await
+            .map(|v| v.map(|_| ()))
+            .map_err(distill_job_error)
+    }
+    async fn admit_call(
+        &self,
+        lease: &DistillLease<'_>,
+        call: Uuid,
+        remaining: f64,
+        budget: DistillCallBudget,
+    ) -> Result<CallAdmission, humaux_application::distill_execution::DistillError> {
+        begin_distill_call(self.pool, lease, call, remaining, budget)
+            .await
+            .map_err(distill_job_error)
+    }
+    fn retry_backoff(&self, seconds: f64, attempt: i32) -> f64 {
+        retry_backoff_seconds(seconds, attempt)
+    }
+}
+
+fn distill_claim_from_row(row: &sqlx::postgres::PgRow) -> Result<DistillClaim, JobsError> {
+    Ok(DistillClaim {
+        job_id: row.try_get("job_id")?,
+        tenant_id: row.try_get("tenant_id")?,
+        claim_generation: row.try_get("claim_generation")?,
+        attempt: row.try_get("attempt")?,
+        abandoned_claims: row.try_get("abandoned_claims")?,
+        payload: row.try_get("payload")?,
+        lease_expires_at: row.try_get("lease_expires_at")?,
+        hard_deadline: row.try_get("hard_deadline")?,
+        last_error_class: row.try_get("last_error_class")?,
+        not_ready_since: row.try_get("not_ready_since")?,
+        dispatch_model_call_id: row.try_get("dispatch_model_call_id")?,
+    })
+}
+
 #[cfg(test)]
 mod contract_tests {
     use super::*;

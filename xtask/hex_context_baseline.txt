@@ -134,7 +134,6 @@ crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:hum
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::provider_failure_line
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::provider_matches_admission
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::DistillFinish
-crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::DistillLease
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::JobsError::Db
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::finish_distill_in_txn
 crates/adapters/src/exact_census.rs:retrieval_read_model->project_continuity:humaux_domain::continuity::ProjectId

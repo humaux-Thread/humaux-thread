@@ -1,15 +1,12 @@
 //! `private-worker::tests::support::distill_lane` — the key-free Distill harness the private-worker E2E tests share:
 //!   the R3 admission lane seed for `PRIVATE_DISTILL_TEXT`, the canned-reply `FakeProvider`, its route map and the
 //!   dispatch config.
-//! Depends-on: crates=[async-trait, humaux-adapters, humaux-testkit, postgres, uuid];
-//!   services=[PostgreSQL(owner) r=[control.processor_models] w=[control.credentials, control.processor_models,
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-testkit, postgres, uuid]; services=[PostgreSQL(owner) r=[control.processor_models] w=[control.credentials, control.processor_models,
 //!   control.provider_accounts, control.provider_endpoints, control.reasoning_credential_bindings,
 //!   control.reasoning_profiles, control.reasoning_route_bindings, control.reasoning_route_candidates,
 //!   control.reasoning_route_policies, ops.reasoning_account_health_observations,
-//!   ops.reasoning_provider_health_observations]]; env=[]; modules=[adapters::byok, adapters::contribution_reasoner,
-//!   adapters::disclosure, adapters::jobs, adapters::reasoning_route_admission, private-worker::distill,
-//!   private-worker::tests::support::live_minimax, humaux-testkit]
-//! Called-by: [private-worker::tests::distill_hop_e2e, private-worker::tests::m29_attribution_e2e]
+//!   ops.reasoning_provider_health_observations]]; env=[]; modules=[adapters::attribution_repo, adapters::byok, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_reasoner, adapters::distill_repo, adapters::jobs, adapters::postgres, adapters::reasoning_route_admission, humaux-private-worker, humaux-testkit, private-worker::distill, private-worker::tests::support::live_minimax]
+//! Called-by: [private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e, private-worker::tests::m29_attribution_e2e]
 //! Invariants: [test-only, included by #[path] next to `support/live_minimax.rs`; the provider answers in call order
 //!   and panics past its last reply, so an unexpected extra call is never silent; the lane matches the descriptor
 //!   exactly, as `provider_matches_admission` requires]
@@ -298,3 +295,62 @@ pub fn seed_admission_lane(
         )
         .expect("account health observation");
 }
+
+/// Compose the same capabilities as the binary for an isolated PG fixture.
+pub async fn dispatch_pass(
+    pool: &humaux_adapters::postgres::PrivateWorkerDbPool,
+    providers: &humaux_adapters::reasoning_route_admission::ProviderFor,
+    config: ContributionReasonerConfig,
+    dispatch: &DistillDispatchConfig,
+) -> Result<
+    humaux_private_worker::distill::DistillDispatchReport,
+    humaux_private_worker::distill::DistillError,
+> {
+    let reasoner = humaux_adapters::distill_reasoner::DistillReasoner::new(pool, providers, config)
+        .map_err(humaux_private_worker::distill::DistillError::Config)?;
+    let runtime = humaux_adapters::distill_repo::DistillRuntime::new(
+        pool,
+        reasoner,
+        dispatch,
+        humaux_adapters::attribution_repo::AttributionLadder,
+        humaux_private_worker::distill::candidate_ttl_seconds,
+        |pool, tenant, call, rejected, seconds| {
+            Box::pin(humaux_private_worker::observe_route_health(
+                pool, tenant, call, rejected, seconds,
+            ))
+        },
+    );
+    humaux_private_worker::distill::dispatch_pass(&runtime, dispatch).await
+}
+/// Fixture assembly for the resident dispatcher; shutdown semantics stay in the worker.
+#[allow(dead_code)]
+pub async fn dispatch_serve(
+    pool: &humaux_adapters::postgres::PrivateWorkerDbPool,
+    providers: &humaux_adapters::reasoning_route_admission::ProviderFor,
+    config: ContributionReasonerConfig,
+    dispatch: &DistillDispatchConfig,
+    poll: Duration,
+    shutdown: &std::sync::atomic::AtomicBool,
+) -> Result<
+    humaux_private_worker::distill::DistillDispatchReport,
+    humaux_private_worker::distill::DistillError,
+> {
+    let reasoner = humaux_adapters::distill_reasoner::DistillReasoner::new(pool, providers, config)
+        .map_err(humaux_private_worker::distill::DistillError::Config)?;
+    let runtime = humaux_adapters::distill_repo::DistillRuntime::new(
+        pool,
+        reasoner,
+        dispatch,
+        humaux_adapters::attribution_repo::AttributionLadder,
+        humaux_private_worker::distill::candidate_ttl_seconds,
+        |pool, tenant, call, rejected, seconds| {
+            Box::pin(humaux_private_worker::observe_route_health(
+                pool, tenant, call, rejected, seconds,
+            ))
+        },
+    );
+    humaux_private_worker::distill::dispatch_serve(&runtime, dispatch, poll, shutdown).await
+}
+/// Shared drain diagnostic in the dispatch-only fixture.
+#[allow(dead_code)]
+pub type DrainStop = humaux_private_worker::distill::DrainStop;

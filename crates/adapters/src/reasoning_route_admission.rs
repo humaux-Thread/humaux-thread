@@ -4,7 +4,7 @@
 //!   control.reasoning_profile_capabilities, control.reasoning_profile_request_extras,
 //!   control.reasoning_route_health_state, control.resolve_user_reasoning_admission]];
 //!   env=[]; modules=[adapters::byok, adapters::postgres, application::consolidate, domain::egress]
-//! Called-by: [adapters::consolidation_reasoner, adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::model_call_ledger, adapters::reasoning_route_onboarding, humaux-private-worker, private-worker::distill, private-worker::inference_rpc, private-worker::main, private-worker::route_providers, tests]
+//! Called-by: [adapters::consolidation_reasoner, adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::model_call_ledger, adapters::reasoning_route_onboarding, humaux-private-worker, private-worker::inference_rpc, private-worker::main, private-worker::route_providers, tests]
 //! Invariants: [the private worker never reads route/health/credential tables directly; it calls the frozen SECURITY
 //!   DEFINER resolver with one binding and gets one typed locator or none; a malformed locator is InvalidLocator;
 //!   the locator's capabilities and request extras are the admitted Profile@version's own, read in the same

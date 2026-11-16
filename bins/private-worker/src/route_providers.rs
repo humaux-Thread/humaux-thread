@@ -1,10 +1,7 @@
 //! `private-worker::route_providers` — the one production source of provider instances: one
 //!   `OpenAiCompatibleProvider` per admitted Profile@version, built from the route, behind the deployment's
 //!   deny-only credential map, recipient ↔ host list and region list (ADR-0060 D-B, D-C, D-J, D-L).
-//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json, sha2, time, tokio, uuid];
-//!   services=[HTTP(provider endpoint), PostgreSQL(role_private_worker)]; env=[HUMAUX_PRIVATE_WORKER_CREDENTIALS,
-//!   HUMAUX_PRIVATE_WORKER_EGRESS_RECIPIENTS, HUMAUX_PRIVATE_WORKER_REGIONS]; modules=[adapters::byok,
-//!   adapters::byok::ssrf, adapters::postgres, adapters::reasoning_route_admission]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json, sha2, time, tokio, uuid]; services=[HTTP(provider endpoint), PostgreSQL(role_private_worker)]; env=[HUMAUX_PRIVATE_WORKER_CREDENTIALS, HUMAUX_PRIVATE_WORKER_EGRESS_RECIPIENTS, HUMAUX_PRIVATE_WORKER_REGIONS]; modules=[adapters::attribution_repo, adapters::byok, adapters::byok::ssrf, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::distill_repo, adapters::postgres, adapters::reasoning_route_admission, application::distill_execution, domain::error, humaux-private-worker, private-worker::distill]
 //! Called-by: [private-worker::main, tests]
 //! Invariants: [an instance is built only from an admitted locator and only after its credential reference is mapped,
 //!   its recipient names the host it dials and its region is allowed — no DNS lookup or client build before that;
@@ -462,6 +459,35 @@ impl RouteProviders {
         });
         Ok(Arc::clone(entry))
     }
+}
+
+/// Assemble Distill outbound capabilities beside the existing provider instance factory.
+pub fn distill_runtime<'a>(
+    pool: &'a PrivateWorkerDbPool,
+    providers: &'a humaux_adapters::reasoning_route_admission::ProviderFor,
+    config: humaux_adapters::contribution_reasoner::ContributionReasonerConfig,
+    dispatch: &'a humaux_application::distill_execution::DistillDispatchConfig,
+) -> Result<
+    humaux_adapters::distill_repo::DistillRuntime<
+        'a,
+        humaux_adapters::attribution_repo::AttributionLadder,
+    >,
+    humaux_domain::error::ErrorCode,
+> {
+    let reasoner =
+        humaux_adapters::distill_reasoner::DistillReasoner::new(pool, providers, config)?;
+    Ok(humaux_adapters::distill_repo::DistillRuntime::new(
+        pool,
+        reasoner,
+        dispatch,
+        humaux_adapters::attribution_repo::AttributionLadder,
+        crate::distill::candidate_ttl_seconds,
+        |pool, tenant, call, rejected, seconds| {
+            Box::pin(crate::observe_route_health(
+                pool, tenant, call, rejected, seconds,
+            ))
+        },
+    ))
 }
 
 #[cfg(test)]

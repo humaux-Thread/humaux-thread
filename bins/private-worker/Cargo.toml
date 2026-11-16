@@ -30,7 +30,7 @@ humaux-infra-cell = { path = "../../crates/infra-cell" }
 # ADR-0016 `distill.rs`: `humaux_projection::fingerprint::source_hash` is the workspace's sole
 # `SourceHash` constructor (§48.0/G80-11) — the Distill hop's `private.processing_runs.
 # source_hash` must come from it, never a second hasher.
-# why: humaux-projection dependency; used-by: [private-worker::distill, private-worker::tests::distill_hop_e2e, tests]
+# why: humaux-projection dependency; used-by: [private-worker::tests::distill_hop_e2e, tests]
 humaux-projection = { path = "../../crates/projection" }
 # ADR-0061 D-B: the loopback ops listener (no metrics crate, D-A).
 # why: /metrics + /status exposition; used-by: [private-worker::main]
@@ -43,9 +43,9 @@ axum = "0.8.9"
 serde = { version = "1", features = ["derive"] }
 # why: serde_json dependency; used-by: [humaux-private-worker, private-worker::distill, private-worker::tests::contribution_execution_runner, private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e, tests]
 serde_json = "1"
-# why: sha2 dependency; used-by: [humaux-private-worker, private-worker::distill, private-worker::tests::contribution_execution_runner, private-worker::tests::distill_hop_e2e, tests]
+# why: sha2 dependency; used-by: [humaux-private-worker, private-worker::tests::contribution_execution_runner, private-worker::tests::distill_hop_e2e, tests]
 sha2 = "0.11"
-# why: hex dependency; used-by: [private-worker::distill, private-worker::inference_rpc, private-worker::tests::distill_hop_e2e, tests]
+# why: hex dependency; used-by: [private-worker::inference_rpc, private-worker::tests::distill_hop_e2e, tests]
 hex = "0.4"
 # why: tokio dependency; used-by: [private-worker::inference_rpc, private-worker::main, private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e, private-worker::tests::start_manual_contribution_command_0131, tests]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
@@ -66,7 +66,7 @@ uuid = { version = "1.25.0", features = ["v4"] }
 humaux-testkit = { path = "../../crates/testkit" }
 # why: humaux-local-secret-scan dependency; used-by: [private-worker::tests::distill_hop_e2e, tests]
 humaux-local-secret-scan = { path = "../../crates/local-secret-scan" }
-# why: sha2 dependency; used-by: [humaux-private-worker, private-worker::distill, private-worker::tests::contribution_execution_runner, private-worker::tests::distill_hop_e2e, tests]
+# why: sha2 dependency; used-by: [humaux-private-worker, private-worker::tests::contribution_execution_runner, private-worker::tests::distill_hop_e2e, tests]
 sha2 = "0.11"
 # M29 T07: `tests/m29_attribution_e2e.rs` puts through the adapters' operation_receipt fixture and governance ops
 # (included by #[path]) and authenticates a PAT through the gateway's real credential check.

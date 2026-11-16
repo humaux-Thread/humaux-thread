@@ -79,7 +79,7 @@ use humaux_domain::{
     relation::{Timestamp, Validity},
 };
 use humaux_gateway::auth::{CredentialScope, TouchThrottle, authenticate_service_credential};
-use humaux_private_worker::distill::{DistillDispatchConfig, DistillDispatchReport, dispatch_pass};
+use humaux_private_worker::distill::{DistillDispatchConfig, DistillDispatchReport};
 use humaux_protocol::edge::compute_api_key_hash;
 use humaux_testkit::fixture_purge::purge_tenant_fixture_sql;
 use humaux_testkit::{DbIntegrationFixture, run_db_fixture};
@@ -1525,3 +1525,5 @@ fn g_n09_4_corpus_fake() {
     let fake = Counted::new(FakeProvider::new(vec![REPLY_B; CORPUS.len()]));
     e_d("g_n09_4_corpus_fake", &fake, false);
 }
+
+use distill_lane::dispatch_pass;
