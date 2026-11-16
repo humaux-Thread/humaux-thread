@@ -92,8 +92,6 @@ bins/maintenance/src/drill.rs:humaux_adapters::rebuild::Verdict
 bins/maintenance/src/drill.rs:humaux_adapters::stream_repo::Backoff
 bins/maintenance/src/drill.rs:humaux_adapters::stream_repo::ClaimFamily
 bins/maintenance/src/drill.rs:humaux_adapters::stream_repo::OnlyRun
-bins/maintenance/src/health_serve.rs:humaux_adapters::disclosure::DisclosureOutcome
-bins/maintenance/src/health_serve.rs:humaux_adapters::health::HealthSample
 bins/maintenance/src/main.rs:humaux_adapters::byok::ReasoningCapability
 bins/maintenance/src/main.rs:humaux_adapters::membership_repo::AdminAction
 bins/maintenance/src/main.rs:humaux_adapters::provisioning::NewApiKey

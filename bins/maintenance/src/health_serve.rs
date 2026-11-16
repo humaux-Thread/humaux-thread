@@ -1,9 +1,9 @@
 //! `maintenance::health_serve` — `humaux-maintenance health serve`, the one resident owner of the §41.2 SQL-derived
 //!   health gauges: a periodic `ops.health_snapshot` sampler plus the loopback `/metrics` + `/status` listener
 //!   (ADR-0061 D-D process side, D-B).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-telemetry, serde_json, time, tokio];
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-telemetry, serde_json, time, tokio];
 //!   services=[PostgreSQL(role_maintenance) x=[ops.health_snapshot]]; env=[
-//!   HUMAUX_MAINTENANCE_HEALTH_SAMPLE_SECONDS, HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR, HUMAUX_MAINTENANCE_PG_DSN]; modules=[adapters::disclosure, adapters::health, adapters::postgres, domain::error,
+//!   HUMAUX_MAINTENANCE_HEALTH_SAMPLE_SECONDS, HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR, HUMAUX_MAINTENANCE_PG_DSN]; modules=[application::health, adapters::postgres, domain::error,
 //!   telemetry::health, telemetry::host, telemetry::metrics, maintenance::main, maintenance::resident]
 //! Called-by: [maintenance::main]
 //! Invariants: [a scrape never runs SQL, it renders the last publish; a failed or stale (> 2 × interval) sample
@@ -23,9 +23,8 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
-use humaux_adapters::disclosure::DisclosureOutcome as DbOutcome;
-use humaux_adapters::health::{HealthSample, read_health_snapshot};
 use humaux_adapters::postgres::MaintenanceDbPool;
+use humaux_application::health::{self as health_use_case, FinalizedOutcome, ObservedHealth};
 use humaux_domain::error::ErrorCode;
 use humaux_telemetry::health::{self, AgeBucket, DisclosureOutcome, HealthSnapshot};
 use humaux_telemetry::host::{self, HostSampler, HostSources};
@@ -120,13 +119,13 @@ fn status(started: SystemTime, last: &Mutex<Last>, interval: Duration) -> String
     Value::Object(doc).to_string()
 }
 
-/// The adapters row onto the telemetry snapshot; the outcome match is exhaustive, so a new DB outcome is a
+/// The application sample onto telemetry; the exhaustive match makes a new published outcome a
 /// compile error here rather than a silently dropped label (§78.2).
-fn snapshot(s: &HealthSample) -> HealthSnapshot {
-    let outcome = |o: &DbOutcome| match o {
-        DbOutcome::Success => DisclosureOutcome::Success,
-        DbOutcome::Failed => DisclosureOutcome::Failed,
-        DbOutcome::Denied => DisclosureOutcome::Denied,
+fn snapshot(s: &ObservedHealth) -> HealthSnapshot {
+    let outcome = |o: &FinalizedOutcome| match o {
+        FinalizedOutcome::Success => DisclosureOutcome::Success,
+        FinalizedOutcome::Failed => DisclosureOutcome::Failed,
+        FinalizedOutcome::Denied => DisclosureOutcome::Denied,
     };
     HealthSnapshot {
         jobs_pending: s.jobs_pending,
@@ -158,7 +157,7 @@ async fn sample_read(
     interval: Duration,
 ) -> std::result::Result<OffsetDateTime, String> {
     // The client-side bound covers a pool acquire against an unreachable server, which no statement_timeout sees.
-    let read = tokio::time::timeout(interval, read_health_snapshot(pool, since))
+    let read = tokio::time::timeout(interval, health_use_case::sample(pool, since))
         .await
         .map_err(|_| {
             format!("ops.health_snapshot(timestamptz) did not answer within {SAMPLE_SECONDS}")

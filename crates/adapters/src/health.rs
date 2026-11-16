@@ -1,9 +1,9 @@
 //! `adapters::health` — the two read-only aggregate reads of ADR-0061: the §41.2 SQL-derived health sample
 //!   (`ops.health_snapshot`, maintenance) and the §4.4 probe aggregates (`ops.admin_probe_snapshot`, admin).
-//! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(role_admin) x=[ops.admin_probe_snapshot],
-//!   PostgreSQL(role_maintenance) x=[ops.health_snapshot]]; env=[]; modules=[adapters::disclosure,
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(role_admin) x=[ops.admin_probe_snapshot],
+//!   PostgreSQL(role_maintenance) x=[ops.health_snapshot]]; env=[]; modules=[application::health, adapters::disclosure,
 //!   adapters::postgres, domain::ticket_family]
-//! Called-by: [admin::probe, maintenance::health_serve, tests]
+//! Called-by: [admin::probe, tests]
 //! Invariants: [the only SQL of the health gauges and the aggregate probes; each read is one definer call that
 //!   returns cross-tenant aggregates and no tenant id; an unknown (domain, projection_kind) pair or outcome literal
 //!   fails the read naming it, never a synthesized label (§78.2)]
@@ -244,6 +244,51 @@ pub async fn read_admin_probe_snapshot(
         jobs_in_lease: count(&row, "jobs_in_lease")?,
         definition: row.try_get("definition")?,
     })
+}
+
+#[async_trait::async_trait]
+impl humaux_application::health::HealthSnapshotPort for MaintenanceDbPool {
+    async fn read_health(
+        &self,
+        since: OffsetDateTime,
+    ) -> Result<humaux_application::health::ObservedHealth, String> {
+        use humaux_application::health::{FinalizedOutcome, ObservedHealth};
+
+        let sample = read_health_snapshot(self, since)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(ObservedHealth {
+            as_of: sample.as_of,
+            jobs_pending: sample.jobs_pending,
+            jobs_processing: sample.jobs_processing,
+            jobs_waiting_key: sample.jobs_waiting_key,
+            jobs_dead: sample.jobs_dead,
+            oldest_pending_age_seconds: sample.oldest_pending_age_seconds,
+            projection_lag_events: sample.projection_lag_events,
+            processing_gaps: sample.processing_gaps,
+            reserved_le_10s: sample.reserved_le_10s,
+            reserved_le_60s: sample.reserved_le_60s,
+            reserved_gt_60s: sample.reserved_gt_60s,
+            tenants_active_1d: sample.tenants_active_1d,
+            tenants_active_7d: sample.tenants_active_7d,
+            finalized_since: sample
+                .finalized_since
+                .into_iter()
+                .map(|(outcome, count)| {
+                    // §78.2: consume the provider's published labels; unknown values fail closed.
+                    let outcome = match outcome.as_str() {
+                        "SUCCESS" => FinalizedOutcome::Success,
+                        "FAILED" => FinalizedOutcome::Failed,
+                        "DENIED" => FinalizedOutcome::Denied,
+                        label => {
+                            return Err(format!("unknown disclosure outcome literal {label:?}"));
+                        }
+                    };
+                    Ok((outcome, count))
+                })
+                .collect::<Result<_, String>>()?,
+        })
+    }
 }
 
 #[cfg(test)]

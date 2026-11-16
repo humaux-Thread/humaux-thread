@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 200, "HEX-LAYER")
+    hex_exact(actual, baseline, 198, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -14095,6 +14095,13 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             "bins/gateway/src/guard.rs",
             "use humaux_adapters as bypass; fn boundary() { let _: bypass::affect_repo::BoundaryDto; }",
             "LAYER qualified alias bypass",
+        );
+        // SLICE-7a: the resident health entry must consume the application sampling contract.
+        mutate(
+            3,
+            "bins/maintenance/src/health_serve.rs",
+            "use humaux_adapters::health::HealthSample as BoundaryHealthSample;",
+            "LAYER SLICE-7a health entry adapter regression",
         );
         let orphan = root.join("crates/domain/src/boundary_orphan.rs");
         fs::write(&orphan, "fn orphan() {}\n").unwrap();

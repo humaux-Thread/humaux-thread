@@ -1413,6 +1413,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_ADMIN_TLS_CERT_PATHS`
 - service `fs(PEM certificate files)`
 
+#### `application::health`
+
 #### `contracts::mechanism_registry`
 - reads `public.consensus_ready`
 - service `PostgreSQL(any)`
@@ -2927,12 +2929,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.memory_in_project`
 - service `PostgreSQL(any)`
 
-#### `adapters::health`
-- executes `ops.admin_probe_snapshot`
-- executes `ops.health_snapshot`
-- service `PostgreSQL(role_admin)`
-- service `PostgreSQL(role_maintenance)`
-
 #### `adapters::jobs`
 - reads `ops.claim_derived_work`
 - writes `ops.jobs`
@@ -3305,6 +3301,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::distill`
 
 #### `application::entitlement`
+
+#### `application::health`
 
 #### `application::pin`
 
@@ -7863,7 +7861,6 @@ executed by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-admin): `adapters::health`
 - process(humaux-admin): `admin::probe`
-- process(humaux-maintenance): `adapters::health`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `ops.admit_distill_budget`
@@ -8453,7 +8450,6 @@ executed by:
 - (no process): `maintenance::tests::health_serve`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-admin): `adapters::health`
-- process(humaux-maintenance): `adapters::health`
 - process(humaux-maintenance): `maintenance::health_serve`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -14307,6 +14303,7 @@ modules naming it:
 - `adapters::exact_census`
 - `adapters::forget_repo`
 - `adapters::grep_repo`
+- `adapters::health`
 - `adapters::login_repo`
 - `adapters::memory_governance_repo`
 - `adapters::memory_repo`
@@ -14465,6 +14462,7 @@ modules naming it:
 - `adapters::email::sink`
 - `adapters::email::smtp`
 - `adapters::email::test_double`
+- `adapters::health`
 - `adapters::login_repo`
 - `adapters::mechanism_observation`
 - `adapters::memory_repo`
@@ -15415,6 +15413,7 @@ modules naming it:
 - `application::correct`
 - `application::distill`
 - `application::entitlement`
+- `application::health`
 - `application::login`
 - `application::notify`
 - `application::oauth`
@@ -15533,6 +15532,7 @@ modules naming it:
 - `application::contribution_execution`
 - `application::coordination`
 - `application::distill`
+- `application::health`
 - `application::login`
 - `application::private_inference`
 - `application::public_dispatch`
@@ -15578,6 +15578,7 @@ why: OffsetDateTime grants and RFC3339 freshness readings
 modules naming it:
 - `application::billing`
 - `application::coordination`
+- `application::health`
 - `application::oauth`
 - `application::recall_read`
 - `application::remember`
@@ -17566,6 +17567,12 @@ modules naming it:
 - `gateway::tests::recall_embedding_cache`
 - `gateway::tests::service_credentials`
 - `tests`
+
+### humaux-maintenance → `humaux-application` (normal)
+why: operational health sampling use case
+
+modules naming it:
+- `maintenance::health_serve`
 
 ### humaux-maintenance → `humaux-adapters` (normal)
 why: the onboarding library (provisioning), typed maintenance pool, quota window and membership admin path
