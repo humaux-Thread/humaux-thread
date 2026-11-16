@@ -171,11 +171,6 @@ bins/private-worker/src/inference_rpc.rs:humaux_adapters::consolidation_reasoner
 bins/private-worker/src/inference_rpc.rs:humaux_adapters::contribution_reasoner::ContributionReasoner
 bins/private-worker/src/inference_rpc.rs:humaux_adapters::contribution_reasoner::ContributionReasonerConfig
 bins/private-worker/src/inference_rpc.rs:humaux_adapters::disclosure::DeletionCapability
-bins/private-worker/src/inference_rpc.rs:humaux_adapters::private_inference_rpc::ClaimOutcome
-bins/private-worker/src/inference_rpc.rs:humaux_adapters::private_inference_rpc::ClaimedRegistration
-bins/private-worker/src/inference_rpc.rs:humaux_adapters::private_inference_rpc::FinishOutcome
-bins/private-worker/src/inference_rpc.rs:humaux_adapters::private_inference_rpc::PrivateWorkerInferenceCalls
-bins/private-worker/src/inference_rpc.rs:humaux_adapters::private_inference_rpc::StoredOutcome
 bins/private-worker/src/inference_rpc.rs:humaux_adapters::reasoning_route_admission::ProviderFor
 bins/private-worker/src/lib.rs:humaux_adapters::byok::ReasoningProviderError
 bins/private-worker/src/lib.rs:humaux_adapters::contribution_execution_ingress::ContributionExecutionIngress
