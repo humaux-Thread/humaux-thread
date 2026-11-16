@@ -1330,12 +1330,37 @@ fn hex_use_types(tree: &syn::UseTree, prefix: &str, found: &mut BTreeSet<String>
     }
 }
 
+/// ADR-0130 D2/D7: public-pool owns cloud public.* repositories and outbound
+/// projection I/O, so these modules are adapters too. Its admission, completeness,
+/// public_evolve and vocab::model modules are pure logic and remain outside this set.
+const HEX_LAYER_ADAPTER_PATHS: &[&str] = &[
+    "humaux_adapters",
+    "humaux_public_pool::notice",
+    "humaux_public_pool::policy",
+    "humaux_public_pool::public_projection",
+    "humaux_public_pool::public_provenance",
+    "humaux_public_pool::public_repo",
+    "humaux_public_pool::vocab",
+];
+
 fn hex_type_leaf(prefix: &str, name: &str, found: &mut BTreeSet<String>) {
-    if prefix.starts_with("humaux_adapters::")
-        && !prefix.starts_with("humaux_adapters::postgres::")
-        && (name == "*" || name.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
+    let path = format!("{prefix}{name}");
+    let adapter = HEX_LAYER_ADAPTER_PATHS.iter().any(|base| {
+        path == *base
+            || path
+                .strip_prefix(base)
+                .is_some_and(|rest| rest.starts_with("::"))
+    });
+    let public_pool = path.starts_with("humaux_public_pool::");
+    if adapter
+        && !path.starts_with("humaux_adapters::postgres::")
+        && (public_pool
+            || name == "*"
+            || name.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
+        && path != "humaux_public_pool::vocab::model"
+        && !path.starts_with("humaux_public_pool::vocab::model::")
     {
-        found.insert(format!("{prefix}{name}"));
+        found.insert(path);
     }
 }
 
@@ -1373,6 +1398,11 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
     };
     refs.items(&file.items);
     for path in refs.paths {
+        if path.first().is_some_and(|s| s == "humaux_public_pool")
+            && let Some((name, prefix)) = path.split_last()
+        {
+            hex_type_leaf(&format!("{}::", prefix.join("::")), name, &mut imports.0);
+        }
         if let Some(n) = path
             .iter()
             .position(|s| s.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
@@ -1389,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 218, "HEX-LAYER")
+    hex_exact(actual, baseline, 224, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -14169,6 +14199,15 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         println!("HEX-COVERAGE restored: pass");
     }
 
+    /// ADR-0130 D2: cloud repositories include calls; pure public logic stays legal.
+    #[test]
+    fn hex_public_pool_adapter_paths() {
+        let symbols = hex_layer_symbols("use humaux_public_pool::{public_repo::{PublicRepoEvaluator as Eval, run_once}, public_projection::PublicProjectionAdapter}; fn call() { humaux_public_pool::public_repo::drain_outbox(); }").unwrap();
+        assert_eq!(symbols.len(), 4, "{symbols:?}");
+        assert!(symbols.contains("humaux_public_pool::public_repo::drain_outbox"));
+        assert!(hex_layer_symbols("use humaux_public_pool::{admission::deid::Input, completeness::Receipt, public_evolve::Assessment, vocab::model::Concept}; use humaux_public_pool_other::public_repo::Type;").unwrap().is_empty());
+    }
+
     /// §80.1 / ADR-0130 D2: worker ingress is guarded, while pure assembly stays legal.
     #[test]
     fn hex_worker_layer_disk_red_green() {
@@ -14182,7 +14221,7 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
         };
         check();
-        let injection = "\nuse humaux_adapters::remember::RememberCommand;\n";
+        let injection = "\nuse humaux_public_pool::public_repo::PublicRepoEvaluator;\n";
         for (file, red) in [
             ("bins/public-worker/src/main.rs", true),
             ("bins/billing-worker/src/main.rs", false),
@@ -14194,7 +14233,7 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             if red {
                 assert!(
                     matches!(&verdict, Verdict::Fail(lines) if lines.iter().any(|l|
-                    l.contains(file) && l.contains("RememberCommand"))),
+                    l.contains(file) && l.contains("PublicRepoEvaluator"))),
                     "{verdict:?}"
                 );
             } else {
@@ -14209,7 +14248,7 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         let original = fs::read_to_string(&path).unwrap();
         let row = original
             .lines()
-            .find(|l| l.starts_with("bins/private-worker/"))
+            .find(|l| l.contains("humaux_public_pool::"))
             .unwrap();
         let shortened = original
             .lines()

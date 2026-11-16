@@ -1,3 +1,4 @@
+# BOUNDARY-3b detection expansion: +6 rows, all pre-existing on 13ac424
 # BOUNDARY-3 detection expansion: +152 rows, all pre-existing on b5724ca3031ad3769ec3523658bea2445f9f0030
 # ponytail: syntax-only legacy debt; upgrade to compiler HIR if macros own contracts.
 # §78 / ADR-0130 step 1. Exact file:symbol set; remove rows as vertical slices migrate.
@@ -220,3 +221,9 @@ bins/retrieval-worker/src/rpc.rs:humaux_adapters::retrieval_embedding_rpc::Claim
 bins/retrieval-worker/src/rpc.rs:humaux_adapters::retrieval_embedding_rpc::FinishOutcome
 bins/retrieval-worker/src/rpc.rs:humaux_adapters::retrieval_embedding_rpc::RetrievalWorkerEmbeddingCalls
 bins/retrieval-worker/src/rpc.rs:humaux_adapters::retrieval_embedding_rpc::StoredOutcome
+bins/public-worker/src/main.rs:humaux_public_pool::public_projection::PublicProjectionAdapter
+bins/public-worker/src/main.rs:humaux_public_pool::public_repo
+bins/public-worker/src/main.rs:humaux_public_pool::public_projection::PublicProjectionAdapter::new
+bins/public-worker/src/main.rs:humaux_public_pool::public_repo::drain_outbox
+bins/public-worker/src/main.rs:humaux_public_pool::public_repo::run_anonymous_once
+bins/public-worker/src/main.rs:humaux_public_pool::public_repo::run_once
