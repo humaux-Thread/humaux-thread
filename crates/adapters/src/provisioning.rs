@@ -1,17 +1,13 @@
 //! `adapters::provisioning` — the single home of production onboarding writes (ADR-0053) and of the operator
 //!   re-drive of DEAD distill jobs (ADR-0058 R4).
-//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-infra-cell, humaux-projection, serde, serde_json,
-//!   sha2, sqlx, uuid]; services=[PostgreSQL(role_maintenance) r=[control.api_keys, control.memberships,
+//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-infra-cell, humaux-projection, serde, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(role_maintenance) r=[control.api_keys, control.memberships,
 //!   control.retrieval_provider_admission_limits, control.tenants, control.workspaces, projection.family_activations,
 //!   projection.stream_checkpoints, projection.tenant_placements] x=[control.audit_event_insert,
 //!   control.ensure_admission_tier, control.ensure_user, control.issue_api_key, control.onboard_tenant,
 //!   control.onboard_workspace, control.revoke_api_key, control.set_workspace_membership, ops.requeue_dead_distill,
 //!   projection.activate_empty_family, projection.ensure_tenant_placement], Qdrant(*)]; env=[];
-//!   modules=[adapters::entitlement_repo, adapters::membership_repo, adapters::postgres, adapters::qdrant, adapters::retrieve, application::auth, domain::audit,
-//!   domain::identity, domain::ids, domain::ticket_family, infra-cell::permit, infra-cell::resource,
-//!   infra-cell::transport, projection::serving]
-//! Called-by: [adapters::cost_repo, adapters::maintenance_repo, adapters::reasoning_route_onboarding, adapters::rebuild,
-//!   adapters::role_hygiene, maintenance::drill, maintenance::main, maintenance::rebuild_cli, tests, xtask::e2e_seed]
+//!   modules=[adapters::entitlement_repo, adapters::membership_repo, adapters::postgres, adapters::qdrant, adapters::retrieve, application::auth, domain::audit, domain::identity, domain::ids, domain::ticket_family, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::serving]
+//! Called-by: [adapters::cost_repo, adapters::maintenance_repo, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::role_hygiene, maintenance::drill, maintenance::main, tests, xtask::e2e_seed]
 //! Invariants: [every write goes through a 0186 / 0197 owner definer as role_maintenance, no table INSERT here; one transaction
 //!   per tenant (onboard_tenant installs the tenant GUC for the caller's transaction); the Qdrant probe runs outside any
 //!   transaction and the activation commits only if evaluate_switch accepts the DB-returned facts and the collection
