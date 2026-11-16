@@ -1,6 +1,6 @@
 //! `adapters::contribution_scan` — Contribution scanner adapter over the shared, pinned local secret scanner.
 //! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-local-secret-scan, serde_json]; services=[]; env=[]; modules=[application::contribute, domain::error, humaux-local-secret-scan]
-//! Called-by: [adapters::contribution_entry_repo, humaux-private-worker, tests]
+//! Called-by: [adapters::contribution_entry_repo, adapters::contribution_reasoner, humaux-private-worker, tests]
 //! Invariants: [implements the application scan port over humaux-retrieval::secret_scan only; a scanner failure is
 //!   returned to the caller, never treated as a clean scan]
 //! Spec: none

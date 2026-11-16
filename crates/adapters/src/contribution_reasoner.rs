@@ -1,6 +1,6 @@
 //! `adapters::contribution_reasoner` — §12.1.1 production bridge from a sealed contribution request to
 //!   USER_REASONING.
-//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.private_reasoning_domains, control.tenants, control.users, private.events, private.evidence_objects, private.memory_evidence, private.memory_records] x=[ops.lock_contribution_inputs, public.phase9_public_coverage_for_probe]]; env=[]; modules=[adapters::byok, adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::disclosure, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, application::contribute, application::contribution_execution, domain::dataclass, domain::egress, domain::error, domain::evidence, domain::ids, domain::ledger, domain::public]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.private_reasoning_domains, control.tenants, control.users, private.events, private.evidence_objects, private.memory_evidence, private.memory_records] x=[ops.lock_contribution_inputs, public.phase9_public_coverage_for_probe]]; env=[]; modules=[adapters::byok, adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::contribution_scan, adapters::disclosure, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, application::contribute, application::contribution_execution, domain::dataclass, domain::egress, domain::error, domain::evidence, domain::ids, domain::ledger, domain::public]
 //! Called-by: [adapters::consolidation_reasoner, adapters::contribution_execution_ingress, adapters::distill_reasoner, humaux-private-worker, private-worker::inference_rpc, private-worker::main, private-worker::route_providers, tests]
 //! Invariants: [private-worker only: source identifiers are reloaded and validated under the authenticated scope
 //!   before any outbound body is built; callers cannot inject private text; an existing reservation or failed
@@ -1728,6 +1728,346 @@ impl PublicCoveragePort for ContributionReasoner<'_> {
 /// indistinguishable from a provider blip in any log.
 pub(crate) fn fail(label: &'static str) -> PrivateReasoningError {
     PrivateReasoningError::classified(label)
+}
+
+use crate::{
+    contribution_execution_repo::{ContributionExecutionRepo, ContributionJobLease},
+    contribution_scan::{ContributionScanOutcome, ContributionScanner},
+};
+use humaux_application::contribution_execution::{
+    AssessmentCompletion, AssessmentCompletionEvidence, AssessmentCompletionValue,
+    CandidateCompletionEvidence, ContributionDispatchResult, ContributionExecutionFailure,
+    ContributionExecutionPort, ContributionExecutionView, ContributionResponseView,
+    CoverageCompletion, CoverageCompletionValue, ReservationDecision, SuccessfulCoverageReceipt,
+};
+impl ContributionExecutionView for ContributionExecutionRead {
+    fn tenant_id(&self) -> Uuid {
+        self.tenant_id
+    }
+    fn execution_id(&self) -> ContributionExecutionId {
+        self.execution_id
+    }
+    fn state(&self) -> ContributionExecutionState {
+        self.state
+    }
+}
+impl ContributionResponseView for DispatchedContributionCall {
+    fn binding(&self) -> ExactContributionCallBinding {
+        self.binding()
+    }
+}
+/// Production I/O wiring for the application-owned bounded contribution use case (ADR-0130 D2).
+pub struct ContributionExecutionIo<'a, 'provider> {
+    pool: &'a PrivateWorkerDbPool,
+    reasoner: &'a ContributionReasoner<'provider>,
+    scanner: &'a ContributionScanner,
+}
+impl<'a, 'provider> ContributionExecutionIo<'a, 'provider> {
+    /// Wires the already admitted provider and pinned scanner without executing a job.
+    pub fn new(
+        pool: &'a PrivateWorkerDbPool,
+        reasoner: &'a ContributionReasoner<'provider>,
+        scanner: &'a ContributionScanner,
+    ) -> Self {
+        Self {
+            pool,
+            reasoner,
+            scanner,
+        }
+    }
+    async fn coverage_value(
+        &self,
+        repo: &ContributionExecutionRepo<'_>,
+        execution: &ContributionExecutionRead,
+        response: &DispatchedContributionCall,
+    ) -> Result<CoverageCompletionValue, ContributionExecutionFailure<ContributionExecutionRepoError>>
+    {
+        let parsed = parse_coverage_probe(response.output_bytes())?;
+        let scan = self.scanner.scan_outcome(parsed.bytes())?;
+        let scan_receipt = repo
+            .bind_completion_scan_receipt(
+                execution.tenant_id,
+                ContributionScanner::receipt_json(scan.receipt()),
+            )
+            .await
+            .map_err(ContributionExecutionFailure::Port)?;
+        let receipt = SuccessfulCoverageReceipt::try_new(
+            scan_receipt,
+            response.provider_trace().clone(),
+            None,
+        )?;
+        match scan {
+            ContributionScanOutcome::Reject(_) => {
+                Ok(CoverageCompletionValue::RejectedSafety(receipt))
+            }
+            ContributionScanOutcome::Pass(_) => {
+                let probe = ContributionCoverageProbe::new(
+                    execution.input_manifest_hash,
+                    parsed.bytes().to_vec(),
+                    payload_sha256(parsed.bytes()),
+                    response.provider_trace().clone(),
+                )?;
+                let coverage = self.reasoner.load_public_coverage(&probe).await?;
+                Ok(CoverageCompletionValue::Usable {
+                    coverage_probe_sha256: probe.output_sha256(),
+                    coverage,
+                    receipt,
+                })
+            }
+        }
+    }
+
+    async fn assessment_value(
+        &self,
+        repo: &ContributionExecutionRepo<'_>,
+        execution: &ContributionExecutionRead,
+        response: &DispatchedContributionCall,
+    ) -> Result<
+        AssessmentCompletionValue,
+        ContributionExecutionFailure<ContributionExecutionRepoError>,
+    > {
+        let parsed = parse_assessment(response.output_bytes())?;
+        let gates = parsed.gates();
+        let canonical = parsed.canonical().to_vec();
+        let assessment = AssessmentCompletionEvidence::try_new(
+            canonical.clone(),
+            ContentSha256(Sha256::digest(&canonical).into()),
+            gates[0],
+            gates[1],
+            gates[2],
+            gates[3],
+            response.provider_trace().clone(),
+            None,
+        )?;
+        match parsed {
+            ParsedContributionAssessment::NotContributable { .. } => Ok(
+                AssessmentCompletionValue::try_not_contributable(assessment)?,
+            ),
+            ParsedContributionAssessment::Candidate { candidate, .. } => {
+                let scan = self.scanner.scan_outcome(&candidate)?;
+                let scan_receipt = repo
+                    .bind_completion_scan_receipt(
+                        execution.tenant_id,
+                        ContributionScanner::receipt_json(scan.receipt()),
+                    )
+                    .await
+                    .map_err(ContributionExecutionFailure::Port)?;
+                let candidate = CandidateCompletionEvidence::try_new(
+                    candidate.clone(),
+                    payload_sha256(&candidate),
+                    scan_receipt,
+                )?;
+                match scan {
+                    ContributionScanOutcome::Pass(_) => Ok(
+                        AssessmentCompletionValue::try_ready_candidate(assessment, candidate)?,
+                    ),
+                    ContributionScanOutcome::Reject(_) => {
+                        Ok(AssessmentCompletionValue::RejectedSafety {
+                            assessment,
+                            candidate,
+                        })
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl ContributionExecutionPort for ContributionExecutionIo<'_, '_> {
+    type Error = ContributionExecutionRepoError;
+    type Execution = ContributionExecutionRead;
+    type Lease = ContributionJobLease;
+    type Prepared = PreparedContributionDispatch;
+    type Response = DispatchedContributionCall;
+    fn lease(
+        &self,
+        job: Uuid,
+        owner: String,
+        attempt: i32,
+    ) -> Result<Self::Lease, ContributionExecutionFailure<Self::Error>> {
+        ContributionJobLease::try_new(job, owner, attempt)
+            .map_err(ContributionExecutionFailure::Port)
+    }
+    async fn load(
+        &self,
+        tenant: Uuid,
+        id: ContributionExecutionId,
+    ) -> Result<Option<Self::Execution>, ContributionExecutionFailure<Self::Error>> {
+        ContributionExecutionRepo::new(self.pool)
+            .load(tenant, id)
+            .await
+            .map_err(ContributionExecutionFailure::Port)
+    }
+    async fn prepare_a(
+        &self,
+        execution: &Self::Execution,
+    ) -> Result<Self::Prepared, ContributionExecutionFailure<Self::Error>> {
+        self.reasoner
+            .prepare_a(execution)
+            .await
+            .map_err(ContributionExecutionFailure::Domain)
+    }
+    async fn reserve_a_new(
+        &self,
+        tenant: Uuid,
+        id: ContributionExecutionId,
+        lease: &Self::Lease,
+        prepared: &Self::Prepared,
+    ) -> Result<ReservationDecision, ContributionExecutionFailure<Self::Error>> {
+        let plan = prepared
+            .reserve_plan()
+            .map_err(ContributionExecutionFailure::Port)?;
+        ContributionExecutionRepo::new(self.pool)
+            .reserve_a_new(tenant, id, lease, &plan)
+            .await
+            .map_err(ContributionExecutionFailure::Port)
+    }
+    async fn prepare_b(
+        &self,
+        execution: &Self::Execution,
+    ) -> Result<Self::Prepared, ContributionExecutionFailure<Self::Error>> {
+        self.reasoner
+            .prepare_b(execution)
+            .await
+            .map_err(ContributionExecutionFailure::Domain)
+    }
+    async fn reserve_b_new(
+        &self,
+        tenant: Uuid,
+        id: ContributionExecutionId,
+        lease: &Self::Lease,
+        prepared: &Self::Prepared,
+    ) -> Result<ReservationDecision, ContributionExecutionFailure<Self::Error>> {
+        let plan = prepared
+            .reserve_plan()
+            .map_err(ContributionExecutionFailure::Port)?;
+        ContributionExecutionRepo::new(self.pool)
+            .reserve_b_new(tenant, id, lease, &plan)
+            .await
+            .map_err(ContributionExecutionFailure::Port)
+    }
+    async fn dispatch_prepared(
+        &self,
+        prepared: Self::Prepared,
+        permit: ProviderDispatchPermit,
+    ) -> Result<ContributionDispatchResult<Self::Response>, ContributionExecutionFailure<Self::Error>>
+    {
+        self.reasoner
+            .dispatch_prepared(prepared, permit)
+            .await
+            .map(|outcome| match outcome {
+                ContributionDispatchOutcome::Response(response) => {
+                    ContributionDispatchResult::Response(response)
+                }
+                ContributionDispatchOutcome::DefiniteTerminal { binding, .. } => {
+                    ContributionDispatchResult::DefiniteTerminal { binding }
+                }
+                ContributionDispatchOutcome::NonTerminal { binding, error } => {
+                    ContributionDispatchResult::NonTerminal {
+                        binding,
+                        credential_rejected: error.class()
+                            == ReasoningProviderError::WAITING_KEY_CLASS,
+                    }
+                }
+            })
+            .map_err(ContributionExecutionFailure::Domain)
+    }
+    async fn coverage_value(
+        &self,
+        execution: &Self::Execution,
+        response: &Self::Response,
+    ) -> Result<CoverageCompletionValue, ContributionExecutionFailure<Self::Error>> {
+        ContributionExecutionIo::coverage_value(
+            self,
+            &ContributionExecutionRepo::new(self.pool),
+            execution,
+            response,
+        )
+        .await
+    }
+    async fn assessment_value(
+        &self,
+        execution: &Self::Execution,
+        response: &Self::Response,
+    ) -> Result<AssessmentCompletionValue, ContributionExecutionFailure<Self::Error>> {
+        ContributionExecutionIo::assessment_value(
+            self,
+            &ContributionExecutionRepo::new(self.pool),
+            execution,
+            response,
+        )
+        .await
+    }
+    async fn complete_a_exact(
+        &self,
+        tenant: Uuid,
+        value: &CoverageCompletion,
+        lease: Option<&Self::Lease>,
+    ) -> Result<ContributionExecutionState, ContributionExecutionFailure<Self::Error>> {
+        ContributionExecutionRepo::new(self.pool)
+            .complete_a_exact(tenant, value, lease)
+            .await
+            .map_err(ContributionExecutionFailure::Port)
+    }
+    async fn complete_b_exact(
+        &self,
+        tenant: Uuid,
+        value: &AssessmentCompletion,
+        lease: Option<&Self::Lease>,
+    ) -> Result<ContributionExecutionState, ContributionExecutionFailure<Self::Error>> {
+        ContributionExecutionRepo::new(self.pool)
+            .complete_b_exact(tenant, value, lease)
+            .await
+            .map_err(ContributionExecutionFailure::Port)
+    }
+    async fn commit_candidate(
+        &self,
+        tenant: Uuid,
+        id: ContributionExecutionId,
+        lease: &Self::Lease,
+    ) -> Result<(), ContributionExecutionFailure<Self::Error>> {
+        ContributionExecutionRepo::new(self.pool)
+            .commit_candidate(tenant, id, lease)
+            .await
+            .map(|_| ())
+            .map_err(ContributionExecutionFailure::Port)
+    }
+    async fn settle_terminal_job(
+        &self,
+        tenant: Uuid,
+        id: ContributionExecutionId,
+        lease: &Self::Lease,
+    ) -> Result<(), ContributionExecutionFailure<Self::Error>> {
+        ContributionExecutionRepo::new(self.pool)
+            .settle_terminal_job(tenant, id, lease)
+            .await
+            .map(|_| ())
+            .map_err(ContributionExecutionFailure::Port)
+    }
+    async fn mark_reconciliation_required(
+        &self,
+        tenant: Uuid,
+        id: ContributionExecutionId,
+        lease: &Self::Lease,
+    ) -> Result<bool, ContributionExecutionFailure<Self::Error>> {
+        ContributionExecutionRepo::new(self.pool)
+            .mark_reconciliation_required(tenant, id, lease)
+            .await
+            .map_err(ContributionExecutionFailure::Port)
+    }
+    fn is_fresh_lease_required(error: &ContributionExecutionFailure<Self::Error>) -> bool {
+        matches!(error, ContributionExecutionFailure::Port(e) if e.is_fresh_lease_required())
+    }
+}
+
+/// Wires sealed adapter capabilities without exporting their concrete wrapper to the worker.
+pub fn contribution_execution_io<'a, 'provider>(
+    pool: &'a PrivateWorkerDbPool,
+    reasoner: &'a ContributionReasoner<'provider>,
+    scanner: &'a ContributionScanner,
+) -> impl ContributionExecutionPort<Error = ContributionExecutionRepoError> + 'a {
+    ContributionExecutionIo::new(pool, reasoner, scanner)
 }
 
 #[cfg(test)]
