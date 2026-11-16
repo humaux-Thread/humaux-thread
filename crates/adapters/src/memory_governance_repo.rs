@@ -1852,6 +1852,167 @@ pub async fn correct_atomically(
     })
 }
 
+/// PostgreSQL whole-transaction lifecycle boundary (§36; ADR-0130).
+pub struct PostgresLifecycleStore<'a> {
+    pool: &'a RuntimeDbPool,
+    attribution: &'a dyn memory_repo::MemoryAttribution,
+}
+impl<'a> PostgresLifecycleStore<'a> {
+    /// Assemble existing PG lifecycle dependencies (§36).
+    pub fn new(
+        pool: &'a RuntimeDbPool,
+        attribution: &'a dyn memory_repo::MemoryAttribution,
+    ) -> Self {
+        Self { pool, attribution }
+    }
+}
+fn lifecycle_parts(
+    audit: humaux_application::lifecycle_execution::LifecycleAudit,
+    confirmation: humaux_application::lifecycle_execution::LifecycleConfirmation,
+) -> Result<(AuditEvent, ConfirmationClaim), ErrorCode> {
+    let a = audit;
+    let mut audit = AuditEvent {
+        event_id: AuditEventId(a.event_id),
+        ts: a.ts,
+        tenant_id: humaux_domain::ids::TenantId(a.tenant_id),
+        actor_type: a.actor_type,
+        actor_id: a.actor_id,
+        action: a.action,
+        resource_type: a.resource_type,
+        resource_id: a.resource_id,
+        result: a.result,
+        request_id: a.request_id,
+        trace_id: a.trace_id,
+        client_ip: a.client_ip,
+        user_agent_hash: a.user_agent_hash,
+        risk_tags: a.risk_tags,
+        before_fingerprint: a.before_fingerprint,
+        after_fingerprint: a.after_fingerprint,
+        metadata: Default::default(),
+    };
+    for (key, value) in a.metadata {
+        audit.metadata.insert(key, value)?;
+    }
+    let c = confirmation;
+    let claim = ConfirmationClaim {
+        op: c.op,
+        target_id: c.target_id,
+        successor_id: c.successor_id,
+        nonce_sha256: c.nonce_sha256,
+        request_sha256: c.request_sha256,
+    };
+    Ok((audit, claim))
+}
+fn lifecycle_stream(stream: humaux_application::lifecycle_execution::LifecycleStream) -> StreamKey {
+    StreamKey {
+        tenant_id: humaux_domain::ids::TenantId(stream.tenant_id),
+        scope_kind: stream.scope_kind,
+        scope_id: stream.scope_id,
+        domain: stream.domain,
+        projection_kind: stream.projection_kind,
+        projection_version: stream.projection_version,
+    }
+}
+#[async_trait::async_trait]
+impl humaux_application::lifecycle_execution::LifecycleStore for PostgresLifecycleStore<'_> {
+    async fn supersede(
+        &self,
+        auth: &AuthorizationScope,
+        command: humaux_application::lifecycle_execution::SupersedeRequest,
+    ) -> Result<SupersedeOutcome, ErrorCode> {
+        let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
+        supersede_atomically(
+            self.pool,
+            auth,
+            SupersedeRequest {
+                request_id: command.request_id,
+                request_fingerprint: command.request_fingerprint,
+                reservation_ttl: command.reservation_ttl,
+                target: command.target,
+                successor: command.successor,
+                stream: lifecycle_stream(command.stream),
+                claim,
+                finished_audit: audit,
+                undo_window: command.undo_window,
+            },
+        )
+        .await
+    }
+    async fn restore(
+        &self,
+        auth: &AuthorizationScope,
+        command: humaux_application::lifecycle_execution::RestoreRequest,
+    ) -> Result<RestoreResult, ErrorCode> {
+        let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
+        restore_atomically(
+            self.pool,
+            auth,
+            RestoreRequest {
+                request_id: command.request_id,
+                request_fingerprint: command.request_fingerprint,
+                reservation_ttl: command.reservation_ttl,
+                target: command.target,
+                stream: lifecycle_stream(command.stream),
+                claim,
+                finished_audit: audit,
+                consistency_token_ttl: command.consistency_token_ttl,
+            },
+        )
+        .await
+    }
+    async fn correct(
+        &self,
+        auth: &AuthorizationScope,
+        command: humaux_application::lifecycle_execution::CorrectRequest,
+    ) -> Result<CorrectDone, ErrorCode> {
+        let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
+        correct_atomically(
+            self.pool,
+            auth,
+            CorrectRequest {
+                request_id: command.request_id,
+                request_fingerprint: command.request_fingerprint,
+                reservation_ttl: command.reservation_ttl,
+                target: command.target,
+                content: command.content,
+                payload_sha256: command.payload_sha256,
+                stream: lifecycle_stream(command.stream),
+                claim,
+                finished_audit: audit,
+                undo_window: command.undo_window,
+                consistency_token_ttl: command.consistency_token_ttl,
+                subjects: command.subjects,
+                affects: command.affects,
+                mood_half_life: command.mood_half_life,
+            },
+            self.attribution,
+        )
+        .await
+    }
+    async fn archive(
+        &self,
+        auth: &AuthorizationScope,
+        command: humaux_application::lifecycle_execution::ArchiveRequest,
+    ) -> Result<ArchiveResult, ErrorCode> {
+        let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
+        archive_or_unarchive_atomically(
+            self.pool,
+            auth,
+            ArchiveRequest {
+                request_id: command.request_id,
+                request_fingerprint: command.request_fingerprint,
+                reservation_ttl: command.reservation_ttl,
+                target: command.target,
+                stream: lifecycle_stream(command.stream),
+                claim,
+                finished_audit: audit,
+                op: command.op,
+            },
+        )
+        .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::SystemTime;
@@ -2121,166 +2282,5 @@ mod tests {
             request_sha256: None,
         };
         assert_eq!(lifecycle_idempotency_key(&claim), "ab".repeat(32));
-    }
-}
-
-/// PostgreSQL whole-transaction lifecycle boundary (§36; ADR-0130).
-pub struct PostgresLifecycleStore<'a> {
-    pool: &'a RuntimeDbPool,
-    attribution: &'a dyn memory_repo::MemoryAttribution,
-}
-impl<'a> PostgresLifecycleStore<'a> {
-    /// Assemble existing PG lifecycle dependencies (§36).
-    pub fn new(
-        pool: &'a RuntimeDbPool,
-        attribution: &'a dyn memory_repo::MemoryAttribution,
-    ) -> Self {
-        Self { pool, attribution }
-    }
-}
-fn lifecycle_parts(
-    audit: humaux_application::lifecycle_execution::LifecycleAudit,
-    confirmation: humaux_application::lifecycle_execution::LifecycleConfirmation,
-) -> Result<(AuditEvent, ConfirmationClaim), ErrorCode> {
-    let a = audit;
-    let mut audit = AuditEvent {
-        event_id: AuditEventId(a.event_id),
-        ts: a.ts,
-        tenant_id: humaux_domain::ids::TenantId(a.tenant_id),
-        actor_type: a.actor_type,
-        actor_id: a.actor_id,
-        action: a.action,
-        resource_type: a.resource_type,
-        resource_id: a.resource_id,
-        result: a.result,
-        request_id: a.request_id,
-        trace_id: a.trace_id,
-        client_ip: a.client_ip,
-        user_agent_hash: a.user_agent_hash,
-        risk_tags: a.risk_tags,
-        before_fingerprint: a.before_fingerprint,
-        after_fingerprint: a.after_fingerprint,
-        metadata: Default::default(),
-    };
-    for (key, value) in a.metadata {
-        audit.metadata.insert(key, value)?;
-    }
-    let c = confirmation;
-    let claim = ConfirmationClaim {
-        op: c.op,
-        target_id: c.target_id,
-        successor_id: c.successor_id,
-        nonce_sha256: c.nonce_sha256,
-        request_sha256: c.request_sha256,
-    };
-    Ok((audit, claim))
-}
-fn lifecycle_stream(stream: humaux_application::lifecycle_execution::LifecycleStream) -> StreamKey {
-    StreamKey {
-        tenant_id: humaux_domain::ids::TenantId(stream.tenant_id),
-        scope_kind: stream.scope_kind,
-        scope_id: stream.scope_id,
-        domain: stream.domain,
-        projection_kind: stream.projection_kind,
-        projection_version: stream.projection_version,
-    }
-}
-#[async_trait::async_trait]
-impl humaux_application::lifecycle_execution::LifecycleStore for PostgresLifecycleStore<'_> {
-    async fn supersede(
-        &self,
-        auth: &AuthorizationScope,
-        command: humaux_application::lifecycle_execution::SupersedeRequest,
-    ) -> Result<SupersedeOutcome, ErrorCode> {
-        let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
-        supersede_atomically(
-            self.pool,
-            auth,
-            SupersedeRequest {
-                request_id: command.request_id,
-                request_fingerprint: command.request_fingerprint,
-                reservation_ttl: command.reservation_ttl,
-                target: command.target,
-                successor: command.successor,
-                stream: lifecycle_stream(command.stream),
-                claim: claim,
-                finished_audit: audit,
-                undo_window: command.undo_window,
-            },
-        )
-        .await
-    }
-    async fn restore(
-        &self,
-        auth: &AuthorizationScope,
-        command: humaux_application::lifecycle_execution::RestoreRequest,
-    ) -> Result<RestoreResult, ErrorCode> {
-        let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
-        restore_atomically(
-            self.pool,
-            auth,
-            RestoreRequest {
-                request_id: command.request_id,
-                request_fingerprint: command.request_fingerprint,
-                reservation_ttl: command.reservation_ttl,
-                target: command.target,
-                stream: lifecycle_stream(command.stream),
-                claim: claim,
-                finished_audit: audit,
-                consistency_token_ttl: command.consistency_token_ttl,
-            },
-        )
-        .await
-    }
-    async fn correct(
-        &self,
-        auth: &AuthorizationScope,
-        command: humaux_application::lifecycle_execution::CorrectRequest,
-    ) -> Result<CorrectDone, ErrorCode> {
-        let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
-        correct_atomically(
-            self.pool,
-            auth,
-            CorrectRequest {
-                request_id: command.request_id,
-                request_fingerprint: command.request_fingerprint,
-                reservation_ttl: command.reservation_ttl,
-                target: command.target,
-                content: command.content,
-                payload_sha256: command.payload_sha256,
-                stream: lifecycle_stream(command.stream),
-                claim: claim,
-                finished_audit: audit,
-                undo_window: command.undo_window,
-                consistency_token_ttl: command.consistency_token_ttl,
-                subjects: command.subjects,
-                affects: command.affects,
-                mood_half_life: command.mood_half_life,
-            },
-            self.attribution,
-        )
-        .await
-    }
-    async fn archive(
-        &self,
-        auth: &AuthorizationScope,
-        command: humaux_application::lifecycle_execution::ArchiveRequest,
-    ) -> Result<ArchiveResult, ErrorCode> {
-        let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
-        archive_or_unarchive_atomically(
-            self.pool,
-            auth,
-            ArchiveRequest {
-                request_id: command.request_id,
-                request_fingerprint: command.request_fingerprint,
-                reservation_ttl: command.reservation_ttl,
-                target: command.target,
-                stream: lifecycle_stream(command.stream),
-                claim: claim,
-                finished_audit: audit,
-                op: command.op,
-            },
-        )
-        .await
     }
 }

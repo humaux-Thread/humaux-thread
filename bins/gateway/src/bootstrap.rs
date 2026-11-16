@@ -2277,6 +2277,20 @@ pub fn passwordless_login_port(
     ))
 }
 
+/// Assemble the existing atomic PG lifecycle implementation (§36).
+pub fn lifecycle_store(
+    pool: &humaux_adapters::postgres::RuntimeDbPool,
+) -> impl humaux_application::lifecycle_execution::LifecycleStore + '_ {
+    humaux_adapters::memory_governance_repo::PostgresLifecycleStore::new(pool, &MEMORY_ATTRIBUTION)
+}
+
+/// Assemble the existing atomic PG deletion implementation (§37).
+pub fn deletion_store(
+    pool: &humaux_adapters::postgres::RuntimeDbPool,
+) -> impl humaux_application::forget::DeletionStore + '_ {
+    humaux_adapters::forget_repo::PostgresDeletionStore::new(pool)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3798,18 +3812,4 @@ mod tests {
         build_semantic_recall_runtime(pool, config, handler_timeout)
             .expect("semantic recall runtime builds from valid config");
     }
-}
-
-/// Assemble the existing atomic PG lifecycle implementation (§36).
-pub fn lifecycle_store(
-    pool: &humaux_adapters::postgres::RuntimeDbPool,
-) -> impl humaux_application::lifecycle_execution::LifecycleStore + '_ {
-    humaux_adapters::memory_governance_repo::PostgresLifecycleStore::new(pool, &MEMORY_ATTRIBUTION)
-}
-
-/// Assemble the existing atomic PG deletion implementation (§37).
-pub fn deletion_store(
-    pool: &humaux_adapters::postgres::RuntimeDbPool,
-) -> impl humaux_application::forget::DeletionStore + '_ {
-    humaux_adapters::forget_repo::PostgresDeletionStore::new(pool)
 }

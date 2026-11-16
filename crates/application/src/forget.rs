@@ -553,6 +553,56 @@ impl ImpactPreview {
     }
 }
 
+/// Trusted token binding consumed inside the deletion transaction (§37).
+pub struct DeletionConfirmation {
+    /// Operation bound by the ingress gate.
+    pub op: humaux_domain::confirm::DestructiveOp,
+    /// Confirmed target.
+    pub target_id: Uuid,
+    /// Confirmed successor.
+    pub successor_id: Option<Uuid>,
+    /// Token digest.
+    pub nonce_sha256: [u8; 32],
+    /// Bound intent digest.
+    pub request_sha256: Option<[u8; 32]>,
+}
+/// Atomic deletion preparation and acceptance boundary (§37.2).
+#[async_trait::async_trait]
+pub trait DeletionStore: Send + Sync {
+    /// Freeze and preview in the existing PG transaction.
+    async fn prepare(
+        &self,
+        auth: &humaux_domain::identity::AuthorizationScope,
+        memory_id: Option<Uuid>,
+        roots: &[Uuid],
+    ) -> Result<(Uuid, ImpactPreview), humaux_domain::error::ErrorCode>;
+    /// Consume confirmation and accept in the existing PG transaction.
+    async fn accept(
+        &self,
+        auth: &humaux_domain::identity::AuthorizationScope,
+        request_id: Uuid,
+        confirmation: DeletionConfirmation,
+    ) -> Result<(), humaux_domain::error::ErrorCode>;
+}
+/// Prepare a server-authorized deletion (§37.2).
+pub async fn prepare(
+    store: &dyn DeletionStore,
+    auth: &humaux_domain::identity::AuthorizationScope,
+    memory_id: Option<Uuid>,
+    roots: &[Uuid],
+) -> Result<(Uuid, ImpactPreview), humaux_domain::error::ErrorCode> {
+    store.prepare(auth, memory_id, roots).await
+}
+/// Accept the exact confirmed deletion (§37.2).
+pub async fn accept(
+    store: &dyn DeletionStore,
+    auth: &humaux_domain::identity::AuthorizationScope,
+    request_id: Uuid,
+    confirmation: DeletionConfirmation,
+) -> Result<(), humaux_domain::error::ErrorCode> {
+    store.accept(auth, request_id, confirmation).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -840,54 +890,4 @@ mod tests {
         );
         assert!(memory_scope.source_retained);
     }
-}
-
-/// Trusted token binding consumed inside the deletion transaction (§37).
-pub struct DeletionConfirmation {
-    /// Operation bound by the ingress gate.
-    pub op: humaux_domain::confirm::DestructiveOp,
-    /// Confirmed target.
-    pub target_id: Uuid,
-    /// Confirmed successor.
-    pub successor_id: Option<Uuid>,
-    /// Token digest.
-    pub nonce_sha256: [u8; 32],
-    /// Bound intent digest.
-    pub request_sha256: Option<[u8; 32]>,
-}
-/// Atomic deletion preparation and acceptance boundary (§37.2).
-#[async_trait::async_trait]
-pub trait DeletionStore: Send + Sync {
-    /// Freeze and preview in the existing PG transaction.
-    async fn prepare(
-        &self,
-        auth: &humaux_domain::identity::AuthorizationScope,
-        memory_id: Option<Uuid>,
-        roots: &[Uuid],
-    ) -> Result<(Uuid, ImpactPreview), humaux_domain::error::ErrorCode>;
-    /// Consume confirmation and accept in the existing PG transaction.
-    async fn accept(
-        &self,
-        auth: &humaux_domain::identity::AuthorizationScope,
-        request_id: Uuid,
-        confirmation: DeletionConfirmation,
-    ) -> Result<(), humaux_domain::error::ErrorCode>;
-}
-/// Prepare a server-authorized deletion (§37.2).
-pub async fn prepare(
-    store: &dyn DeletionStore,
-    auth: &humaux_domain::identity::AuthorizationScope,
-    memory_id: Option<Uuid>,
-    roots: &[Uuid],
-) -> Result<(Uuid, ImpactPreview), humaux_domain::error::ErrorCode> {
-    store.prepare(auth, memory_id, roots).await
-}
-/// Accept the exact confirmed deletion (§37.2).
-pub async fn accept(
-    store: &dyn DeletionStore,
-    auth: &humaux_domain::identity::AuthorizationScope,
-    request_id: Uuid,
-    confirmation: DeletionConfirmation,
-) -> Result<(), humaux_domain::error::ErrorCode> {
-    store.accept(auth, request_id, confirmation).await
 }
