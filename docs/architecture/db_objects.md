@@ -2258,8 +2258,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_client_register`
@@ -2278,8 +2278,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_client_registrations`
@@ -2329,9 +2329,9 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - (no process): `adapters::tests::oauth_persistence`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_code_issue`
@@ -2350,8 +2350,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_issue`
@@ -2370,8 +2370,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_lookup`
@@ -2390,8 +2390,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_revoke`
@@ -2410,8 +2410,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grants`
@@ -2465,8 +2465,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_refresh_rotate`
@@ -2485,8 +2485,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_refresh_tokens`
