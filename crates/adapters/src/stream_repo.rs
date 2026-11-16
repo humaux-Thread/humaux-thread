@@ -3,21 +3,8 @@
 //!   `ISSUED -> LOST` patrol (through [`MaintenanceDbPool`]) and the sole private-evidence ticket door
 //!   [`issue_ticket_in_txn`] (on the caller's transaction, M09 D1) and the O(1) frontier read (M09 D3, C6): [`ledger_frontier_in_txn`] on the caller's transaction (the gateway-role form `memory.get`
 //!   uses inside its REPEATABLE READ READ ONLY snapshot) and its worker-pool wrapper [`ledger_frontier`].
-//! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit, sqlx, tokio];
-//!   services=[PostgreSQL(any)
-//!   r=[ops.commit_seq_seq, ops.jobs, ops.outbox, projection.processing_gaps, projection.rebuild_tickets,
-//!   projection.tenant_placements] w=[ops.outbox, projection.stream_checkpoints, projection.stream_log]
-//!   x=[projection.retire_failed_ticket, projection.stream_point_ledger], PostgreSQL(role_maintenance)
-//!   r=[private.ingest_tickets] w=[private.ingest_tickets],
-//!   PostgreSQL(role_retrieval_worker) x=[projection.claim_issued_tickets, projection.unplaced_issued_tickets]];
-//!   env=[HUMAUX_TEST_PG_DSN];
-//!   modules=[adapters::placement_repo, adapters::postgres, adapters::qdrant, adapters::retrieve, domain::dataclass, domain::egress, domain::identity,
-//!   projection::stream, retrieval::completeness]
-//! Called-by: [adapters::processing_status, adapters::affect_repo, adapters::consolidate_repo, adapters::context_repo,
-//!   adapters::contribution_entry_repo, adapters::contribution_repo, adapters::distill_repo,
-//!   adapters::memory_governance_repo, adapters::projection_worker, adapters::read_gate, adapters::remember, adapters::retrieve,
-//!   adapters::serving_repo, maintenance::drill, maintenance::serve, retrieval-worker::main, tests,
-//!   maintenance::projection_serve]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit, sqlx, tokio]; services=[PostgreSQL(any) r=[ops.commit_seq_seq, ops.jobs, ops.outbox, projection.processing_gaps, projection.rebuild_tickets, projection.tenant_placements] w=[ops.outbox, projection.stream_checkpoints, projection.stream_log] x=[projection.retire_failed_ticket, projection.stream_point_ledger], PostgreSQL(role_maintenance) r=[private.ingest_tickets] w=[private.ingest_tickets], PostgreSQL(role_retrieval_worker) x=[projection.claim_issued_tickets, projection.unplaced_issued_tickets]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::placement_repo, adapters::postgres, adapters::qdrant, adapters::retrieve, domain::dataclass, domain::egress, domain::identity, projection::stream, retrieval::completeness]
+//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::context_repo, adapters::contribution_entry_repo, adapters::contribution_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::processing_status, adapters::projection_worker, adapters::read_materialize, adapters::remember, adapters::retrieve, adapters::serving_repo, maintenance::drill, maintenance::projection_serve, maintenance::serve, retrieval-worker::main, tests]
 //! Invariants: [every function except next_commit_seq / issue_ticket_in_txn (which run on the caller's tenant-scoped
 //!   transaction) opens its own transaction and sets humaux.tenant_id before touching FORCE-RLS stream
 //!   tables (otherwise it would silently see zero rows) — except the two ADR-0052 definer calls, which are the only
@@ -500,22 +487,7 @@ pub async fn fetch_ledger_closure(
     Ok(closure)
 }
 
-/// §15.3: the frontier of one stream as its `stream_checkpoints` row holds it. Carries only what has a writer on main
-/// (`issued_highwater` by the ticket door, `projection_highwater` by [`advance_prefix`], `serving` by the maintenance
-/// switch); `evidence_highwater` / `knowledge_highwater` are absent until M13 gives them one, because exposing a
-/// column nobody writes would present a fabricated 0 (§23.3④). No `visible`, no per-state count either: those come
-/// from [`fetch_ledger_closure`], and which reader an envelope uses is M13's ruling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Frontier {
-    /// `issued_highwater` — A1's `expected` (§15.4).
-    pub issued_hw: u64,
-    /// `projection_highwater` — the §15.4 contiguous-done prefix [`advance_prefix`] last stored.
-    pub projection_hw: u64,
-    /// `serving` — the §15.3 read-routing flag.
-    pub serving: bool,
-    /// The row's last-write time (`stream_checkpoints_touch_updated_at`, DB clock).
-    pub updated_at: sqlx::types::time::OffsetDateTime,
-}
+pub use humaux_application::recall_read::Frontier;
 
 /// M09 D3 / C6: the O(1) frontier read on the caller's transaction — tenant GUC plus one primary-key SELECT on
 /// `stream_checkpoints`, never `stream_log` and never the point ledger. It is the form `memory.get` (M13) uses inside

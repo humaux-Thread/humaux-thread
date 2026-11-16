@@ -1,7 +1,6 @@
 //! `retrieval::handoff` — §25.3 continuity handoff 的**字节域**（G80-31）。
-//! Depends-on: crates=[humaux-domain, serde, serde_json, sha2]; services=[];
-//!   env=[]; modules=[domain::context, domain::grounding, retrieval::compiler]
-//! Called-by: [adapters::context_repo, adapters::continuity_read, application::continuity, gateway::context, tests]
+//! Depends-on: crates=[humaux-domain, serde, serde_json, sha2]; services=[]; env=[]; modules=[domain::context, domain::grounding, retrieval::compiler]
+//! Called-by: [adapters::context_repo, adapters::continuity_read, application::continuity, application::recall_read, gateway::context, tests]
 //! Invariants: []
 //! Spec: §25.3; §57.1
 //!

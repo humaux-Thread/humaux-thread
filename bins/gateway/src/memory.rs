@@ -1,12 +1,5 @@
 //! `gateway::memory` — Authenticated Memory reads through the existing final-body and Envelope boundaries.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json,
-//!   sha2, time, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::context_repo,
-//!   adapters::distill_repo, adapters::forget_repo, adapters::grep_repo, adapters::memory_governance_repo, adapters::postgres,
-//!   adapters::read_gate, adapters::read_materialize, adapters::serving_repo,
-//!   adapters::subject_repo, application::forget, domain::affect, domain::authority, domain::confirm, domain::context, domain::error,
-//!   domain::evidence, domain::identity, domain::ids, domain::selection, domain::subject, gateway::bootstrap,
-//!   gateway::context, gateway::guard,
-//!   projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::request]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, sha2, time, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::context_repo, adapters::distill_repo, adapters::forget_repo, adapters::grep_repo, adapters::memory_governance_repo, adapters::postgres, adapters::serving_repo, adapters::subject_repo, application::forget, application::recall_read, domain::affect, domain::authority, domain::confirm, domain::context, domain::error, domain::evidence, domain::identity, domain::ids, domain::selection, domain::subject, gateway::bootstrap, gateway::context, gateway::guard, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::request]
 //! Called-by: [gateway::mcp_application]
 //! Invariants: [a read that cannot reach its final-body boundary returns the application error, never a partially materialized memory;
 //!   `memory.get` reports the ledger frontier from one `stream_checkpoints` lookup and never calls the ledger closure or the
@@ -15,27 +8,44 @@
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use humaux_adapters::{
-    affect_repo::{self, AffectInput, AffectRow, AnnotateDone},
-    context_repo::{self, BindingWriteOutcome, BindingWriteRequest, EnumerationCensus},
-    distill_repo::{
-        self, ConfirmOutcome, ConfirmRequest, PendingCandidate, RejectOutcome, RejectRequest,
-    },
-    grep_repo::{self, GrepQuery},
-    memory_governance_repo::{
-        self, ArchiveRequest, ArchiveResult, CorrectDone, CorrectRequest, RestoreRequest,
-        RestoreResult, SupersedeOutcome, SupersedeRequest,
-    },
-    postgres::RuntimeDbPool,
-    read_gate::{
-        MaterializedMemory, MemoryEnumerationParams, MemoryGetTarget, NoteEnumerationFilter,
-        frontier_pipeline_block, materialize_memory_enumeration_filtered,
-        materialize_memory_get_frontier_target,
-    },
-    read_materialize::{Lifecycle, MaterializedItem, MemoryHistory},
-    serving_repo::UnservedLedger,
-    subject_repo,
-};
+use humaux_adapters::affect_repo;
+use humaux_adapters::affect_repo::AffectInput;
+use humaux_adapters::affect_repo::AffectRow;
+use humaux_adapters::affect_repo::AnnotateDone;
+use humaux_adapters::context_repo;
+use humaux_adapters::context_repo::BindingWriteOutcome;
+use humaux_adapters::context_repo::BindingWriteRequest;
+use humaux_adapters::distill_repo;
+use humaux_adapters::distill_repo::ConfirmOutcome;
+use humaux_adapters::distill_repo::ConfirmRequest;
+use humaux_adapters::distill_repo::PendingCandidate;
+use humaux_adapters::distill_repo::RejectOutcome;
+use humaux_adapters::distill_repo::RejectRequest;
+use humaux_adapters::grep_repo;
+use humaux_adapters::grep_repo::GrepQuery;
+use humaux_adapters::memory_governance_repo;
+use humaux_adapters::memory_governance_repo::ArchiveRequest;
+use humaux_adapters::memory_governance_repo::ArchiveResult;
+use humaux_adapters::memory_governance_repo::CorrectDone;
+use humaux_adapters::memory_governance_repo::CorrectRequest;
+use humaux_adapters::memory_governance_repo::RestoreRequest;
+use humaux_adapters::memory_governance_repo::RestoreResult;
+use humaux_adapters::memory_governance_repo::SupersedeOutcome;
+use humaux_adapters::memory_governance_repo::SupersedeRequest;
+use humaux_adapters::postgres::RuntimeDbPool;
+use humaux_adapters::serving_repo::UnservedLedger;
+use humaux_adapters::subject_repo;
+use humaux_application::recall_read::EnumerationCensus;
+use humaux_application::recall_read::Lifecycle;
+use humaux_application::recall_read::MaterializedItem;
+use humaux_application::recall_read::MaterializedMemory;
+use humaux_application::recall_read::MemoryEnumerationParams;
+use humaux_application::recall_read::MemoryGetTarget;
+use humaux_application::recall_read::MemoryHistory;
+use humaux_application::recall_read::NoteEnumerationFilter;
+use humaux_application::recall_read::frontier_pipeline_block;
+use humaux_application::recall_read::materialize_memory_enumeration_filtered;
+use humaux_application::recall_read::materialize_memory_get_frontier_target;
 use humaux_domain::{
     affect::{BasisPoints, MoodHalfLife},
     authority::MemoryId,
@@ -250,7 +260,7 @@ pub(crate) async fn get<T>(
     let (authorization, scope, family, stream, _) =
         read_scope(&pool, authorization, requested_workspace, &bootstrap).await?;
     let materialized = materialize_memory_get_frontier_target(
-        &pool,
+        pool.as_ref(),
         &authorization,
         &scope,
         &family,
@@ -370,7 +380,7 @@ pub(crate) async fn enumerate<T>(
     )
     .map_err(|_| ErrorCode::Internal)?;
     let mut page = materialize_memory_enumeration_filtered(
-        &pool,
+        pool.as_ref(),
         &authorization,
         &scope,
         &family,

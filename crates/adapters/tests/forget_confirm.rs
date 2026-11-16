@@ -1,21 +1,25 @@
 //! `adapters::tests::forget_confirm` — ADR-0092 D-B/D-C round-2 atomicity and scope isolation, on disposable PG.
-//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit, postgres, serde_json, sqlx]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq] w=[control.confirm_tokens, control.deletion_requests, control.deletion_targets, ops.deletion_plan_steps, ops.memory_lifecycle_events, ops.outbox, private.memory_evidence, private.memory_records, projection.embedding_fingerprints, projection.rebuild_runs, projection.rebuild_tickets, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_gateway), PostgreSQL(role_maintenance), PostgreSQL(role_migration_owner)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::forget_repo, adapters::confirm_token_repo, adapters::context_repo, adapters::grep_repo, adapters::read_gate, adapters::read_materialize, adapters::exact_census, adapters::tests::support::operation_receipt_fixture, application::forget, domain::confirm, domain::authority, domain::context, domain::error, domain::identity, domain::ids, humaux-testkit, projection::serving, projection::stream, retrieval::predicate_registry, testkit::disposable]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit, postgres, serde_json, sqlx]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq] w=[control.confirm_tokens, control.deletion_requests, control.deletion_targets, ops.deletion_plan_steps, ops.memory_lifecycle_events, ops.outbox, private.memory_evidence, private.memory_records, projection.embedding_fingerprints, projection.rebuild_runs, projection.rebuild_tickets, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_gateway), PostgreSQL(role_maintenance), PostgreSQL(role_migration_owner)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::confirm_token_repo, adapters::exact_census, adapters::forget_repo, adapters::grep_repo, adapters::read_materialize, adapters::tests::support::operation_receipt_fixture, application::forget, application::recall_read, domain::authority, domain::confirm, domain::context, domain::error, domain::identity, domain::ids, humaux-testkit, projection::serving, projection::stream, retrieval::predicate_registry, testkit::disposable]
 //! Called-by: [cargo-test]
 //! Invariants: [refusals leave token/request/lifecycle/stream state unchanged; accept re-judges the frozen roots, never the closure, under its own scope (#346); every read uses role_gateway; exact ids and counts; fixture writes require disposable PG]
 //! Spec: Baseline §37.2; §33.10 rule 9; §41.2; §78.2; ADR-0092 D-B/D-C; G-M19-2; G-M19-3; G-M19-17; G-DOC-13; #346
 
-use humaux_adapters::{
-    confirm_token_repo::ConfirmationClaim,
-    context_repo::assemble_materialized,
-    forget_repo::{self, ForgetRepoError, FrozenDeletion},
-    grep_repo::{GrepQuery, grep},
-    read_gate::{
-        MemoryEnumerationParams, NoteEnumerationFilter, materialize_memory_enumeration,
-        materialize_memory_enumeration_filtered, materialize_memory_get,
-    },
-    read_materialize::{Lifecycle, MaterializedItem, materialize_final_bodies},
-};
+use humaux_adapters::confirm_token_repo::ConfirmationClaim;
+use humaux_adapters::forget_repo;
+use humaux_adapters::forget_repo::ForgetRepoError;
+use humaux_adapters::forget_repo::FrozenDeletion;
+use humaux_adapters::grep_repo::GrepQuery;
+use humaux_adapters::grep_repo::grep;
+use humaux_adapters::read_materialize::materialize_final_bodies;
 use humaux_application::forget::{DeletionScopeKind, confirmation_digest};
+use humaux_application::recall_read::Lifecycle;
+use humaux_application::recall_read::MaterializedItem;
+use humaux_application::recall_read::MemoryEnumerationParams;
+use humaux_application::recall_read::NoteEnumerationFilter;
+use humaux_application::recall_read::assemble_materialized;
+use humaux_application::recall_read::materialize_memory_enumeration;
+use humaux_application::recall_read::materialize_memory_enumeration_filtered;
+use humaux_application::recall_read::materialize_memory_get;
 use humaux_domain::{
     authority::MemoryId,
     confirm::{ConfirmToken, DestructiveOp},

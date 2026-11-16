@@ -1,6 +1,6 @@
 //! `adapters::memory_repo` — the sole `INSERT INTO private.memory_records` door (M07 D9, gate G-M07-1): one authorized Memory plus its PRIMARY
 //!   `memory_evidence` link, written in the caller's transaction.
-//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) r=[private.memory_text_v] w=[private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::subject_repo, domain::authority, domain::evidence, domain::memory, domain::note]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) r=[private.memory_text_v] w=[private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::subject_repo, application::recall_read, domain::authority, domain::evidence, domain::memory, domain::note]
 //! Called-by: [adapters::attribution_repo, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::remember, adapters::retrieve, tests]
 //! Invariants: [every non-test Memory INSERT in the workspace is this one statement (xtask architecture-check G-M07-1, counted `== 1`); the
 //!   Memory row and its PRIMARY `memory_evidence` link are written together, because 0004's deferred `memory_records_requires_evidence` trigger
@@ -241,8 +241,7 @@ pub async fn insert_memory_in_txn(
     Ok(memory_id)
 }
 
-// ponytail: compatibility export for existing readers; remove in SLICE-2b.
-pub use humaux_application::recall_read::MemoryText;
+use humaux_application::recall_read::MemoryText;
 
 /// Reads the canonical text of `memory_ids` from `private.memory_text_v` in the caller's transaction, ordered by `memory_id`.
 /// The view is `security_invoker`, so a Memory the caller's role and RLS context cannot read is absent from the result, never

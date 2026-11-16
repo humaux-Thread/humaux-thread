@@ -1571,7 +1571,7 @@ fn render_items(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use humaux_adapters::retrieve::ProcessingState;
+    use humaux_application::recall_read::ProcessingState;
     use humaux_domain::identity::{BoundedSet, PrincipalId};
     use humaux_projection::dense::build_dense_filter;
     use humaux_projection::note_chunks::CardSlot;
@@ -1583,7 +1583,8 @@ mod tests {
     /// ADR-0111 D-C: unclassified Evidence prevents a fresh-only envelope claim.
     #[test]
     fn fresh_memory_with_temporary_evidence_has_unknown_summary() {
-        use humaux_adapters::read_materialize::{MaterializationSnapshot, MaterializedBodies};
+        use humaux_application::recall_read::MaterializationSnapshot;
+        use humaux_application::recall_read::MaterializedBodies;
         use humaux_retrieval::completeness::FreshnessClass;
         let memory_id = Uuid::from_u128(1);
         let evidence_id = Uuid::from_u128(2);

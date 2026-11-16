@@ -1,11 +1,5 @@
 //! `adapters::tests::stream_repo` — T3.3+T3.4 integration test — `stream_repo` (§15) against a real Postgres.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit, postgres,
-//!   sqlx, tokio]; services=[PostgreSQL(owner) r=[projection.processing_gaps] w=[control.private_reasoning_domains, control.tenants,
-//!   ops.jobs, ops.outbox, private.events, private.evidence_objects, private.memory_evidence, private.memory_records,
-//!   projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_maintenance),
-//!   PostgreSQL(role_retrieval_worker)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, adapters::retrieve,
-//!   adapters::stream_repo, adapters::tests::support::throwaway_db, domain::egress, domain::identity, domain::ids,
-//!   humaux-testkit, projection::stream, retrieval::completeness, retrieval::envelope]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit, postgres, sqlx, tokio]; services=[PostgreSQL(owner) r=[projection.processing_gaps] w=[control.private_reasoning_domains, control.tenants, ops.jobs, ops.outbox, private.events, private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_maintenance), PostgreSQL(role_retrieval_worker)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, adapters::stream_repo, adapters::tests::support::throwaway_db, application::recall_read, domain::egress, domain::identity, domain::ids, humaux-testkit, projection::stream, retrieval::completeness, retrieval::envelope]
 //! Called-by: [cargo-test]
 //! Invariants: [advance_prefix/sweep_lost run per tenant under FORCE RLS on real projection tables scoped to a
 //!   throwaway tenant; every sweep_lost test (an ISSUED -> LOST write) runs in its own throwaway database, never on
@@ -1308,7 +1302,7 @@ fn deployed_state_check_mirrors_processing_state_all() {
             in_db.sort_unstable();
             in_db.dedup();
 
-            let mut in_rust: Vec<String> = humaux_adapters::retrieve::ProcessingState::ALL
+            let mut in_rust: Vec<String> = humaux_application::recall_read::ProcessingState::ALL
                 .into_iter()
                 .map(|s| s.as_db_str().to_string())
                 .collect();

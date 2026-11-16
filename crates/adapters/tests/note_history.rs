@@ -1,13 +1,6 @@
 //! `adapters::tests::note_history` — ADR-0067 D-J2 card 40c-2 acceptance for the note history axes (G29-G33, L-6) and
 //!   the 40c-1 privacy follow-up (P2-2), against a real PostgreSQL and real `role_gateway` logins.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, serde_json, sqlx];
-//!   services=[PostgreSQL(role_gateway) r=[ops.outbox, ops.selection_snapshots, private.evidence_objects,
-//!   private.memory_evidence, private.note_heads, projection.stream_log] w=[private.memory_records]]; env=[];
-//!   modules=[adapters::attribution_repo, adapters::confirm_token_repo, adapters::forget_repo, adapters::note_repo,
-//!   adapters::operation_receipt, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::tests::support::governance_ops,
-//!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::authority, domain::confirm,
-//!   domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::selection, domain::subject,
-//!   humaux-testkit, projection::serving, projection::stream]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-testkit, serde_json, sqlx]; services=[PostgreSQL(role_gateway) r=[ops.outbox, ops.selection_snapshots, private.evidence_objects, private.memory_evidence, private.note_heads, projection.stream_log] w=[private.memory_records]]; env=[]; modules=[adapters::attribution_repo, adapters::confirm_token_repo, adapters::forget_repo, adapters::note_repo, adapters::operation_receipt, adapters::read_materialize, adapters::remember, adapters::tests::support::governance_ops, adapters::tests::support::operation_receipt_fixture, application::recall_read, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::selection, domain::subject, humaux-testkit, projection::serving, projection::stream]
 //! Called-by: [cargo-test]
 //! Invariants: [every read under test is a real role_gateway login through the production adapter entry points; every
 //!   version is written by the real 40a create or 40c-1 replacement transaction; the owner connection only archives,
@@ -24,22 +17,27 @@
 
 use std::time::{Duration, SystemTime};
 
-use humaux_adapters::{
-    confirm_token_repo::{self, ConfirmationClaim},
-    forget_repo,
-    note_repo::NoteIntake,
-    operation_receipt::{
-        self, AtomicRememberRequest, AtomicRememberResult, NOTE_OPERATION, NoteReplaceOutcome,
-        NoteReplaceRequest,
-    },
-    read_gate::{
-        MaterializedMemory, MaterializedMemoryPage, MemoryEnumerationParams, MemoryGetTarget,
-        NoteEnumerationFilter, materialize_memory_enumeration_filtered,
-        materialize_memory_get_target,
-    },
-    read_materialize::{Lifecycle, MaterializedItem, materialize_final_bodies},
-    remember::RememberCommand,
-};
+use humaux_adapters::confirm_token_repo;
+use humaux_adapters::confirm_token_repo::ConfirmationClaim;
+use humaux_adapters::forget_repo;
+use humaux_adapters::note_repo::NoteIntake;
+use humaux_adapters::operation_receipt;
+use humaux_adapters::operation_receipt::AtomicRememberRequest;
+use humaux_adapters::operation_receipt::AtomicRememberResult;
+use humaux_adapters::operation_receipt::NOTE_OPERATION;
+use humaux_adapters::operation_receipt::NoteReplaceOutcome;
+use humaux_adapters::operation_receipt::NoteReplaceRequest;
+use humaux_adapters::read_materialize::materialize_final_bodies;
+use humaux_adapters::remember::RememberCommand;
+use humaux_application::recall_read::Lifecycle;
+use humaux_application::recall_read::MaterializedItem;
+use humaux_application::recall_read::MaterializedMemory;
+use humaux_application::recall_read::MaterializedMemoryPage;
+use humaux_application::recall_read::MemoryEnumerationParams;
+use humaux_application::recall_read::MemoryGetTarget;
+use humaux_application::recall_read::NoteEnumerationFilter;
+use humaux_application::recall_read::materialize_memory_enumeration_filtered;
+use humaux_application::recall_read::materialize_memory_get_target;
 use humaux_domain::{
     audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction},
     authority::{AuthorityClass, MemoryId},

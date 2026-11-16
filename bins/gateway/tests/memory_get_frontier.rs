@@ -1,20 +1,6 @@
 //! `gateway::tests::memory_get_frontier` — M13-2 / ADR-0110 D-A: `memory.get` reports the ledger frontier from the
 //!   `stream_checkpoints` row alone (G-M13-1, G-M13-2).
-//! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-contracts, humaux-domain,
-//!   humaux-infra-cell, humaux-projection, humaux-protocol, humaux-testkit, postgres, serde_json, tokio, uuid];
-//!   services=[HTTP(gateway), PostgreSQL(owner) r=[ops.commit_seq_seq]
-//!   w=[control.api_keys, control.entitlement_snapshots, control.memberships, control.private_reasoning_domains,
-//!   control.tenants, control.users, control.workspace_memberships, control.workspaces, private.evidence_objects,
-//!   private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log,
-//!   projection.tenant_placements] x=[projection.stream_point_ledger], PostgreSQL(role_gateway),
-//!   PostgreSQL(role_maintenance), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT];
-//!   modules=[adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::serving_repo,
-//!   adapters::stream_repo, adapters::tests::support::operation_receipt_fixture, adapters::tests::support::throwaway_db,
-//!   application::retrieval_embedding_port, contracts::retrieval_config, domain::authority, domain::context,
-//!   domain::dataclass, domain::error, domain::identity, domain::ids, gateway::context, gateway::guard,
-//!   gateway::limiter, gateway::mcp_application, gateway::recall, gateway::remember, humaux-testkit,
-//!   infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::serving, projection::stream,
-//!   protocol::edge, protocol::mcp, protocol::mcp_catalog]
+//! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-infra-cell, humaux-projection, humaux-protocol, humaux-testkit, postgres, serde_json, tokio, uuid]; services=[HTTP(gateway), PostgreSQL(owner) r=[ops.commit_seq_seq] w=[control.api_keys, control.entitlement_snapshots, control.memberships, control.private_reasoning_domains, control.tenants, control.users, control.workspace_memberships, control.workspaces, private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log, projection.tenant_placements] x=[projection.stream_point_ledger], PostgreSQL(role_gateway), PostgreSQL(role_maintenance), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::postgres, adapters::quota_repo, adapters::serving_repo, adapters::stream_repo, adapters::tests::support::operation_receipt_fixture, adapters::tests::support::throwaway_db, application::recall_read, application::retrieval_embedding_port, contracts::retrieval_config, domain::authority, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::recall, gateway::remember, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::serving, projection::stream, protocol::edge, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]
 //! Invariants: [the door tests run in their own throwaway database because they REVOKE role_gateway's SELECT on
 //!   `projection.stream_log` (leaving only the three columns the get's own tombstone gate reads, read_materialize.rs,
@@ -42,16 +28,19 @@ use std::{
     time::Duration,
 };
 
-use humaux_adapters::{
-    postgres::{MaintenanceDbPool, RuntimeDbPool},
-    quota_repo,
-    read_gate::{
-        MaterializedMemory, MemoryGetTarget, frontier_pipeline_block,
-        materialize_memory_get_frontier_target, materialize_memory_get_target,
-    },
-    serving_repo::{FamilyReadState, ServingRepoError, UnservedLedger, family_read_state},
-    stream_repo::Frontier,
-};
+use humaux_adapters::postgres::MaintenanceDbPool;
+use humaux_adapters::postgres::RuntimeDbPool;
+use humaux_adapters::quota_repo;
+use humaux_adapters::serving_repo::FamilyReadState;
+use humaux_adapters::serving_repo::ServingRepoError;
+use humaux_adapters::serving_repo::UnservedLedger;
+use humaux_adapters::serving_repo::family_read_state;
+use humaux_adapters::stream_repo::Frontier;
+use humaux_application::recall_read::MaterializedMemory;
+use humaux_application::recall_read::MemoryGetTarget;
+use humaux_application::recall_read::frontier_pipeline_block;
+use humaux_application::recall_read::materialize_memory_get_frontier_target;
+use humaux_application::recall_read::materialize_memory_get_target;
 use humaux_application::retrieval_embedding_port::{
     RetrievalEmbeddingInput, RetrievalEmbeddingOutcome, RetrievalEmbeddingPort,
 };

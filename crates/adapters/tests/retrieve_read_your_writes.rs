@@ -1,14 +1,6 @@
 //! `adapters::tests::retrieve_read_your_writes` — T3.8 (§15.5) integration test — `retrieve::recall_with_overlay`
 //!   against a real Postgres.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sqlx,
-//!   tokio]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq] w=[control.memberships,
-//!   control.private_reasoning_domains, control.tenants, control.users, control.workspaces, ops.jobs, ops.outbox,
-//!   private.artifacts, private.events, private.evidence_objects, private.memory_evidence, private.memory_records,
-//!   projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_gateway), PostgreSQL(role_maintenance),
-//!   PostgreSQL(role_retrieval_worker)]; env=[HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN];
-//!   modules=[adapters::forget_repo, adapters::postgres, adapters::read_materialize, adapters::remember,
-//!   adapters::retrieve, adapters::stream_repo, adapters::tests::support::token_keys, domain::error, domain::evidence, domain::identity, domain::ids,
-//!   domain::subject, humaux-testkit, projection::serving, projection::stream]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(owner) r=[ops.commit_seq_seq] w=[control.memberships, control.private_reasoning_domains, control.tenants, control.users, control.workspaces, ops.jobs, ops.outbox, private.artifacts, private.events, private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_gateway), PostgreSQL(role_maintenance), PostgreSQL(role_retrieval_worker)]; env=[HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::forget_repo, adapters::postgres, adapters::read_materialize, adapters::remember, adapters::retrieve, adapters::stream_repo, adapters::tests::support::token_keys, application::recall_read, domain::error, domain::evidence, domain::identity, domain::ids, domain::subject, humaux-testkit, projection::serving, projection::stream]
 //! Called-by: [cargo-test]
 //! Invariants: [seeded rows match exactly what remember() writes; expired, malformed or unissued tokens and
 //!   cross-tenant/workspace scopes are typed RetrieveErrors; no DSN, unreachable DB or migrations before 0046 is a
@@ -33,9 +25,13 @@ use std::time::{Duration, Instant};
 
 use humaux_adapters::forget_repo;
 use humaux_adapters::postgres::{MaintenanceDbPool, RuntimeDbPool};
-use humaux_adapters::read_materialize::{self, MaterializedItem};
+use humaux_adapters::read_materialize;
 use humaux_adapters::remember::{self, RememberCommand};
-use humaux_adapters::retrieve::{self, ProcessingState, RetrieveError, TokenClaims};
+use humaux_adapters::retrieve;
+use humaux_adapters::retrieve::RetrieveError;
+use humaux_adapters::retrieve::TokenClaims;
+use humaux_application::recall_read::MaterializedItem;
+use humaux_application::recall_read::ProcessingState;
 use humaux_domain::evidence::{EvidenceOriginClass, payload_sha256};
 use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId};
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};

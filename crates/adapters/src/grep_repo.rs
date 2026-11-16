@@ -1,9 +1,7 @@
 //! `adapters::grep_repo` — ADR-0069 `memory.grep`: a literal, case-insensitive substring search over the caller's
 //!   authorized memories, one hit per matching line with ±1 line of context, true totals and a keyset page, all in one
 //!   snapshot.
-//! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(role_gateway) r=[private.memory_records]]; env=[];
-//!   modules=[adapters::context_repo, adapters::postgres, adapters::read_materialize, domain::error, domain::identity,
-//!   domain::ids]
+//! Depends-on: crates=[humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(role_gateway) r=[private.memory_records]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_materialize, application::recall_read, domain::error, domain::identity, domain::ids]
 //! Called-by: [gateway::memory, tests]
 //! Invariants: [candidates, the final gate, the totals, the page and the context bodies come from ONE REPEATABLE READ
 //!   READ ONLY transaction; what a grep may count or show is exactly what the shared final gate admits
@@ -21,7 +19,8 @@ use sqlx::types::Uuid;
 
 use crate::context_repo::{ENUMERATION_SCOPE, set_authorization_local};
 use crate::postgres::RuntimeDbPool;
-use crate::read_materialize::{Lifecycle, final_memory_ids_about_in_txn};
+use crate::read_materialize::final_memory_ids_about_in_txn;
+use humaux_application::recall_read::Lifecycle;
 
 /// ADR-0069 D-B: the longest pattern accepted, in Unicode scalars (the contract's `maxLength`).
 pub const MAX_PATTERN_CHARS: usize = 512;

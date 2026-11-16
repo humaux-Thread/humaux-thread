@@ -12603,37 +12603,31 @@ read by:
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::context_repo`
 - process(cargo-xtask): `adapters::exact_census`
-- process(cargo-xtask): `adapters::read_gate`
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `adapters::subject_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::context_repo`
 - process(humaux-consolidation-worker): `adapters::exact_census`
-- process(humaux-consolidation-worker): `adapters::read_gate`
 - process(humaux-consolidation-worker): `adapters::read_materialize`
 - process(humaux-consolidation-worker): `adapters::subject_repo`
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::exact_census`
 - process(humaux-gateway): `adapters::projection_worker`
-- process(humaux-gateway): `adapters::read_gate`
 - process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::subject_repo`
 - process(humaux-maintenance): `adapters::context_repo`
 - process(humaux-maintenance): `adapters::exact_census`
 - process(humaux-maintenance): `adapters::projection_worker`
-- process(humaux-maintenance): `adapters::read_gate`
 - process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::subject_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::context_repo`
 - process(humaux-private-worker): `adapters::exact_census`
-- process(humaux-private-worker): `adapters::read_gate`
 - process(humaux-private-worker): `adapters::read_materialize`
 - process(humaux-private-worker): `adapters::subject_repo`
 - process(humaux-retrieval-worker): `adapters::context_repo`
 - process(humaux-retrieval-worker): `adapters::exact_census`
 - process(humaux-retrieval-worker): `adapters::projection_worker`
-- process(humaux-retrieval-worker): `adapters::read_gate`
 - process(humaux-retrieval-worker): `adapters::read_materialize`
 - process(humaux-retrieval-worker): `adapters::subject_repo`
 
@@ -12770,19 +12764,19 @@ read by:
 - (no process): `adapters::tests::note_replace`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::operation_receipt`
-- process(cargo-xtask): `adapters::read_gate`
+- process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::operation_receipt`
-- process(humaux-consolidation-worker): `adapters::read_gate`
+- process(humaux-consolidation-worker): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::operation_receipt`
-- process(humaux-gateway): `adapters::read_gate`
+- process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::operation_receipt`
-- process(humaux-maintenance): `adapters::read_gate`
+- process(humaux-maintenance): `adapters::read_materialize`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::operation_receipt`
-- process(humaux-private-worker): `adapters::read_gate`
+- process(humaux-private-worker): `adapters::read_materialize`
 - process(humaux-retrieval-worker): `adapters::operation_receipt`
-- process(humaux-retrieval-worker): `adapters::read_gate`
+- process(humaux-retrieval-worker): `adapters::read_materialize`
 
 written by:
 - process(cargo-xtask): `adapters::note_repo`

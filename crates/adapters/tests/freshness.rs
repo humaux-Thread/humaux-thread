@@ -1,18 +1,15 @@
 //! `adapters::tests::freshness` — G-M13-4 Evidence-time wiring through the shared final materializer.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit,
-//!   serde_json, sqlx]; services=[PostgreSQL(owner) w=[private.evidence_objects, private.events,
-//!   private.memory_records] r=[private.memory_evidence], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN];
-//!   modules=[adapters::read_materialize, adapters::tests::support::operation_receipt_fixture,
-//!   domain::ids, humaux-testkit, projection::serving, retrieval::completeness]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit, serde_json, sqlx]; services=[PostgreSQL(owner) w=[private.evidence_objects, private.events, private.memory_records] r=[private.memory_evidence], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::read_materialize, adapters::tests::support::operation_receipt_fixture, application::recall_read, domain::ids, humaux-testkit, projection::serving, retrieval::completeness]
 //! Called-by: [cargo-test]
 //! Invariants: [real role_gateway reads; owner mutates only fixture audit timestamps; missing DB fails in CI;
 //!   the classifier is M13-4a's, never a second policy]
 //! Spec: §9; §21.5; §23.3; §57.1; ADR-0111 D-A/D-D
 
-use humaux_adapters::read_materialize::{
-    ItemFreshness, MaterializationSnapshot, MaterializedBodies, MaterializedItem,
-    materialize_final_bodies,
-};
+use humaux_adapters::read_materialize::materialize_final_bodies;
+use humaux_application::recall_read::ItemFreshness;
+use humaux_application::recall_read::MaterializationSnapshot;
+use humaux_application::recall_read::MaterializedBodies;
+use humaux_application::recall_read::MaterializedItem;
 use humaux_domain::ids::TenantId;
 use humaux_projection::serving::StreamFamily;
 use humaux_retrieval::completeness::FreshnessClass;
@@ -176,7 +173,7 @@ fn g_m13_4_reads_reembed_and_reimport_never_launder_evidence_time() {
         let mut selected = read(&handle, &ids);
         selected.items.retain(|item| {
             matches!(item,
-            humaux_adapters::read_materialize::MaterializedItem::Memory { memory_id, .. }
+            humaux_application::recall_read::MaterializedItem::Memory { memory_id, .. }
                 if [ids[0], ids[3]].contains(memory_id))
         });
         assert_eq!(selected.items.len(), 2);

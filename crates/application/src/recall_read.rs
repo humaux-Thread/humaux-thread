@@ -1,18 +1,27 @@
 //! `application::recall_read` — ordered candidates enter one authoritative snapshot (Baseline §23 / ADR-0130).
-//! Depends-on: crates=[async-trait, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, time, uuid]; services=[]; env=[]; modules=[domain::affect, domain::identity, domain::subject, projection::note_chunks, projection::serving, retrieval::completeness, retrieval::envelope, retrieval::signals]
-//! Called-by: [adapters::retrieve, gateway::recall]
+//! Depends-on: crates=[async-trait, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, time, uuid]; services=[]; env=[]; modules=[domain::affect, domain::authority, domain::context, domain::error, domain::identity, domain::ids, domain::note, domain::subject, projection::note_chunks, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, retrieval::signals]
+//! Called-by: [adapters::context_repo, adapters::exact_census, adapters::grep_repo, adapters::memory_repo, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, gateway::context, gateway::mcp_application, gateway::memory, gateway::recall, tests]
 //! Invariants: [the read port owns the complete same-snapshot hydration; candidates confer no authority]
 //! Spec: Baseline §15.5; §22; §23; ADR-0130 D7.2
 
 use async_trait::async_trait;
 use humaux_domain::{affect::AffectFilter, identity::AuthorizationScope, subject::SubjectId};
+use humaux_domain::{
+    authority::MemoryId, context::ContextBudget, error::ErrorCode, ids::Scope, note::NoteKind,
+};
+use humaux_projection::stream::StreamKey;
 use humaux_projection::{note_chunks::CardSlot, serving::StreamFamily};
+use humaux_retrieval::{
+    compiler::ContextOutcome,
+    envelope::{FrontierBlock, FrontierPipelineBlock},
+    handoff::Handoff,
+};
 use humaux_retrieval::{
     completeness::{FreshnessClass, LedgerClosure},
     envelope::{CountScope, EvidenceBlock, FreshnessBlock, GroundingBlock, KnowledgeBlock},
     signals::summarize_freshness,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -117,6 +126,26 @@ pub struct MemoryText {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// §23.3④ `pipeline.evidence` / `pipeline.knowledge` readings in the **`stream_ledger`**
+/// universe — the request's full six-column [`humaux_projection::stream::StreamKey`] ledger, not the caller's authorized
+/// view (§23.3④: "同一块的计数必须来自同一实际全集、同一授权与快照"; the authorized EXACT
+/// census is a different universe and may never fill these, "禁止填 `0`、返回条数、
+/// `issued_highwater` 或其他块的值充数").
+///
+/// Both blocks read `projection.stream_log` rows for that key. §15.1/§60 issue a stream_seq in
+/// the same transaction that persists its Evidence and its `ops.outbox` row, so a row's
+/// existence *is* the "Evidence fully persisted" reading; §15.2's state set is what partitions
+/// the knowledge layer. The equation §23.3④ freezes (`evidence.persisted ==
+/// knowledge.eligible == projection.expected`, and `processed + waiting_key + failed ==
+/// eligible`) therefore discriminates on two real axes: the ledger rows against
+/// `stream_checkpoints.issued_highwater` (a separately-written watermark — a hole in the dense
+/// sequence, or a watermark ahead of its rows, fails it), and the knowledge partition against
+/// its own base (anything still in flight fails it).
+// ponytail: derived from `stream_log` at read time because nothing in the workspace advances
+// `stream_checkpoints.evidence_highwater` / `knowledge_highwater` (grep: migration 0011's
+// GRANT and two fixtures). Upgrade path: when the distill/projection workers start advancing
+// those two watermarks, read them here instead — the two blocks then become genuinely
+// independent per-layer readings rather than two statements over one ledger.
 pub struct StreamPipelineCounts {
     pub evidence_persisted: u64,
     pub knowledge_eligible: u64,
@@ -197,11 +226,11 @@ impl ProcessingState {
     }
 
     /// Parse the database closed set, leaving adapter error translation at its boundary (§15.1).
-    pub fn parse(s: &str) -> Result<Self, String> {
+    pub fn parse(s: &str) -> Result<Self, UnknownProcessingState> {
         Self::ALL
             .into_iter()
             .find(|v| v.as_db_str() == s)
-            .ok_or_else(|| s.to_string())
+            .ok_or_else(|| UnknownProcessingState(s.to_owned()))
     }
 
     /// §15.2/§15.4 `SETTLED_OK = DONE | SKIPPED_BY_POLICY | TOMBSTONED | RETIRED_FAILED` — an
@@ -319,4 +348,674 @@ pub async fn hydrate_recall<P: RecallHydrationReadPort>(
     request: RecallHydrationRequest<'_>,
 ) -> Result<MaterializedPrivateReadServing, P::Error> {
     port.hydrate(request).await
+}
+
+/// ADR-0067 D-J2: the lifecycle statuses a read admits. `revoked` / `expired` are not representable (L-6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusSet {
+    Active,
+    Superseded,
+    Both,
+}
+
+/// ADR-0067 D-J2: how a read treats `archived_at` (ADR-0024 D-C).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArchiveMode {
+    Exclude,
+    Only,
+    Include,
+}
+
+/// ADR-0067 D-J2: one typed lifecycle selection of the shared final gate — statuses ⊆ {active, superseded}
+/// (non-empty) × archive ∈ {exclude, only, include}. The fields are private: a value comes only from
+/// [`Lifecycle::CURRENT`], `for_get`, [`Lifecycle::for_enumerate`] or the census's `ACTIVE_FINAL`, and the
+/// recall/context entry points of this module accept none at all (they run `CURRENT`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lifecycle {
+    statuses: StatusSet,
+    archive: ArchiveMode,
+}
+
+impl Default for Lifecycle {
+    fn default() -> Self {
+        Self::CURRENT
+    }
+}
+
+impl Lifecycle {
+    /// Recall, context and the default enumerate: active, not superseded, not archived.
+    pub const CURRENT: Self = Self {
+        statuses: StatusSet::Active,
+        archive: ArchiveMode::Exclude,
+    };
+
+    /// The §22.1 registry census's `ACTIVE_FINAL`: active and not superseded, archive not consulted (a registry
+    /// predicate owns its own archive stance).
+    pub const ACTIVE_FINAL: Self = Self {
+        statuses: StatusSet::Active,
+        archive: ArchiveMode::Include,
+    };
+
+    /// ADR-0067 D-H / D-J2: `memory.get` admits archived rows (it reports `archived:true`), and with
+    /// `include_history` the exact superseded version too.
+    pub const fn for_get(include_history: bool) -> Self {
+        Self {
+            statuses: if include_history {
+                StatusSet::Both
+            } else {
+                StatusSet::Active
+            },
+            archive: ArchiveMode::Include,
+        }
+    }
+
+    /// ADR-0067 D-J2: `memory.enumerate`'s selector from its wire values. `None` = the defaults (`["active"]`,
+    /// `"exclude"`).
+    ///
+    /// # Errors
+    /// [`ErrorCode::InvalidInput`] for an empty list, more than two entries, a duplicate, `revoked` / `expired`
+    /// (L-6) or any other value, and for an archive mode outside `exclude` / `only` / `include`.
+    pub fn for_enumerate(
+        statuses: Option<&[&str]>,
+        archive: Option<&str>,
+    ) -> Result<Self, ErrorCode> {
+        let statuses = statuses.unwrap_or(&["active"][..]);
+        if statuses.is_empty() || statuses.len() > 2 {
+            return Err(ErrorCode::InvalidInput);
+        }
+        let (mut active, mut superseded) = (false, false);
+        for status in statuses {
+            match *status {
+                "active" if !active => active = true,
+                "superseded" if !superseded => superseded = true,
+                _ => return Err(ErrorCode::InvalidInput),
+            }
+        }
+        let statuses = match (active, superseded) {
+            (true, false) => StatusSet::Active,
+            (false, true) => StatusSet::Superseded,
+            (true, true) => StatusSet::Both,
+            (false, false) => return Err(ErrorCode::InvalidInput),
+        };
+        let archive = match archive.unwrap_or("exclude") {
+            "exclude" => ArchiveMode::Exclude,
+            "only" => ArchiveMode::Only,
+            "include" => ArchiveMode::Include,
+            _ => return Err(ErrorCode::InvalidInput),
+        };
+        Ok(Self { statuses, archive })
+    }
+
+    /// The bound `text[]` of statuses, in canonical order (`active` before `superseded`).
+    pub fn status_wires(self) -> Vec<String> {
+        let wires: &[&str] = match self.statuses {
+            StatusSet::Active => &["active"],
+            StatusSet::Superseded => &["superseded"],
+            StatusSet::Both => &["active", "superseded"],
+        };
+        wires.iter().map(|wire| (*wire).to_owned()).collect()
+    }
+
+    /// The bound archive mode.
+    pub const fn archive_wire(self) -> &'static str {
+        match self.archive {
+            ArchiveMode::Exclude => "exclude",
+            ArchiveMode::Only => "only",
+            ArchiveMode::Include => "include",
+        }
+    }
+
+    /// The canonical text a cursor fingerprint binds: statuses joined by `,`, then `/` and the archive mode.
+    pub fn canonical(self) -> String {
+        format!("{}/{}", self.status_wires().join(","), self.archive_wire())
+    }
+}
+
+/// ADR-0067 D-H: one Memory version's lifecycle and provenance, as `memory.get` with `include_history` reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryHistory {
+    /// The version described — always the id asked for, never its successor.
+    pub memory_id: Uuid,
+    /// `"active"` or `"superseded"`: the only two states the final gate admits with history.
+    pub status: &'static str,
+    /// The successor, present only when the caller may read it (`read_gate::readable_memory_ids`).
+    pub superseded_by: Option<Uuid>,
+    /// Where the version came from.
+    pub provenance: MemoryProvenance,
+}
+
+/// ADR-0067 D-H `provenance`. Evidence-side fields are `None` when the PRIMARY Evidence is not visible to the caller.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryProvenance {
+    /// The PRIMARY `memory_evidence` link's Evidence.
+    pub primary_evidence_id: Option<Uuid>,
+    /// `private.events.event_kind` of that Evidence (`None` for an artifact).
+    pub event_kind: Option<String>,
+    /// `private.evidence_objects.origin_class` of that Evidence.
+    pub origin: Option<String>,
+    /// The identity contract's `strategy` for a note, else `"distill"`.
+    pub derivation_strategy: String,
+    /// `private.memory_records.asserted_at`.
+    pub asserted_at: OffsetDateTime,
+    /// `private.memory_records.authority_class`.
+    pub authority_class: String,
+    /// The identity contract's SHA-256 of the verbatim body (notes only; ADR-0067 D-E).
+    pub body_sha256: Option<Vec<u8>>,
+}
+
+/// One exact, object-level Memory read from the caller's trusted serving stream.
+///
+/// `bodies` carries the same RR snapshot identity as the final Memory body. `ledger` and
+/// `grounding` were read in that same transaction, but this type does not claim a complete
+/// stream or pipeline census. `L` is the projection-side reading `ledger` holds: the stream
+/// ledger closure by default (enumerate, [`materialize_memory_get_target`]), and the checkpoint
+/// frontier on the one door `memory.get` uses ([`materialize_memory_get_frontier_target`],
+/// ADR-0110 D-A).
+pub struct MaterializedMemory<L = humaux_retrieval::completeness::LedgerClosure> {
+    /// The final body rows, gated and read in one RR snapshot.
+    pub bodies: MaterializedBodies,
+    /// The projection-side reading taken in that same transaction (see the type's `L`).
+    pub ledger: L,
+    /// The §8.8 grounding tally of the admitted Memory rows.
+    pub grounding: GroundingBlock,
+    /// §6.1.3 (ADR-0028 D-D): `memory_id → linked subject ids` (link order) for every body in
+    /// `bodies`, read in the same RR snapshot under the caller's RLS. A memory with no link has
+    /// no entry.
+    pub subjects: HashMap<Uuid, Vec<Uuid>>,
+    /// Q3/ADR-0024 D-C: `true` when this one `memory.get` Memory carries `archived_at IS NOT NULL`. Every other read
+    /// sets `false`; an enumerate page that selected archived rows reports them per item in `archived_ids`.
+    pub archived: bool,
+    /// ADR-0067 D-J2: the archived ids of a `memory.enumerate` page, read in its snapshot; empty on every other read.
+    pub archived_ids: HashSet<Uuid>,
+    /// ADR-0067 D-J2: `memory_id → "active" | "superseded"` for every body of a `memory.enumerate` page, read in its
+    /// snapshot; empty on every other read.
+    pub statuses: HashMap<Uuid, &'static str>,
+    /// ADR-0067 D-D: `memory_id → note_kind` for every body in `bodies` that is a note, read in the same RR snapshot.
+    /// A non-note Memory has no entry.
+    pub note_kinds: HashMap<Uuid, NoteKind>,
+    /// ADR-0067 D-J: `memory_id → note_id` for the same notes, from the same read. A non-note Memory has no entry.
+    pub note_ids: HashMap<Uuid, Uuid>,
+    /// ADR-0067 D-H: lifecycle and provenance of the one Memory `memory.get` read with `include_history`; `None` on
+    /// every other read, so their output is unchanged.
+    pub history: Option<MemoryHistory>,
+}
+
+/// Trusted server-side pagination inputs for an authorized memory enumeration.
+pub struct MemoryEnumerationParams<'a> {
+    /// The opaque continuation cursor of a later page; `None` mints the first segment.
+    pub cursor: Option<&'a str>,
+    /// Items per page, 1..=100.
+    pub page_size: u16,
+    /// `HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS` (§78.1): one manifest segment's lifetime.
+    pub ttl: std::time::Duration,
+    /// `HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP` (> 0, ADR-0062 D-K): the most ids one manifest segment stores;
+    /// a larger universe continues in keyset segments, each with its own exact census.
+    pub manifest_cap: usize,
+    /// The key the manifest's page cursors are MAC-signed and verified with (ADR-0062 D-K); never empty.
+    pub mac_key: &'a [u8],
+    /// §6.1.3 (ADR-0028 D-D): restrict the EXACT enumeration predicate to memories linked to
+    /// this subject (`private.memory_subjects`, under RLS). Part of the manifest's query
+    /// fingerprint, so a cursor minted with one filter cannot page another; never a
+    /// post-filter, so the page's completeness claim stays what the manifest says.
+    pub subject_id: Option<Uuid>,
+}
+
+/// ADR-0067 D-G (40b) / D-J2 (40c-2): the note and history axes of the EXACT enumeration predicate — `note_kind` ∈
+/// `note_kinds`, `occurred_at ∈ [occurred_since, occurred_until)`, `note_id`, and the [`Lifecycle`] selection. Like
+/// `subject_id`, every axis rides inside the manifest predicate, its census and the page's final gate (never a
+/// post-filter) and enters the manifest's query fingerprint. `Default` = no note axis, [`Lifecycle::CURRENT`].
+#[derive(Debug, Clone, Default)]
+pub struct NoteEnumerationFilter {
+    /// `Some` = only notes of these kinds (non-empty); `None` = any Memory, note or not.
+    pub note_kinds: Option<Vec<NoteKind>>,
+    /// Inclusive lower bound on `memory_records.occurred_at`.
+    pub occurred_since: Option<OffsetDateTime>,
+    /// Exclusive upper bound on `memory_records.occurred_at`.
+    pub occurred_until: Option<OffsetDateTime>,
+    /// ADR-0067 D-J2: only the versions of this note (`memory_records.note_id`); `None` = no note axis.
+    pub note_id: Option<Uuid>,
+    /// ADR-0067 D-J2: which lifecycle statuses and archive states the predicate admits.
+    pub lifecycle: Lifecycle,
+}
+
+impl NoteEnumerationFilter {
+    /// The kinds as the bound `text[]` of DB wire strings (`private.memory_records.note_kind`, migration 0235).
+    pub fn kind_wires(&self) -> Option<Vec<String>> {
+        self.note_kinds
+            .as_ref()
+            .map(|kinds| kinds.iter().map(|kind| kind.wire().to_owned()).collect())
+    }
+
+    /// The fingerprint segment: kinds sorted and deduplicated, joined by `,`; bounds as unix nanoseconds; empty when
+    /// absent. `None` when no axis is set, so an unfiltered manifest keeps its pre-40b fingerprint.
+    pub fn fingerprint_segment(&self) -> Option<String> {
+        if self.note_kinds.is_none()
+            && self.occurred_since.is_none()
+            && self.occurred_until.is_none()
+        {
+            return None;
+        }
+        let mut kinds: Vec<&str> = self
+            .note_kinds
+            .iter()
+            .flatten()
+            .map(|kind| kind.wire())
+            .collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        let nanos = |at: Option<OffsetDateTime>| {
+            at.map(|at| at.unix_timestamp_nanos().to_string())
+                .unwrap_or_default()
+        };
+        Some(format!(
+            "{}:{}:{}",
+            kinds.join(","),
+            nanos(self.occurred_since),
+            nanos(self.occurred_until)
+        ))
+    }
+
+    /// ADR-0067 D-J2: the canonical history selection (statuses sorted, archive mode, note id), `None` when it is the
+    /// default (`CURRENT`, no note) so an unfiltered manifest keeps its pre-40c-2 fingerprint. Tagged and colon-free,
+    /// so it never reads as the note segment.
+    pub fn history_segment(&self) -> Option<String> {
+        if self.note_id.is_none() && self.lifecycle == Lifecycle::CURRENT {
+            return None;
+        }
+        Some(format!(
+            "history={};{}",
+            self.lifecycle.canonical(),
+            self.note_id.map(|id| id.to_string()).unwrap_or_default()
+        ))
+    }
+
+    /// An empty kind set or `since >= until` describes no window a caller can mean: `InvalidInput`.
+    pub fn validate(&self) -> Result<(), ErrorCode> {
+        if self.note_kinds.as_ref().is_some_and(Vec::is_empty) {
+            return Err(ErrorCode::InvalidInput);
+        }
+        if let (Some(since), Some(until)) = (self.occurred_since, self.occurred_until)
+            && since >= until
+        {
+            return Err(ErrorCode::InvalidInput);
+        }
+        Ok(())
+    }
+}
+
+/// One immutable manifest page whose body, grounding and ledger share one PostgreSQL snapshot.
+pub struct MaterializedMemoryPage {
+    /// The manifest snapshot this page was cut from.
+    pub snapshot_id: Uuid,
+    /// The cursor of the next page; `None` at the end of the last segment.
+    pub next_cursor: Option<String>,
+    /// The page's bodies, ledger, grounding and per-item readings.
+    pub memory: MaterializedMemory,
+    /// §22.1 census + §23.3④ pipeline readings for THIS page, or `None` when this call had no
+    /// workspace-scoped universe to enumerate at all.
+    ///
+    /// The two travel together on purpose: §22.0 makes `class=exact` without an enumeration a
+    /// hard 5xx, and `classify()` maps this route's frozen `PlannerDecision::Enumerate` to
+    /// `Exact` as soon as the pipeline counts stop being unknown — so a caller that took the
+    /// counts without the census would 5xx, and one that took the census without the counts
+    /// would report `cannot_establish/count_unknown` while holding a proven total. One
+    /// `Option` over both makes neither half reachable on its own.
+    pub census: Option<EnumerationCensus>,
+}
+
+/// ADR-0067 D-J2: what `memory.get` names — one version, or one note (resolved to its head). The two namespaces never
+/// fall back into each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryGetTarget {
+    /// One immutable version by its `memory_id`.
+    Memory(MemoryId),
+    /// One note by its `note_id`, read at `private.note_heads.head_memory_id`.
+    Note(Uuid),
+}
+
+/// [`crate::read_gate::MaterializedMemoryPage::census`]'s payload: the §22.1 verdict for this page and the
+/// `stream_ledger`-universe pipeline counts read in the same transaction.
+pub struct EnumerationCensus {
+    pub census: humaux_retrieval::completeness::CensusResult,
+    pub pipeline: StreamPipelineCounts,
+}
+
+/// Gateway-callable Context manifest and bodies produced from one PostgreSQL snapshot.
+pub struct MaterializedContext {
+    /// Canonical v1 manifest assembled from the frozen lanes.
+    pub handoff: Handoff,
+    /// Compiler outcome that produced the manifest, including mandatory overflow.
+    pub outcome: ContextOutcome,
+    /// Final body rows rechecked in the manifest's transaction snapshot.
+    pub bodies: MaterializedBodies,
+    /// Stream ledger closure read in that same transaction snapshot.
+    pub ledger: humaux_retrieval::completeness::LedgerClosure,
+    /// §23.3④ `stream_ledger` pipeline readings for `validated_key`, taken in that same
+    /// snapshot as the ledger and the bodies (ADR-0041 D-H). Not an `Option`: unlike
+    /// [`crate::read_gate::MaterializedMemoryPage::census`] there is no census travelling with it and
+    /// `classify()` maps this route's `PlannerDecision::Class(_)` to `SemanticBounded`, so
+    /// §22.0's exact-without-a-predicate trap is not on this path.
+    pub pipeline: StreamPipelineCounts,
+    /// Actual §8.8 states retained from compiled mandatory and pinned rows.
+    pub grounding: GroundingBlock,
+}
+
+/// §15.3: the frontier of one stream as its `stream_checkpoints` row holds it. Carries only what has a writer on main
+/// (`issued_highwater` by the ticket door, `projection_highwater` by [`advance_prefix`], `serving` by the maintenance
+/// switch); `evidence_highwater` / `knowledge_highwater` are absent until M13 gives them one, because exposing a
+/// column nobody writes would present a fabricated 0 (§23.3④). No `visible`, no per-state count either: those come
+/// from [`fetch_ledger_closure`], and which reader an envelope uses is M13's ruling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frontier {
+    /// `issued_highwater` — A1's `expected` (§15.4).
+    pub issued_hw: u64,
+    /// `projection_highwater` — the §15.4 contiguous-done prefix [`advance_prefix`] last stored.
+    pub projection_hw: u64,
+    /// `serving` — the §15.3 read-routing flag.
+    pub serving: bool,
+    /// The row's last-write time (`stream_checkpoints_touch_updated_at`, DB clock).
+    pub updated_at: time::OffsetDateTime,
+}
+
+/// ADR-0110 D-A: the `pipeline` of a `memory.get` envelope from the frontier its snapshot read. The one mapping from a
+/// [`Frontier`] to the wire: `None` (no checkpoint row) is `projection: null` with `no_checkpoint`, never a zero
+/// frontier (§23.1④, G-M13-2); a row becomes a [`FrontierBlock`], whose `behind` is derived there and nowhere else.
+/// `observed_at` is the row's DB-clock write time in RFC 3339.
+pub fn frontier_pipeline_block(
+    frontier: Option<Frontier>,
+) -> Result<FrontierPipelineBlock, ErrorCode> {
+    let block = match frontier {
+        Some(frontier) => {
+            let observed_at = frontier
+                .updated_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|_| ErrorCode::Internal)?;
+            Some(FrontierBlock::new(
+                frontier.issued_hw,
+                frontier.projection_hw,
+                frontier.serving,
+                observed_at,
+            ))
+        }
+        None => None,
+    };
+    Ok(FrontierPipelineBlock::new(block))
+}
+
+/// Authenticated get_target inputs (§23 / ADR-0130 D7).
+pub struct MaterializeMemoryGetTargetRequest<'a> {
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub authorization: &'a AuthorizationScope,
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub scope: &'a Scope,
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub expected_family: &'a StreamFamily,
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub validated_key: &'a StreamKey,
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub target: MemoryGetTarget,
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub include_history: bool,
+}
+
+/// Authenticated get_frontier inputs (§23 / ADR-0130 D7).
+pub struct MaterializeMemoryGetFrontierTargetRequest<'a> {
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub authorization: &'a AuthorizationScope,
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub scope: &'a Scope,
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub expected_family: &'a StreamFamily,
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub validated_key: &'a StreamKey,
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub target: MemoryGetTarget,
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub include_history: bool,
+}
+
+/// Authenticated enumerate_filtered inputs (§23 / ADR-0130 D7).
+pub struct MaterializeMemoryEnumerationFilteredRequest<'a> {
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub authorization: &'a AuthorizationScope,
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub scope: &'a Scope,
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub expected_family: &'a StreamFamily,
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub validated_key: &'a StreamKey,
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub params: MemoryEnumerationParams<'a>,
+    /// Trusted read input, validated at the existing snapshot boundary.
+    pub notes: &'a NoteEnumerationFilter,
+}
+
+/// Purpose-specific read port; implementations retain the same snapshot and final gate (§23).
+#[async_trait]
+pub trait MemoryGetReadPort: Send + Sync {
+    async fn get_target(
+        &self,
+        request: MaterializeMemoryGetTargetRequest<'_>,
+    ) -> Result<MaterializedMemory, ErrorCode>;
+    async fn get_frontier(
+        &self,
+        request: MaterializeMemoryGetFrontierTargetRequest<'_>,
+    ) -> Result<MaterializedMemory<Option<Frontier>>, ErrorCode>;
+}
+
+/// Purpose-specific read port; implementations retain the same snapshot and final gate (§23).
+#[async_trait]
+pub trait MemoryEnumerationReadPort: Send + Sync {
+    async fn enumerate_filtered(
+        &self,
+        request: MaterializeMemoryEnumerationFilteredRequest<'_>,
+    ) -> Result<MaterializedMemoryPage, ErrorCode>;
+}
+
+/// Authenticated read use case; the port owns one complete snapshot (§23).
+pub async fn materialize_memory_get<P: MemoryGetReadPort + Sync>(
+    pool: &P,
+    authorization: &AuthorizationScope,
+    scope: &Scope,
+    expected_family: &StreamFamily,
+    validated_key: &StreamKey,
+    memory_id: MemoryId,
+) -> Result<MaterializedMemory, ErrorCode> {
+    materialize_memory_get_versioned(
+        pool,
+        authorization,
+        scope,
+        expected_family,
+        validated_key,
+        memory_id,
+        false,
+    )
+    .await
+}
+
+/// Authenticated read use case; the port owns one complete snapshot (§23).
+pub async fn materialize_memory_get_versioned<P: MemoryGetReadPort + Sync>(
+    pool: &P,
+    authorization: &AuthorizationScope,
+    scope: &Scope,
+    expected_family: &StreamFamily,
+    validated_key: &StreamKey,
+    memory_id: MemoryId,
+    include_history: bool,
+) -> Result<MaterializedMemory, ErrorCode> {
+    materialize_memory_get_target(
+        pool,
+        authorization,
+        scope,
+        expected_family,
+        validated_key,
+        MemoryGetTarget::Memory(memory_id),
+        include_history,
+    )
+    .await
+}
+
+/// Authenticated read use case; the port owns one complete snapshot (§23).
+pub async fn materialize_memory_get_target<P: MemoryGetReadPort + Sync>(
+    pool: &P,
+    authorization: &AuthorizationScope,
+    scope: &Scope,
+    expected_family: &StreamFamily,
+    validated_key: &StreamKey,
+    target: MemoryGetTarget,
+    include_history: bool,
+) -> Result<MaterializedMemory, ErrorCode> {
+    pool.get_target(MaterializeMemoryGetTargetRequest {
+        authorization,
+        scope,
+        expected_family,
+        validated_key,
+        target,
+        include_history,
+    })
+    .await
+}
+
+/// Authenticated read use case; the port owns one complete snapshot (§23).
+pub async fn materialize_memory_get_frontier_target<P: MemoryGetReadPort + Sync>(
+    pool: &P,
+    authorization: &AuthorizationScope,
+    scope: &Scope,
+    expected_family: &StreamFamily,
+    validated_key: &StreamKey,
+    target: MemoryGetTarget,
+    include_history: bool,
+) -> Result<MaterializedMemory<Option<Frontier>>, ErrorCode> {
+    pool.get_frontier(MaterializeMemoryGetFrontierTargetRequest {
+        authorization,
+        scope,
+        expected_family,
+        validated_key,
+        target,
+        include_history,
+    })
+    .await
+}
+
+/// Authenticated read use case; the port owns one complete snapshot (§23).
+pub async fn materialize_memory_enumeration<P: MemoryEnumerationReadPort + Sync>(
+    pool: &P,
+    authorization: &AuthorizationScope,
+    scope: &Scope,
+    expected_family: &StreamFamily,
+    validated_key: &StreamKey,
+    params: MemoryEnumerationParams<'_>,
+) -> Result<MaterializedMemoryPage, ErrorCode> {
+    materialize_memory_enumeration_filtered(
+        pool,
+        authorization,
+        scope,
+        expected_family,
+        validated_key,
+        params,
+        &NoteEnumerationFilter::default(),
+    )
+    .await
+}
+
+/// Authenticated read use case; the port owns one complete snapshot (§23).
+pub async fn materialize_memory_enumeration_filtered<P: MemoryEnumerationReadPort + Sync>(
+    pool: &P,
+    authorization: &AuthorizationScope,
+    scope: &Scope,
+    expected_family: &StreamFamily,
+    validated_key: &StreamKey,
+    params: MemoryEnumerationParams<'_>,
+    notes: &NoteEnumerationFilter,
+) -> Result<MaterializedMemoryPage, ErrorCode> {
+    pool.enumerate_filtered(MaterializeMemoryEnumerationFilteredRequest {
+        authorization,
+        scope,
+        expected_family,
+        validated_key,
+        params,
+        notes,
+    })
+    .await
+}
+
+/// Authenticated Context read inputs (§25).
+pub struct ContextReadRequest<'a> {
+    /// Caller authorization.
+    pub authorization: &'a AuthorizationScope,
+    /// Canonical scope.
+    pub scope: &'a Scope,
+    /// Compiler budget.
+    pub budget: ContextBudget,
+    /// Trusted serving family.
+    pub expected_family: &'a StreamFamily,
+    /// Validated stream.
+    pub validated_key: &'a StreamKey,
+}
+/// One authoritative Context snapshot (§25 / ADR-0130 D7).
+#[async_trait]
+pub trait ContextAssemblyReadPort: Send + Sync {
+    /// Compile and materialize the same snapshot.
+    async fn assemble_context(
+        &self,
+        request: ContextReadRequest<'_>,
+    ) -> Result<MaterializedContext, ErrorCode>;
+}
+/// Assemble the authenticated Context through its read port.
+pub async fn assemble_materialized<P: ContextAssemblyReadPort + Sync>(
+    pool: &P,
+    authorization: &AuthorizationScope,
+    scope: &Scope,
+    budget: ContextBudget,
+    expected_family: &StreamFamily,
+    validated_key: &StreamKey,
+) -> Result<MaterializedContext, ErrorCode> {
+    pool.assemble_context(ContextReadRequest {
+        authorization,
+        scope,
+        budget,
+        expected_family,
+        validated_key,
+    })
+    .await
+}
+
+/// Unrecognized database state; adapters retain their existing public error mapping (§15.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownProcessingState(pub String);
+
+#[async_trait]
+impl<P: MemoryGetReadPort + ?Sized> MemoryGetReadPort for std::sync::Arc<P> {
+    async fn get_target(
+        &self,
+        request: MaterializeMemoryGetTargetRequest<'_>,
+    ) -> Result<MaterializedMemory, ErrorCode> {
+        self.as_ref().get_target(request).await
+    }
+    async fn get_frontier(
+        &self,
+        request: MaterializeMemoryGetFrontierTargetRequest<'_>,
+    ) -> Result<MaterializedMemory<Option<Frontier>>, ErrorCode> {
+        self.as_ref().get_frontier(request).await
+    }
+}
+
+#[async_trait]
+impl<P: MemoryEnumerationReadPort + ?Sized> MemoryEnumerationReadPort for std::sync::Arc<P> {
+    async fn enumerate_filtered(
+        &self,
+        request: MaterializeMemoryEnumerationFilteredRequest<'_>,
+    ) -> Result<MaterializedMemoryPage, ErrorCode> {
+        self.as_ref().enumerate_filtered(request).await
+    }
+}
+
+#[async_trait]
+impl<P: ContextAssemblyReadPort + ?Sized> ContextAssemblyReadPort for std::sync::Arc<P> {
+    async fn assemble_context(
+        &self,
+        request: ContextReadRequest<'_>,
+    ) -> Result<MaterializedContext, ErrorCode> {
+        self.as_ref().assemble_context(request).await
+    }
 }

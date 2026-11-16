@@ -2,13 +2,7 @@
 //!   note's body from its Evidence payload and any other Memory's body from `content.key_claim`, the Rust accessor
 //!   returns exactly that, and the body materializers behind memory.get, memory.enumerate and recall/context read the
 //!   same text through the view, against a real PostgreSQL and an actual `role_gateway` role.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, serde_json, sqlx];
-//!   services=[PostgreSQL(owner) w=[private.events, private.identity_note_materializations, private.memory_records],
-//!   PostgreSQL(role_gateway)];
-//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::memory_repo, adapters::operation_receipt,
-//!   adapters::note_repo, adapters::read_gate, adapters::read_materialize, adapters::remember,
-//!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::authority, domain::evidence,
-//!   domain::ids, domain::note, domain::subject, humaux-testkit, projection::serving, projection::stream]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-testkit, serde_json, sqlx]; services=[PostgreSQL(owner) w=[private.events, private.identity_note_materializations, private.memory_records], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::memory_repo, adapters::note_repo, adapters::operation_receipt, adapters::read_materialize, adapters::remember, adapters::tests::support::operation_receipt_fixture, application::recall_read, domain::audit, domain::authority, domain::evidence, domain::ids, domain::note, domain::subject, humaux-testkit, projection::serving, projection::stream]
 //! Called-by: [cargo-test]
 //! Invariants: [notes enter through the real `memory.note_put` transaction; the text is read back only through
 //!   `memory_repo::memory_texts_in_txn` and the production body materializers, under `SET LOCAL ROLE role_gateway`
@@ -28,17 +22,23 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
-use humaux_adapters::{
-    memory_repo::{self, MemoryText},
-    note_repo::NoteIntake,
-    operation_receipt::{self, AtomicRememberRequest, AtomicRememberResult, NOTE_OPERATION},
-    read_gate::{
-        MaterializedMemory, MaterializedMemoryPage, MemoryEnumerationParams, NoteEnumerationFilter,
-        materialize_memory_enumeration_filtered, materialize_memory_get,
-    },
-    read_materialize::{MaterializedBodies, MaterializedItem, materialize_final_bodies},
-    remember::RememberCommand,
-};
+use humaux_adapters::memory_repo;
+use humaux_adapters::note_repo::NoteIntake;
+use humaux_adapters::operation_receipt;
+use humaux_adapters::operation_receipt::AtomicRememberRequest;
+use humaux_adapters::operation_receipt::AtomicRememberResult;
+use humaux_adapters::operation_receipt::NOTE_OPERATION;
+use humaux_adapters::read_materialize::materialize_final_bodies;
+use humaux_adapters::remember::RememberCommand;
+use humaux_application::recall_read::MaterializedBodies;
+use humaux_application::recall_read::MaterializedItem;
+use humaux_application::recall_read::MaterializedMemory;
+use humaux_application::recall_read::MaterializedMemoryPage;
+use humaux_application::recall_read::MemoryEnumerationParams;
+use humaux_application::recall_read::MemoryText;
+use humaux_application::recall_read::NoteEnumerationFilter;
+use humaux_application::recall_read::materialize_memory_enumeration_filtered;
+use humaux_application::recall_read::materialize_memory_get;
 use humaux_domain::{
     audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction},
     authority::MemoryId,
