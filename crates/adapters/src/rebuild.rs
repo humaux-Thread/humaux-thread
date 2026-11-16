@@ -2,18 +2,14 @@
 //!   D-E), its equivalence verifier against Project(PG@H2) (D-F E1–E6, orphan deletion under the quiescent rule),
 //!   the embedding-fingerprint precheck (D-G), the closed no-provider deps of the restore drill (D-M), and the
 //!   registry-driven `memory_id` payload backfill (ADR-0068 40d-2a).
-//! Depends-on: crates=[async-trait, hex, humaux-domain, humaux-infra-cell, humaux-local-secret-scan,
-//!   humaux-projection, serde_json, sha2, sqlx];
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-infra-cell, humaux-local-secret-scan, humaux-projection, serde_json, sha2, sqlx];
 //!   services=[PostgreSQL(role_maintenance) r=[projection.embedding_fingerprints,
 //!   projection.stream_checkpoints, projection.tenant_placements] x=[projection.issue_rebuild_tickets,
 //!   projection.rebuild_close, projection.rebuild_open],
 //!   PostgreSQL(role_retrieval_worker) r=[ops.outbox, private.evidence_objects, private.memory_evidence,
 //!   private.memory_records, projection.memory_vectors, projection.private_memory_points,
 //!   projection.rebuild_tickets, projection.stream_checkpoints, projection.stream_log], Qdrant(*)]; env=[];
-//!   modules=[adapters::maintenance_repo, adapters::postgres, adapters::projection_worker, adapters::provisioning,
-//!   adapters::qdrant, domain::egress, domain::error, domain::ids, domain::ticket_family, humaux-local-secret-scan,
-//!   infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::note_chunks,
-//!   projection::serving, projection::stream]
+//!   modules=[adapters::maintenance_repo, adapters::postgres, adapters::projection_worker, adapters::provisioning, adapters::qdrant, application::projection_maintenance, domain::egress, domain::error, domain::ids, domain::ticket_family, humaux-local-secret-scan, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::note_chunks, projection::serving, projection::stream]
 //! Called-by: [maintenance::drill, maintenance::rebuild_cli, tests]
 //! Invariants: [every write is an owner definer call as role_maintenance under the tenant GUC (rebuild_open,
 //!   issue_rebuild_tickets, rebuild_close), none is a table write; the verifier reads PostgreSQL in READ ONLY
@@ -1704,6 +1700,146 @@ pub fn drill_closed_deps(
         processor_id,
         sleep,
     })
+}
+
+/// Assemble the projection maintenance port; all adapter DTOs remain private to this wiring.
+/// # Errors
+/// Preserves Qdrant setup and worker-label binding failures.
+pub async fn maintenance_port(
+    maintenance: MaintenanceDbPool,
+    reader: RetrievalWorkerDbPool,
+    host: &str,
+    port: u16,
+    cidr: &str,
+    label: &str,
+) -> Result<
+    impl humaux_application::projection_maintenance::ProjectionMaintenancePort<
+        Error = ProvisioningError,
+    > + use<>,
+> {
+    let face = QdrantFace::new(host, port, cidr)?;
+    let worker = worker_label(&maintenance, label).await?;
+    Ok(MaintenanceProjection {
+        maintenance,
+        reader,
+        face,
+        worker,
+    })
+}
+
+struct MaintenanceProjection {
+    maintenance: MaintenanceDbPool,
+    reader: RetrievalWorkerDbPool,
+    face: QdrantFace,
+    worker: WorkerLabel,
+}
+
+impl MaintenanceProjection {
+    fn deps(&self) -> RebuildDeps<'_> {
+        RebuildDeps {
+            maintenance: &self.maintenance,
+            reader: &self.reader,
+            qdrant: &self.face,
+            worker: &self.worker,
+        }
+    }
+}
+
+fn maintenance_stream(stream: &humaux_application::projection_maintenance::Stream) -> Stream {
+    Stream {
+        key: stream.key.clone(),
+        collection: stream.collection.clone(),
+    }
+}
+
+fn maintenance_outcome(
+    outcome: StreamOutcome,
+) -> humaux_application::projection_maintenance::StreamOutcome {
+    use humaux_application::projection_maintenance as app;
+    let verdict = match outcome.verdict {
+        Verdict::Equivalent => app::Verdict::Equivalent,
+        Verdict::NotEquivalent => app::Verdict::NotEquivalent,
+        Verdict::ReEmbedRequired => app::Verdict::ReEmbedRequired,
+        Verdict::CannotEstablish => app::Verdict::CannotEstablish,
+    };
+    app::StreamOutcome {
+        verdict,
+        refused: outcome.refused,
+        receipt: outcome.receipt,
+    }
+}
+
+#[async_trait::async_trait]
+impl humaux_application::projection_maintenance::ProjectionMaintenancePort
+    for MaintenanceProjection
+{
+    type Error = ProvisioningError;
+
+    async fn streams(
+        &self,
+        scope: &humaux_application::projection_maintenance::Scope,
+    ) -> Result<Vec<humaux_application::projection_maintenance::Stream>> {
+        use humaux_application::projection_maintenance as app;
+        let selected = match scope {
+            app::Scope::One { tenant, workspace } => {
+                streams(&self.maintenance, *tenant, *workspace).await?
+            }
+            app::Scope::All => {
+                let mut selected = Vec::new();
+                for tenant in all_tenants(&self.maintenance).await? {
+                    selected.extend(streams(&self.maintenance, tenant, None).await?);
+                }
+                selected
+            }
+        };
+        Ok(selected
+            .into_iter()
+            .map(|s| app::Stream {
+                key: s.key,
+                collection: s.collection,
+            })
+            .collect())
+    }
+
+    async fn rebuild(
+        &self,
+        stream: &humaux_application::projection_maintenance::Stream,
+        options: &humaux_application::projection_maintenance::RebuildOptions<'_, '_>,
+    ) -> Result<humaux_application::projection_maintenance::StreamOutcome> {
+        let options = RebuildOptions {
+            batch: options.batch,
+            wait: options.wait,
+            allow_reembed: options.allow_reembed,
+            require_stored_vector: options.require_stored_vector,
+            pump: options.pump,
+        };
+        Ok(maintenance_outcome(
+            rebuild_stream(&self.deps(), &maintenance_stream(stream), &options).await?,
+        ))
+    }
+
+    async fn verify(
+        &self,
+        stream: &humaux_application::projection_maintenance::Stream,
+    ) -> Result<humaux_application::projection_maintenance::StreamOutcome> {
+        let report = verify_stream(&self.deps(), &maintenance_stream(stream), None, false).await?;
+        Ok(maintenance_outcome(StreamOutcome {
+            verdict: report.verdict,
+            refused: false,
+            receipt: report.json,
+        }))
+    }
+
+    async fn backfill(
+        &self,
+        stream: &humaux_application::projection_maintenance::Stream,
+    ) -> Result<humaux_application::projection_maintenance::BackfillReport> {
+        let report = backfill_memory_ids(&self.deps(), &maintenance_stream(stream)).await?;
+        Ok(humaux_application::projection_maintenance::BackfillReport {
+            json: report.json,
+            strays: report.strays,
+        })
+    }
 }
 
 #[cfg(test)]

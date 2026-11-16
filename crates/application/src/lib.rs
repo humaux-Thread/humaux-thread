@@ -56,5 +56,7 @@ pub mod private_inference;
 /// Operational health sampling (ADR-0061 D-D; ADR-0130 D2).
 pub mod health;
 
+/// Projection maintenance use cases (ADR-0130).
+pub mod projection_maintenance;
 /// Atomic operator role rotation (ADR-0059 D-E).
 pub mod role_rotation;
