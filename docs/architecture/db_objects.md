@@ -13131,6 +13131,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::continuity_repo`
 - (no process): `adapters::tests::continuity_publish`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
@@ -13139,7 +13140,6 @@ executed by:
 - (no process): `gateway::tests::cross_tenant_canary`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-gateway): `adapters::continuity_repo`
 - process(humaux-gateway): `gateway::mcp_application`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -13162,12 +13162,12 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::continuity_repo`
 - (no process): `adapters::tests::project_continuity_read_0137_acceptance`
 - process(cargo-xtask): `maintenance::migrate`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-gateway): `adapters::continuity_read`
-- process(humaux-gateway): `adapters::continuity_repo`
 - process(humaux-maintenance): `maintenance::migrate`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -13207,6 +13207,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::continuity_repo`
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `adapters::tests::project_continuity_read_0137`
 - (no process): `adapters::tests::support::continuity_0137_fixture`
@@ -13215,7 +13216,6 @@ executed by:
 - process(cargo-xtask): `adapters::coord_task_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-consolidation-worker): `adapters::coord_task_repo`
-- process(humaux-gateway): `adapters::continuity_repo`
 - process(humaux-gateway): `adapters::coord_task_repo`
 - process(humaux-gateway): `gateway::mcp_application`
 - process(humaux-maintenance): `adapters::coord_task_repo`

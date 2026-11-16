@@ -136,6 +136,7 @@ owned_tables = [
   "private.task_binding_grants",
 ]
 may_depend_on = [
+  "contract_kernel",
   "coordination",
   "knowledge_association",
   "knowledge_lifecycle",
@@ -147,6 +148,7 @@ may_depend_on = [
 id = "coordination"
 # ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
 files = [
+  "crates/application/src/coordination.rs",
   "crates/adapters/src/coord_repo.rs",
   "crates/adapters/src/coord_task_repo.rs",
   "crates/adapters/src/coord_tree_repo.rs",
@@ -167,6 +169,7 @@ owned_tables = [
   "private.project_facets",
 ]
 may_depend_on = [
+  "contract_kernel",
   "identity_access",
   "knowledge_lifecycle",
   "retrieval_read_model",
