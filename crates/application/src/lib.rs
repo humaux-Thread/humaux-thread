@@ -1,7 +1,7 @@
 //! `humaux-application` — Humaux Thread workspace crate（布局见 §58）。
 //! Depends-on: crates=[]; services=[];
 //!   env=[]; modules=[]
-//! Called-by: [crate(humaux-adapters), crate(humaux-billing-worker), crate(humaux-consolidation-worker), crate(humaux-gateway), crate(humaux-private-worker), crate(humaux-protocol), crate(humaux-public-pool), crate(humaux-public-worker)]
+//! Called-by: [crate(humaux-adapters), crate(humaux-billing-worker), crate(humaux-consolidation-worker), crate(humaux-gateway), crate(humaux-private-worker), crate(humaux-protocol), crate(humaux-public-pool), crate(humaux-public-worker), crate(humaux-retrieval-worker)]
 //! Invariants: []
 //! Spec: §58; §3; §78.3
 //!
@@ -46,3 +46,6 @@ pub mod coordination;
 
 /// Bounded public dispatch use cases (§13/§14).
 pub mod public_dispatch;
+
+/// Registered query embedding execution (ADR-0012).
+pub mod query_embedding_execution;

@@ -1,8 +1,8 @@
 //! `adapters::retrieval_embedding_rpc` — ADR-0012 repository for `ops.retrieval_embedding_rpc_calls` (migration
 //!   0141).
-//! Depends-on: crates=[sqlx]; services=[PostgreSQL(any) w=[ops.retrieval_embedding_rpc_calls]];
-//!   env=[]; modules=[adapters::postgres]
-//! Called-by: [gateway::retrieval_embedding_client, retrieval-worker::rpc, tests]
+//! Depends-on: crates=[async-trait, humaux-application, sqlx]; services=[PostgreSQL(any) w=[ops.retrieval_embedding_rpc_calls]];
+//!   env=[]; modules=[adapters::postgres, application::query_embedding_execution]
+//! Called-by: [gateway::retrieval_embedding_client, tests]
 //! Invariants: [the gateway side only INSERTs/SELECTs registrations and the retrieval-worker side only
 //!   claims/finishes them (disjoint column GRANTs, 0141); both set humaux.tenant_id first; bad input is InvalidInput]
 //! Spec: none
@@ -376,4 +376,74 @@ pub enum FinishOutcome {
     Unavailable {
         failure_code: String,
     },
+}
+
+#[async_trait::async_trait]
+impl humaux_application::query_embedding_execution::QueryEmbeddingCalls for RetrievalWorkerDbPool {
+    type Error = RetrievalEmbeddingRpcError;
+
+    async fn claim(
+        &self,
+        call_id: Uuid,
+        tenant_hint: Uuid,
+        query_sha256: [u8; 32],
+    ) -> Result<humaux_application::query_embedding_execution::ClaimOutcome, Self::Error> {
+        use humaux_application::query_embedding_execution as app;
+        Ok(
+            match RetrievalWorkerEmbeddingCalls::new(self)
+                .load_and_claim(call_id, tenant_hint, query_sha256, "role_retrieval_worker")
+                .await?
+            {
+                ClaimOutcome::NotFound => app::ClaimOutcome::NotFound,
+                ClaimOutcome::Expired => app::ClaimOutcome::Expired,
+                ClaimOutcome::QueryMismatch => app::ClaimOutcome::QueryMismatch,
+                ClaimOutcome::AlreadyClaimed => app::ClaimOutcome::AlreadyClaimed,
+                ClaimOutcome::Replay(s) => app::ClaimOutcome::Replay(app::StoredOutcome {
+                    outcome: s.outcome,
+                    response_vector: s.response_vector,
+                    response_provider_id: s.response_provider_id,
+                    response_model_id: s.response_model_id,
+                    response_model_revision: s.response_model_revision,
+                    response_dimension: s.response_dimension.and_then(|d| u32::try_from(d).ok()),
+                    response_failure_code: s.response_failure_code,
+                }),
+                ClaimOutcome::Claimed(r) => app::ClaimOutcome::Claimed(app::ClaimedRegistration {
+                    tenant_id: r.tenant_id,
+                    principal_id: r.principal_id,
+                    user_id: r.user_id,
+                    workspace_id: r.workspace_id,
+                    request_id: r.request_id,
+                    logical_call_id: r.logical_call_id,
+                    attempt_no: r.attempt_no,
+                    profile_fingerprint: r.profile_fingerprint,
+                }),
+            },
+        )
+    }
+
+    async fn finish(
+        &self,
+        call_id: Uuid,
+        tenant_id: Uuid,
+        outcome: humaux_application::query_embedding_execution::StoredOutcome,
+    ) -> Result<(), Self::Error> {
+        let finish = match outcome.outcome.as_str() {
+            "EMBEDDED" => FinishOutcome::Embedded {
+                vector: outcome.response_vector.unwrap_or_default(),
+                provider_id: outcome.response_provider_id.unwrap_or_default(),
+                model_id: outcome.response_model_id.unwrap_or_default(),
+                model_revision: outcome.response_model_revision.unwrap_or_default(),
+                dimension: outcome.response_dimension.unwrap_or_default(),
+            },
+            "SKIPPED" => FinishOutcome::Skipped,
+            _ => FinishOutcome::Unavailable {
+                failure_code: outcome
+                    .response_failure_code
+                    .unwrap_or_else(|| "UNKNOWN".to_owned()),
+            },
+        };
+        RetrievalWorkerEmbeddingCalls::new(self)
+            .finish(call_id, tenant_id, finish)
+            .await
+    }
 }

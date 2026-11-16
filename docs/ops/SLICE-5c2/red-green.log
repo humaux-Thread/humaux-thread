@@ -1,0 +1,14 @@
+SLICE-5c2 · base c6cce46d55af41b122f7c1df816c2312eb566278
+bins/retrieval-worker/src/rpc.rs sha256=ab765afa2743f859d18ca525d93d28011c5934d428c679a9a0b1271ed9a9818f
+crates/adapters/src/retrieval_embedding_rpc.rs sha256=194f8253938955d212f9178561ebaef85922be57dc18ad4e4fed930b55918878
+crates/application/src/query_embedding_execution.rs sha256=e0321f1608b0f66ec41d5b5000a769c59665ce1aa221265fdc92af60bc658601
+
+Claim → execute → finish entry injection: direct use humaux_adapters::retrieval_embedding_rpc::RetrievalWorkerEmbeddingCalls appended to rpc.rs
+Command: cargo test -p xtask --bin xtask hex_boundary_layer_red_green -- --nocapture
+RED exit=101:
+Fail(["HEX-LAYER: new violation bins/retrieval-worker/src/rpc.rs:humaux_adapters::retrieval_embedding_rpc::RetrievalWorkerEmbeddingCalls"])
+RESTORED exit=0: HEX-LAYER actual=ceiling=209; 1 test passed.
+worker cargo check exit=0; worker clippy --all-targets -D warnings exit=0.
+application unit tests: 2 passed using --features time/formatting (standalone app tests otherwise encounter existing recall_read.rs:731 missing format feature).
+architecture-check exit=0, HEX-COVERAGE/LAYER/CONTEXT/WRITER pass; compose rendering NOT_APPLICABLE locally.
+PG transaction negative control: PENDING CI. Live provider NOT_RUN.

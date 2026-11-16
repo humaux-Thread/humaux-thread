@@ -1,8 +1,8 @@
 //! `retrieval-worker::rpc` — ADR-0012 query-embedding RPC — the Unix-domain-socket side `humaux-retrieval-worker`
 //!   serves.
-//! Depends-on: crates=[axum, humaux-adapters, humaux-contracts, humaux-domain, humaux-infra-cell, humaux-local-secret-scan,
+//! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-infra-cell, humaux-local-secret-scan,
 //!   humaux-retrieval, humaux-retrieval-provider, serde, sha2, tokio, tracing,
-//!   uuid]; services=[PostgreSQL(role_retrieval_worker)]; env=[HUMAUX_RETRIEVAL_WORKER_PG_POOL_MAX_CONNECTIONS]; modules=[adapters::postgres, adapters::retrieval_embedding_rpc, contracts::retrieval_config, domain::error,
+//!   uuid]; services=[PostgreSQL(role_retrieval_worker)]; env=[HUMAUX_RETRIEVAL_WORKER_PG_POOL_MAX_CONNECTIONS]; modules=[adapters::postgres, application::query_embedding_execution, contracts::retrieval_config, domain::error,
 //!   domain::identity, domain::ids, humaux-local-secret-scan, infra-cell::uds, retrieval-provider::contract, retrieval-worker::rerank, retrieval::request]
 //! Called-by: [retrieval-worker::main, tests]
 //! Invariants: [a malformed or unauthenticated RPC frame is rejected before it reaches the embedding provider call;
@@ -35,8 +35,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use humaux_adapters::postgres::RetrievalWorkerDbPool;
-use humaux_adapters::retrieval_embedding_rpc::{
-    ClaimOutcome, ClaimedRegistration, FinishOutcome, RetrievalWorkerEmbeddingCalls, StoredOutcome,
+use humaux_application::query_embedding_execution::{
+    self, ClaimOutcome, ClaimedRegistration, StoredOutcome,
 };
 use humaux_contracts::retrieval_config::{RERANK_MAX_LEN_MAX, RETRIEVAL_CANDIDATE_CAP};
 use humaux_domain::error::ErrorCode;
@@ -256,9 +256,7 @@ fn envelope_from_stored(call_id: Uuid, stored: StoredOutcome) -> QueryEmbeddingR
         provider_id: stored.response_provider_id,
         model_id: stored.response_model_id,
         model_revision: stored.response_model_revision,
-        dimension: stored
-            .response_dimension
-            .and_then(|d| u32::try_from(d).ok()),
+        dimension: stored.response_dimension,
         failure_code: stored.response_failure_code,
     }
 }
@@ -282,61 +280,51 @@ async fn execute(
     wire: QueryEmbeddingRpcRequest,
 ) -> Result<QueryEmbeddingRpcEnvelope, WorkerRpcError> {
     let query_sha256: [u8; 32] = Sha256::digest(wire.query.as_bytes()).into();
-    let repo = RetrievalWorkerEmbeddingCalls::new(&state.calls);
-    let claim = repo
-        .load_and_claim(
-            wire.call_id,
-            wire.tenant_hint,
-            query_sha256,
-            "role_retrieval_worker",
-        )
-        .await
-        .map_err(|_| WorkerRpcError::NotFound)?;
-
-    let registration = match claim {
-        ClaimOutcome::NotFound => return Err(WorkerRpcError::NotFound),
-        ClaimOutcome::Expired => return Err(WorkerRpcError::Expired),
-        ClaimOutcome::QueryMismatch => return Err(WorkerRpcError::QueryMismatch),
-        ClaimOutcome::AlreadyClaimed => {
-            return Ok(unavailable_envelope(wire.call_id, "WORKER_BUSY"));
-        }
-        ClaimOutcome::Replay(stored) => return Ok(envelope_from_stored(wire.call_id, stored)),
-        ClaimOutcome::Claimed(registration) => registration,
-    };
-
-    let envelope = embed(state, wire.call_id, &wire.query, &registration).await;
-    let finish_outcome = match &envelope {
-        e if e.outcome == "EMBEDDED" => FinishOutcome::Embedded {
-            vector: e.vector.clone().unwrap_or_default(),
-            provider_id: e.provider_id.clone().unwrap_or_default(),
-            model_id: e.model_id.clone().unwrap_or_default(),
-            model_revision: e.model_revision.clone().unwrap_or_default(),
-            dimension: e.dimension.unwrap_or_default(),
-        },
-        e if e.outcome == "SKIPPED" => FinishOutcome::Skipped,
-        e => FinishOutcome::Unavailable {
-            failure_code: e
-                .failure_code
-                .clone()
-                .unwrap_or_else(|| "UNKNOWN".to_owned()),
-        },
-    };
-    // A failed persist leaves the row stuck in `CLAIMED` (finish's own `WHERE state =
-    // 'CLAIMED'` never matches again once it's already there) — every retry within the row's
-    // TTL then misreads as `AlreadyClaimed`/`WORKER_BUSY` with zero visibility into why. This
-    // is the only signal an operator gets before that TTL expires, so it must not be silent.
-    if let Err(error) = repo
-        .finish(wire.call_id, registration.tenant_id, finish_outcome)
-        .await
-    {
+    let result = query_embedding_execution::execute(
+        &state.calls,
+        state.as_ref(),
+        wire.call_id,
+        wire.tenant_hint,
+        query_sha256,
+        &wire.query,
+    )
+    .await
+    .map_err(|_| WorkerRpcError::NotFound)?;
+    if let Some((tenant_id, error)) = result.finish_error {
         tracing::error!(
-            call_id = %wire.call_id,
-            tenant_id = %registration.tenant_id,
-            %error,
+            call_id = %wire.call_id, %tenant_id, %error,
             "retrieval_embedding_rpc: finish() failed to persist call outcome; row stuck CLAIMED until TTL expiry"
         );
     }
-    Ok(envelope)
+    match result.outcome {
+        ClaimOutcome::NotFound => Err(WorkerRpcError::NotFound),
+        ClaimOutcome::Expired => Err(WorkerRpcError::Expired),
+        ClaimOutcome::QueryMismatch => Err(WorkerRpcError::QueryMismatch),
+        ClaimOutcome::AlreadyClaimed => Ok(unavailable_envelope(wire.call_id, "WORKER_BUSY")),
+        ClaimOutcome::Replay(stored) => Ok(envelope_from_stored(wire.call_id, stored)),
+        ClaimOutcome::Claimed(_) => unreachable!("application executes fresh claims"),
+    }
+}
+
+#[async_trait::async_trait]
+impl query_embedding_execution::QueryEmbeddingExecutor for RpcState {
+    async fn embed(
+        &self,
+        call_id: Uuid,
+        query: &str,
+        registration: &ClaimedRegistration,
+    ) -> StoredOutcome {
+        let envelope = embed(self, call_id, query, registration).await;
+        StoredOutcome {
+            outcome: envelope.outcome.to_owned(),
+            response_vector: envelope.vector,
+            response_provider_id: envelope.provider_id,
+            response_model_id: envelope.model_id,
+            response_model_revision: envelope.model_revision,
+            response_dimension: envelope.dimension,
+            response_failure_code: envelope.failure_code,
+        }
+    }
 }
 
 /// Re-derives an `AuthorizationScope` from the claimed registration row (never trusting the
@@ -350,7 +338,7 @@ async fn execute(
 /// Gateway resolved from, which is out of this card's file scope) — upgrade to a real
 /// stored-profile equality check once a profile registry object exists to compare against.
 async fn embed(
-    state: &Arc<RpcState>,
+    state: &RpcState,
     call_id: Uuid,
     query: &str,
     registration: &ClaimedRegistration,
