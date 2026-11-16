@@ -66,3 +66,6 @@ pub mod role_rotation;
 
 /// Claimed Distill execution through purpose-specific outbound ports.
 pub mod distill_execution;
+
+/// Whole-transaction memory governance (§36).
+pub mod lifecycle_execution;

@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 140, "HEX-LAYER")
+    hex_exact(actual, baseline, 131, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -14143,6 +14143,50 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             fs::write(&path, &original).unwrap();
             assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
             println!("SLICE-7c {case} restored: GREEN");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// §80.1: each migrated lifecycle entry must reject its former adapter import.
+    #[test]
+    fn hex_boundary_slice9a_entry_red_green() {
+        let source = workspace_root();
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("slice9a-boundary-{}", std::process::id()));
+        hex_copy_boundary_fixture(&source, &root);
+        for verdict in [
+            hex_layer_gate(&root),
+            hex_boundary_gate(&root, false),
+            hex_boundary_gate(&root, true),
+            hex_coverage_gate(&root),
+        ] {
+            assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
+        }
+        let path = root.join("bins/gateway/src/memory.rs");
+        let original = fs::read_to_string(&path).unwrap();
+        for (case, symbol) in [
+            ("supersede", "memory_governance_repo::SupersedeRequest"),
+            ("restore", "memory_governance_repo::RestoreRequest"),
+            ("correct", "memory_governance_repo::CorrectRequest"),
+            ("archive", "memory_governance_repo::ArchiveRequest"),
+            ("forget", "forget_repo::ForgetRepoError"),
+        ] {
+            fs::write(
+                &path,
+                format!("{original}\nuse humaux_adapters::{symbol};\n"),
+            )
+            .unwrap();
+            let red = hex_layer_gate(&root);
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.contains(symbol))),
+                "{red:?}"
+            );
+            println!("SLICE-9a {case}: RED {red:?}");
+            fs::write(&path, &original).unwrap();
+            assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
+            println!("SLICE-9a {case}: restored GREEN");
         }
         fs::remove_dir_all(root).unwrap();
     }

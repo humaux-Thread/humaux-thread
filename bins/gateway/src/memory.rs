@@ -1,5 +1,5 @@
 //! `gateway::memory` — Authenticated Memory reads through the existing final-body and Envelope boundaries.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, sha2, time, uuid]; services=[]; env=[]; modules=[application::distill, adapters::affect_repo, adapters::context_repo, adapters::distill_repo, adapters::forget_repo, adapters::grep_repo, adapters::memory_governance_repo, adapters::postgres, adapters::serving_repo, adapters::subject_repo, application::forget, application::recall_read, domain::affect, domain::authority, domain::confirm, domain::context, domain::error, domain::evidence, domain::identity, domain::ids, domain::selection, domain::subject, gateway::bootstrap, gateway::context, gateway::guard, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::request]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, sha2, time, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::context_repo, adapters::distill_repo, adapters::grep_repo, adapters::postgres, adapters::serving_repo, adapters::subject_repo, application::distill, application::forget, application::lifecycle_execution, application::recall_read, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::error, domain::evidence, domain::identity, domain::ids, domain::selection, domain::subject, gateway::bootstrap, gateway::context, gateway::guard, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::request]
 //! Called-by: [gateway::mcp_application]
 //! Invariants: [a read that cannot reach its final-body boundary returns the application error, never a partially materialized memory;
 //!   `memory.get` reports the ledger frontier from one `stream_checkpoints` lookup and never calls the ledger closure or the
@@ -19,20 +19,20 @@ use humaux_adapters::distill_repo;
 use humaux_adapters::distill_repo::PendingCandidate;
 use humaux_adapters::grep_repo;
 use humaux_adapters::grep_repo::GrepQuery;
-use humaux_adapters::memory_governance_repo;
-use humaux_adapters::memory_governance_repo::ArchiveRequest;
-use humaux_adapters::memory_governance_repo::ArchiveResult;
-use humaux_adapters::memory_governance_repo::CorrectDone;
-use humaux_adapters::memory_governance_repo::CorrectRequest;
-use humaux_adapters::memory_governance_repo::RestoreRequest;
-use humaux_adapters::memory_governance_repo::RestoreResult;
-use humaux_adapters::memory_governance_repo::SupersedeOutcome;
-use humaux_adapters::memory_governance_repo::SupersedeRequest;
 use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_adapters::serving_repo::UnservedLedger;
 use humaux_adapters::subject_repo;
 use humaux_application::distill::ConfirmOutcome;
 use humaux_application::distill::RejectOutcome;
+use humaux_application::lifecycle_execution as memory_governance_repo;
+use humaux_application::lifecycle_execution::ArchiveRequest;
+use humaux_application::lifecycle_execution::ArchiveResult;
+use humaux_application::lifecycle_execution::CorrectDone;
+use humaux_application::lifecycle_execution::CorrectRequest;
+use humaux_application::lifecycle_execution::RestoreRequest;
+use humaux_application::lifecycle_execution::RestoreResult;
+use humaux_application::lifecycle_execution::SupersedeOutcome;
+use humaux_application::lifecycle_execution::SupersedeRequest;
 use humaux_application::recall_read::EnumerationCensus;
 use humaux_application::recall_read::Lifecycle;
 use humaux_application::recall_read::MaterializedItem;
@@ -440,8 +440,8 @@ pub(crate) async fn supersede(
     undo_window: Duration,
 ) -> Result<SupersedeOutcome, ErrorCode> {
     let (authorization, stream) = confirmed_write_scope(&pool, &write, &bootstrap).await?;
-    memory_governance_repo::supersede_atomically(
-        &pool,
+    memory_governance_repo::supersede(
+        &crate::bootstrap::lifecycle_store(&pool),
         &authorization,
         SupersedeRequest {
             request_id: write.request.request_id(),
@@ -449,9 +449,15 @@ pub(crate) async fn supersede(
             reservation_ttl: write.reservation_ttl,
             target,
             successor,
-            stream,
-            claim: write.claim,
-            finished_audit: write.finished_audit,
+            stream: lifecycle_stream(stream),
+            claim: humaux_application::lifecycle_execution::LifecycleConfirmation {
+                op: write.claim.op,
+                target_id: write.claim.target_id,
+                successor_id: write.claim.successor_id,
+                nonce_sha256: write.claim.nonce_sha256,
+                request_sha256: write.claim.request_sha256,
+            },
+            finished_audit: lifecycle_audit(write.finished_audit),
             undo_window,
         },
     )
@@ -468,17 +474,23 @@ pub(crate) async fn restore(
     consistency_token_ttl: Duration,
 ) -> Result<RestoreResult, ErrorCode> {
     let (authorization, stream) = confirmed_write_scope(&pool, &write, &bootstrap).await?;
-    memory_governance_repo::restore_atomically(
-        &pool,
+    memory_governance_repo::restore(
+        &crate::bootstrap::lifecycle_store(&pool),
         &authorization,
         RestoreRequest {
             request_id: write.request.request_id(),
             request_fingerprint: write.request_fingerprint,
             reservation_ttl: write.reservation_ttl,
             target,
-            stream,
-            claim: write.claim,
-            finished_audit: write.finished_audit,
+            stream: lifecycle_stream(stream),
+            claim: humaux_application::lifecycle_execution::LifecycleConfirmation {
+                op: write.claim.op,
+                target_id: write.claim.target_id,
+                successor_id: write.claim.successor_id,
+                nonce_sha256: write.claim.nonce_sha256,
+                request_sha256: write.claim.request_sha256,
+            },
+            finished_audit: lifecycle_audit(write.finished_audit),
             consistency_token_ttl,
         },
     )
@@ -513,8 +525,8 @@ pub(crate) async fn correct(
     mood_half_life: Option<MoodHalfLife>,
 ) -> Result<CorrectDone, ErrorCode> {
     let (authorization, stream) = confirmed_write_scope(&pool, &write, &bootstrap).await?;
-    memory_governance_repo::correct_atomically(
-        &pool,
+    memory_governance_repo::correct(
+        &crate::bootstrap::lifecycle_store(&pool),
         &authorization,
         CorrectRequest {
             request_id: write.request.request_id(),
@@ -523,16 +535,21 @@ pub(crate) async fn correct(
             target,
             content,
             payload_sha256,
-            stream,
-            claim: write.claim,
-            finished_audit: write.finished_audit,
+            stream: lifecycle_stream(stream),
+            claim: humaux_application::lifecycle_execution::LifecycleConfirmation {
+                op: write.claim.op,
+                target_id: write.claim.target_id,
+                successor_id: write.claim.successor_id,
+                nonce_sha256: write.claim.nonce_sha256,
+                request_sha256: write.claim.request_sha256,
+            },
+            finished_audit: lifecycle_audit(write.finished_audit),
             undo_window,
             consistency_token_ttl,
             subjects,
             affects,
             mood_half_life,
         },
-        &crate::bootstrap::MEMORY_ATTRIBUTION,
     )
     .await
 }
@@ -746,7 +763,6 @@ pub(crate) async fn forget_prepare(
     memory_id: Option<Uuid>,
     evidence_ids: Vec<Uuid>,
 ) -> Result<(Uuid, [u8; 32], serde_json::Value), ErrorCode> {
-    use humaux_adapters::forget_repo;
     use humaux_application::forget::{DeletionScopeKind, confirmation_digest};
     let (auth, _) = write_scope(
         &pool,
@@ -755,9 +771,13 @@ pub(crate) async fn forget_prepare(
         &bootstrap,
     )
     .await?;
-    let (frozen, preview) = forget_repo::freeze_and_preview(&pool, &auth, memory_id, &evidence_ids)
-        .await
-        .map_err(forget_error)?;
+    let (frozen, preview) = humaux_application::forget::prepare(
+        &crate::bootstrap::deletion_store(&pool),
+        &auth,
+        memory_id,
+        &evidence_ids,
+    )
+    .await?;
     let intent = confirmation_digest(preview.scope_kind, &preview.manifest_hash);
     // ponytail: fixed 50-item caps; move to protocol::page Pager in M26-8
     let view = serde_json::json!({
@@ -769,29 +789,30 @@ pub(crate) async fn forget_prepare(
         "multi_person_evidence_omitted": preview.multi_person_evidence.len().saturating_sub(50),
         "source_retained": preview.source_retained, "restore_supported": false,
     });
-    Ok((frozen.request_id, intent, view))
+    Ok((frozen, intent, view))
 }
 
 /// ADR-0092 D-B / §37.2: the owner door consumes the token; any refusal drops the whole transaction.
 pub(crate) async fn forget_accept(
     pool: Arc<RuntimeDbPool>,
-    mut write: ConfirmedWrite,
+    write: ConfirmedWrite,
     bootstrap: ContextBootstrap,
     request_id: Uuid,
 ) -> Result<(), ErrorCode> {
-    use humaux_adapters::forget_repo;
     let (auth, _) = confirmed_write_scope(&pool, &write, &bootstrap).await?;
-    forget_repo::accept_previewed(&pool, &auth, request_id, &mut write.claim)
-        .await
-        .map_err(forget_error)
-}
-
-/// §52.1: refusal codes cross the wire; internal reasons and database details never do.
-fn forget_error(error: humaux_adapters::forget_repo::ForgetRepoError) -> ErrorCode {
-    match error {
-        humaux_adapters::forget_repo::ForgetRepoError::Refused { code, .. } => code,
-        humaux_adapters::forget_repo::ForgetRepoError::Db(_) => ErrorCode::DependencyUnavailable,
-    }
+    humaux_application::forget::accept(
+        &crate::bootstrap::deletion_store(&pool),
+        &auth,
+        request_id,
+        humaux_application::forget::DeletionConfirmation {
+            op: write.claim.op,
+            target_id: write.claim.target_id,
+            successor_id: write.claim.successor_id,
+            nonce_sha256: write.claim.nonce_sha256,
+            request_sha256: write.claim.request_sha256,
+        },
+    )
+    .await
 }
 
 /// §36 `memory.archive` / `memory.unarchive`, second (confirmed) call (ADR-0024). Same
@@ -805,17 +826,23 @@ pub(crate) async fn archive(
     target: MemoryId,
 ) -> Result<ArchiveResult, ErrorCode> {
     let (authorization, stream) = confirmed_write_scope(&pool, &write, &bootstrap).await?;
-    memory_governance_repo::archive_or_unarchive_atomically(
-        &pool,
+    memory_governance_repo::archive(
+        &crate::bootstrap::lifecycle_store(&pool),
         &authorization,
         ArchiveRequest {
             request_id: write.request.request_id(),
             request_fingerprint: write.request_fingerprint,
             reservation_ttl: write.reservation_ttl,
             target,
-            stream,
-            claim: write.claim,
-            finished_audit: write.finished_audit,
+            stream: lifecycle_stream(stream),
+            claim: humaux_application::lifecycle_execution::LifecycleConfirmation {
+                op: write.claim.op,
+                target_id: write.claim.target_id,
+                successor_id: write.claim.successor_id,
+                nonce_sha256: write.claim.nonce_sha256,
+                request_sha256: write.claim.request_sha256,
+            },
+            finished_audit: lifecycle_audit(write.finished_audit),
             op,
         },
     )
@@ -1317,5 +1344,43 @@ fn candidate_write(
                 .map(|(k, v)| (k.to_owned(), v.to_owned()))
                 .collect(),
         },
+    }
+}
+
+fn lifecycle_audit(
+    a: humaux_domain::audit::AuditEvent,
+) -> humaux_application::lifecycle_execution::LifecycleAudit {
+    humaux_application::lifecycle_execution::LifecycleAudit {
+        event_id: a.event_id.0,
+        ts: a.ts,
+        tenant_id: a.tenant_id.0,
+        actor_type: a.actor_type,
+        actor_id: a.actor_id,
+        action: a.action,
+        resource_type: a.resource_type,
+        resource_id: a.resource_id,
+        result: a.result,
+        request_id: a.request_id,
+        trace_id: a.trace_id,
+        client_ip: a.client_ip,
+        user_agent_hash: a.user_agent_hash,
+        risk_tags: a.risk_tags,
+        before_fingerprint: a.before_fingerprint,
+        after_fingerprint: a.after_fingerprint,
+        metadata: a
+            .metadata
+            .iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect(),
+    }
+}
+fn lifecycle_stream(s: StreamKey) -> humaux_application::lifecycle_execution::LifecycleStream {
+    humaux_application::lifecycle_execution::LifecycleStream {
+        tenant_id: s.tenant_id.0,
+        scope_kind: s.scope_kind,
+        scope_id: s.scope_id,
+        domain: s.domain,
+        projection_kind: s.projection_kind,
+        projection_version: s.projection_version,
     }
 }

@@ -4,8 +4,8 @@
 //!   `tombstoned_unpurged_over_sla` gauge ([`tombstoned_unpurged_over_sla`]), and — §23.4 G23-2 — the two PG-side
 //!   overlay reads a literal/EXACT-channel lane needs ([`count_excluding_tombstoned`], [`state_of`]), sharing this
 //!   module's own `state <> 'TOMBSTONED'` knowledge instead of a caller re-deriving it.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, sqlx]; services=[PostgreSQL(any) r=[control.deletion_requests, control.deletion_targets, ops.deletion_plan_steps, private.evidence_objects, private.evidence_subjects, private.memory_evidence, private.memory_records, private.memory_text_v, projection.stream_log] w=[projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze, ops.record_deletion_plan_step]]; env=[]; modules=[adapters::confirm_token_repo, adapters::context_repo, adapters::postgres, adapters::read_gate, application::forget, domain::confirm, domain::error, domain::identity, projection::stream]
-//! Called-by: [gateway::memory, tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, sqlx]; services=[PostgreSQL(any) r=[control.deletion_requests, control.deletion_targets, ops.deletion_plan_steps, private.evidence_objects, private.evidence_subjects, private.memory_evidence, private.memory_records, private.memory_text_v, projection.stream_log] w=[projection.stream_log] x=[control.deletion_request_accept, control.deletion_request_freeze, ops.record_deletion_plan_step]]; env=[]; modules=[adapters::confirm_token_repo, adapters::context_repo, adapters::postgres, adapters::read_gate, application::forget, domain::confirm, domain::error, domain::identity, projection::stream]
+//! Called-by: [gateway::bootstrap, tests]
 //! Invariants: [maintenance calls open their own transaction and set humaux.tenant_id first; request calls use the caller-owned transaction and set its AuthorizationScope; maintenance tombstones and
 //!   plan-step bookkeeping run on role_maintenance; accept re-judges the frozen roots (never the whole closure) under its own AuthorizationScope before the gateway-only owner door (#346); a PG error aborts the step so the plan stays resumable; a
 //!   deletion request and its targets are written only through control.deletion_request_freeze (ADR-0092 D-A), which takes
@@ -758,5 +758,51 @@ fn accept_refusal(error: sqlx::Error) -> ForgetRepoError {
             reason,
         },
         _ => door_refusal(error),
+    }
+}
+
+/// PostgreSQL deletion boundary; SQL and transaction ownership stay here (§37.2).
+pub struct PostgresDeletionStore<'a>(&'a RuntimeDbPool);
+impl<'a> PostgresDeletionStore<'a> {
+    /// Assemble the existing deletion implementation (§37).
+    pub fn new(pool: &'a RuntimeDbPool) -> Self {
+        Self(pool)
+    }
+}
+fn deletion_error(error: ForgetRepoError) -> ErrorCode {
+    match error {
+        ForgetRepoError::Refused { code, .. } => code,
+        ForgetRepoError::Db(_) => ErrorCode::DependencyUnavailable,
+    }
+}
+#[async_trait::async_trait]
+impl humaux_application::forget::DeletionStore for PostgresDeletionStore<'_> {
+    async fn prepare(
+        &self,
+        auth: &AuthorizationScope,
+        memory_id: Option<Uuid>,
+        roots: &[Uuid],
+    ) -> Result<(Uuid, ImpactPreview), ErrorCode> {
+        let (frozen, preview) = freeze_and_preview(self.0, auth, memory_id, roots)
+            .await
+            .map_err(deletion_error)?;
+        Ok((frozen.request_id, preview))
+    }
+    async fn accept(
+        &self,
+        auth: &AuthorizationScope,
+        request_id: Uuid,
+        confirmation: humaux_application::forget::DeletionConfirmation,
+    ) -> Result<(), ErrorCode> {
+        let mut claim = crate::confirm_token_repo::ConfirmationClaim {
+            op: confirmation.op,
+            target_id: confirmation.target_id,
+            successor_id: confirmation.successor_id,
+            nonce_sha256: confirmation.nonce_sha256,
+            request_sha256: confirmation.request_sha256,
+        };
+        accept_previewed(self.0, auth, request_id, &mut claim)
+            .await
+            .map_err(deletion_error)
     }
 }
