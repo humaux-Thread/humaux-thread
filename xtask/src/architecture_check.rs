@@ -1933,7 +1933,7 @@ fn hex_boundary_gate(root: &Path, writer: bool) -> Verdict {
     let (file, ceiling, label) = if writer {
         ("xtask/hex_writer_baseline.txt", 46, "HEX-WRITER")
     } else {
-        ("xtask/hex_context_baseline.txt", 730, "HEX-CONTEXT")
+        ("xtask/hex_context_baseline.txt", 472, "HEX-CONTEXT")
     };
     let actual = if writer {
         hex_writer_actual(root)
@@ -13870,30 +13870,33 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         fs::write(&path, visible).unwrap();
         assert!(matches!(gate(), Verdict::Pass));
         println!("CONTEXT real use restored: GREEN");
-        let bridge = root.join("crates/adapters/src/credential_repo.rs");
+        let bridge = root.join("crates/adapters/src/read_gate.rs");
         let original = fs::read_to_string(&bridge).unwrap();
         fs::write(
             &bridge,
-            format!("{original}\npub use humaux_domain::error::ErrorCode as BoundaryAlias;\n"),
+            format!("{original}\npub use humaux_domain::egress::ProcessorId as BoundaryAlias;\n"),
         )
         .unwrap();
         assert!(matches!(gate(), Verdict::Pass));
-        println!("CONTEXT identity_access exports allowed contract_kernel type: GREEN");
+        println!("CONTEXT retrieval_read_model exports allowed provider_execution type: GREEN");
         fs::write(
             &path,
-            format!("{visible}\nuse humaux_adapters::credential_repo::BoundaryAlias as Hidden;"),
+            format!("{visible}\nuse humaux_adapters::read_gate::BoundaryAlias as Hidden;"),
         )
         .unwrap();
         let red = gate();
         assert!(
-            matches!(&red,Verdict::Fail(lines) if lines.iter().any(|l|l.contains("boundary_visibility.rs:work_attribution->contract_kernel:"))),
+            matches!(&red,Verdict::Fail(lines) if lines.iter().any(|l|l.contains("boundary_visibility.rs:work_attribution->provider_execution:"))),
             "{red:?}"
         );
         println!(
-            "CONTEXT discriminating identity_access re-export to contract_kernel: RED {red:?}"
+            "CONTEXT discriminating retrieval_read_model re-export to provider_execution: RED {red:?}"
         );
+        // ADR-0130 D5: the declared bridge alone must not explain the forbidden target edge.
+        fs::write(&bridge, &original).unwrap();
+        assert!(matches!(gate(), Verdict::Pass));
+        println!("CONTEXT consumer without bridge re-export: GREEN");
         fs::write(&path, visible).unwrap();
-        fs::write(bridge, original).unwrap();
         assert!(matches!(gate(), Verdict::Pass));
         println!("CONTEXT discriminating re-export restored: GREEN");
         fs::remove_dir_all(root).unwrap();
