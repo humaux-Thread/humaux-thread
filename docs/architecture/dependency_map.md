@@ -15408,6 +15408,7 @@ why: domain types every use case reads/returns
 
 modules naming it:
 - `application::affect`
+- `application::api_key`
 - `application::archive`
 - `application::auth`
 - `application::billing`
@@ -15472,6 +15473,7 @@ modules naming it:
 why: verification-code HMAC and the signed-token MAC
 
 modules naming it:
+- `application::api_key`
 - `application::auth`
 - `application::signed_token`
 
@@ -15479,6 +15481,7 @@ modules naming it:
 why: token/handoff sha256 digests
 
 modules naming it:
+- `application::api_key`
 - `application::auth`
 - `application::consolidate`
 - `application::continuity`
@@ -15948,6 +15951,7 @@ modules naming it:
 why: domain ErrorCode/DegradeCode mapping and error types
 
 modules naming it:
+- `protocol::edge`
 - `protocol::error_map`
 - `protocol::mcp`
 - `protocol::mcp_catalog`
@@ -15964,21 +15968,15 @@ modules naming it:
 why: signs and verifies the page@1 cursor with the shared token key set
 
 modules naming it:
+- `protocol::edge`
 - `protocol::page`
 - `protocol::tests::page_budget`
 - `tests`
 
-### humaux-protocol → `hmac` (normal)
-why: control.api_keys.key_hash keyed-hash verifier
-
-modules naming it:
-- `protocol::edge`
-
 ### humaux-protocol → `sha2` (normal)
-why: paired digest for the HMAC-SHA256 key-hash verifier and the page@1 args hash
+why: SHA256 digest for the page@1 args hash
 
 modules naming it:
-- `protocol::edge`
 - `protocol::page`
 
 ### humaux-protocol → `rmcp` (normal)
@@ -20396,6 +20394,13 @@ default run:
 - PostgreSQL
 - Qdrant
 
+### `crates/application/tests/api_key.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/cache/tests/bounds.rs`
 db-bound (default run): no
 
@@ -20787,7 +20792,7 @@ default run:
 - `crates/adapters/tests/contribution_execution_repo.rs:42` [table-undeclared] (line) — static source-text guard; no DB connection
 - `crates/application/Cargo.toml:41` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
-- `crates/protocol/Cargo.toml:44` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
+- `crates/protocol/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/public-pool/src/completeness.rs:379` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
 - `crates/retrieval/src/envelope.rs:2143` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/envelope.rs:2962` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access

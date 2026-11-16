@@ -18,12 +18,7 @@ humaux-domain = { version = "0.1.0", path = "../domain" }
 # Workspace path dependency, not a new external crate; application does not depend on protocol (no cycle).
 # why: signs and verifies the page@1 cursor with the shared token key set; used-by: [protocol::page, tests]
 humaux-application = { version = "0.1.0", path = "../application" }
-# §73.5: API key keyed-hash verifier (HMAC-SHA256). Same sha2 line as `humaux-domain`
-# (§8.1/§48.0①); hmac reused from the workspace's own already-resolved dependency graph
-# (paired digest 0.11.x, see Cargo.lock) rather than introducing a second major line.
-# why: control.api_keys.key_hash keyed-hash verifier; used-by: [protocol::edge]
-hmac = "0.13"
-# why: paired digest for the HMAC-SHA256 key-hash verifier and the page@1 args hash; used-by: [protocol::edge, protocol::page]
+# why: SHA256 digest for the page@1 args hash; used-by: [protocol::page]
 sha2 = "0.11"
 # §33: SDK and HTTP wire types stay inside the Protocol adapter.
 # Native 2026-07-28 only; no provider/client/auth SDK feature is enabled.

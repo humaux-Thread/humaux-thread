@@ -1,6 +1,6 @@
 //! `protocol::edge` — H1: §73 Edge/Trusted-Proxy/IP Policy/ClientNetworkIdentity/API key/session/CSRF 中间件类型 （Phase 2
 //!   wave 实现；判据出处见 spec 家章）。
-//! Depends-on: crates=[hmac, sha2]; services=[]; env=[CARGO_MANIFEST_DIR]; modules=[]
+//! Depends-on: crates=[humaux-application, humaux-domain]; services=[]; env=[CARGO_MANIFEST_DIR]; modules=[]
 //! Called-by: [gateway::auth, gateway::auth_pages, gateway::bootstrap, gateway::guard, maintenance::main, tests, xtask::e2e_seed]
 //! Invariants: [no runtime env or service read; CARGO_MANIFEST_DIR is build-time (`env!`) in the unit tests only, to embed migration 0037 for the contract checks]
 //! Spec: §73; §73.2
@@ -12,104 +12,15 @@
 //! what makes the fault-injection tests below possible without a live socket or a clock mock.
 
 use std::net::IpAddr;
-use std::str::FromStr;
+#[cfg(test)]
 use std::time::SystemTime;
-
-use hmac::{Hmac, KeyInit, Mac};
-use sha2::Sha256;
-
-type HmacSha256 = Hmac<Sha256>;
 
 // ============================================================================
 // §73.2 Trusted Proxy / Real IP — Cidr + ClientNetworkIdentity construction
 // ============================================================================
 
-/// One CIDR block, either address family (§73.2 `trusted_proxy_cidrs[]` / IP policy lists /
-/// API credential `allowed_cidrs`— one shape serves all three, spec draws no distinction).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Cidr {
-    network: IpAddr,
-    prefix_len: u8,
-}
-
-/// [`Cidr::from_str`] failure — malformed literal, not a runtime condition.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CidrParseError(pub String);
-
-impl std::fmt::Display for CidrParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "invalid CIDR literal: {}", self.0)
-    }
-}
-impl std::error::Error for CidrParseError {}
-
-impl FromStr for Cidr {
-    type Err = CidrParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (addr_s, len_s) = s
-            .split_once('/')
-            .ok_or_else(|| CidrParseError(s.to_string()))?;
-        // §73.2: canonicalize before it becomes a CIDR/rate-limit key — an IPv4-mapped IPv6
-        // literal in config ("::ffff:10.0.0.0/104") collapses to the plain IPv4 form so it
-        // compares correctly against a canonicalized peer address in `contains`.
-        let network: IpAddr = addr_s
-            .parse::<IpAddr>()
-            .map_err(|_| CidrParseError(s.to_string()))?
-            .to_canonical();
-        let max_len: u8 = match network {
-            IpAddr::V4(_) => 32,
-            IpAddr::V6(_) => 128,
-        };
-        let prefix_len: u8 = len_s.parse().map_err(|_| CidrParseError(s.to_string()))?;
-        if prefix_len > max_len {
-            return Err(CidrParseError(s.to_string()));
-        }
-        Ok(Cidr {
-            network,
-            prefix_len,
-        })
-    }
-}
-
-impl Cidr {
-    /// Whether `ip` (canonicalized first, §73.2) falls inside this block. Cross-family
-    /// comparisons (an IPv6-only address against a v4 block) never match — canonicalization
-    /// already folded every IPv4-mapped v6 address into its v4 form, so a real mismatch here
-    /// means the families are genuinely different.
-    pub fn contains(&self, ip: IpAddr) -> bool {
-        let ip = ip.to_canonical();
-        match (self.network, ip) {
-            (IpAddr::V4(net), IpAddr::V4(ip)) => {
-                let mask = mask_u32(self.prefix_len);
-                (u32::from(net) & mask) == (u32::from(ip) & mask)
-            }
-            (IpAddr::V6(net), IpAddr::V6(ip)) => {
-                let mask = mask_u128(self.prefix_len);
-                (u128::from(net) & mask) == (u128::from(ip) & mask)
-            }
-            _ => false,
-        }
-    }
-}
-
-/// `u32::MAX << n` panics at `n == 32`; the `/0` block ("match everything") is the one case
-/// that needs the all-zero mask directly.
-const fn mask_u32(prefix_len: u8) -> u32 {
-    if prefix_len == 0 {
-        0
-    } else {
-        u32::MAX << (32 - prefix_len)
-    }
-}
-
-const fn mask_u128(prefix_len: u8) -> u128 {
-    if prefix_len == 0 {
-        0
-    } else {
-        u128::MAX << (128 - prefix_len)
-    }
-}
+// ponytail: keep edge callers compatible; remove CIDR aliases in the network caller migration card.
+pub use humaux_domain::network::{Cidr, CidrParseError};
 
 /// §73.2 `trusted_proxy_cidrs[]` / `max_forwarded_hops` — supplied by the caller's resolved
 /// config (§78.1: no business threshold hardcoded in this module). Which header to read
@@ -306,161 +217,11 @@ pub fn evaluate_ip_policy(input: &IpPolicyInput<'_>) -> IpPolicyDecision {
 // §73.5 API Key / MCP Credential
 // ============================================================================
 
-/// §73.5 lifecycle: `CREATE -> ACTIVE -> ROTATING -> REVOKED/EXPIRED`. Wire form matches the
-/// `control.api_keys.status` CHECK constraint (migration 0035) — [`ApiKeyStatus::as_db_str`]
-/// / [`ApiKeyStatus::from_db_str`] are the only conversion points, kept next to the enum so
-/// the two never drift independently. [`ApiKeyStatus::ALL`] + `contract_tests` below hold
-/// this against the migration's literal CHECK list (§78.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApiKeyStatus {
-    Create,
-    Active,
-    Rotating,
-    Revoked,
-    Expired,
-}
-
-impl ApiKeyStatus {
-    /// Every variant, in the same order as `control.api_keys.status`'s CHECK list —
-    /// order matters, [`contract_tests`] diffs this positionally against the migration.
-    pub const ALL: [ApiKeyStatus; 5] = [
-        ApiKeyStatus::Create,
-        ApiKeyStatus::Active,
-        ApiKeyStatus::Rotating,
-        ApiKeyStatus::Revoked,
-        ApiKeyStatus::Expired,
-    ];
-
-    pub const fn as_db_str(self) -> &'static str {
-        match self {
-            ApiKeyStatus::Create => "CREATE",
-            ApiKeyStatus::Active => "ACTIVE",
-            ApiKeyStatus::Rotating => "ROTATING",
-            ApiKeyStatus::Revoked => "REVOKED",
-            ApiKeyStatus::Expired => "EXPIRED",
-        }
-    }
-
-    pub fn from_db_str(s: &str) -> Option<Self> {
-        match s {
-            "CREATE" => Some(ApiKeyStatus::Create),
-            "ACTIVE" => Some(ApiKeyStatus::Active),
-            "ROTATING" => Some(ApiKeyStatus::Rotating),
-            "REVOKED" => Some(ApiKeyStatus::Revoked),
-            "EXPIRED" => Some(ApiKeyStatus::Expired),
-            _ => None,
-        }
-    }
-}
-
-/// §73.5 lifecycle edges. `Active` may skip `Rotating` straight to `Revoked`/`Expired`
-/// (rotation is optional); `Rotating` only ever concludes the *old* key via `Revoked`/`Expired`
-/// once its overlap window ends — it never goes back to `Active`.
-pub fn is_legal_api_key_transition(from: ApiKeyStatus, to: ApiKeyStatus) -> bool {
-    use ApiKeyStatus::*;
-    matches!(
-        (from, to),
-        (Create, Active)
-            | (Active, Rotating)
-            | (Active, Revoked)
-            | (Active, Expired)
-            | (Rotating, Revoked)
-            | (Rotating, Expired)
-    )
-}
-
-/// §73.5 keyed hash: `HMAC-SHA256(pepper, raw_key)`. A random-entropy API key (unlike a
-/// user-chosen password, §74.3) does not need Argon2's deliberately-slow KDF — a fast keyed
-/// hash keyed by a server-side pepper is the standard shape for this credential class, and
-/// `hmac::Mac::verify_slice` gives constant-time comparison for free (no hand-rolled
-/// timing-safe compare here — that would be reinventing a primitive the crate already owns).
-pub fn compute_api_key_hash(pepper: &[u8], raw_key: &str) -> Vec<u8> {
-    let mut mac =
-        <HmacSha256 as KeyInit>::new_from_slice(pepper).expect("HMAC accepts any key length");
-    mac.update(raw_key.as_bytes());
-    mac.finalize().into_bytes().to_vec()
-}
-
-fn verify_api_key_hash(pepper: &[u8], raw_key: &str, stored_hash: &[u8]) -> bool {
-    let mut mac =
-        <HmacSha256 as KeyInit>::new_from_slice(pepper).expect("HMAC accepts any key length");
-    mac.update(raw_key.as_bytes());
-    mac.verify_slice(stored_hash).is_ok()
-}
-
-/// One `control.api_keys` row's fields relevant to validation — not the full DB row shape,
-/// just what [`validate_api_key`] needs.
-pub struct ApiKeyRecord {
-    pub key_hash: Vec<u8>,
-    pub status: ApiKeyStatus,
-    pub allowed_cidrs: Vec<Cidr>,
-    pub expires_at: Option<SystemTime>,
-    pub revoked_at: Option<SystemTime>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApiKeyRejection {
-    /// Presented key does not verify against the stored keyed hash.
-    HashMismatch,
-    Revoked,
-    Expired,
-    /// `status` is not `Active`/`Rotating` (e.g. still `Create`, never activated).
-    InactiveStatus,
-    /// `allowed_cidrs` is non-empty and the request IP is not in it (§73.5 credential CIDR
-    /// binding).
-    CidrNotAllowed,
-}
-
-/// Which pepper verified the presented key (ADR-0059 D-H). A result, not an error: `Previous`
-/// tells the caller to rehash the stored verifier under the current pepper.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PepperMatch {
-    Current,
-    Previous,
-}
-
-/// §73.5 validation: keyed-hash compare, then lifecycle status, then `expires_at`/`revoked_at`
-/// timestamps (belt-and-suspenders with `status` — a row can be `Active` in the DB with a
-/// stale `expires_at` between the row's actual expiry and the next sweep), then CIDR binding.
-/// `now` is caller-supplied (§78.1: no clock read baked into a pure function).
-///
-/// ADR-0059 D-H: `previous` is the rotation window's old pepper (`None` = window closed); it is
-/// tried only after `current` fails.
-pub fn validate_api_key(
-    record: &ApiKeyRecord,
-    presented_key: &str,
-    current: &[u8],
-    previous: Option<&[u8]>,
-    request_ip: IpAddr,
-    now: SystemTime,
-) -> Result<PepperMatch, ApiKeyRejection> {
-    let matched = if verify_api_key_hash(current, presented_key, &record.key_hash) {
-        PepperMatch::Current
-    } else if previous.is_some_and(|p| verify_api_key_hash(p, presented_key, &record.key_hash)) {
-        PepperMatch::Previous
-    } else {
-        return Err(ApiKeyRejection::HashMismatch);
-    };
-    match record.status {
-        ApiKeyStatus::Revoked => return Err(ApiKeyRejection::Revoked),
-        ApiKeyStatus::Expired => return Err(ApiKeyRejection::Expired),
-        ApiKeyStatus::Create => return Err(ApiKeyRejection::InactiveStatus),
-        ApiKeyStatus::Active | ApiKeyStatus::Rotating => {}
-    }
-    if record.revoked_at.is_some_and(|at| at <= now) {
-        return Err(ApiKeyRejection::Revoked);
-    }
-    if record.expires_at.is_some_and(|at| at <= now) {
-        return Err(ApiKeyRejection::Expired);
-    }
-    if !record.allowed_cidrs.is_empty() {
-        let ip = request_ip.to_canonical();
-        if !record.allowed_cidrs.iter().any(|c| c.contains(ip)) {
-            return Err(ApiKeyRejection::CidrNotAllowed);
-        }
-    }
-    Ok(matched)
-}
+// ponytail: keep edge callers compatible; remove API key aliases in the credential caller migration card.
+pub use humaux_application::api_key::{
+    ApiKeyRecord, ApiKeyRejection, ApiKeyStatus, PepperMatch, compute_api_key_hash,
+    is_legal_api_key_transition, validate_api_key,
+};
 
 /// §73.5 "日志只记录 fingerprint/prefix，不记录 secret". A short, deterministic,
 /// non-reversible string safe for logs/audit metadata — never the raw key, never the full
