@@ -2479,6 +2479,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::pin`
 
+#### `application::query_embedding_execution`
+
 #### `application::recall_read`
 
 #### `application::remember`
@@ -5032,10 +5034,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.audit_event_insert`
 - service `PostgreSQL(role_gateway)`
 
-#### `adapters::retrieval_embedding_rpc`
-- writes `ops.retrieval_embedding_rpc_calls`
-- service `PostgreSQL(any)`
-
 #### `adapters::retrieval_query_log`
 - writes `ops.retrieval_query_log`
 - service `PostgreSQL(role_gateway)`
@@ -5120,6 +5118,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::distill`
 
 #### `application::pin`
+
+#### `application::query_embedding_execution`
 
 #### `application::recall_read`
 
@@ -9119,7 +9119,6 @@ read by:
 written by:
 - (no process): `gateway::tests::semantic_recall_wiring`
 - process(humaux-gateway): `adapters::retrieval_embedding_rpc`
-- process(humaux-retrieval-worker): `adapters::retrieval_embedding_rpc`
 
 executed by:
 
@@ -14320,6 +14319,7 @@ modules naming it:
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
 - `adapters::remember`
+- `adapters::retrieval_embedding_rpc`
 - `adapters::retrieve`
 - `adapters::serving_repo`
 - `adapters::session_repo`
@@ -14472,6 +14472,7 @@ modules naming it:
 - `adapters::read_materialize`
 - `adapters::rebuild`
 - `adapters::remember`
+- `adapters::retrieval_embedding_rpc`
 - `adapters::retrieve`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::contribution_execution_repo_0131`
@@ -15533,6 +15534,7 @@ modules naming it:
 - `application::distill`
 - `application::private_inference`
 - `application::public_dispatch`
+- `application::query_embedding_execution`
 - `application::recall_read`
 - `application::remember`
 - `application::retrieval_embedding_port`
@@ -15555,6 +15557,7 @@ modules naming it:
 - `application::oauth`
 - `application::pin`
 - `application::private_inference`
+- `application::query_embedding_execution`
 - `application::recall_read`
 - `application::remember`
 - `application::retrieval_embedding_port`
@@ -15584,6 +15587,7 @@ modules naming it:
 - `application::consolidate`
 - `application::contribute`
 - `application::private_inference`
+- `application::query_embedding_execution`
 - `tests`
 
 ### humaux-cache → `humaux-domain` (normal)
@@ -18203,6 +18207,12 @@ why: UUID ids (v7) and parsing
 modules naming it:
 - `public-worker::main`
 
+### humaux-retrieval-worker → `humaux-application` (normal)
+why: registered embedding use case and purpose ports
+
+modules naming it:
+- `retrieval-worker::rpc`
+
 ### humaux-retrieval-worker → `humaux-adapters` (normal)
 why: typed PG pools, repositories and wire adapters this package drives
 
@@ -18279,6 +18289,7 @@ why: object-safe async traits for ports and transports
 
 modules naming it:
 - `retrieval-worker::main`
+- `retrieval-worker::rpc`
 
 ### humaux-retrieval-worker → `axum` (normal)
 why: HTTP/UDS server framework

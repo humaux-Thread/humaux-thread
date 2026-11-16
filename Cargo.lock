@@ -1468,6 +1468,7 @@ dependencies = [
  "async-trait",
  "axum",
  "humaux-adapters",
+ "humaux-application",
  "humaux-contracts",
  "humaux-domain",
  "humaux-infra-cell",

@@ -12,6 +12,8 @@ edition = "core"
 workspace = true
 
 [dependencies]
+# why: registered embedding use case and purpose ports; used-by: [retrieval-worker::rpc]
+humaux-application = { path = "../../crates/application" }
 # why: typed PG pools, repositories and wire adapters this package drives; used-by: [retrieval-worker::main, retrieval-worker::rpc]
 humaux-adapters = { path = "../../crates/adapters" }
 # why: domain ids, errors and value types shared across layers; used-by: [retrieval-worker::main, retrieval-worker::rpc, tests]

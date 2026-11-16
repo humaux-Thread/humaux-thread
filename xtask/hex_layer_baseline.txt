@@ -202,10 +202,5 @@ bins/retrieval-worker/src/main.rs:humaux_adapters::projection_worker::SharedProj
 bins/retrieval-worker/src/main.rs:humaux_adapters::qdrant::RetrievalFamily
 bins/retrieval-worker/src/main.rs:humaux_adapters::stream_repo::Backoff
 bins/retrieval-worker/src/main.rs:humaux_adapters::stream_repo::ClaimFamily
-bins/retrieval-worker/src/rpc.rs:humaux_adapters::retrieval_embedding_rpc::ClaimOutcome
-bins/retrieval-worker/src/rpc.rs:humaux_adapters::retrieval_embedding_rpc::ClaimedRegistration
-bins/retrieval-worker/src/rpc.rs:humaux_adapters::retrieval_embedding_rpc::FinishOutcome
-bins/retrieval-worker/src/rpc.rs:humaux_adapters::retrieval_embedding_rpc::RetrievalWorkerEmbeddingCalls
-bins/retrieval-worker/src/rpc.rs:humaux_adapters::retrieval_embedding_rpc::StoredOutcome
 bins/public-worker/src/main.rs:humaux_public_pool::public_projection::PublicProjectionAdapter
 bins/public-worker/src/main.rs:humaux_public_pool::public_projection::PublicProjectionAdapter::new
