@@ -597,6 +597,36 @@ pub fn check_env_dsn_placeholders(
     )
 }
 
+#[async_trait::async_trait(?Send)]
+impl humaux_application::role_rotation::RoleRotationPort for MigratorDbPool {
+    type Error = ProvisioningError;
+
+    async fn rotate_roles(
+        &self,
+        request: &humaux_application::role_rotation::RotateRoles<'_>,
+    ) -> Result<(), Self::Error> {
+        let targets: Vec<(String, RolePassword)> = request
+            .targets
+            .iter()
+            .map(|target| {
+                (
+                    target.role.to_owned(),
+                    RolePassword::new(target.password.to_owned()),
+                )
+            })
+            .collect();
+        rotate_in_txn(
+            self,
+            &RotateRequest {
+                targets: &targets,
+                owner: request.owner,
+                create_missing: request.create_missing,
+            },
+        )
+        .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -744,35 +774,5 @@ mod tests {
             check_env_dsn_placeholders(&env[2..], &placeholders).status,
             CheckStatus::Pass
         );
-    }
-}
-
-#[async_trait::async_trait(?Send)]
-impl humaux_application::role_rotation::RoleRotationPort for MigratorDbPool {
-    type Error = ProvisioningError;
-
-    async fn rotate_roles(
-        &self,
-        request: &humaux_application::role_rotation::RotateRoles<'_>,
-    ) -> Result<(), Self::Error> {
-        let targets: Vec<(String, RolePassword)> = request
-            .targets
-            .iter()
-            .map(|target| {
-                (
-                    target.role.to_owned(),
-                    RolePassword::new(target.password.to_owned()),
-                )
-            })
-            .collect();
-        rotate_in_txn(
-            self,
-            &RotateRequest {
-                targets: &targets,
-                owner: request.owner,
-                create_missing: request.create_missing,
-            },
-        )
-        .await
     }
 }
