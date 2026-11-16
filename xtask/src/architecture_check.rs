@@ -1389,13 +1389,26 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 66, "HEX-LAYER")
+    hex_exact(actual, baseline, 218, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
-// files' module responsibility headers; recall/guard/mcp_application remain request handlers.
+// files' module responsibility headers. Mixed roots with processing loops remain scanned,
+// including public-worker/main, private-worker/lib and maintenance/main. New bin sources
+// are covered by default; new exclusions require review here (ADR-0130 D2).
 const HEX_LAYER_EXCLUDED: &[&str] = &[
-    "bins/gateway/src/main.rs", // Process entry and listener assembly (§4.2).
+    "bins/admin/src/main.rs",                     // CLI dispatch only (§4.4).
+    "bins/billing-worker/src/main.rs",            // Startup probe; no processing loop (§71.2).
+    "bins/worker/src/main.rs",                    // Unwired process scaffold (§4.2).
+    "bins/consolidation-worker/src/dsn.rs",       // DSN resolution only (§4.2).
+    "bins/private-worker/src/dsn.rs",             // DSN resolution only (§4.2).
+    "bins/private-worker/src/route_providers.rs", // Provider/credential assembly (§39).
+    "bins/consolidation-worker/src/inference_client.rs", // Outbound inference RPC port (§11.8).
+    "bins/retrieval-worker/src/rerank.rs",        // Outbound local model engine (ADR-0084).
+    "bins/billing-worker/src/creem.rs",           // Outbound provider adapter (§71.2).
+    "bins/billing-worker/src/fake_creem.rs",      // Test-only provider double (§79.4).
+    "bins/maintenance/src/throwaway.rs",          // Disposable DB test support (§79).
+    "bins/gateway/src/main.rs",                   // Process entry and listener assembly (§4.2).
     "bins/gateway/src/bootstrap.rs", // Process-wide config and adapter assembly (§34.0.1).
     "bins/gateway/src/cached_embedding.rs", // Outbound embedding cache port (§51).
     "bins/gateway/src/rerank_client.rs", // Outbound rerank RPC port (ADR-0084).
@@ -1403,7 +1416,10 @@ const HEX_LAYER_EXCLUDED: &[&str] = &[
 ];
 
 fn hex_layer_source(path: &str) -> bool {
-    (path.starts_with("bins/gateway/src/") || path.starts_with("crates/protocol/src/"))
+    (path.strip_prefix("bins/").is_some_and(|p| {
+        p.split_once('/')
+            .is_some_and(|(_, p)| p.starts_with("src/"))
+    }) || path.starts_with("crates/protocol/src/"))
         && !HEX_LAYER_EXCLUDED.contains(&path)
         && !path.split('/').any(|part| part == "tests")
 }
@@ -1411,7 +1427,7 @@ fn hex_layer_source(path: &str) -> bool {
 fn hex_layer_gate(root: &Path) -> Verdict {
     let mut actual = BTreeSet::new();
     let mut problems = Vec::new();
-    for directory in ["bins/gateway/src", "crates/protocol/src"] {
+    for directory in ["bins", "crates/protocol/src"] {
         let files = walk_files(&root.join(directory), &["rs"]);
         if files.is_empty() {
             problems.push(format!("missing source object `{directory}`"));
@@ -14153,6 +14169,84 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         println!("HEX-COVERAGE restored: pass");
     }
 
+    /// §80.1 / ADR-0130 D2: worker ingress is guarded, while pure assembly stays legal.
+    #[test]
+    fn hex_worker_layer_disk_red_green() {
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("hex-worker-fixture-{}", std::process::id()));
+        hex_copy_boundary_fixture(&real_root(), &root);
+        let check = || {
+            let verdict = hex_layer_gate(&root);
+            assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
+        };
+        check();
+        let injection = "\nuse humaux_adapters::remember::RememberCommand;\n";
+        for (file, red) in [
+            ("bins/public-worker/src/main.rs", true),
+            ("bins/billing-worker/src/main.rs", false),
+        ] {
+            let path = root.join(file);
+            let original = fs::read_to_string(&path).unwrap();
+            fs::write(&path, format!("{original}{injection}")).unwrap();
+            let verdict = hex_layer_gate(&root);
+            if red {
+                assert!(
+                    matches!(&verdict, Verdict::Fail(lines) if lines.iter().any(|l|
+                    l.contains(file) && l.contains("RememberCommand"))),
+                    "{verdict:?}"
+                );
+            } else {
+                assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
+            }
+            println!("worker disk injection {file}: {verdict:?}");
+            fs::write(path, original).unwrap();
+            check();
+            println!("worker disk injection {file}: restored GREEN");
+        }
+        let path = root.join(HEX_BASELINE);
+        let original = fs::read_to_string(&path).unwrap();
+        let row = original
+            .lines()
+            .find(|l| l.starts_with("bins/private-worker/"))
+            .unwrap();
+        let shortened = original
+            .lines()
+            .filter(|l| *l != row)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (label, mutant) in [
+            ("removed worker baseline", shortened),
+            (
+                "baseline exceeds ceiling",
+                format!(
+                    "{original}bins/public-worker/src/main.rs:humaux_adapters::remember::RememberCommand\n"
+                ),
+            ),
+        ] {
+            fs::write(&path, mutant).unwrap();
+            let verdict = hex_layer_gate(&root);
+            assert!(
+                matches!(&verdict, Verdict::Fail(lines) if lines.iter().any(|l|
+                l.contains("expected exactly ceiling"))),
+                "{verdict:?}"
+            );
+            if label == "removed worker baseline" {
+                assert!(
+                    matches!(&verdict, Verdict::Fail(lines) if lines.iter().any(|l|
+                    l.contains("new violation") && l.contains(row))),
+                    "{verdict:?}"
+                );
+            }
+            println!("{label}: RED {verdict:?}");
+            fs::write(&path, &original).unwrap();
+            check();
+            println!("{label}: restored GREEN");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn hex_boundary_layer_red_green() {
         let root = workspace_root();
@@ -14224,8 +14318,11 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         for path in HEX_LAYER_EXCLUDED {
             assert!(!hex_layer_source(path), "{path}");
         }
-        assert!(!hex_layer_source("bins/maintenance/src/main.rs"));
-        assert!(!hex_layer_source("bins/private-worker/src/lib.rs"));
+        assert!(hex_layer_source("bins/maintenance/src/main.rs"));
+        assert!(hex_layer_source("bins/private-worker/src/lib.rs"));
+        assert!(hex_layer_source("bins/public-worker/src/main.rs"));
+        assert!(hex_layer_source("bins/new-worker/src/handler.rs"));
+        assert!(!hex_layer_source("bins/new-worker/tests/handler.rs"));
         assert!(hex_layer_source("bins/gateway/src/remember.rs"));
         assert!(hex_layer_source("bins/gateway/src/boundary_injection.rs"));
         assert!(hex_layer_source("crates/protocol/src/edge.rs"));
