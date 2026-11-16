@@ -14221,68 +14221,69 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
         };
         check();
-        let injection = "\nuse humaux_public_pool::public_repo::PublicRepoEvaluator;\n";
-        for (file, red) in [
-            ("bins/public-worker/src/main.rs", true),
-            ("bins/billing-worker/src/main.rs", false),
+        for symbol in [
+            "humaux_adapters::remember::RememberCommand",
+            "humaux_public_pool::public_repo::PublicRepoEvaluator",
         ] {
-            let path = root.join(file);
-            let original = fs::read_to_string(&path).unwrap();
-            fs::write(&path, format!("{original}{injection}")).unwrap();
-            let verdict = hex_layer_gate(&root);
-            if red {
-                assert!(
-                    matches!(&verdict, Verdict::Fail(lines) if lines.iter().any(|l|
-                    l.contains(file) && l.contains("PublicRepoEvaluator"))),
-                    "{verdict:?}"
-                );
-            } else {
-                assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
+            let injection = format!("\nuse {symbol};\n");
+            for (file, red) in [
+                ("bins/public-worker/src/main.rs", true),
+                ("bins/billing-worker/src/main.rs", false),
+            ] {
+                let path = root.join(file);
+                let original = fs::read_to_string(&path).unwrap();
+                fs::write(&path, format!("{original}{injection}")).unwrap();
+                let verdict = hex_layer_gate(&root);
+                if red {
+                    assert!(
+                        matches!(&verdict, Verdict::Fail(lines) if lines.iter().any(|l|
+                        l.contains(file) && l.contains(symbol))),
+                        "{verdict:?}"
+                    );
+                } else {
+                    assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
+                }
+                println!("worker disk injection {file} {symbol}: {verdict:?}");
+                fs::write(path, original).unwrap();
+                check();
+                println!("worker disk injection {file} {symbol}: restored GREEN");
             }
-            println!("worker disk injection {file}: {verdict:?}");
-            fs::write(path, original).unwrap();
-            check();
-            println!("worker disk injection {file}: restored GREEN");
         }
         let path = root.join(HEX_BASELINE);
         let original = fs::read_to_string(&path).unwrap();
-        let row = original
-            .lines()
-            .find(|l| l.contains("humaux_public_pool::"))
-            .unwrap();
-        let shortened = original
-            .lines()
-            .filter(|l| *l != row)
-            .collect::<Vec<_>>()
-            .join("\n");
-        for (label, mutant) in [
-            ("removed worker baseline", shortened),
-            (
-                "baseline exceeds ceiling",
-                format!(
-                    "{original}bins/public-worker/src/main.rs:humaux_adapters::remember::RememberCommand\n"
-                ),
-            ),
-        ] {
-            fs::write(&path, mutant).unwrap();
+        for marker in ["bins/private-worker/", "humaux_public_pool::"] {
+            let row = original.lines().find(|l| l.contains(marker)).unwrap();
+            let shortened = original
+                .lines()
+                .filter(|l| *l != row)
+                .collect::<Vec<_>>()
+                .join("\n");
+            fs::write(&path, shortened).unwrap();
             let verdict = hex_layer_gate(&root);
             assert!(
-                matches!(&verdict, Verdict::Fail(lines) if lines.iter().any(|l|
-                l.contains("expected exactly ceiling"))),
+                matches!(&verdict, Verdict::Fail(lines) if
+                    lines.iter().any(|l| l.contains("expected exactly ceiling")) &&
+                    lines.iter().any(|l| l.contains("new violation") && l.contains(row))),
                 "{verdict:?}"
             );
-            if label == "removed worker baseline" {
-                assert!(
-                    matches!(&verdict, Verdict::Fail(lines) if lines.iter().any(|l|
-                    l.contains("new violation") && l.contains(row))),
-                    "{verdict:?}"
-                );
-            }
-            println!("{label}: RED {verdict:?}");
+            println!("removed worker baseline {row}: RED {verdict:?}");
             fs::write(&path, &original).unwrap();
             check();
-            println!("{label}: restored GREEN");
+            println!("removed worker baseline {row}: restored GREEN");
         }
+        fs::write(&path, format!(
+            "{original}bins/public-worker/src/main.rs:humaux_adapters::remember::RememberCommand\n"
+        )).unwrap();
+        let verdict = hex_layer_gate(&root);
+        assert!(
+            matches!(&verdict, Verdict::Fail(lines) if lines.iter().any(|l|
+                l.contains("expected exactly ceiling"))),
+            "{verdict:?}"
+        );
+        println!("baseline exceeds ceiling: RED {verdict:?}");
+        fs::write(&path, &original).unwrap();
+        check();
+        println!("baseline exceeds ceiling: restored GREEN");
         fs::remove_dir_all(root).unwrap();
     }
 
