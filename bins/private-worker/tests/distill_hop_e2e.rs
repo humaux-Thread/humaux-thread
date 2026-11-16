@@ -86,7 +86,7 @@ use humaux_infra_cell::{
     authorize_cell_access,
 };
 use humaux_local_secret_scan::{LocalSecretScanner, LocalSecretScannerConfig, SealedRetrievalCard};
-use humaux_private_worker::distill::{DistillDispatchConfig, DistillDispatchReport, dispatch_pass};
+use humaux_private_worker::distill::{DistillDispatchConfig, DistillDispatchReport};
 use humaux_projection::fingerprint::{ProcessingInputFingerprintInputs, source_hash};
 use humaux_projection::serving::StreamFamily;
 use humaux_testkit::fixture_purge::purge_tenant_fixture_sql;
@@ -2673,3 +2673,5 @@ fn forgotten_evidence_finishes_without_provider_call() {
         .get(0);
     assert_eq!(remaining, 0, "routing fixture cleanup must leave no tenant");
 }
+
+use distill_lane::dispatch_pass;

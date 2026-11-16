@@ -539,9 +539,14 @@ async fn distill_mode(resident: bool) -> Result<(), ModeFailure> {
              BUDGET_MAX_CALLS must be >= 1)"
         )
     })?;
+    let runtime =
+        route_providers::distill_runtime(&pool, &*providers, clone_config(&config), &dispatch)
+            .map_err(|code| {
+                ModeFailure::runtime(format!("distill configuration rejected: {code:?}"))
+            })?;
     let mut shutdown = Shutdown::install().map_err(ModeFailure::runtime)?;
     let Some(poll) = poll_interval else {
-        let report = distill::dispatch_pass(&pool, &*providers, clone_config(&config), &dispatch)
+        let report = distill::dispatch_pass(&runtime, &dispatch)
             .await
             .map_err(|error| ModeFailure::runtime(format!("distill dispatch failed: {error}")))?;
         println!("{}", report.summary_line());
@@ -553,14 +558,7 @@ async fn distill_mode(resident: bool) -> Result<(), ModeFailure> {
     // HTTP timeout plus the post-call legs); the supervisor's grace period must exceed it
     // (docs/ops/supervision.md).
     let stop = AtomicBool::new(false);
-    let serve = distill::dispatch_serve(
-        &pool,
-        &*providers,
-        clone_config(&config),
-        &dispatch,
-        poll,
-        &stop,
-    );
+    let serve = distill::dispatch_serve(&runtime, &dispatch, poll, &stop);
     tokio::pin!(serve);
     let report = tokio::select! {
         report = &mut serve => report,

@@ -319,6 +319,7 @@ files = [
   "crates/adapters/src/reasoning_route_onboarding.rs",
   "crates/application/src/consolidate.rs",
   "crates/application/src/distill.rs",
+  "crates/application/src/distill_execution.rs",
   "crates/domain/src/consolidate.rs",
 ]
 kind = "core"

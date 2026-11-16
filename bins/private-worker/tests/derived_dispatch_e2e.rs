@@ -20,14 +20,7 @@
 //!   HUMAUX_PRIVATE_WORKER_HEALTH_RENEW_SECS, HUMAUX_PRIVATE_WORKER_HTTP_TIMEOUT_SECS,
 //!   HUMAUX_PRIVATE_WORKER_PERMIT_TTL_SECS, HUMAUX_PRIVATE_WORKER_REGIONS, HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH,
 //!   HUMAUX_PRIVATE_WORKER_SERVE_RPC_METRICS_ADDR, HUMAUX_TEST_PG_DSN, MINIMAX_API_KEY, PRIVATE_WORKER_PG_DSN,
-//!   refused:HUMAUX_PRIVATE_WORKER_EGRESS_PROCESSOR_ID]; modules=[adapters::byok,
-//!   adapters::contribution_reasoner, adapters::disclosure, adapters::distill_reasoner, adapters::jobs,
-//!   adapters::maintenance_repo, adapters::membership_repo, adapters::postgres, adapters::provisioning,
-//!   adapters::reasoning_route_admission, adapters::tests::support::throwaway_db, domain::evidence, humaux-testkit,
-//!   private-worker::distill, private-worker::tests::support::dispatch_fence,
-//!   private-worker::tests::support::double_spend, private-worker::tests::support::live_minimax,
-//!   private-worker::tests::support::live_provider, private-worker::inference_rpc, private-worker::route_providers,
-//!   adapters::byok::ssrf, testkit::fixture_purge, testkit::reaped]
+//!   refused:HUMAUX_PRIVATE_WORKER_EGRESS_PROCESSOR_ID]; modules=[adapters::byok, adapters::byok::ssrf, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_reasoner, adapters::jobs, adapters::maintenance_repo, adapters::membership_repo, adapters::postgres, adapters::provisioning, adapters::reasoning_route_admission, adapters::tests::support::throwaway_db, domain::evidence, humaux-testkit, private-worker::distill, private-worker::inference_rpc, private-worker::route_providers, private-worker::tests::support::dispatch_fence, private-worker::tests::support::distill_lane, private-worker::tests::support::double_spend, private-worker::tests::support::live_minimax, private-worker::tests::support::live_provider, testkit::fixture_purge, testkit::reaped]
 //! Called-by: [cargo-test]
 //! Invariants: [only this file's tenants are ever claimed (foreign scheduler rows are fenced FOR UPDATE); every
 //!   scenario's faults are named in its doc (ADR-0058 records the red→green runs); a fixture deletes its jobs, slots
@@ -60,7 +53,7 @@ use humaux_adapters::provisioning::{
 use humaux_adapters::reasoning_route_admission::{
     ProviderFor, ROUTE_HEALTH_DENIED, ROUTE_HEALTH_STALE, ReasoningAdmissionLocator,
 };
-use humaux_private_worker::distill::{self, DistillDispatchConfig, DistillDispatchReport};
+use humaux_private_worker::distill::{DistillDispatchConfig, DistillDispatchReport};
 use humaux_private_worker::route_providers::{
     self, CREDENTIAL_NOT_MAPPED, EGRESS_RECIPIENTS, REGIONS, RouteProviders,
 };
@@ -75,6 +68,9 @@ use uuid::Uuid;
 
 #[path = "support/dispatch_fence.rs"]
 mod dispatch_fence;
+#[allow(dead_code)]
+#[path = "support/distill_lane.rs"]
+mod distill_lane;
 #[path = "support/double_spend.rs"]
 mod double_spend;
 #[path = "support/live_minimax.rs"]
@@ -6001,3 +5997,5 @@ fn distill_channel_ab_live() {
         );
     });
 }
+
+use distill_lane as distill;

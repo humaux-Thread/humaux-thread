@@ -1,6 +1,6 @@
 //! `projection::fingerprint` — processing input fingerprint (§16.1 / §16.1.1).
 //! Depends-on: crates=[humaux-domain, sha2]; services=[]; env=[]; modules=[domain::evidence]
-//! Called-by: [private-worker::distill, tests]
+//! Called-by: [adapters::distill_repo, tests]
 //! Invariants: []
 //! Spec: Baseline §1.2.1; §11; §36; §16.1.1
 //!

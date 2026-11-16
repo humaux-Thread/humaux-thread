@@ -2,7 +2,7 @@
 //!   `UserReasoningProfile`/`PrivateReasoningDomain` DB-facing types, the §11.3 Provider Error state machine, and the
 //!   §11.4 custom-endpoint SSRF guard chain.
 //! Depends-on: crates=[async-trait, humaux-domain, humaux-infra-egress, serde_json, tokio, uuid]; services=[]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::byok::ssrf, domain::egress, domain::error, domain::evidence, domain::ids, infra-egress::raw, infra-egress::resolver]
-//! Called-by: [adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::reasoning_route_admission, adapters::reasoning_route_onboarding, gateway::mcp_application, humaux-private-worker, maintenance::main, private-worker::distill, private-worker::route_providers, tests, xtask::e2e_onboard, xtask::e2e_seed]
+//! Called-by: [adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::reasoning_route_admission, adapters::reasoning_route_onboarding, gateway::mcp_application, humaux-private-worker, maintenance::main, private-worker::route_providers, tests, xtask::e2e_onboard, xtask::e2e_seed]
 //! Invariants: [the plaintext BYOK key never becomes a struct field and never prints (only CredentialFingerprint
 //!   does); permit tenant/purpose/payload mismatches are refused before any provider call; provider failures surface
 //!   as typed ReasoningProviderError; no vendor-specific request field is written by code — a Profile's

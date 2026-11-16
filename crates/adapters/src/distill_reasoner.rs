@@ -1,7 +1,7 @@
 //! `adapters::distill_reasoner` — §15.5 / §16.1.1 / §10.1 Distill inference (ADR-0016) — the private-worker reasoner
 //!   that turns ONE accepted Evidence into 0..N memory candidates.
-//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-projection, serde_json, sha2, sqlx, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::byok, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::memory_repo, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, domain::affect, domain::authority, domain::dataclass, domain::error, domain::evidence, domain::ledger, domain::memory]
-//! Called-by: [adapters::consolidation_reasoner, private-worker::distill, tests]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-projection, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(role_private_worker)]; env=[]; modules=[adapters::affect_repo, adapters::byok, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_repo, adapters::memory_repo, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, application::distill_execution, domain::affect, domain::authority, domain::dataclass, domain::error, domain::evidence, domain::ledger, domain::memory]
+//! Called-by: [adapters::consolidation_reasoner, adapters::distill_repo, private-worker::route_providers, tests]
 //! Invariants: [reuses the shared provider pipeline (admission -> egress permit -> disclosure reserve -> provider ->
 //!   finalize) with purpose Distill and the same model_call_ledger leg; no second provider path; any step failing
 //!   returns an error before memories are written; the HTTP cutoff cuts only the provider future, an answer that
@@ -376,26 +376,10 @@ pub fn distill_prompt_contract(
 /// One parsed memory candidate — still unauthorized: `OriginBoundAuthorityPolicy::authorize`
 /// (§10.1) decides per candidate in the worker, and an over-ceiling `class` is rejected there,
 /// never downgraded.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DistillCandidate {
-    pub content: String,
-    pub memory_type: MemoryType,
-    pub class: AuthorityClass,
-    pub confidence: f32,
-    /// ADR-0058 D-P: inferred `EMOTION`s of the authoring user (only when the menu was offered),
-    /// already inside the inferred ceiling; written as `origin = 'DISTILL'` rows.
-    pub affects: Vec<AffectAnnotation>,
-}
+pub use humaux_application::distill_execution::DistillCandidate;
 
 /// A reply [`parse_distill_output_detailed`] accepted.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct DistillReply {
-    /// The memory candidates, in reply order.
-    pub memories: Vec<DistillCandidate>,
-    /// ADR-0058 R1: some `affects` entry was outside the inferred menu, so every inferred affect
-    /// of this reply was discarded; the memories stand.
-    pub affects_dropped: bool,
-}
+pub use humaux_application::distill_execution::DistillReply;
 
 /// ADR-0058 R1: the class the job line names when [`DistillReply::affects_dropped`] — the same
 /// word the refusal carried before R1, so the soak greps keep matching.
@@ -654,27 +638,7 @@ impl DistillAdmission {
 
 /// Successful provider round trip: the raw reply bytes plus the §7.4 disclosure row id that is
 /// this attempt's durable receipt (`processing_runs.provider_request_id` stores it).
-#[derive(Clone, PartialEq, Eq)]
-pub struct DistillInferenceResult {
-    pub output_bytes: Vec<u8>,
-    pub disclosure_id: Uuid,
-    /// ADR-0058 R9: the tool-channel reply carried no tool call and these bytes are its `content`
-    /// object (`StructuredReasoningResponse::channel_fallback`); the parser judges them the same.
-    pub channel_fallback: bool,
-}
-
-impl std::fmt::Debug for DistillInferenceResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DistillInferenceResult")
-            .field(
-                "output_bytes",
-                &format_args!("[REDACTED; {} bytes]", self.output_bytes.len()),
-            )
-            .field("disclosure_id", &self.disclosure_id)
-            .field("channel_fallback", &self.channel_fallback)
-            .finish()
-    }
-}
+pub use humaux_application::distill_execution::DistillInferenceResult;
 
 /// The wire request of one Distill call (ADR-0048 + ADR-0058 D-M): the contract is rendered for the
 /// ceiling the envelope already carries — so the prompt offers exactly the classes `authorize`
@@ -972,6 +936,135 @@ pub enum DistillCallOutcome {
     Failed(&'static str),
     /// The HTTP cutoff won: nothing finalized, the outcome is unknown (ADR-0058 T5 -> T6).
     Unknown,
+}
+
+#[async_trait::async_trait(?Send)]
+impl<A: crate::memory_repo::MemoryAttribution + Copy>
+    humaux_application::distill_execution::DistillProviderPort
+    for crate::distill_repo::DistillRuntime<'_, A>
+{
+    type Admission = crate::distill_repo::DistillReadData;
+    type Prepared = PreparedDistillCall;
+    async fn prepare(
+        &self,
+        ready: &humaux_application::distill_execution::Ready<Self::Admission>,
+    ) -> Result<
+        humaux_application::distill_execution::Prepared<Self::Prepared>,
+        humaux_application::distill_execution::DistillError,
+    > {
+        use humaux_application::distill_execution::DistillError;
+        let offer_affects = ready.offer_affects;
+        let ready = &ready.handle;
+        let evidence = &ready.evidence;
+        let ceiling = evidence.origin_class.authority_ceiling(MemoryType::Fact);
+        let envelope = DistillEnvelopeInput {
+            origin_class: &evidence.origin_class_wire,
+            max_class: ceiling,
+            occurred_at: evidence.occurred_at,
+            payload: &evidence.payload,
+            offer_affects,
+        };
+
+        let principal = match evidence.origin_class {
+            EvidenceOriginClass::DirectUserInput
+            | EvidenceOriginClass::UserConfirmed
+            | EvidenceOriginClass::TenantAdmin => evidence
+                .origin_principal_id
+                .unwrap_or(ready.admission.owner_user_id),
+            _ => ready.admission.owner_user_id,
+        };
+        let acting = if principal == ready.admission.owner_user_id
+            || crate::distill_repo::active_member(
+                self.pool,
+                ready.admission.locator.tenant_id,
+                principal,
+            )
+            .await
+            .map_err(|e| {
+                DistillError::Db(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            })? {
+            principal
+        } else {
+            ready.admission.owner_user_id
+        };
+        let handle = self
+            .reasoner
+            .prepare(
+                &ready.admission,
+                acting,
+                evidence.evidence_id,
+                humaux_domain::dataclass::DataClass::parse_or_secret(&evidence.data_class),
+                &envelope,
+            )
+            .await
+            .map_err(humaux_application::distill_execution::DistillError::Reasoning)?;
+        Ok(humaux_application::distill_execution::Prepared {
+            model_call_id: handle.model_call_id,
+            handle,
+        })
+    }
+    async fn abandon(
+        &self,
+        prepared: Self::Prepared,
+    ) -> Result<(), humaux_application::distill_execution::DistillError> {
+        self.reasoner
+            .abandon(prepared)
+            .await
+            .map_err(humaux_application::distill_execution::DistillError::Reasoning)
+    }
+    async fn call(
+        &self,
+        prepared: Self::Prepared,
+        cutoff: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    ) -> Result<
+        humaux_application::distill_execution::DistillCallOutcome,
+        humaux_application::distill_execution::DistillError,
+    > {
+        use humaux_application::distill_execution::DistillCallOutcome as Outcome;
+        Ok(
+            match self
+                .reasoner
+                .call(prepared, cutoff)
+                .await
+                .map_err(humaux_application::distill_execution::DistillError::Reasoning)?
+            {
+                DistillCallOutcome::Answered(v) => Outcome::Answered(v),
+                DistillCallOutcome::Failed(c) => Outcome::Failed(c),
+                DistillCallOutcome::Unknown => Outcome::Unknown,
+            },
+        )
+    }
+    fn parse(&self, bytes: &[u8], affects: bool) -> Result<DistillReply, &'static str> {
+        parse_distill_output_detailed(bytes, affects).map_err(DistillParseError::as_str)
+    }
+    async fn observe_health(
+        &self,
+        tenant_id: Uuid,
+        model_call_id: Uuid,
+        credential_rejected: bool,
+        valid_for_seconds: i64,
+    ) {
+        // dep: PostgreSQL(role_private_worker) — control.observe_reasoning_route_health (0206/0209, E3)
+        match crate::reasoning_route_admission::observe_route_health(
+            self.pool,
+            tenant_id,
+            model_call_id,
+            credential_rejected,
+            valid_for_seconds,
+        )
+        .await
+        {
+            Ok((None, None)) => {}
+            Ok((provider, account)) => eprintln!(
+                "humaux-private-worker: route health observed tenant={tenant_id} model_call_id={model_call_id} credential_rejected={credential_rejected} provider_observation={} account_observation={}",
+                provider.map_or_else(|| "-".to_owned(), |id| id.to_string()),
+                account.map_or_else(|| "-".to_owned(), |id| id.to_string()),
+            ),
+            Err(_) => eprintln!(
+                "humaux-private-worker: route health observe failed tenant={tenant_id} model_call_id={model_call_id} class=WORKER_DB_ERROR"
+            ),
+        }
+    }
 }
 
 #[cfg(test)]

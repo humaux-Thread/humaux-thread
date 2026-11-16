@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 190, "HEX-LAYER")
+    hex_exact(actual, baseline, 156, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -1979,7 +1979,7 @@ fn hex_boundary_gate(root: &Path, writer: bool) -> Verdict {
     let (file, ceiling, label) = if writer {
         ("xtask/hex_writer_baseline.txt", 46, "HEX-WRITER")
     } else {
-        ("xtask/hex_context_baseline.txt", 464, "HEX-CONTEXT")
+        ("xtask/hex_context_baseline.txt", 463, "HEX-CONTEXT")
     };
     let actual = if writer {
         hex_writer_actual(root)
@@ -14259,6 +14259,26 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
         };
         check();
+        for (case, symbol) in [
+            (
+                "provider",
+                "humaux_adapters::distill_reasoner::DistillReasoner",
+            ),
+            ("result", "humaux_adapters::distill_repo::NewMemory"),
+        ] {
+            let path = root.join("bins/private-worker/src/distill.rs");
+            let original = fs::read_to_string(&path).unwrap();
+            fs::write(&path, format!("{original}\nuse {symbol};\n")).unwrap();
+            let red = hex_layer_gate(&root);
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.contains(symbol))),
+                "{red:?}"
+            );
+            println!("SLICE-8a {case} direct adapter import RED {red:?}");
+            fs::write(&path, original).unwrap();
+            check();
+            println!("SLICE-8a {case} restored GREEN");
+        }
         // SLICE-5d: restoring any removed MANUAL ingress dependency must fail at the real entry.
         for symbol in [
             "humaux_adapters::contribution_execution_ingress::ContributionExecutionIngress",
