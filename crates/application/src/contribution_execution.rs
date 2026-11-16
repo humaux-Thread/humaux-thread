@@ -805,8 +805,6 @@ pub trait ManualContributionPort: Send + Sync {
         &self,
         request: crate::contribute::ContributionPreparationInput,
         idempotency_key: String,
-        coverage_contract: ContributionPromptContract,
-        assessment_contract: ContributionPromptContract,
     ) -> Result<EnqueuedContributionExecution, ErrorCode>;
 }
 
@@ -815,16 +813,8 @@ pub async fn start_manual_contribution(
     port: &dyn ManualContributionPort,
     request: crate::contribute::ContributionPreparationInput,
     idempotency_key: String,
-    coverage_contract: ContributionPromptContract,
-    assessment_contract: ContributionPromptContract,
 ) -> Result<EnqueuedContributionExecution, ErrorCode> {
-    port.start_manual(
-        request,
-        idempotency_key,
-        coverage_contract,
-        assessment_contract,
-    )
-    .await
+    port.start_manual(request, idempotency_key).await
 }
 
 #[cfg(test)]

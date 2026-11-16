@@ -33,8 +33,7 @@ use humaux_adapters::{
     },
     contribution_reasoner::{
         ContributionDispatchOutcome, ContributionReasoner, DispatchedContributionCall,
-        ParsedContributionAssessment, assessment_prompt_contract, coverage_prompt_contract,
-        parse_assessment, parse_coverage_probe,
+        ParsedContributionAssessment, parse_assessment, parse_coverage_probe,
     },
     contribution_scan::{ContributionScanOutcome, ContributionScanner},
     jobs::{self, ClaimedJob, JobStatus, JobsError},
@@ -80,14 +79,7 @@ impl<'a> StartManualContributionCommand<'a> {
         request: ContributionPreparationInput,
         idempotency_key: String,
     ) -> Result<EnqueuedContributionExecution, ErrorCode> {
-        start_manual_contribution(
-            self.ingress,
-            request,
-            idempotency_key,
-            coverage_prompt_contract(),
-            assessment_prompt_contract(),
-        )
-        .await
+        start_manual_contribution(self.ingress, request, idempotency_key).await
     }
 }
 
