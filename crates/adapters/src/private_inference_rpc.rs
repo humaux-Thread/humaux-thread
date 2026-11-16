@@ -1,6 +1,6 @@
 //! `adapters::private_inference_rpc` — §11.8 ADR-0012-pattern repository for `ops.private_inference_rpc_calls`
 //!   (migration 0143).
-//! Depends-on: crates=[humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(any) w=[ops.private_inference_rpc_calls]]; env=[]; modules=[adapters::postgres, application::consolidate, domain::error]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(any) w=[ops.private_inference_rpc_calls]]; env=[]; modules=[adapters::postgres, application::consolidate, application::private_inference, domain::error]
 //! Called-by: [consolidation-worker::inference_client, private-worker::inference_rpc, tests]
 //! Invariants: [the consolidation side only INSERTs/SELECTs its registrations (role_consolidation_worker) and the
 //!   private-worker side only claims/finishes them (role_private_worker); both set humaux.tenant_id first; bad input
@@ -339,5 +339,70 @@ impl<'a> PrivateWorkerInferenceCalls<'a> {
         }
         txn.commit().await?;
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl humaux_application::private_inference::PrivateInferenceCallsPort for PrivateWorkerDbPool {
+    async fn claim(
+        &self,
+        call_id: Uuid,
+        tenant_hint: Uuid,
+    ) -> Result<humaux_application::private_inference::ClaimOutcome, String> {
+        use humaux_application::private_inference as app;
+        PrivateWorkerInferenceCalls::new(self)
+            .load_and_claim(call_id, tenant_hint, "role_private_worker")
+            .await
+            .map(|claim| match claim {
+                ClaimOutcome::NotFound => app::ClaimOutcome::NotFound,
+                ClaimOutcome::Expired => app::ClaimOutcome::Expired,
+                ClaimOutcome::AlreadyClaimed => app::ClaimOutcome::AlreadyClaimed,
+                ClaimOutcome::Claimed(row) => {
+                    app::ClaimOutcome::Claimed(app::ClaimedRegistration {
+                        tenant_id: row.tenant_id,
+                        reasoning_domain_id: row.reasoning_domain_id,
+                        binding_id: row.binding_id,
+                        binding_version: row.binding_version,
+                        purpose: row.purpose,
+                        input_manifest_hash: row.input_manifest_hash,
+                        consolidation_run_id: row.consolidation_run_id,
+                    })
+                }
+                ClaimOutcome::Replay(row) => app::ClaimOutcome::Replay(app::StoredOutcome {
+                    outcome: row.outcome,
+                    response_output_bytes: row.response_output_bytes,
+                    response_output_sha256: row.response_output_sha256,
+                    response_provider_trace: row.response_provider_trace,
+                    response_model_call_id: row.response_model_call_id,
+                    response_failure_message: row.response_failure_message,
+                }),
+            })
+            .map_err(|error| error.to_string())
+    }
+    async fn finish(
+        &self,
+        call_id: Uuid,
+        tenant_id: Uuid,
+        outcome: humaux_application::private_inference::FinishOutcome,
+    ) -> Result<(), String> {
+        use humaux_application::private_inference::FinishOutcome as App;
+        let outcome = match outcome {
+            App::Completed {
+                output_bytes,
+                output_sha256,
+                provider_trace,
+                model_call_id,
+            } => FinishOutcome::Completed {
+                output_bytes,
+                output_sha256,
+                provider_trace,
+                model_call_id,
+            },
+            App::Failed { message } => FinishOutcome::Failed { message },
+        };
+        PrivateWorkerInferenceCalls::new(self)
+            .finish(call_id, tenant_id, outcome)
+            .await
+            .map_err(|error| error.to_string())
     }
 }

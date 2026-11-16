@@ -1885,6 +1885,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::pin`
 
+#### `application::private_inference`
+
 #### `application::recall_read`
 
 #### `application::remember`
@@ -4401,6 +4403,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::distill`
 
 #### `application::pin`
+
+#### `application::private_inference`
 
 #### `application::recall_read`
 
@@ -14463,6 +14467,7 @@ modules naming it:
 - `adapters::email::test_double`
 - `adapters::mechanism_observation`
 - `adapters::memory_repo`
+- `adapters::private_inference_rpc`
 - `adapters::projection_worker`
 - `adapters::read_materialize`
 - `adapters::rebuild`
@@ -15526,6 +15531,7 @@ modules naming it:
 - `application::contribution_execution`
 - `application::coordination`
 - `application::distill`
+- `application::private_inference`
 - `application::public_dispatch`
 - `application::recall_read`
 - `application::remember`
@@ -15548,6 +15554,7 @@ modules naming it:
 - `application::forget`
 - `application::oauth`
 - `application::pin`
+- `application::private_inference`
 - `application::recall_read`
 - `application::remember`
 - `application::retrieval_embedding_port`
@@ -15576,6 +15583,7 @@ why: async executor for #[tokio::test] fixtures of async ports
 modules naming it:
 - `application::consolidate`
 - `application::contribute`
+- `application::private_inference`
 - `tests`
 
 ### humaux-cache → `humaux-domain` (normal)

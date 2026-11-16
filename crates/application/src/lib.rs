@@ -46,3 +46,6 @@ pub mod coordination;
 
 /// Bounded public dispatch use cases (§13/§14).
 pub mod public_dispatch;
+
+/// Private inference RPC lifecycle.
+pub mod private_inference;
