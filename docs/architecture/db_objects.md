@@ -6032,7 +6032,6 @@ executed by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-admin): `adapters::health`
 - process(humaux-admin): `admin::probe`
-- process(humaux-maintenance): `adapters::health`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `ops.admit_distill_budget`
@@ -7502,7 +7501,6 @@ executed by:
 - (no process): `maintenance::tests::health_serve`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-admin): `adapters::health`
-- process(humaux-maintenance): `adapters::health`
 - process(humaux-maintenance): `maintenance::health_serve`
 - process(humaux-maintenance): `maintenance::rls_check`
 
