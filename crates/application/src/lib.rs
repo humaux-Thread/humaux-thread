@@ -1,7 +1,7 @@
 //! `humaux-application` — Humaux Thread workspace crate（布局见 §58）。
 //! Depends-on: crates=[]; services=[];
 //!   env=[]; modules=[]
-//! Called-by: [crate(humaux-adapters), crate(humaux-billing-worker), crate(humaux-consolidation-worker), crate(humaux-gateway), crate(humaux-private-worker), crate(humaux-protocol), crate(humaux-public-pool), crate(humaux-public-worker), crate(humaux-retrieval-worker)]
+//! Called-by: [crate(humaux-adapters), crate(humaux-billing-worker), crate(humaux-consolidation-worker), crate(humaux-gateway), crate(humaux-maintenance), crate(humaux-private-worker), crate(humaux-protocol), crate(humaux-public-pool), crate(humaux-public-worker), crate(humaux-retrieval-worker)]
 //! Invariants: []
 //! Spec: §58; §3; §78.3
 //!
@@ -52,3 +52,6 @@ pub mod query_embedding_execution;
 
 /// Private inference RPC lifecycle.
 pub mod private_inference;
+
+/// Operational health sampling (ADR-0061 D-D; ADR-0130 D2).
+pub mod health;
