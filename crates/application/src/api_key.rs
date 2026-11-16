@@ -1,6 +1,6 @@
 //! `application::api_key` — API credential validation policy (§73.5; ADR-0059 D-H).
 //! Depends-on: crates=[hmac, humaux-domain, sha2]; services=[]; env=[]; modules=[domain::network]
-//! Called-by: []
+//! Called-by: [tests]
 //! Invariants: [caller-supplied clock and peppers; current pepper precedes previous]
 //! Spec: §73.5; ADR-0130
 
@@ -166,21 +166,4 @@ pub fn validate_api_key(
         }
     }
     Ok(matched)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn known_keyed_hash_bytes() {
-        // Fixed pre-extraction HMAC-SHA256 vector, independently checked with Python hmac.
-        assert_eq!(
-            compute_api_key_hash(b"server-side-pepper", "raw-key-value"),
-            vec![
-                182, 123, 117, 67, 190, 123, 228, 7, 92, 229, 238, 188, 63, 231, 71, 81, 127, 130,
-                188, 162, 144, 42, 7, 20, 105, 168, 53, 105, 174, 123, 145, 160
-            ]
-        );
-    }
 }

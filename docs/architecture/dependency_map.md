@@ -20388,6 +20388,13 @@ default run:
 - PostgreSQL
 - Qdrant
 
+### `crates/application/tests/api_key.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/cache/tests/bounds.rs`
 db-bound (default run): no
 
