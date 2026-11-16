@@ -51,7 +51,7 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::attribution_repo, adapters::postgres, domain::error, gateway::limiter,
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::distill_repo, application::distill, adapters::attribution_repo, adapters::postgres, domain::error, gateway::limiter,
 //!   adapters::email, adapters::retrieve, application::auth, application::retrieval_embedding_port, cache::bounded, contracts::config_registry,
 //!   contracts::retrieval_config, domain::billing, domain::context, domain::dataclass, domain::identity, gateway::admission,
 //!   gateway::auth_pages, gateway::billing_webhook, gateway::oauth_http, gateway::cached_embedding, gateway::context,
@@ -2250,6 +2250,13 @@ fn redacted_fingerprint(registry: &[ConfigEntry], effective: &BTreeMap<String, S
         })
         .collect();
     effective_config_fingerprint(&redacted)
+}
+
+/// Compose the whole-transaction candidate decision port (ADR-0130 D2/D7a).
+pub fn candidate_decision_store(
+    pool: &RuntimeDbPool,
+) -> impl humaux_application::distill::CandidateDecisionStore + '_ {
+    humaux_adapters::distill_repo::PostgresCandidateDecisionStore::new(pool, &MEMORY_ATTRIBUTION)
 }
 
 #[cfg(test)]

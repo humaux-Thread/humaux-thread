@@ -51,7 +51,6 @@ crates/adapters/src/attribution_repo.rs:work_attribution->project_continuity:hum
 crates/adapters/src/audit_sink.rs:provider_execution->document_acquisition:humaux_adapters::object_store::ObjectKey
 crates/adapters/src/audit_sink.rs:provider_execution->document_acquisition:humaux_adapters::object_store::ObjectStore
 crates/adapters/src/byok.rs:provider_execution->knowledge_lifecycle:humaux_domain::evidence::payload_sha256
-crates/adapters/src/candidate_repo.rs:knowledge_curation->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::AuditEvent
 crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction
 crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction::McpRequestFinished
@@ -134,11 +133,6 @@ crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:hum
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::fail
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::provider_failure_line
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::provider_matches_admission
-crates/adapters/src/distill_repo.rs:knowledge_curation->identity_access:humaux_adapters::request_guard_repo
-crates/adapters/src/distill_repo.rs:knowledge_curation->identity_access:humaux_adapters::request_guard_repo::AuditTenant
-crates/adapters/src/distill_repo.rs:knowledge_curation->identity_access:humaux_adapters::request_guard_repo::AuditTenant::Authenticated
-crates/adapters/src/distill_repo.rs:knowledge_curation->identity_access:humaux_adapters::request_guard_repo::audit_event_insert_in_txn
-crates/adapters/src/distill_repo.rs:knowledge_curation->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::DistillFinish
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::DistillLease
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::JobsError::Db
@@ -196,7 +190,6 @@ crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->provider_execution
 crates/adapters/src/private_inference_rpc.rs:provider_execution->knowledge_curation:humaux_application::consolidate::PrivateReasoningError
 crates/adapters/src/private_inference_rpc.rs:provider_execution->knowledge_curation:humaux_application::consolidate::PrivateReasoningPurpose
 crates/adapters/src/private_projection_registry.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::authority::MemoryId
-crates/adapters/src/project_rollup.rs:knowledge_curation->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind::ALL
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind::from_str
@@ -295,7 +288,6 @@ crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycl
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::note::NoteKind
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::note::NoteKind::parse_wire
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::subject::SubjectId
-crates/adapters/src/reasoning_route_onboarding.rs:knowledge_curation->identity_access:humaux_adapters::membership_repo::AdminAction
 crates/adapters/src/rebuild.rs:retrieval_read_model->job_execution:humaux_adapters::maintenance_repo
 crates/adapters/src/rebuild.rs:retrieval_read_model->job_execution:humaux_adapters::maintenance_repo::tenant_page
 crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo
