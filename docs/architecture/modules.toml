@@ -831,6 +831,7 @@ files = [
   "bins/admin/tests/exit_codes.rs",
   "bins/admin/tests/probes.rs",
   "crates/adapters/src/health.rs",
+  "crates/application/src/health.rs",
   "crates/adapters/src/mechanism_observation.rs",
   "crates/application/src/notify.rs",
   "crates/telemetry/src/admission.rs",

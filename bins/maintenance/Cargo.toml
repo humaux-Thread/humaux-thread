@@ -12,6 +12,8 @@ edition = "core"
 workspace = true
 
 [dependencies]
+# why: operational health sampling use case; used-by: [maintenance::health_serve]
+humaux-application = { path = "../../crates/application" }
 # why: the onboarding library (provisioning), typed maintenance pool, quota window and membership admin path; used-by: [maintenance::main]
 humaux-adapters = { path = "../../crates/adapters" }
 # why: TicketFamily (the §15.1 family triples) and MembershipRole; used-by: [maintenance::main]
