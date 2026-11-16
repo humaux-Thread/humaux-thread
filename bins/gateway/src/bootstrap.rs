@@ -2252,6 +2252,13 @@ fn redacted_fingerprint(registry: &[ConfigEntry], effective: &BTreeMap<String, S
     effective_config_fingerprint(&redacted)
 }
 
+/// Compose the whole-transaction candidate decision port (ADR-0130 D2/D7a).
+pub fn candidate_decision_store(
+    pool: &RuntimeDbPool,
+) -> impl humaux_application::distill::CandidateDecisionStore + '_ {
+    humaux_adapters::distill_repo::PostgresCandidateDecisionStore::new(pool, &MEMORY_ATTRIBUTION)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3773,11 +3780,4 @@ mod tests {
         build_semantic_recall_runtime(pool, config, handler_timeout)
             .expect("semantic recall runtime builds from valid config");
     }
-}
-
-/// Compose the whole-transaction candidate decision port (ADR-0130 D2/D7a).
-pub fn candidate_decision_store(
-    pool: &RuntimeDbPool,
-) -> impl humaux_application::distill::CandidateDecisionStore + '_ {
-    humaux_adapters::distill_repo::PostgresCandidateDecisionStore::new(pool, &MEMORY_ATTRIBUTION)
 }

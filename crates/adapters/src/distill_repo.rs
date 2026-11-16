@@ -1420,74 +1420,6 @@ pub async fn list_pending_candidates(
     Ok(out)
 }
 
-/// §78.2: the read-side origin mapping is pinned against the same migration CHECK list
-/// `remember::contract_tests` pins the write side against.
-#[cfg(test)]
-mod contract_tests {
-    use super::*;
-
-    /// A class string outside the closed set is a producer bug: INTERNAL, never the retryable DEPENDENCY_UNAVAILABLE.
-    #[test]
-    fn evidence_class_outside_the_set_maps_to_internal() {
-        let error = remember::RememberError::EvidenceClassOutsideSet {
-            column: "data_class",
-            value: "x".to_owned(),
-        };
-        assert_eq!(remember_err(error), ErrorCode::Internal);
-    }
-
-    const MIGRATION_SQL: &str = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../migrations/0004_private_evidence_memory.sql"
-    ));
-
-    #[test]
-    fn origin_class_from_db_str_round_trips_every_check_value() {
-        let needle = "origin_class IN (";
-        let start = MIGRATION_SQL.find(needle).expect("origin_class CHECK") + needle.len();
-        let close = MIGRATION_SQL[start..].find(')').expect("CHECK close") + start;
-        let db: Vec<&str> = MIGRATION_SQL[start..close]
-            .split(',')
-            .map(|s| s.trim().trim_matches('\''))
-            .collect();
-        assert_eq!(db.len(), 9);
-        for value in db {
-            assert!(
-                origin_class_from_db_str(value).is_some(),
-                "{value} must parse"
-            );
-        }
-        assert!(origin_class_from_db_str("Bogus").is_none());
-    }
-
-    #[test]
-    fn memory_type_db_str_matches_check_list() {
-        let needle = "memory_type IN (";
-        let start = MIGRATION_SQL.find(needle).expect("memory_type CHECK") + needle.len();
-        let close = MIGRATION_SQL[start..].find(')').expect("CHECK close") + start;
-        let db: Vec<String> = MIGRATION_SQL[start..close]
-            .split(',')
-            .map(|s| s.trim().trim_matches('\'').to_owned())
-            .collect();
-        for memory_type in [
-            MemoryType::Fact,
-            MemoryType::Preference,
-            MemoryType::Decision,
-            MemoryType::Rejection,
-            MemoryType::State,
-            MemoryType::Issue,
-            MemoryType::Lesson,
-            MemoryType::Constraint,
-            MemoryType::Procedure,
-            MemoryType::Outcome,
-            MemoryType::Reference,
-            MemoryType::Note,
-        ] {
-            assert!(db.contains(&memory_type_db_str(memory_type).to_owned()));
-        }
-    }
-}
-
 /// PG implementation of the complete candidate decision boundary (ADR-0130 D7a).
 pub struct PostgresCandidateDecisionStore<'a> {
     pool: &'a RuntimeDbPool,
@@ -1608,5 +1540,73 @@ impl humaux_application::distill::CandidateDecisionStore for PostgresCandidateDe
             },
         )
         .await
+    }
+}
+
+/// §78.2: the read-side origin mapping is pinned against the same migration CHECK list
+/// `remember::contract_tests` pins the write side against.
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    /// A class string outside the closed set is a producer bug: INTERNAL, never the retryable DEPENDENCY_UNAVAILABLE.
+    #[test]
+    fn evidence_class_outside_the_set_maps_to_internal() {
+        let error = remember::RememberError::EvidenceClassOutsideSet {
+            column: "data_class",
+            value: "x".to_owned(),
+        };
+        assert_eq!(remember_err(error), ErrorCode::Internal);
+    }
+
+    const MIGRATION_SQL: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations/0004_private_evidence_memory.sql"
+    ));
+
+    #[test]
+    fn origin_class_from_db_str_round_trips_every_check_value() {
+        let needle = "origin_class IN (";
+        let start = MIGRATION_SQL.find(needle).expect("origin_class CHECK") + needle.len();
+        let close = MIGRATION_SQL[start..].find(')').expect("CHECK close") + start;
+        let db: Vec<&str> = MIGRATION_SQL[start..close]
+            .split(',')
+            .map(|s| s.trim().trim_matches('\''))
+            .collect();
+        assert_eq!(db.len(), 9);
+        for value in db {
+            assert!(
+                origin_class_from_db_str(value).is_some(),
+                "{value} must parse"
+            );
+        }
+        assert!(origin_class_from_db_str("Bogus").is_none());
+    }
+
+    #[test]
+    fn memory_type_db_str_matches_check_list() {
+        let needle = "memory_type IN (";
+        let start = MIGRATION_SQL.find(needle).expect("memory_type CHECK") + needle.len();
+        let close = MIGRATION_SQL[start..].find(')').expect("CHECK close") + start;
+        let db: Vec<String> = MIGRATION_SQL[start..close]
+            .split(',')
+            .map(|s| s.trim().trim_matches('\'').to_owned())
+            .collect();
+        for memory_type in [
+            MemoryType::Fact,
+            MemoryType::Preference,
+            MemoryType::Decision,
+            MemoryType::Rejection,
+            MemoryType::State,
+            MemoryType::Issue,
+            MemoryType::Lesson,
+            MemoryType::Constraint,
+            MemoryType::Procedure,
+            MemoryType::Outcome,
+            MemoryType::Reference,
+            MemoryType::Note,
+        ] {
+            assert!(db.contains(&memory_type_db_str(memory_type).to_owned()));
+        }
     }
 }
