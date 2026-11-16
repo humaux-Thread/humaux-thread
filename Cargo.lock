@@ -1381,7 +1381,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
- "hmac 0.13.0",
  "humaux-application",
  "humaux-domain",
  "jsonschema",

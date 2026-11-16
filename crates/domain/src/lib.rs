@@ -79,3 +79,6 @@ pub mod source;
 pub mod subject;
 pub mod temporal;
 pub mod ticket_family;
+
+/// Pure §73 credential/network vocabulary.
+pub mod network;

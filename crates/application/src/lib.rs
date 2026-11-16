@@ -55,3 +55,6 @@ pub mod private_inference;
 
 /// Operational health sampling (ADR-0061 D-D; ADR-0130 D2).
 pub mod health;
+
+/// Pure §73 credential/network vocabulary.
+pub mod api_key;
