@@ -1,6 +1,6 @@
 //! `private-worker::inference_rpc` — §11.8 ADR-0012-pattern inference-only RPC — the Unix-domain-socket side
 //!   `humaux-private-worker` serves for `humaux-consolidation-worker`.
-//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-infra-cell, serde, tokio, uuid]; services=[PostgreSQL(role_private_worker), UDS(serve)]; env=[]; modules=[adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::postgres, adapters::private_inference_rpc, adapters::reasoning_route_admission, application::consolidate, humaux-private-worker, infra-cell::uds]
+//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-infra-cell, serde, tokio, uuid]; services=[PostgreSQL(role_private_worker), UDS(serve)]; env=[]; modules=[adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::postgres, adapters::private_inference_rpc, adapters::reasoning_route_admission, application::consolidate, application::private_inference, humaux-private-worker, infra-cell::uds]
 //! Called-by: [private-worker::main, tests]
 //! Invariants: [the caller is authenticated by kernel peer credential before the body is read; every field reasoned
 //!   over comes from the claimed ops.private_inference_rpc_calls row, never the wire body; unknown or expired calls
@@ -37,14 +37,15 @@ use humaux_adapters::consolidation_reasoner::{ConsolidationCallBinding, Consolid
 use humaux_adapters::contribution_reasoner::{ContributionReasoner, ContributionReasonerConfig};
 use humaux_adapters::disclosure::DeletionCapability;
 use humaux_adapters::postgres::PrivateWorkerDbPool;
-use humaux_adapters::private_inference_rpc::{
-    ClaimOutcome, ClaimedRegistration, FinishOutcome, PrivateWorkerInferenceCalls, StoredOutcome,
-    reasoning_failure,
-};
+use humaux_adapters::private_inference_rpc::reasoning_failure;
 use humaux_adapters::reasoning_route_admission::ProviderFor;
 use humaux_application::consolidate::{
     PrivateReasoningDomainId, PrivateReasoningPort, PrivateReasoningPurpose,
     ReasoningRouteBindingId, ReasoningRouteBindingVersion, SealedPrivateReasoningRequest,
+};
+use humaux_application::private_inference::{
+    self, ClaimedRegistration, FinishOutcome, InferenceExecution, InferenceOutcome,
+    PrivateInferenceExecutionPort, StoredOutcome,
 };
 
 const SCHEMA_VERSION: u16 = 1;
@@ -240,69 +241,61 @@ async fn execute(
     state: &Arc<RpcState>,
     wire: PrivateInferenceRpcRequest,
 ) -> Result<PrivateInferenceRpcEnvelope, WorkerRpcError> {
-    let repo = PrivateWorkerInferenceCalls::new(&state.calls);
-    let claim = repo
-        .load_and_claim(wire.call_id, wire.tenant_hint, "role_private_worker")
-        .await
-        .map_err(|_| WorkerRpcError::NotFound)?;
-
-    let registration = match claim {
-        ClaimOutcome::NotFound => return Err(WorkerRpcError::NotFound),
-        ClaimOutcome::Expired => return Err(WorkerRpcError::Expired),
-        ClaimOutcome::AlreadyClaimed => {
-            return Ok(failed_envelope(wire.call_id, "WORKER_BUSY".to_owned()));
-        }
-        ClaimOutcome::Replay(stored) => return Ok(envelope_from_stored(wire.call_id, stored)),
-        ClaimOutcome::Claimed(registration) => registration,
-    };
-
-    let (envelope, route) = infer(state, wire.call_id, &registration).await;
-    let finish_outcome = match &envelope {
-        e if e.outcome == "COMPLETED" => FinishOutcome::Completed {
-            output_bytes: e
-                .output_bytes_hex
-                .as_deref()
-                .and_then(|h| hex::decode(h).ok())
-                .unwrap_or_default(),
-            output_sha256: e
-                .output_sha256_hex
-                .as_deref()
-                .and_then(|h| hex::decode(h).ok())
-                .and_then(|v| <[u8; 32]>::try_from(v).ok())
-                .unwrap_or([0u8; 32]),
-            provider_trace: e.provider_trace.clone().unwrap_or_default(),
-            model_call_id: e.model_call_id.unwrap_or_else(Uuid::nil),
-        },
-        e => FinishOutcome::Failed {
-            message: e
-                .failure_message
-                .clone()
-                .unwrap_or_else(|| "UNKNOWN".to_owned()),
-        },
-    };
-    // Same documented tradeoff `retrieval_embedding_rpc`'s handler accepts for its own
-    // `finish()` failure: a failed persist here leaves the row stuck `CLAIMED` until TTL
-    // expiry, logged rather than silent.
-    if let Err(error) = repo
-        .finish(wire.call_id, registration.tenant_id, finish_outcome)
-        .await
-    {
-        eprintln!(
-            "private_inference_rpc: finish() failed to persist call outcome for {}: {error} \
-             (row stuck CLAIMED until TTL expiry)",
-            wire.call_id
-        );
-    }
-    // ADR-0060 D-M: one finish line per call naming its admitted route (static fields only).
-    eprintln!(
-        "humaux-private-worker: rpc call={} tenant={} purpose={} {} outcome={}",
+    match private_inference::execute(
+        &state.calls,
+        &WorkerInference(state),
         wire.call_id,
-        registration.tenant_id,
-        registration.purpose,
-        route.as_deref().unwrap_or("route=-"),
-        envelope.outcome
-    );
-    Ok(envelope)
+        wire.tenant_hint,
+    )
+    .await
+    {
+        InferenceOutcome::NotFound => Err(WorkerRpcError::NotFound),
+        InferenceOutcome::Expired => Err(WorkerRpcError::Expired),
+        InferenceOutcome::Busy => Ok(failed_envelope(wire.call_id, "WORKER_BUSY".to_owned())),
+        InferenceOutcome::Replay(stored) => Ok(envelope_from_stored(wire.call_id, stored)),
+        InferenceOutcome::Executed(envelope) => Ok(envelope),
+    }
+}
+
+struct WorkerInference<'a>(&'a Arc<RpcState>);
+
+impl PrivateInferenceExecutionPort for WorkerInference<'_> {
+    type Response = PrivateInferenceRpcEnvelope;
+    async fn infer(
+        &self,
+        call_id: Uuid,
+        registration: &ClaimedRegistration,
+    ) -> InferenceExecution<Self::Response> {
+        let (envelope, route) = infer(self.0, call_id, registration).await;
+        let finish_outcome = match &envelope {
+            e if e.outcome == "COMPLETED" => FinishOutcome::Completed {
+                output_bytes: e
+                    .output_bytes_hex
+                    .as_deref()
+                    .and_then(|h| hex::decode(h).ok())
+                    .unwrap_or_default(),
+                output_sha256: e
+                    .output_sha256_hex
+                    .as_deref()
+                    .and_then(|h| hex::decode(h).ok())
+                    .and_then(|v| <[u8; 32]>::try_from(v).ok())
+                    .unwrap_or([0u8; 32]),
+                provider_trace: e.provider_trace.clone().unwrap_or_default(),
+                model_call_id: e.model_call_id.unwrap_or_else(Uuid::nil),
+            },
+            e => FinishOutcome::Failed {
+                message: e
+                    .failure_message
+                    .clone()
+                    .unwrap_or_else(|| "UNKNOWN".to_owned()),
+            },
+        };
+        InferenceExecution {
+            response: envelope,
+            finish: finish_outcome,
+            route,
+        }
+    }
 }
 
 /// §11.8: rebuilds the sealed request from the claimed registration row (never the wire body —
