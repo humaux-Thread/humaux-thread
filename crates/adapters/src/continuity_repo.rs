@@ -1,6 +1,6 @@
 //! `adapters::continuity_repo` — Typed role_gateway bindings for Project Continuity registration and facet publication.
-//! Depends-on: crates=[humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(any) x=[private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project]]; env=[]; modules=[adapters::postgres, domain::continuity, domain::error, domain::identity, domain::ids]
-//! Called-by: [gateway::continuity, gateway::mcp_application, tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(any) x=[private.publish_continuity_facet, private.read_continuity_project_storage_v1, private.register_continuity_project]]; env=[]; modules=[adapters::postgres, application::continuity, domain::continuity, domain::error, domain::identity, domain::ids]
+//! Called-by: [tests]
 //! Invariants: [registration and facet publication go only through the SECURITY DEFINER functions; the slot version a
 //!   publication is checked against is the door's own in-transaction read, never a caller value (§25.3.1, ADR-0094
 //!   D-C); scalar facets never retry, list facets use the registered total attempt budget; their SQLSTATEs map to
@@ -14,8 +14,7 @@
 use crate::postgres::RuntimeDbPool;
 use humaux_domain::{
     continuity::{
-        ContinuityFacetKind, ContinuityFacetVersionId, ContinuityPublishResult,
-        ContinuityPublishState, ProjectId,
+        ContinuityFacetKind, ContinuityFacetVersionId, ContinuityPublishResult, ProjectId,
     },
     error::{ConflictReason, ErrorCode},
     identity::AuthorizationScope,
@@ -55,18 +54,6 @@ const ITEM_SOURCE_ID_MAX: usize = 256;
 /// Savepoint of one publish attempt, so a lost compare-and-set leaves the caller's transaction usable.
 const PUBLISH_SAVEPOINT: &str = "continuity_publish_attempt";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ContinuityMemorySource {
-    pub memory_id: Uuid,
-    pub content_sha256: [u8; 32],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ContinuityEvidenceSource {
-    pub evidence_id: Uuid,
-    pub payload_sha256: [u8; 32],
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisterContinuityProject<'a> {
     pub workspace_id: WorkspaceId,
@@ -74,36 +61,10 @@ pub struct RegisterContinuityProject<'a> {
     pub title: &'a str,
 }
 
-/// One `continuity.publish` input. The expected slot version is deliberately absent: it is the
-/// door's own in-transaction read, never a caller value (ADR-0094 D-C).
-#[derive(Debug, Clone)]
-pub struct PublishContinuityFacet<'a> {
-    /// §50 / ADR-0094 D-D: positive total attempts, parsed once by process bootstrap.
-    pub list_merge_attempts: usize,
-    pub workspace_id: WorkspaceId,
-    pub project_id: ProjectId,
-    pub facet_kind: ContinuityFacetKind,
-    pub published_state: ContinuityPublishState,
-    pub body: &'a Value,
-    pub memories: &'a [ContinuityMemorySource],
-    pub evidence: &'a [ContinuityEvidenceSource],
-    /// `source_id`s dropped after the union; empty for every scalar facet.
-    pub removals: &'a [String],
-}
-
-/// The outcome of one facet publication. `Conflict` is success-shaped (nothing was written): the
-/// caller gets the typed §52 D-B sub-reason and the slot version to merge against, so it can retry
-/// without a second error registry.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PublishFacetOutcome {
-    /// The immutable version, its links and the slot compare-and-swap committed.
-    Published(ContinuityPublishResult),
-    /// The slot did not hold the version the door read; `current_slot_version` is what it holds now.
-    Conflict {
-        reason: ConflictReason,
-        current_slot_version: i64,
-    },
-}
+// ponytail: compatibility for existing adapter callers; remove when those callers migrate.
+pub use humaux_application::continuity::{
+    ContinuityEvidenceSource, ContinuityMemorySource, PublishContinuityFacet, PublishFacetOutcome,
+};
 
 /// One slot snapshot read through the 0137 reader (the only runtime read of continuity storage).
 #[derive(Debug, Clone, PartialEq)]
@@ -494,6 +455,17 @@ pub async fn publish_facet(
             tx.rollback().await.map_err(map_db_error)?;
             Ok(conflict)
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl humaux_application::continuity::FacetPublicationPort for RuntimeDbPool {
+    async fn publish_facet(
+        &self,
+        authorization: &AuthorizationScope,
+        command: &PublishContinuityFacet<'_>,
+    ) -> Result<PublishFacetOutcome, ErrorCode> {
+        publish_facet(self, authorization, command).await
     }
 }
 

@@ -1,8 +1,5 @@
 //! `gateway::continuity` — Native `continuity.get` and `continuity.publish` application handlers.
-//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain,
-//!   serde_json]; services=[]; env=[]; modules=[adapters::continuity_read, adapters::continuity_repo,
-//!   adapters::postgres, application::continuity, domain::context, domain::continuity, domain::error,
-//!   domain::identity, domain::ids]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json]; services=[]; env=[]; modules=[adapters::continuity_read, adapters::postgres, application::continuity, domain::context, domain::continuity, domain::error, domain::identity, domain::ids]
 //! Called-by: [gateway::mcp_application, tests]
 //! Invariants: [an unknown or unpublished continuity project yields the application-layer NotFound error, never a
 //!   partial facet list; a publish hands the adapter's own in-transaction slot read to the compare-and-set and never
@@ -11,15 +8,11 @@
 
 use std::sync::Arc;
 
-use humaux_adapters::{
-    continuity_read::PostgresContinuityReadPort,
-    continuity_repo::{
-        self, ContinuityEvidenceSource, ContinuityMemorySource, PublishContinuityFacet,
-        PublishFacetOutcome,
-    },
-    postgres::RuntimeDbPool,
+use humaux_adapters::{continuity_read::PostgresContinuityReadPort, postgres::RuntimeDbPool};
+use humaux_application::continuity::{
+    ContinuityEvidenceSource, ContinuityMemorySource, ContinuityResult, PublishContinuityFacet,
+    PublishFacetOutcome, read_project_continuity,
 };
-use humaux_application::continuity::{ContinuityResult, read_project_continuity};
 use humaux_domain::{
     context::ContextBudget,
     continuity::{ContinuityFacetKind, ContinuityPublishResult, ContinuityPublishState, ProjectId},
@@ -89,8 +82,12 @@ pub async fn publish(
     command: PublishFacetCommand,
 ) -> Result<PublishOutcome, ErrorCode> {
     let repository_command = repository_command(&command);
-    let outcome =
-        continuity_repo::publish_facet(&pool, &authorization, &repository_command).await?;
+    let outcome = humaux_application::continuity::publish_facet(
+        pool.as_ref(),
+        &authorization,
+        &repository_command,
+    )
+    .await?;
     Ok(publish_outcome(
         command.project_id,
         command.facet_kind,
