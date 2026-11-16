@@ -1,7 +1,7 @@
 //! `adapters::login_repo` — the passwordless login challenge over the three `control.login_challenge_*` doors (migration 0266)
 //!   and the §74.6 email door. Writes only through definers; role_gateway has SELECT only on `control.email_challenges`.
-//! Depends-on: crates=[humaux-application, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) x=[control.login_challenge_claim, control.login_challenge_issue, control.login_challenge_settle]]; env=[]; modules=[adapters::email, adapters::email::outbox, adapters::postgres, application::auth, application::login, domain::error, domain::ids]
-//! Called-by: [gateway::auth_pages, tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) x=[control.login_challenge_claim, control.login_challenge_issue, control.login_challenge_settle]]; env=[]; modules=[adapters::email, adapters::email::outbox, adapters::postgres, application::auth, application::login, application::session, adapters::session_repo, domain::error, domain::ids]
+//! Called-by: [gateway::bootstrap, tests]
 //! Invariants: [a start answers LoginStartResponse::UNIFORM on every path and enqueues mail only for a stored code; the
 //!   code goes to the outbox payload and nowhere else, only its keyed hash is stored; a verify counts or consumes through
 //!   one conditional UPDATE inside one transaction, so a consumed, expired or exhausted challenge never accepts and two
@@ -205,4 +205,86 @@ pub async fn verify_code(
         .await?
         .finish(pepper, candidate)
         .await
+}
+
+/// PG implementation of the passwordless login use cases (ADR-0130 D7a).
+/// Policy and sender configuration are captured by the bins composition root.
+pub struct PostgresPasswordlessLogin {
+    pool: std::sync::Arc<RuntimeDbPool>,
+    pepper: Vec<u8>,
+    policy: ChallengePolicy,
+    from_email: String,
+    subject: String,
+    allowlist: RecipientAllowlist,
+    session: humaux_application::session::SessionPolicy,
+}
+
+impl PostgresPasswordlessLogin {
+    /// Assemble configured doors without opening a transaction (§78.1).
+    pub fn new(
+        pool: std::sync::Arc<RuntimeDbPool>,
+        pepper: Vec<u8>,
+        policy: ChallengePolicy,
+        from_email: String,
+        subject: String,
+        allowlist: RecipientAllowlist,
+        session: humaux_application::session::SessionPolicy,
+    ) -> Self {
+        Self {
+            pool,
+            pepper,
+            policy,
+            from_email,
+            subject,
+            allowlist,
+            session,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl humaux_application::login::PasswordlessLoginPort for PostgresPasswordlessLogin {
+    async fn start(&self, canonical_email: &str) -> Result<LoginStartReceipt, ErrorCode> {
+        start(
+            &self.pool,
+            &self.pepper,
+            self.policy,
+            &LoginMail {
+                from_email: &self.from_email,
+                subject: &self.subject,
+            },
+            &self.allowlist,
+            canonical_email,
+        )
+        .await
+    }
+
+    async fn verify_session(
+        &self,
+        canonical_email: &str,
+        candidate: &str,
+    ) -> Result<Option<humaux_application::login::LoginSession>, ErrorCode> {
+        let outcome = verify_code(&self.pool, &self.pepper, canonical_email, candidate).await?;
+        Ok(
+            crate::session_repo::issue(&self.pool, &self.session, outcome)
+                .await?
+                .map(|issued| humaux_application::login::LoginSession {
+                    secret: issued.secret,
+                }),
+        )
+    }
+
+    async fn authenticate(
+        &self,
+        secret: &humaux_application::session::SessionSecret,
+    ) -> Result<Option<humaux_application::session::VerifiedSession>, ErrorCode> {
+        crate::session_repo::authenticate(&self.pool, &self.session, secret).await
+    }
+
+    async fn revoke(
+        &self,
+        session_id: humaux_application::session::SessionId,
+    ) -> Result<bool, ErrorCode> {
+        crate::session_repo::revoke(&self.pool, session_id).await
+    }
 }

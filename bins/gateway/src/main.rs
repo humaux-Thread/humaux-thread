@@ -185,7 +185,8 @@ async fn serve(bootstrap: GatewayBootstrap) -> Result<(), Box<dyn Error>> {
     // ADR-0125: the /auth/* pages, when the switch is on, join the MCP router so admission wraps both.
     let mut mcp = runtime.adapter().router();
     if let Some(config) = runtime.take_auth_pages() {
-        mcp = mcp.merge(auth_pages::router(runtime.guard(), config));
+        let login = runtime.passwordless_login(&config);
+        mcp = mcp.merge(auth_pages::router(runtime.guard(), config, login));
         if let Some(config) = runtime.take_oauth_http() {
             mcp = mcp.merge(oauth_http::router(runtime.guard(), config));
         }

@@ -54,7 +54,7 @@
 //!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::distill_repo, application::distill, adapters::attribution_repo, adapters::postgres, domain::error, gateway::limiter,
 //!   adapters::email, adapters::retrieve, application::auth, application::retrieval_embedding_port, cache::bounded, contracts::config_registry,
 //!   contracts::retrieval_config, domain::billing, domain::context, domain::dataclass, domain::identity, gateway::admission,
-//!   gateway::auth_pages, gateway::billing_webhook, gateway::oauth_http, gateway::cached_embedding, gateway::context,
+//!   adapters::login_repo, application::login, application::session, gateway::auth_pages, gateway::billing_webhook, gateway::oauth_http, gateway::cached_embedding, gateway::context,
 //!   gateway::guard, gateway::mcp_application, gateway::recall, gateway::remember, gateway::rerank_client,
 //!   gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource,
 //!   infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::metrics]
@@ -404,6 +404,14 @@ impl GatewayRuntime {
     /// the first call).
     pub fn take_auth_pages(&mut self) -> Option<AuthPagesConfig> {
         self.auth_pages.take()
+    }
+
+    /// Assemble passwordless PG doors at the bins composition root (ADR-0130 D5).
+    pub fn passwordless_login(
+        &self,
+        config: &AuthPagesConfig,
+    ) -> Arc<dyn humaux_application::login::PasswordlessLoginPort> {
+        passwordless_login_port(&self.guard(), config)
     }
 
     /// M02-10 routes share the auth-surface switch and admission (ADR-0125).
@@ -2257,6 +2265,22 @@ pub fn candidate_decision_store(
     pool: &RuntimeDbPool,
 ) -> impl humaux_application::distill::CandidateDecisionStore + '_ {
     humaux_adapters::distill_repo::PostgresCandidateDecisionStore::new(pool, &MEMORY_ATTRIBUTION)
+}
+
+/// Wire the production passwordless port for HTTP hosts and integration tests (ADR-0130 D5).
+pub fn passwordless_login_port(
+    guard: &GatewayGuard,
+    config: &AuthPagesConfig,
+) -> Arc<dyn humaux_application::login::PasswordlessLoginPort> {
+    Arc::new(humaux_adapters::login_repo::PostgresPasswordlessLogin::new(
+        guard.runtime_pool(),
+        config.code_pepper.clone(),
+        config.auth.login_challenge,
+        config.mail_from.clone(),
+        crate::auth_pages::LOGIN_MAIL_SUBJECT.to_owned(),
+        config.allowlist.clone(),
+        humaux_application::session::SessionPolicy::from(&config.auth),
+    ))
 }
 
 #[cfg(test)]
