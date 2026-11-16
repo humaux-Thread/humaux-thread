@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 199, "HEX-LAYER")
+    hex_exact(actual, baseline, 192, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -14113,6 +14113,37 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         fs::remove_file(orphan).unwrap();
         check(2);
         println!("COVERAGE orphan: restored GREEN");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hex_boundary_slice7c_entry_red_green() {
+        let source = workspace_root();
+        let root = std::env::temp_dir().join(format!("humaux-slice7c-{}", std::process::id()));
+        hex_copy_boundary_fixture(&source, &root);
+        let path = root.join("bins/maintenance/src/rebuild_cli.rs");
+        let original = fs::read_to_string(&path).unwrap();
+        for (case, symbol) in [
+            ("rebuild", "RebuildOptions"),
+            ("verify", "StreamOutcome"),
+            ("backfill", "RebuildDeps"),
+        ] {
+            assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
+            fs::write(
+                &path,
+                format!("{original}\nuse humaux_adapters::rebuild::{symbol};\n"),
+            )
+            .unwrap();
+            let red = hex_layer_gate(&root);
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.contains(symbol))),
+                "{red:?}"
+            );
+            println!("SLICE-7c {case} direct adapter import: RED {red:?}");
+            fs::write(&path, &original).unwrap();
+            assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
+            println!("SLICE-7c {case} restored: GREEN");
+        }
         fs::remove_dir_all(root).unwrap();
     }
 

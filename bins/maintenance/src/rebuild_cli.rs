@@ -1,11 +1,10 @@
 //! `maintenance::rebuild_cli` — the one-shot arms `projection rebuild`, `projection verify` (ADR-0064 D-E, D-F) and
 //!   `projection backfill-memory-id` (ADR-0068 40d-2a): flag parsing, the two pools and the Qdrant face, the
 //!   per-stream loop and the one JSON receipt. Every step and every verdict lives in `adapters::rebuild`.
-//! Depends-on: crates=[humaux-adapters, serde_json, tokio, uuid]; services=[PostgreSQL(role_maintenance),
+//! Depends-on: crates=[humaux-adapters, humaux-application, serde_json, tokio]; services=[PostgreSQL(role_maintenance),
 //!   PostgreSQL(role_retrieval_worker), Qdrant(*)]; env=[HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MAINTENANCE_QDRANT_CIDR,
 //!   HUMAUX_MAINTENANCE_QDRANT_HOST, HUMAUX_MAINTENANCE_QDRANT_PORT, HUMAUX_RETRIEVAL_WORKER_EMBEDDING_VERSION,
-//!   HUMAUX_RETRIEVAL_WORKER_PG_DSN]; modules=[adapters::postgres, adapters::provisioning, adapters::rebuild,
-//!   maintenance::main]
+//!   HUMAUX_RETRIEVAL_WORKER_PG_DSN]; modules=[adapters::postgres, adapters::rebuild, application::projection_maintenance, maintenance::main]
 //! Called-by: [maintenance::main]
 //! Invariants: [every flag is required with no default except the D-G consent `--allow-reembed` (§78.1); flags are
 //!   parsed before any connection (a missing flag is exit 2 with nothing read); exactly one receipt object per stream
@@ -22,10 +21,10 @@
 use std::time::Duration;
 
 use humaux_adapters::postgres::RetrievalWorkerDbPool;
-use humaux_adapters::provisioning::QdrantFace;
-use humaux_adapters::rebuild::{self, RebuildDeps, RebuildOptions, Stream, StreamOutcome, Verdict};
+use humaux_application::projection_maintenance::{
+    self as rebuild, ProjectionMaintenancePort, RebuildOptions, Scope, StreamOutcome, Verdict,
+};
 use serde_json::{Value, json};
-use uuid::Uuid;
 
 use crate::{Args, Failure, Output, Result, env, env_parsed, pool};
 
@@ -37,15 +36,6 @@ const WORKER_DSN: &str = "HUMAUX_RETRIEVAL_WORKER_PG_DSN";
 /// ADR-0064 D-E step 5: the poll step inside the operator's `--wait-seconds` bound while the resident retrieval
 /// worker projects the generation (not a schedule; the bound is the operator's).
 const POLL: Duration = Duration::from_secs(1);
-
-/// `(--tenant <uuid> [--workspace <uuid>] | --all)`.
-enum Scope {
-    One {
-        tenant: Uuid,
-        workspace: Option<Uuid>,
-    },
-    All,
-}
 
 fn scope(args: &Args) -> Result<Scope> {
     let all = args.0.iter().any(|a| a == "--all");
@@ -64,59 +54,23 @@ fn scope(args: &Args) -> Result<Scope> {
     }
 }
 
-/// The two pools, the Qdrant face and the bound label every stream uses.
-struct Wiring {
-    maintenance: humaux_adapters::postgres::MaintenanceDbPool,
-    reader: RetrievalWorkerDbPool,
-    face: QdrantFace,
-    worker: rebuild::WorkerLabel,
-}
-
-async fn wiring() -> Result<Wiring> {
+async fn wiring() -> Result<impl ProjectionMaintenancePort<Error = crate::ProvisioningError>> {
     let maintenance = pool().await?;
     // dep: PostgreSQL(role_retrieval_worker) — the projector-view reads of the verifier
     let reader = RetrievalWorkerDbPool::connect(&env(WORKER_DSN)?)
         .await
         .map_err(|e| Failure::Infra(format!("connect {WORKER_DSN}: {e}")))?;
-    // dep: Qdrant(*) — the operator's face on the placement collections
-    let face = QdrantFace::new(
+    // dep: PostgreSQL(role_maintenance) — the projection maintenance port
+    // dep: Qdrant(*) — the operator face assembled inside the adapter
+    Ok(humaux_adapters::rebuild::maintenance_port(
+        maintenance,
+        reader,
         &env("HUMAUX_MAINTENANCE_QDRANT_HOST")?,
         env_parsed("HUMAUX_MAINTENANCE_QDRANT_PORT")?,
         &env("HUMAUX_MAINTENANCE_QDRANT_CIDR")?,
-    )?;
-    let worker = rebuild::worker_label(&maintenance, &env(WORKER_LABEL)?).await?;
-    Ok(Wiring {
-        maintenance,
-        reader,
-        face,
-        worker,
-    })
-}
-
-impl Wiring {
-    fn deps(&self) -> RebuildDeps<'_> {
-        RebuildDeps {
-            maintenance: &self.maintenance,
-            reader: &self.reader,
-            qdrant: &self.face,
-            worker: &self.worker,
-        }
-    }
-
-    /// The streams of the scope (`--all`: every tenant's).
-    async fn streams(&self, scope: &Scope) -> Result<Vec<Stream>> {
-        let tenants = match scope {
-            Scope::One { tenant, workspace } => {
-                return Ok(rebuild::streams(&self.maintenance, *tenant, *workspace).await?);
-            }
-            Scope::All => rebuild::all_tenants(&self.maintenance).await?,
-        };
-        let mut streams = Vec::new();
-        for tenant in tenants {
-            streams.extend(rebuild::streams(&self.maintenance, tenant, None).await?);
-        }
-        Ok(streams)
-    }
+        &env(WORKER_LABEL)?,
+    )
+    .await?)
 }
 
 /// The receipt over every stream object: exit 3 if any refused, 1 if any other was not `equivalent`.
@@ -150,7 +104,6 @@ pub(crate) async fn rebuild(args: &Args) -> Result<Output> {
         None => None,
     };
     let wiring = wiring().await?;
-    let deps = wiring.deps();
     let pump = || -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
         Box::pin(tokio::time::sleep(POLL))
     };
@@ -162,8 +115,8 @@ pub(crate) async fn rebuild(args: &Args) -> Result<Output> {
         pump: &pump,
     };
     let mut outcomes = Vec::new();
-    for stream in wiring.streams(&scope).await? {
-        outcomes.push(rebuild::rebuild_stream(&deps, &stream, &opts).await?);
+    for stream in rebuild::streams(&wiring, &scope).await? {
+        outcomes.push(rebuild::rebuild(&wiring, &stream, &opts).await?);
     }
     Ok(receipt("projection rebuild", outcomes))
 }
@@ -172,15 +125,9 @@ pub(crate) async fn rebuild(args: &Args) -> Result<Output> {
 pub(crate) async fn verify(args: &Args) -> Result<Output> {
     let scope = scope(args)?;
     let wiring = wiring().await?;
-    let deps = wiring.deps();
     let mut outcomes = Vec::new();
-    for stream in wiring.streams(&scope).await? {
-        let report = rebuild::verify_stream(&deps, &stream, None, false).await?;
-        outcomes.push(StreamOutcome {
-            verdict: report.verdict,
-            refused: false,
-            receipt: report.json,
-        });
+    for stream in rebuild::streams(&wiring, &scope).await? {
+        outcomes.push(rebuild::verify(&wiring, &stream).await?);
     }
     Ok(receipt("projection verify", outcomes))
 }
@@ -192,11 +139,10 @@ pub(crate) async fn verify(args: &Args) -> Result<Output> {
 pub(crate) async fn backfill_memory_id(args: &Args) -> Result<Output> {
     let scope = scope(args)?;
     let wiring = wiring().await?;
-    let deps = wiring.deps();
     let mut streams = Vec::new();
     let mut strays = 0;
-    for stream in wiring.streams(&scope).await? {
-        let report = rebuild::backfill_memory_ids(&deps, &stream).await?;
+    for stream in rebuild::streams(&wiring, &scope).await? {
+        let report = rebuild::backfill(&wiring, &stream).await?;
         strays += report.strays;
         streams.push(report.json);
     }

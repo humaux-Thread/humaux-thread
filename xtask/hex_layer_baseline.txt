@@ -106,13 +106,6 @@ bins/maintenance/src/member.rs:humaux_adapters::membership_repo::AdminAction
 bins/maintenance/src/member.rs:humaux_adapters::membership_repo::MembershipRepoError
 bins/maintenance/src/member.rs:humaux_adapters::membership_repo::MembershipRequest
 bins/maintenance/src/projection_serve.rs:humaux_adapters::serving_repo::SwitchOutcome
-bins/maintenance/src/rebuild_cli.rs:humaux_adapters::provisioning::QdrantFace
-bins/maintenance/src/rebuild_cli.rs:humaux_adapters::rebuild::RebuildDeps
-bins/maintenance/src/rebuild_cli.rs:humaux_adapters::rebuild::RebuildOptions
-bins/maintenance/src/rebuild_cli.rs:humaux_adapters::rebuild::Stream
-bins/maintenance/src/rebuild_cli.rs:humaux_adapters::rebuild::StreamOutcome
-bins/maintenance/src/rebuild_cli.rs:humaux_adapters::rebuild::Verdict
-bins/maintenance/src/rebuild_cli.rs:humaux_adapters::rebuild::WorkerLabel
 bins/maintenance/src/retention.rs:humaux_adapters::maintenance_repo::DropOutcome
 bins/maintenance/src/retention.rs:humaux_adapters::maintenance_repo::DropRequest
 bins/maintenance/src/retention.rs:humaux_adapters::maintenance_repo::PartitionTable

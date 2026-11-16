@@ -3306,6 +3306,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::pin`
 
+#### `application::projection_maintenance`
+
 #### `application::recall_read`
 
 #### `application::remember`
@@ -14315,6 +14317,7 @@ modules naming it:
 - `adapters::read_materialize`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
+- `adapters::rebuild`
 - `adapters::remember`
 - `adapters::retrieval_embedding_rpc`
 - `adapters::retrieve`
@@ -15440,6 +15443,7 @@ modules naming it:
 why: trusted recall stream family and card slot identity
 
 modules naming it:
+- `application::projection_maintenance`
 - `application::recall_read`
 
 ### humaux-application → `argon2` (normal)
@@ -15511,6 +15515,7 @@ modules naming it:
 - `application::contribution_execution`
 - `application::entitlement`
 - `application::notify`
+- `application::projection_maintenance`
 - `application::recall_read`
 - `application::remember`
 - `tests`
@@ -15533,6 +15538,7 @@ modules naming it:
 - `application::distill`
 - `application::health`
 - `application::private_inference`
+- `application::projection_maintenance`
 - `application::public_dispatch`
 - `application::query_embedding_execution`
 - `application::recall_read`
@@ -15557,6 +15563,7 @@ modules naming it:
 - `application::oauth`
 - `application::pin`
 - `application::private_inference`
+- `application::projection_maintenance`
 - `application::query_embedding_execution`
 - `application::recall_read`
 - `application::remember`
@@ -17571,6 +17578,7 @@ why: operational health sampling use case
 
 modules naming it:
 - `maintenance::health_serve`
+- `maintenance::rebuild_cli`
 
 ### humaux-maintenance → `humaux-adapters` (normal)
 why: the onboarding library (provisioning), typed maintenance pool, quota window and membership admin path
@@ -17703,7 +17711,6 @@ modules naming it:
 - `maintenance::main`
 - `maintenance::member`
 - `maintenance::projection_serve`
-- `maintenance::rebuild_cli`
 - `maintenance::serve`
 - `maintenance::switch_visible`
 - `maintenance::tests::billing_legacy_migration`
@@ -17858,7 +17865,6 @@ modules naming it:
 - `maintenance::main`
 - `maintenance::member`
 - `maintenance::projection_serve`
-- `maintenance::rebuild_cli`
 - `maintenance::serve`
 - `maintenance::switch_visible`
 - `maintenance::tests::billing_legacy_migration`
