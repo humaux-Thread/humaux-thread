@@ -84,6 +84,7 @@ owned_tables = [
   "private.subjects",
 ]
 may_depend_on = [
+  "contract_kernel",
   "identity_access",
   "retrieval_read_model",
 ]
@@ -109,6 +110,7 @@ owned_tables = [
   "private.subject_relations",
 ]
 may_depend_on = [
+  "contract_kernel",
   "identity_access",
   "retrieval_read_model",
 ]
@@ -349,6 +351,7 @@ owned_tables = [
   "private.processing_runs",
 ]
 may_depend_on = [
+  "contract_kernel",
   "commercial",
   "coordination",
   "knowledge_lifecycle",
@@ -375,6 +378,7 @@ owned_tables = [
   "private.worktree_overlays",
 ]
 may_depend_on = [
+  "contract_kernel",
   "coordination",
   "knowledge_lifecycle",
   "retrieval_read_model",
@@ -396,6 +400,7 @@ owned_tables = [
   "private.artifacts",
 ]
 may_depend_on = [
+  "contract_kernel",
   "data_rights",
   "knowledge_lifecycle",
   "provider_execution",
@@ -418,6 +423,7 @@ owned_tables = [
   "ops.deletion_plan_steps",
 ]
 may_depend_on = [
+  "contract_kernel",
   "identity_access",
   "knowledge_lifecycle",
   "retrieval_read_model",
@@ -513,6 +519,7 @@ owned_tables = [
   "staging.sanitized_public_candidates",
 ]
 may_depend_on = [
+  "contract_kernel",
   "data_rights",
   "knowledge_lifecycle",
   "provider_execution",
@@ -528,6 +535,7 @@ owned_tables = [
   "private.relations",
 ]
 may_depend_on = [
+  "contract_kernel",
   "code_intelligence",
   "knowledge_curation",
   "knowledge_lifecycle",
