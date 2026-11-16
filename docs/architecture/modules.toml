@@ -434,6 +434,7 @@ may_depend_on = [
 id = "public_knowledge"
 # ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
 files = [
+  "crates/application/src/public_dispatch.rs",
   "bins/public-worker/src/main.rs",
   "bins/public-worker/tests/readyz_probe.rs",
   "crates/adapters/src/contribution_eligibility.rs",

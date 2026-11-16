@@ -13,6 +13,8 @@ edition = "cloud"
 workspace = true
 
 [dependencies]
+# why: public dispatch inbound use cases and outbound port; used-by: [public-worker::main]
+humaux-application = { path = "../../crates/application" }
 # why: typed PG pools, repositories and wire adapters this package drives; used-by: [public-worker::main]
 humaux-adapters = { path = "../../crates/adapters" }
 # why: domain ids, errors and value types shared across layers; used-by: [public-worker::main]

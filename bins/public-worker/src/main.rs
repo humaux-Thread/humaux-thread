@@ -1,11 +1,10 @@
 //! `public-worker::main` — `humaux-public-worker` explicit bounded Phase 9 runner (§14 / §31).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-public-pool, tokio, uuid];
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell, humaux-public-pool, tokio, uuid];
 //!   services=[PostgreSQL(role_public_worker), Qdrant(*)]; env=[HUMAUX_PUBLIC_WORKER_PG_POOL_MAX_CONNECTIONS, HUMAUX_PUBLIC_WORKER_CALLER,
 //!   HUMAUX_PUBLIC_WORKER_CELL_ID, HUMAUX_PUBLIC_WORKER_LEASE_OWNER, HUMAUX_PUBLIC_WORKER_LIMIT,
 //!   HUMAUX_PUBLIC_WORKER_PG_DSN, HUMAUX_PUBLIC_WORKER_QDRANT_CIDR, HUMAUX_PUBLIC_WORKER_QDRANT_COLLECTION,
 //!   HUMAUX_PUBLIC_WORKER_QDRANT_HOST, HUMAUX_PUBLIC_WORKER_QDRANT_PORT, HUMAUX_PUBLIC_WORKER_QDRANT_TLS,
-//!   HUMAUX_PUBLIC_WORKER_TENANT_ID]; modules=[adapters::postgres, domain::ids, infra-cell::permit,
-//!   infra-cell::resource, infra-cell::transport, public-pool::public_projection, public-pool::public_repo]
+//!   HUMAUX_PUBLIC_WORKER_TENANT_ID]; modules=[adapters::postgres, application::public_dispatch, domain::ids, infra-cell::permit, infra-cell::resource, infra-cell::transport, public-pool::public_projection]
 //! Called-by: [process(humaux-public-worker)]
 //! Invariants: [a worker that cannot reach PostgreSQL or Qdrant exits non-zero rather than silently skipping its lease]
 //! Spec: Baseline §4.2; §4.4; §31; ADR-0037; §48.1; §78.1; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G; ADR-0100
@@ -31,13 +30,14 @@ use std::{
 };
 
 use humaux_adapters::postgres::PublicWorkerDbPool;
+use humaux_application::public_dispatch;
 use humaux_domain::ids::TenantId;
 use humaux_infra_cell::{
     CallerId, CellId, HttpIntraCellTransport, IntraCellHttpTransport, IntraCellMethod,
     IntraCellRequest, IntraCellResource, IntraCellResourceRegistry, ResourceEntry,
     authorize_cell_access,
 };
-use humaux_public_pool::{public_projection::PublicProjectionAdapter, public_repo};
+use humaux_public_pool::public_projection::PublicProjectionAdapter;
 use uuid::Uuid;
 
 fn required(name: &str) -> Result<String, String> {
@@ -241,15 +241,16 @@ async fn run() -> Result<(), String> {
         .await
         .map_err(|_| "public worker database role connection failed".to_owned())?;
 
+    let dispatch = projection.dispatcher(&pool);
     if let Some(tenant_id) = tenant_id {
-        public_repo::drain_outbox(&pool, tenant_id, limit)
+        public_dispatch::drain_outbox(&dispatch, tenant_id, limit)
             .await
             .map_err(|_| "public outbox drain failed".to_owned())?;
-        public_repo::run_once(&pool, tenant_id, &lease_owner, limit, &projection)
+        public_dispatch::run_once(&dispatch, tenant_id, &lease_owner, limit)
             .await
             .map_err(|_| "public run-once failed".to_owned())?;
     } else {
-        public_repo::run_anonymous_once(&pool, &lease_owner, limit, &projection)
+        public_dispatch::run_anonymous_once(&dispatch, &lease_owner, limit)
             .await
             .map_err(|_| "anonymous public run-once failed".to_owned())?;
     }

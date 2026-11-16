@@ -216,8 +216,4 @@ bins/retrieval-worker/src/rpc.rs:humaux_adapters::retrieval_embedding_rpc::Finis
 bins/retrieval-worker/src/rpc.rs:humaux_adapters::retrieval_embedding_rpc::RetrievalWorkerEmbeddingCalls
 bins/retrieval-worker/src/rpc.rs:humaux_adapters::retrieval_embedding_rpc::StoredOutcome
 bins/public-worker/src/main.rs:humaux_public_pool::public_projection::PublicProjectionAdapter
-bins/public-worker/src/main.rs:humaux_public_pool::public_repo
 bins/public-worker/src/main.rs:humaux_public_pool::public_projection::PublicProjectionAdapter::new
-bins/public-worker/src/main.rs:humaux_public_pool::public_repo::drain_outbox
-bins/public-worker/src/main.rs:humaux_public_pool::public_repo::run_anonymous_once
-bins/public-worker/src/main.rs:humaux_public_pool::public_repo::run_once

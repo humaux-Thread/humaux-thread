@@ -1419,6 +1419,7 @@ name = "humaux-public-worker"
 version = "0.1.0"
 dependencies = [
  "humaux-adapters",
+ "humaux-application",
  "humaux-domain",
  "humaux-infra-cell",
  "humaux-public-pool",

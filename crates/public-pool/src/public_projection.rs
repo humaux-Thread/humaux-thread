@@ -1,10 +1,9 @@
-//! `public-pool::public_projection` — Public Qdrant projection writes (§17.6).
-//! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-domain, humaux-infra-cell, serde_json, sha2, uuid];
-//!   services=[Qdrant(*)]; env=[]; modules=[adapters::qdrant, domain::error, infra-cell::permit,
-//!   infra-cell::transport, public-pool::public_repo]
+//! `public-pool::public_projection` — Public Qdrant projection writes and bounded dispatch assembly (§17.6).
+//! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell, serde_json, sha2, uuid];
+//!   services=[Qdrant(*)]; env=[]; modules=[adapters::postgres, adapters::qdrant, application::public_dispatch, domain::error, domain::ids, infra-cell::permit, infra-cell::transport, public-pool::public_repo]
 //! Called-by: [public-worker::main, tests]
 //! Invariants: [writes only the public payload contract through the same-cell transport; no dense vector, private
-//!   payload, tenant or database seam; a Qdrant failure is DependencyUnavailable]
+//!   payload; dispatch captures only the public-role pool and retains repository transaction fences; a Qdrant failure is DependencyUnavailable]
 //! Spec: none
 //!
 //! This adapter is deliberately narrow: it writes only the public payload contract through the
@@ -82,6 +81,17 @@ pub struct PublicProjectionAdapter<'a> {
 }
 
 impl<'a> PublicProjectionAdapter<'a> {
+    /// Compose dispatch with the existing public-role pool; projection stays inside the cloud port.
+    pub fn dispatcher<'b>(
+        &'b self,
+        pool: &'b humaux_adapters::postgres::PublicWorkerDbPool,
+    ) -> impl humaux_application::public_dispatch::PublicDispatchPort + 'b {
+        PublicDispatch {
+            pool,
+            projection: self,
+        }
+    }
+
     pub async fn query_live(
         &self,
         text: &str,
@@ -467,6 +477,38 @@ fn point_id(kind: &str, object_id: Uuid, revision: i64) -> Uuid {
     bytes[6] = (bytes[6] & 0x0f) | 0x50;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Uuid::from_bytes(bytes)
+}
+
+struct PublicDispatch<'a> {
+    pool: &'a humaux_adapters::postgres::PublicWorkerDbPool,
+    projection: &'a dyn PublicProjectionPort,
+}
+
+#[async_trait::async_trait]
+impl humaux_application::public_dispatch::PublicDispatchPort for PublicDispatch<'_> {
+    async fn drain_outbox(
+        &self,
+        tenant_id: humaux_domain::ids::TenantId,
+        limit: i64,
+    ) -> Result<u64, humaux_domain::error::ErrorCode> {
+        crate::public_repo::drain_outbox(self.pool, tenant_id, limit).await
+    }
+    async fn run_once(
+        &self,
+        tenant_id: humaux_domain::ids::TenantId,
+        lease_owner: &str,
+        limit: i64,
+    ) -> Result<u64, humaux_domain::error::ErrorCode> {
+        crate::public_repo::run_once(self.pool, tenant_id, lease_owner, limit, self.projection)
+            .await
+    }
+    async fn run_anonymous_once(
+        &self,
+        lease_owner: &str,
+        limit: i64,
+    ) -> Result<u64, humaux_domain::error::ErrorCode> {
+        crate::public_repo::run_anonymous_once(self.pool, lease_owner, limit, self.projection).await
+    }
 }
 
 #[cfg(test)]

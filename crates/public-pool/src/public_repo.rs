@@ -15,7 +15,7 @@
 //!   staging.assert_active_contribution_release], PostgreSQL(role_gateway), PostgreSQL(role_private_worker),
 //!   PostgreSQL(role_public_worker), PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::mechanism_observation,
 //!   adapters::postgres, domain::error, domain::identity, domain::ids, domain::public, public-pool::public_evolve]
-//! Called-by: [public-pool::public_projection, public-worker::main, tests]
+//! Called-by: [public-pool::public_projection, tests]
 //! Invariants: [every write uses PublicWorkerDbPool in a real tenant transaction; no function reads private rows or
 //!   accepts caller-provided released content or scanner outcomes; the public DB stays the serving authority]
 //! Spec: none
