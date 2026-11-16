@@ -299,14 +299,8 @@ impl ContributionReserveInput {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EnqueuedContributionExecution {
-    pub execution_id: ContributionExecutionId,
-    pub job_id: Uuid,
-    pub logical_call_ids: ContributionLogicalCallIds,
-    pub candidate_id: Uuid,
-    pub created: bool,
-}
+/// Application-owned enqueue receipt (ADR-0130 D2).
+pub use humaux_application::contribution_execution::EnqueuedContributionExecution;
 
 /// Closed source kind persisted in `private.contribution_execution_sources`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

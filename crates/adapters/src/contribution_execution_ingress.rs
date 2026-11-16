@@ -1,7 +1,7 @@
 //! `adapters::contribution_execution_ingress` — Transactional production core for an explicit MANUAL contribution
 //!   start command.
-//! Depends-on: crates=[humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(any)]; env=[]; modules=[adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::postgres, application::contribute, application::contribution_execution, domain::error]
-//! Called-by: [humaux-private-worker, tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(any)]; env=[]; modules=[adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::postgres, application::contribute, application::contribution_execution, domain::error]
+//! Called-by: [tests]
 //! Invariants: [accepts only an already-verified authorization scope plus an ID-free request and idempotency key;
 //!   PostgreSQL stays the authority for policy, rights, hashes, admission and the job chain; malformed input is
 //!   InvalidInput before any write]
@@ -122,5 +122,40 @@ impl<'a> ContributionExecutionIngress<'a> {
             .await?;
         txn.commit().await?;
         Ok(enqueued)
+    }
+}
+
+#[async_trait::async_trait]
+impl humaux_application::contribution_execution::ManualContributionPort
+    for ContributionExecutionIngress<'_>
+{
+    async fn start_manual(
+        &self,
+        request: ContributionPreparationInput,
+        idempotency_key: String,
+        coverage_contract: ContributionPromptContract,
+        assessment_contract: ContributionPromptContract,
+    ) -> Result<EnqueuedContributionExecution, ErrorCode> {
+        ContributionExecutionIngress::start_manual(
+            self,
+            request,
+            idempotency_key,
+            coverage_contract,
+            assessment_contract,
+        )
+        .await
+        .map_err(|error| {
+            if error.is_idempotency_conflict() {
+                ErrorCode::Conflict
+            } else {
+                match error {
+                    ContributionExecutionIngressError::Domain(code) => code,
+                    ContributionExecutionIngressError::Repository(
+                        ContributionExecutionRepoError::InvalidInput,
+                    ) => ErrorCode::InvalidInput,
+                    ContributionExecutionIngressError::Repository(_) => ErrorCode::Internal,
+                }
+            }
+        })
     }
 }
