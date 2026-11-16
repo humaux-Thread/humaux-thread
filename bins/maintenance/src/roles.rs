@@ -1,10 +1,10 @@
 //! `maintenance::roles` — `roles rotate` and `deploy-check` (ADR-0059 D-E, D-F): where role passwords come from, how
 //!   generated ones are printed, and which roles and variables each check covers.
-//! Depends-on: crates=[humaux-adapters, rand, serde_json]; services=[PostgreSQL(owner), PostgreSQL(role_maintenance),
+//! Depends-on: crates=[humaux-application, humaux-adapters, rand, serde_json]; services=[PostgreSQL(owner), PostgreSQL(role_maintenance),
 //!   PostgreSQL(any)]; env=[CARGO_MANIFEST_DIR, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MIGRATOR_PG_DSN, HUMAUX_ROLE_PASSWORD_ADMIN,
 //!   HUMAUX_ROLE_PASSWORD_BATCH_ISSUER, HUMAUX_ROLE_PASSWORD_CONSOLIDATION_WORKER, HUMAUX_ROLE_PASSWORD_GATEWAY,
 //!   HUMAUX_ROLE_PASSWORD_MAINTENANCE, HUMAUX_ROLE_PASSWORD_PRIVATE_WORKER, HUMAUX_ROLE_PASSWORD_PUBLIC_WORKER,
-//!   HUMAUX_ROLE_PASSWORD_RETRIEVAL_WORKER]; modules=[adapters::postgres, adapters::role_hygiene, maintenance::main]
+//!   HUMAUX_ROLE_PASSWORD_RETRIEVAL_WORKER]; modules=[application::role_rotation, adapters::postgres, adapters::role_hygiene, maintenance::main]
 //! Called-by: [maintenance::main]
 //! Invariants: [a generated password is printed exactly once, as `HUMAUX_ROLE_PASSWORD_<SUFFIX>=<value>` on stdout
 //!   before the receipt, never in the receipt or on stderr; an env value is validated and refused by variable name
@@ -17,9 +17,8 @@ use humaux_adapters::postgres::{
     ROLE_GATEWAY, ROLE_MAINTENANCE, ROLE_MIGRATION_OWNER, ROLE_PRIVATE_WORKER, ROLE_PUBLIC_WORKER,
     ROLE_RETRIEVAL_WORKER,
 };
-use humaux_adapters::role_hygiene::{
-    self, CheckResult, CheckStatus, Placeholders, RolePassword, RotateRequest,
-};
+use humaux_adapters::role_hygiene::{self, CheckResult, CheckStatus, Placeholders, RolePassword};
+use humaux_application::role_rotation::{self, RoleCredential, RotateRoles};
 use serde_json::{Value, json};
 
 use crate::{Admin, Args, Failure, Output, Result, env};
@@ -217,13 +216,16 @@ pub(crate) async fn rotate(args: &Args) -> Result<Output> {
     let pool = MigratorDbPool::connect(&dsn)
         .await
         .map_err(|e| Failure::Infra(format!("connect HUMAUX_MIGRATOR_PG_DSN: {e}")))?;
-    let pairs: Vec<(String, RolePassword)> = rotated
+    let pairs: Vec<RoleCredential<'_>> = rotated
         .iter()
-        .map(|(role, password, _)| (role.clone(), password.clone()))
+        .map(|(role, password, _)| RoleCredential {
+            role,
+            password: password.expose(),
+        })
         .collect();
-    role_hygiene::rotate_in_txn(
+    role_rotation::rotate(
         &pool,
-        &RotateRequest {
+        &RotateRoles {
             targets: &pairs,
             owner: ROLE_MIGRATION_OWNER,
             create_missing,

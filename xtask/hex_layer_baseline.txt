@@ -119,7 +119,6 @@ bins/maintenance/src/roles.rs:humaux_adapters::role_hygiene::CheckResult
 bins/maintenance/src/roles.rs:humaux_adapters::role_hygiene::CheckStatus
 bins/maintenance/src/roles.rs:humaux_adapters::role_hygiene::Placeholders
 bins/maintenance/src/roles.rs:humaux_adapters::role_hygiene::RolePassword
-bins/maintenance/src/roles.rs:humaux_adapters::role_hygiene::RotateRequest
 bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::DrEvidence
 bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::JobRetention
 bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::MaintenanceTask

@@ -658,6 +658,7 @@ files = [
   "crates/adapters/src/provisioning.rs",
   "crates/adapters/src/retrieval_embedding_rpc.rs",
   "crates/adapters/src/role_hygiene.rs",
+  "crates/application/src/role_rotation.rs",
   "crates/domain/src/audit.rs",
   "crates/domain/src/boundary.rs",
   "crates/domain/src/egress.rs",
