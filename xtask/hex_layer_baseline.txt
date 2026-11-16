@@ -17,7 +17,6 @@ bins/consolidation-worker/src/lib.rs:humaux_adapters::jobs::DerivedWorkOutcome
 bins/consolidation-worker/src/lib.rs:humaux_adapters::jobs::JobsError
 bins/gateway/src/auth.rs:humaux_adapters::credential_repo::CredentialRecord
 bins/gateway/src/auth_pages.rs:humaux_adapters::email::RecipientAllowlist
-bins/gateway/src/auth_pages.rs:humaux_adapters::login_repo::LoginMail
 bins/gateway/src/context.rs:humaux_adapters::serving_repo::FamilyReadState
 bins/gateway/src/context.rs:humaux_adapters::serving_repo::UnservedLedger
 bins/gateway/src/continuity.rs:humaux_adapters::continuity_read::PostgresContinuityReadPort
@@ -120,7 +119,6 @@ bins/maintenance/src/roles.rs:humaux_adapters::role_hygiene::CheckResult
 bins/maintenance/src/roles.rs:humaux_adapters::role_hygiene::CheckStatus
 bins/maintenance/src/roles.rs:humaux_adapters::role_hygiene::Placeholders
 bins/maintenance/src/roles.rs:humaux_adapters::role_hygiene::RolePassword
-bins/maintenance/src/roles.rs:humaux_adapters::role_hygiene::RotateRequest
 bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::DrEvidence
 bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::JobRetention
 bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::MaintenanceTask

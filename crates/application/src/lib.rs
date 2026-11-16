@@ -58,3 +58,5 @@ pub mod health;
 
 /// Pure §73 credential/network vocabulary.
 pub mod api_key;
+/// Atomic operator role rotation (ADR-0059 D-E).
+pub mod role_rotation;

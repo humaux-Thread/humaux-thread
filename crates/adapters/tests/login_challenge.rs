@@ -4,7 +4,7 @@
 //!   services=[PostgreSQL(any) w=[control.auth_events, control.email_challenges, control.user_emails, control.users,
 //!   ops.email_delivery_events, ops.email_outbox] x=[control.login_challenge_issue], PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::email, adapters::login_repo, adapters::postgres, application::auth,
-//!   application::login, domain::ids, humaux-testkit]
+//!   application::login, domain::error, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [a consumed code fails on the second verify; the attempt after the cap fails even with the right code;
 //!   an existing and an unknown mailbox get the identical response and an unknown one enqueues nothing; two concurrent
@@ -423,6 +423,94 @@ fn g_m02_3_expired_unknown_and_superseded_codes_are_rejected() {
             assert_eq!(
                 verify_for(&h, &unknown, &second),
                 Ok(LoginVerifyOutcome::Rejected)
+            );
+        },
+    );
+}
+
+/// SLICE-6a / ADR-0130 D7a: a failed enqueue must roll back both challenge and auth event.
+/// Only the dedicated fixture pool enables the fault; its function lives in a unique scratch schema.
+#[test]
+fn g_m02_3_mail_enqueue_failure_rolls_back_challenge_and_event() {
+    run_db_fixture::<LoginFixture, _>(
+        "g_m02_3_mail_enqueue_failure_rolls_back_challenge_and_event",
+        |mut h| {
+            struct EnqueueFault<'a> {
+                admin: &'a mut Client,
+                name: String,
+            }
+            impl Drop for EnqueueFault<'_> {
+                fn drop(&mut self) {
+                    let _ = self.admin.batch_execute(&format!(
+                        "DROP TRIGGER IF EXISTS {0} ON ops.email_outbox; DROP SCHEMA IF EXISTS {0} CASCADE;",
+                        self.name
+                    ));
+                }
+            }
+            let fault = EnqueueFault {
+                admin: &mut h.admin,
+                name: format!("slice6a_{}", Uuid::new_v4().simple()),
+            };
+            // The same role-scoped connection helper as LoginFixture, with a non-sensitive session-only fault flag.
+            let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("fixture database URL");
+            let fault_dsn = format!(
+                "{}%20-c%20humaux.slice6a_enqueue_fault%3Don",
+                dsn_as_role(&dsn, "role_gateway")
+            );
+            // dep: PostgreSQL(role_gateway) — only this pool's connections enable the enqueue fault
+            let gateway =
+                h.rt.block_on(RuntimeDbPool::connect(&fault_dsn))
+                    .expect("fault-enabled role_gateway pool");
+            // dep: PostgreSQL(any) — isolated, session-scoped enqueue fault; RAII removes it even on assertion failure
+            fault
+                .admin
+                .batch_execute(&format!(
+                    "CREATE SCHEMA {0}; \
+                 CREATE FUNCTION {0}.reject_mail() RETURNS trigger LANGUAGE plpgsql AS $$ \
+                 BEGIN RAISE EXCEPTION 'SLICE-6a enqueue fault'; END; $$; \
+                 CREATE TRIGGER {0} BEFORE INSERT ON ops.email_outbox FOR EACH ROW \
+                 WHEN (current_setting('humaux.slice6a_enqueue_fault', true) = 'on') \
+                 EXECUTE FUNCTION {0}.reject_mail();",
+                    fault.name
+                ))
+                .expect("install fixture-local enqueue fault");
+
+            let result = h.rt.block_on(login_repo::start(
+                &gateway,
+                PEPPER,
+                open_policy(),
+                &MAIL,
+                &RecipientAllowlist::allow_all(),
+                &h.email,
+            ));
+            assert_eq!(
+                result,
+                Err(humaux_domain::error::ErrorCode::DependencyUnavailable)
+            );
+            // dep: PostgreSQL(any) — inspect committed effects from a separate connection after the failed use case
+            let row = fault
+                .admin
+                .query_one(
+                    "SELECT (SELECT count(*) FROM control.email_challenges WHERE user_id = $1), \
+                        (SELECT count(*) FROM control.auth_events WHERE user_id = $1), \
+                        (SELECT count(*) FROM ops.email_outbox WHERE user_id = $1)",
+                    &[&h.user_id],
+                )
+                .expect("inspect rollback");
+            assert_eq!(
+                row.get::<_, i64>(0),
+                0,
+                "failed mail must not leave a challenge"
+            );
+            assert_eq!(
+                row.get::<_, i64>(1),
+                0,
+                "failed mail must not leave an auth event"
+            );
+            assert_eq!(
+                row.get::<_, i64>(2),
+                0,
+                "failed mail must not leave an outbox row"
             );
         },
     );

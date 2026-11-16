@@ -1,7 +1,7 @@
 //! `application::login` — M02 D2 passwordless login challenge: the closed purpose set, the uniform start response and the
-//!   verify outcome. Pure: no SQL, no mail, no clock.
-//! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[domain::ids]
-//! Called-by: [adapters::login_repo, adapters::session_repo, tests]
+//!   verify outcome. Use cases own no SQL, mail transport, or clock.
+//! Depends-on: crates=[async-trait, humaux-domain]; services=[]; env=[]; modules=[application::session, domain::error, domain::ids]
+//! Called-by: [gateway::auth_pages, gateway::bootstrap, adapters::login_repo, adapters::session_repo, tests]
 //! Invariants: [every start, whatever became of the mailbox, is answered with LoginStartResponse::UNIFORM; a verify is
 //!   Accepted only for the one row the settle door consumed, and every other fate is the same Rejected]
 //! Spec: §74.2; §74.3; §52; §78.1; §78.2
@@ -82,6 +82,73 @@ pub enum LoginVerifyOutcome {
     Accepted(UserId),
     /// Anything else.
     Rejected,
+}
+
+/// A session issued after a consumed login challenge (§73.6); no verifier leaves the adapter.
+#[derive(Debug)]
+pub struct LoginSession {
+    /// Secret delivered once in the session cookie.
+    pub secret: crate::session::SessionSecret,
+}
+
+/// Passwordless login persistence boundary (ADR-0130 D5/D7a).
+/// Each operation retains the existing adapter-owned transaction boundaries.
+#[async_trait::async_trait]
+pub trait PasswordlessLoginPort: Send + Sync {
+    /// Issue a challenge and enqueue its mail in the same transaction.
+    async fn start(
+        &self,
+        canonical_email: &str,
+    ) -> Result<LoginStartReceipt, humaux_domain::error::ErrorCode>;
+    /// Consume a challenge, then issue a session using the existing separate doors.
+    async fn verify_session(
+        &self,
+        canonical_email: &str,
+        candidate: &str,
+    ) -> Result<Option<LoginSession>, humaux_domain::error::ErrorCode>;
+    /// Resolve a live session and record its use with the database clock.
+    async fn authenticate(
+        &self,
+        secret: &crate::session::SessionSecret,
+    ) -> Result<Option<crate::session::VerifiedSession>, humaux_domain::error::ErrorCode>;
+    /// Revoke a session after the inbound CSRF check.
+    async fn revoke(
+        &self,
+        session_id: crate::session::SessionId,
+    ) -> Result<bool, humaux_domain::error::ErrorCode>;
+}
+
+/// Start passwordless login; the receipt disposition remains internal (§74.3).
+pub async fn start(
+    port: &dyn PasswordlessLoginPort,
+    canonical_email: &str,
+) -> Result<LoginStartReceipt, humaux_domain::error::ErrorCode> {
+    port.start(canonical_email).await
+}
+
+/// Verify once and mint a session only on the accepted outcome (§74.2).
+pub async fn verify_session(
+    port: &dyn PasswordlessLoginPort,
+    canonical_email: &str,
+    candidate: &str,
+) -> Result<Option<LoginSession>, humaux_domain::error::ErrorCode> {
+    port.verify_session(canonical_email, candidate).await
+}
+
+/// Resolve the live session before the inbound CSRF decision (§73.6).
+pub async fn authenticate_session(
+    port: &dyn PasswordlessLoginPort,
+    secret: &crate::session::SessionSecret,
+) -> Result<Option<crate::session::VerifiedSession>, humaux_domain::error::ErrorCode> {
+    port.authenticate(secret).await
+}
+
+/// Revoke only the session selected by authenticated transport context (§73.6).
+pub async fn revoke_session(
+    port: &dyn PasswordlessLoginPort,
+    session_id: crate::session::SessionId,
+) -> Result<bool, humaux_domain::error::ErrorCode> {
+    port.revoke(session_id).await
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 //! `gateway::auth_pages` — M02 D1/D2 `/auth/*` SSR pages: email → code → console session, and logout (ADR-0125).
 //! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, serde, uuid];
-//!   services=[]; env=[]; modules=[adapters::email, adapters::login_repo, adapters::postgres, adapters::session_repo,
+//!   services=[]; env=[]; modules=[adapters::email, application::login,
 //!   application::auth, application::session, application::signed_token, domain::error,
 //!   gateway::guard, protocol::edge]
 //! Called-by: [gateway::billing_webhook, gateway::bootstrap, gateway::main, gateway::oauth_http, tests]
@@ -19,7 +19,7 @@
 //!
 //! ponytail: unstyled forms, visual layer lands with the console design-system card (audit-first).
 //! ponytail: English copy only; i18n arrives with the console card's message catalogue.
-//! ponytail: the start path answers a statement faster for an unknown mailbox (login_repo::start's own ponytail);
+//! ponytail: the start path answers a statement faster for an unknown mailbox (login::start's own ponytail);
 //! a fixed latency floor is its upgrade path.
 
 use std::net::SocketAddr;
@@ -36,10 +36,8 @@ use axum::{
     routing::{get, post},
 };
 use humaux_adapters::email::RecipientAllowlist;
-use humaux_adapters::login_repo::{self, LoginMail};
-use humaux_adapters::postgres::RuntimeDbPool;
-use humaux_adapters::session_repo;
 use humaux_application::auth::{AuthConfig, canonicalize_email};
+use humaux_application::login::{self, PasswordlessLoginPort};
 use humaux_application::session::{SessionPolicy, SessionSecret, csrf_token};
 use humaux_application::signed_token::{FIELD_SEP, TokenKeys, TokenLabel};
 use humaux_domain::error::ErrorCode;
@@ -66,7 +64,8 @@ const PENDING_COOKIE_NAME: &str = "__Host-humaux_login";
 /// forged-cookie test signs with the production label and fails on the expiry check, not on a label mismatch.
 pub const PENDING_LABEL: TokenLabel =
     TokenLabel::new(b"humaux.login_pending.v1", b"humaux.login_pending.kid.v1");
-const LOGIN_MAIL_SUBJECT: &str = "Your Humaux sign-in code";
+/// Subject used by the configured login mail adapter (§78.1).
+pub(crate) const LOGIN_MAIL_SUBJECT: &str = "Your Humaux sign-in code";
 /// RFC 5321 §4.5.3.1.3 path limit; a longer mailbox cannot exist.
 const MAX_MAILBOX_BYTES: usize = 254;
 /// A longer candidate cannot be a login code; it is refused without a database round trip.
@@ -167,7 +166,7 @@ pub struct AuthPagesConfig {
 
 struct Pages {
     guard: Arc<GatewayGuard>,
-    pool: Arc<RuntimeDbPool>,
+    login: Arc<dyn PasswordlessLoginPort>,
     session: SessionPolicy,
     config: AuthPagesConfig,
 }
@@ -175,9 +174,13 @@ struct Pages {
 type Shared = Arc<Pages>;
 
 /// The `/auth/*` routes. Merge the result into the router `main` serves so the admission layer wraps both.
-pub fn router(guard: Arc<GatewayGuard>, config: AuthPagesConfig) -> Router {
+pub fn router(
+    guard: Arc<GatewayGuard>,
+    config: AuthPagesConfig,
+    login: Arc<dyn PasswordlessLoginPort>,
+) -> Router {
     let pages = Arc::new(Pages {
-        pool: guard.runtime_pool(),
+        login,
         session: SessionPolicy::from(&config.auth),
         guard,
         config,
@@ -268,20 +271,8 @@ async fn login_submit(
     let Some(canonical) = mailbox(&form.email) else {
         return page(StatusCode::BAD_REQUEST, BAD_REQUEST_PAGE);
     };
-    let mail = LoginMail {
-        from_email: &pages.config.mail_from,
-        subject: LOGIN_MAIL_SUBJECT,
-    };
-    let started = login_repo::start(
-        &pages.pool,
-        &pages.config.code_pepper,
-        pages.config.auth.login_challenge,
-        &mail,
-        &pages.config.allowlist,
-        &canonical,
-    )
-    .await;
-    // The receipt's disposition is for logs only (login_repo::start); the answer never depends on it.
+    let started = login::start(pages.login.as_ref(), &canonical).await;
+    // The receipt's disposition is for logs only (login::start); the answer never depends on it.
     if started.is_err() {
         return denial(ErrorCode::DependencyUnavailable);
     }
@@ -318,12 +309,7 @@ async fn code_submit(
     if candidate.is_empty() || candidate.len() > MAX_CODE_BYTES {
         return rejected();
     }
-    let Ok(outcome) =
-        login_repo::verify_code(&pages.pool, &pages.config.code_pepper, &address, candidate).await
-    else {
-        return denial(ErrorCode::DependencyUnavailable);
-    };
-    let issued = match session_repo::issue(&pages.pool, &pages.session, outcome).await {
+    let issued = match login::verify_session(pages.login.as_ref(), &address, candidate).await {
         Ok(Some(issued)) => issued,
         Ok(None) => return rejected(),
         Err(_) => return denial(ErrorCode::DependencyUnavailable),
@@ -346,7 +332,7 @@ async fn logout(State(pages): State<Shared>, headers: HeaderMap) -> Response {
     else {
         return forbidden();
     };
-    let verified = match session_repo::authenticate(&pages.pool, &pages.session, &secret).await {
+    let verified = match login::authenticate_session(pages.login.as_ref(), &secret).await {
         Ok(Some(verified)) => verified,
         Ok(None) => return forbidden(),
         Err(_) => return denial(ErrorCode::DependencyUnavailable),
@@ -360,7 +346,7 @@ async fn logout(State(pages): State<Shared>, headers: HeaderMap) -> Response {
     if !allowed {
         return forbidden();
     }
-    match session_repo::revoke(&pages.pool, verified.session_id).await {
+    match login::revoke_session(pages.login.as_ref(), verified.session_id).await {
         Ok(_) => redirect(LOGIN_PATH, [cookie(SESSION_COOKIE_NAME, "", 0)]),
         Err(_) => denial(ErrorCode::DependencyUnavailable),
     }

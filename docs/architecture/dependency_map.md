@@ -3310,6 +3310,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::remember`
 
+#### `application::role_rotation`
+
 #### `application::signed_token`
 
 #### `application::supersede`
@@ -14318,6 +14320,7 @@ modules naming it:
 - `adapters::remember`
 - `adapters::retrieval_embedding_rpc`
 - `adapters::retrieve`
+- `adapters::role_hygiene`
 - `adapters::serving_repo`
 - `adapters::session_repo`
 - `adapters::stream_repo`
@@ -14463,6 +14466,7 @@ modules naming it:
 - `adapters::email::smtp`
 - `adapters::email::test_double`
 - `adapters::health`
+- `adapters::login_repo`
 - `adapters::mechanism_observation`
 - `adapters::memory_repo`
 - `adapters::private_inference_rpc`
@@ -14472,6 +14476,7 @@ modules naming it:
 - `adapters::remember`
 - `adapters::retrieval_embedding_rpc`
 - `adapters::retrieve`
+- `adapters::role_hygiene`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::contribution_execution_repo_0131`
 - `adapters::tests::contribution_reasoner`
@@ -15535,12 +15540,14 @@ modules naming it:
 - `application::coordination`
 - `application::distill`
 - `application::health`
+- `application::login`
 - `application::private_inference`
 - `application::public_dispatch`
 - `application::query_embedding_execution`
 - `application::recall_read`
 - `application::remember`
 - `application::retrieval_embedding_port`
+- `application::role_rotation`
 - `tests`
 
 ### humaux-application → `uuid` (normal)
@@ -17569,6 +17576,7 @@ why: operational health sampling use case
 
 modules naming it:
 - `maintenance::health_serve`
+- `maintenance::roles`
 
 ### humaux-maintenance → `humaux-adapters` (normal)
 why: the onboarding library (provisioning), typed maintenance pool, quota window and membership admin path
@@ -20760,9 +20768,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3695` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3700` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3705` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3719` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3724` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3729` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
