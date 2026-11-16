@@ -429,7 +429,7 @@ fn g_m02_3_expired_unknown_and_superseded_codes_are_rejected() {
 }
 
 /// SLICE-6a / ADR-0130 D7a: a failed enqueue must roll back both challenge and auth event.
-/// The trigger is restricted to this fixture's user; its function lives in a unique scratch schema.
+/// Only the dedicated fixture pool enables the fault; its function lives in a unique scratch schema.
 #[test]
 fn g_m02_3_mail_enqueue_failure_rolls_back_challenge_and_event() {
     run_db_fixture::<LoginFixture, _>(
@@ -451,7 +451,17 @@ fn g_m02_3_mail_enqueue_failure_rolls_back_challenge_and_event() {
                 admin: &mut h.admin,
                 name: format!("slice6a_{}", Uuid::new_v4().simple()),
             };
-            // dep: PostgreSQL(any) — isolated, user-scoped enqueue fault; RAII removes it even on assertion failure
+            // The same role-scoped connection helper as LoginFixture, with a non-sensitive session-only fault flag.
+            let dsn = std::env::var("HUMAUX_TEST_PG_DSN").expect("fixture database URL");
+            let fault_dsn = format!(
+                "{}%20-c%20humaux.slice6a_enqueue_fault%3Don",
+                dsn_as_role(&dsn, "role_gateway")
+            );
+            // dep: PostgreSQL(role_gateway) — only this pool's connections enable the enqueue fault
+            let gateway =
+                h.rt.block_on(RuntimeDbPool::connect(&fault_dsn))
+                    .expect("fault-enabled role_gateway pool");
+            // dep: PostgreSQL(any) — isolated, session-scoped enqueue fault; RAII removes it even on assertion failure
             fault
                 .admin
                 .batch_execute(&format!(
@@ -459,13 +469,14 @@ fn g_m02_3_mail_enqueue_failure_rolls_back_challenge_and_event() {
                  CREATE FUNCTION {0}.reject_mail() RETURNS trigger LANGUAGE plpgsql AS $$ \
                  BEGIN RAISE EXCEPTION 'SLICE-6a enqueue fault'; END; $$; \
                  CREATE TRIGGER {0} BEFORE INSERT ON ops.email_outbox FOR EACH ROW \
-                 WHEN (NEW.user_id = '{1}'::uuid) EXECUTE FUNCTION {0}.reject_mail();",
-                    fault.name, h.user_id
+                 WHEN (current_setting('humaux.slice6a_enqueue_fault', true) = 'on') \
+                 EXECUTE FUNCTION {0}.reject_mail();",
+                    fault.name
                 ))
                 .expect("install fixture-local enqueue fault");
 
             let result = h.rt.block_on(login_repo::start(
-                &h.gateway,
+                &gateway,
                 PEPPER,
                 open_policy(),
                 &MAIL,
