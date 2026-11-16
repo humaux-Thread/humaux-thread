@@ -10,11 +10,11 @@
 //!   private.memory_project_revocations, private.memory_projects, private.project_task_relations, private.subjects]
 //!   x=[private.link_memory_subjects], PostgreSQL(role_gateway) x=[private.declared_project_visible],
 //!   PostgreSQL(role_private_worker)];
-//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::attribution_repo, adapters::coord_repo, adapters::distill_repo,
+//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::confirm_token_repo, adapters::attribution_repo, adapters::coord_repo, adapters::distill_repo,
 //!   adapters::memory_repo, adapters::operation_receipt, adapters::remember,
 //!   adapters::tests::support::governance_ops, adapters::tests::support::operation_receipt_fixture,
 //!   domain::attribution, domain::audit, domain::authority, domain::confirm, domain::continuity, domain::error,
-//!   domain::evidence, domain::ids,
+//!   domain::evidence, domain::identity, domain::ids,
 //!   domain::memory, domain::relation, domain::subject, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [Evidence enters through the real `remember.put` (the T04c path when it carries a run); the Memory
@@ -571,6 +571,59 @@ fn g_n09_3_unknown_stays_unknown() {
     });
 }
 
+// ADR-0130 D7a: use the real PG door, then verify the token survived the late failure.
+fn assert_confirm_error_rolls_back(
+    handle: &mut Handle,
+    auth: &humaux_domain::identity::AuthorizationScope,
+    request_id: Uuid,
+    candidate_id: Uuid,
+    candidate_sha256: &[u8],
+    claim: &humaux_adapters::confirm_token_repo::ConfirmationClaim,
+) {
+    // ADR-0130 D7a: a downstream policy error must roll back the already-consumed token
+    // and BMO reservation, so this same token can still drive the successful call below.
+    let failed = handle
+        .rt
+        .block_on(distill_repo::confirm_candidate_atomically(
+            &handle.runtime,
+            auth,
+            ConfirmRequest {
+                request_id,
+                request_fingerprint: governance_ops::fingerprint(),
+                reservation_ttl: Duration::from_secs(30),
+                candidate_id,
+                candidate_sha256: candidate_sha256.to_vec(),
+                stream: governance_ops::stream(handle.tenant_id, handle.workspace_id),
+                claim: claim.clone(),
+                finished_audit: governance_ops::audit(
+                    auth,
+                    DestructiveOp::MemoryConfirm,
+                    request_id,
+                    false,
+                ),
+                consistency_token_ttl: Duration::MAX,
+                subjects: humaux_domain::subject::SubjectDeclaration::default(),
+            },
+            &AttributionLadder,
+        ));
+    assert!(matches!(
+        failed,
+        Err(humaux_domain::error::ErrorCode::InvalidInput)
+    ));
+    let consumed: bool = handle
+        .admin
+        .query_one(
+            "SELECT consumed_at IS NOT NULL FROM control.confirm_tokens WHERE nonce_sha256=$1 FOR UPDATE",
+            &[&claim.nonce_sha256.as_slice()],
+        )
+        .expect("owner checks token rollback")
+        .get(0);
+    assert!(
+        !consumed,
+        "candidate confirmation token must roll back with a downstream error"
+    );
+}
+
 /// G-T06a-confirm (ADR-0078 D-D attribution Evidence): a candidate distilled from a task-run Evidence E1, confirmed
 /// through `distill_repo::confirm_candidate_atomically`, inherits E1's CONTAINS project, decided by E1, although its
 /// PRIMARY Evidence is the confirmation E2 (which carries no task run).
@@ -622,42 +675,13 @@ fn g_t06a_confirm_reads_the_source_evidence() {
         let claim =
             governance_ops::confirm(&handle.rt, &handle.runtime, &auth, op, candidate_id, None);
         let request_id = Uuid::now_v7();
-        // ADR-0130 D7a: a downstream policy error must roll back the already-consumed token
-        // and BMO reservation, so this same token can still drive the successful call below.
-        let failed = handle
-            .rt
-            .block_on(distill_repo::confirm_candidate_atomically(
-                &handle.runtime,
-                &auth,
-                ConfirmRequest {
-                    request_id,
-                    request_fingerprint: governance_ops::fingerprint(),
-                    reservation_ttl: Duration::from_secs(30),
-                    candidate_id,
-                    candidate_sha256: candidate_sha256.clone(),
-                    stream: governance_ops::stream(handle.tenant_id, handle.workspace_id),
-                    claim: claim.clone(),
-                    finished_audit: governance_ops::audit(&auth, op, request_id, false),
-                    consistency_token_ttl: Duration::MAX,
-                    subjects: humaux_domain::subject::SubjectDeclaration::default(),
-                },
-                &AttributionLadder,
-            ));
-        assert!(matches!(
-            failed,
-            Err(humaux_domain::error::ErrorCode::InvalidInput)
-        ));
-        let consumed: bool = handle
-            .admin
-            .query_one(
-                "SELECT consumed_at IS NOT NULL FROM control.confirm_tokens WHERE nonce_sha256=$1 FOR UPDATE",
-                &[&claim.nonce_sha256.as_slice()],
-            )
-            .expect("owner checks token rollback")
-            .get(0);
-        assert!(
-            !consumed,
-            "candidate confirmation token must roll back with a downstream error"
+        assert_confirm_error_rolls_back(
+            &mut handle,
+            &auth,
+            request_id,
+            candidate_id,
+            &candidate_sha256,
+            &claim,
         );
         let outcome = handle
             .rt
