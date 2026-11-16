@@ -8861,7 +8861,6 @@ read by:
 written by:
 - (no process): `gateway::tests::semantic_recall_wiring`
 - process(humaux-gateway): `adapters::retrieval_embedding_rpc`
-- process(humaux-retrieval-worker): `adapters::retrieval_embedding_rpc`
 
 executed by:
 
