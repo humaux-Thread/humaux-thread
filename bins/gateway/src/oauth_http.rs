@@ -1,7 +1,5 @@
 //! `gateway::oauth_http` — M02 token exchange and authorization-server metadata.
-//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-domain, rand, serde, serde_json, time];
-//!   services=[]; env=[]; modules=[adapters::oauth_repo, adapters::postgres, application::oauth,
-//!   application::signed_token, domain::error, gateway::auth_pages, gateway::guard]
+//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, serde, serde_json, time]; services=[]; env=[]; modules=[adapters::postgres, application::oauth, application::oauth_exchange, application::signed_token, domain::error, gateway::auth_pages, gateway::guard]
 //! Called-by: [gateway::bootstrap, gateway::main, tests]
 //! Invariants: [refusals render only OAUTH_REASONS strings; precheck precedes consume; spent codes and revoking denies
 //!   commit, other denies roll back; no raw code or refresh token is logged or stored]
@@ -16,23 +14,16 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use humaux_adapters::{
-    oauth_repo::{
-        self, GrantIssue, GrantRecord, GrantStatus, OAuthTxn, RevokeReason, RotateOutcome,
-        SecretHash,
-    },
-    postgres::RuntimeDbPool,
-};
+use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_application::{
     oauth::{
-        self, ACCESS_TOKEN_LABEL, AccessTerms, CodeExchangeRequest, ConsumedCodeView, GrantView,
-        OAuthPolicy, OAuthReason, OAuthRefusal, RefreshDecision, RefreshRequest, RevokeCause,
-        RotationFact, SUPPORTED_SCOPES,
+        self, ACCESS_TOKEN_LABEL, AccessTerms, CodeExchangeRequest, OAuthPolicy, OAuthReason,
+        RefreshRequest, SUPPORTED_SCOPES,
     },
+    oauth_exchange,
     signed_token::TokenKeys,
 };
 use humaux_domain::error::ErrorCode;
-use rand::{TryRngCore as _, rngs::OsRng};
 use serde::Serialize;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use time::OffsetDateTime;
@@ -164,10 +155,38 @@ async fn token(
 ) -> Response {
     let params = Params(form.map_or_else(|_| vec![], |Form(values)| values));
     let result = match params.get("grant_type") {
-        Some("refresh_token") => refresh(&state, &params).await,
-        _ => code(&state, &params).await,
+        Some("refresh_token") => {
+            oauth_exchange::refresh_token(
+                state.pool.as_ref(),
+                &state.config.policy(),
+                RefreshRequest {
+                    client_id: params.get("client_id").unwrap_or_default(),
+                    resource: params.get("resource"),
+                },
+                params.get("refresh_token"),
+            )
+            .await
+        }
+        _ => {
+            oauth_exchange::exchange_code(
+                state.pool.as_ref(),
+                &state.config.policy(),
+                params.code_request(),
+                params.get("code"),
+            )
+            .await
+        }
     };
-    result.unwrap_or_else(server_failure)
+    match result {
+        Ok(Ok(tokens)) => success(
+            &state.config,
+            &tokens.access,
+            &tokens.refresh,
+            tokens.observed_at,
+        ),
+        Ok(Err(reason)) => refusal(reason),
+        Err(code) => server_failure(code),
+    }
 }
 
 fn refusal(reason: OAuthReason) -> Response {
@@ -190,14 +209,6 @@ fn server_failure(code: ErrorCode) -> Response {
     (status, Json(serde_json::json!({"error": SERVER_ERROR}))).into_response()
 }
 
-fn secret() -> Result<String, ErrorCode> {
-    let mut bytes = [0u8; 32];
-    OsRng
-        .try_fill_bytes(&mut bytes)
-        .map_err(|_| ErrorCode::Internal)?;
-    Ok(hex::encode(bytes))
-}
-
 fn success(
     config: &OAuthHttpConfig,
     access: &AccessTerms,
@@ -207,159 +218,4 @@ fn success(
     Json(serde_json::json!({"access_token": config.keys.sign(&ACCESS_TOKEN_LABEL, &oauth::access_token_payload(access)),
         "token_type": "Bearer", "expires_in": (access.expires_at - now).whole_seconds().max(1),
         "refresh_token": refresh, "scope": access.scopes.join(" ")})).into_response()
-}
-
-async fn spent(txn: OAuthTxn, reason: OAuthReason) -> Result<Response, ErrorCode> {
-    txn.commit().await?;
-    Ok(refusal(reason))
-}
-
-async fn code(state: &HttpState, params: &Params) -> Result<Response, ErrorCode> {
-    let request = params.code_request();
-    if let Err(error) = oauth::precheck_code_exchange(&request) {
-        return Ok(refusal(error.reason));
-    }
-    let Some(presented) = params.get("code") else {
-        return Ok(refusal(OAuthReason::CODE_INVALID));
-    };
-    let mut txn = oauth_repo::begin(&state.pool).await?;
-    let Some(consumed) = txn.consume_code(&SecretHash::of_secret(presented)).await? else {
-        return Ok(refusal(OAuthReason::CODE_INVALID));
-    };
-    // ponytail: tokens issued from a replayed code are not revoked (no code→grant link in 0268); add the link + revoke in a migration card (RFC 6749 §4.1.2 SHOULD)
-    let view = ConsumedCodeView {
-        client_id: &consumed.client_id,
-        redirect_uri: &consumed.redirect_uri,
-        pkce_challenge: &consumed.pkce_challenge,
-        resource: &consumed.resource,
-        user_id: consumed.user_id,
-        tenant_id: consumed.tenant_id,
-        workspace_id: consumed.workspace_id,
-        scopes: &consumed.scopes,
-    };
-    let terms = match oauth::exchange_code(&request, &view, &state.config.policy()) {
-        Ok(terms) => terms,
-        Err(error) => return spent(txn, error.reason).await,
-    };
-    let refresh = secret()?;
-    let hash = SecretHash::of_secret(&refresh);
-    let issued = txn
-        .issue_grant(&GrantIssue {
-            user_id: terms.user_id,
-            tenant_id: terms.tenant_id,
-            workspace_id: terms.workspace_id,
-            client_id: &terms.client_id,
-            resource: &terms.resource,
-            scopes: &terms.scopes,
-            refresh_hash: &hash,
-            refresh_ttl: terms.refresh_ttl,
-            grant_max_ttl: terms.grant_max_ttl,
-        })
-        .await?;
-    let Some(issued) = issued else {
-        return spent(txn, OAuthReason::GRANT_CLOSED).await;
-    };
-    let grant = txn
-        .lookup_grant(issued.grant_id)
-        .await?
-        .ok_or(ErrorCode::Internal)?;
-    let now = OffsetDateTime::now_utc();
-    let access = oauth::access_terms(
-        issued.grant_id,
-        &grant_view(&grant),
-        now,
-        &state.config.policy(),
-    );
-    let response = success(&state.config, &access, &refresh, now);
-    txn.commit().await?;
-    Ok(response)
-}
-
-fn grant_view(grant: &GrantRecord) -> GrantView<'_> {
-    GrantView {
-        client_id: &grant.client_id,
-        resource: &grant.resource,
-        scopes: &grant.scopes,
-        active: grant.status == Some(GrantStatus::Active),
-        revoked_at: grant.revoked_at,
-        grant_max_expires_at: grant.grant_max_expires_at,
-        user_epoch_snapshot: grant.user_epoch_snapshot,
-        tenant_epoch_snapshot: grant.tenant_epoch_snapshot,
-        live_user_epoch: grant.live_user_epoch,
-        live_tenant_epoch: grant.live_tenant_epoch,
-    }
-}
-
-fn rotation_fact(outcome: RotateOutcome) -> RotationFact {
-    match outcome {
-        RotateOutcome::Rotated {
-            grant_id,
-            family_id,
-            expires_at,
-        } => RotationFact::Rotated {
-            grant_id,
-            family_id,
-            expires_at,
-        },
-        RotateOutcome::ReuseDetected {
-            grant_id,
-            family_id,
-        } => RotationFact::ReuseDetected {
-            grant_id,
-            family_id,
-        },
-        RotateOutcome::Rejected => RotationFact::Rejected,
-    }
-}
-
-async fn refresh(state: &HttpState, params: &Params) -> Result<Response, ErrorCode> {
-    let Some(presented) = params.get("refresh_token") else {
-        return Ok(refusal(OAuthReason::REFRESH_REJECTED));
-    };
-    let successor = secret()?;
-    let mut txn = oauth_repo::begin(&state.pool).await?;
-    let fact = rotation_fact(
-        txn.rotate_refresh(
-            &SecretHash::of_secret(presented),
-            &SecretHash::of_secret(&successor),
-            state.config.refresh_ttl,
-        )
-        .await?,
-    );
-    let grant = match fact {
-        RotationFact::Rotated { grant_id, .. } => txn.lookup_grant(grant_id).await?,
-        _ => None,
-    };
-    let view = grant.as_ref().map(grant_view);
-    let request = RefreshRequest {
-        client_id: params.get("client_id").unwrap_or_default(),
-        resource: params.get("resource"),
-    };
-    let now = OffsetDateTime::now_utc();
-    // RFC 6749 §6 / OPEN-5: requested scope is ignored; only the stored grant's scopes are returned.
-    match oauth::decide_refresh(fact, view.as_ref(), &request, now, &state.config.policy()) {
-        RefreshDecision::Issue { access, .. } => {
-            let response = success(&state.config, &access, &successor, now);
-            txn.commit().await?;
-            Ok(response)
-        }
-        RefreshDecision::Deny {
-            refusal: OAuthRefusal { reason, .. },
-            revoke,
-        } => {
-            if let Some(revoke) = revoke {
-                let cause = match revoke.cause {
-                    RevokeCause::RefreshReuse => RevokeReason::RefreshReuse,
-                    RevokeCause::SecurityEpoch => RevokeReason::SecurityEpoch,
-                };
-                if let Some(family) = revoke.family_id {
-                    txn.revoke_family(family, cause).await?;
-                } else {
-                    txn.revoke_grant(revoke.grant_id, cause).await?;
-                }
-                return spent(txn, reason).await;
-            }
-            Ok(refusal(reason))
-        }
-    }
 }

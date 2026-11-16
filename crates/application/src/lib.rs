@@ -1,6 +1,5 @@
 //! `humaux-application` — Humaux Thread workspace crate（布局见 §58）。
-//! Depends-on: crates=[]; services=[];
-//!   env=[]; modules=[]
+//! Depends-on: crates=[]; services=[]; env=[]; modules=[]
 //! Called-by: [crate(humaux-adapters), crate(humaux-billing-worker), crate(humaux-consolidation-worker), crate(humaux-gateway), crate(humaux-maintenance), crate(humaux-private-worker), crate(humaux-protocol), crate(humaux-public-pool), crate(humaux-public-worker), crate(humaux-retrieval-worker)]
 //! Invariants: []
 //! Spec: §58; §3; §78.3
@@ -26,6 +25,8 @@ pub mod ingest;
 pub mod login;
 pub mod notify;
 pub mod oauth;
+/// Transactional OAuth token exchange use cases.
+pub mod oauth_exchange;
 pub mod pin;
 /// ADR-0110 D-E: per-account processing status (§15.6).
 pub mod processing_status;

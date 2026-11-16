@@ -198,6 +198,7 @@ files = [
   "crates/application/src/auth.rs",
   "crates/application/src/login.rs",
   "crates/application/src/oauth.rs",
+  "crates/application/src/oauth_exchange.rs",
   "crates/application/src/session.rs",
   "crates/application/src/signed_token.rs",
   "crates/domain/src/identity.rs",
