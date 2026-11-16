@@ -4632,6 +4632,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `adapters::qdrant`
 - service `Qdrant(*)`
 
+#### `application::public_dispatch`
+
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
@@ -15398,6 +15400,7 @@ modules naming it:
 - `application::oauth`
 - `application::pin`
 - `application::processing_status`
+- `application::public_dispatch`
 - `application::recall_read`
 - `application::referral`
 - `application::remember`
@@ -15508,6 +15511,7 @@ modules naming it:
 - `application::continuity`
 - `application::contribute`
 - `application::coordination`
+- `application::public_dispatch`
 - `application::recall_read`
 - `application::remember`
 - `application::retrieval_embedding_port`
@@ -16007,6 +16011,16 @@ modules naming it:
 - `protocol::tests::mcp_http`
 - `tests`
 
+### humaux-public-pool → `humaux-application` (normal)
+why: public dispatch inbound use cases and outbound port
+
+modules naming it:
+- `public-pool::public_projection`
+- `public-pool::tests::mechanism_observation`
+- `public-pool::tests::public_runtime`
+- `public-pool::tests::support::public_anonymous_seam`
+- `tests`
+
 ### humaux-public-pool → `humaux-adapters` (normal)
 why: typed per-role pools, Qdrant transport error, claim-evaluator seam
 
@@ -16141,15 +16155,6 @@ why: parse PR-controlled public vocabulary
 
 modules naming it:
 - `public-pool::vocab::model`
-
-### humaux-public-pool → `humaux-application` (dev)
-why: contribute::prepare/finalize drive the fixtures that feed admission
-
-modules naming it:
-- `public-pool::tests::mechanism_observation`
-- `public-pool::tests::public_runtime`
-- `public-pool::tests::support::public_anonymous_seam`
-- `tests`
 
 ### humaux-public-pool → `humaux-contracts` (dev)
 why: mechanism registry parsing in the observation test
@@ -18131,6 +18136,12 @@ why: time dependency
 modules naming it:
 - `private-worker::route_providers`
 - `tests`
+
+### humaux-public-worker → `humaux-application` (normal)
+why: public dispatch inbound use cases and outbound port
+
+modules naming it:
+- `public-worker::main`
 
 ### humaux-public-worker → `humaux-adapters` (normal)
 why: typed PG pools, repositories and wire adapters this package drives
