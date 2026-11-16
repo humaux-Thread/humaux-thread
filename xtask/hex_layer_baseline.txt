@@ -32,8 +32,6 @@ bins/gateway/src/guard.rs:humaux_adapters::remember::PostgresRememberStore
 bins/gateway/src/guard.rs:humaux_adapters::request_guard_repo::AuditTenant
 bins/gateway/src/guard.rs:humaux_adapters::request_guard_repo::EffectiveEntitlementFacts
 bins/gateway/src/mcp_application.rs:humaux_adapters::confirm_token_repo::ConfirmationClaim
-bins/gateway/src/mcp_application.rs:humaux_adapters::distill_repo::ConfirmOutcome
-bins/gateway/src/mcp_application.rs:humaux_adapters::distill_repo::RejectOutcome
 bins/gateway/src/mcp_application.rs:humaux_adapters::memory_governance_repo::ArchiveResult
 bins/gateway/src/mcp_application.rs:humaux_adapters::memory_governance_repo::RestoreResult
 bins/gateway/src/mcp_application.rs:humaux_adapters::note_repo::NoteIntake
@@ -45,11 +43,7 @@ bins/gateway/src/memory.rs:humaux_adapters::affect_repo::AffectRow
 bins/gateway/src/memory.rs:humaux_adapters::affect_repo::AnnotateDone
 bins/gateway/src/memory.rs:humaux_adapters::context_repo::BindingWriteOutcome
 bins/gateway/src/memory.rs:humaux_adapters::context_repo::BindingWriteRequest
-bins/gateway/src/memory.rs:humaux_adapters::distill_repo::ConfirmOutcome
-bins/gateway/src/memory.rs:humaux_adapters::distill_repo::ConfirmRequest
 bins/gateway/src/memory.rs:humaux_adapters::distill_repo::PendingCandidate
-bins/gateway/src/memory.rs:humaux_adapters::distill_repo::RejectOutcome
-bins/gateway/src/memory.rs:humaux_adapters::distill_repo::RejectRequest
 bins/gateway/src/memory.rs:humaux_adapters::forget_repo::ForgetRepoError
 bins/gateway/src/memory.rs:humaux_adapters::grep_repo::GrepQuery
 bins/gateway/src/memory.rs:humaux_adapters::memory_governance_repo::ArchiveRequest

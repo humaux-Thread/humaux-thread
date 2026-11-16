@@ -945,6 +945,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::candidates`
+- (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::note_replace`
 - (no process): `gateway::tests::mcp_forget`
 - process(cargo-xtask): `maintenance::rls_check`

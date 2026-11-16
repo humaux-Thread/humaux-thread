@@ -1,5 +1,5 @@
 //! `gateway::memory` — Authenticated Memory reads through the existing final-body and Envelope boundaries.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, sha2, time, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::context_repo, adapters::distill_repo, adapters::forget_repo, adapters::grep_repo, adapters::memory_governance_repo, adapters::postgres, adapters::serving_repo, adapters::subject_repo, application::forget, application::recall_read, domain::affect, domain::authority, domain::confirm, domain::context, domain::error, domain::evidence, domain::identity, domain::ids, domain::selection, domain::subject, gateway::bootstrap, gateway::context, gateway::guard, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::request]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, sha2, time, uuid]; services=[]; env=[]; modules=[application::distill, adapters::affect_repo, adapters::context_repo, adapters::distill_repo, adapters::forget_repo, adapters::grep_repo, adapters::memory_governance_repo, adapters::postgres, adapters::serving_repo, adapters::subject_repo, application::forget, application::recall_read, domain::affect, domain::authority, domain::confirm, domain::context, domain::error, domain::evidence, domain::identity, domain::ids, domain::selection, domain::subject, gateway::bootstrap, gateway::context, gateway::guard, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::request]
 //! Called-by: [gateway::mcp_application]
 //! Invariants: [a read that cannot reach its final-body boundary returns the application error, never a partially materialized memory;
 //!   `memory.get` reports the ledger frontier from one `stream_checkpoints` lookup and never calls the ledger closure or the
@@ -16,11 +16,7 @@ use humaux_adapters::context_repo;
 use humaux_adapters::context_repo::BindingWriteOutcome;
 use humaux_adapters::context_repo::BindingWriteRequest;
 use humaux_adapters::distill_repo;
-use humaux_adapters::distill_repo::ConfirmOutcome;
-use humaux_adapters::distill_repo::ConfirmRequest;
 use humaux_adapters::distill_repo::PendingCandidate;
-use humaux_adapters::distill_repo::RejectOutcome;
-use humaux_adapters::distill_repo::RejectRequest;
 use humaux_adapters::grep_repo;
 use humaux_adapters::grep_repo::GrepQuery;
 use humaux_adapters::memory_governance_repo;
@@ -35,6 +31,8 @@ use humaux_adapters::memory_governance_repo::SupersedeRequest;
 use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_adapters::serving_repo::UnservedLedger;
 use humaux_adapters::subject_repo;
+use humaux_application::distill::ConfirmOutcome;
+use humaux_application::distill::RejectOutcome;
 use humaux_application::recall_read::EnumerationCensus;
 use humaux_application::recall_read::Lifecycle;
 use humaux_application::recall_read::MaterializedItem;
@@ -554,22 +552,23 @@ pub(crate) async fn confirm(
     subjects: SubjectDeclaration,
 ) -> Result<ConfirmOutcome, ErrorCode> {
     let (authorization, stream) = confirmed_write_scope(&pool, &write, &bootstrap).await?;
-    distill_repo::confirm_candidate_atomically(
-        &pool,
+    humaux_application::distill::confirm_candidate(
+        &crate::bootstrap::candidate_decision_store(&pool),
         &authorization,
-        ConfirmRequest {
-            request_id: write.request.request_id(),
-            request_fingerprint: write.request_fingerprint,
-            reservation_ttl: write.reservation_ttl,
-            candidate_id,
+        humaux_application::distill::ConfirmCandidate {
+            write: candidate_write(write, candidate_id),
             candidate_sha256,
-            stream,
-            claim: write.claim,
-            finished_audit: write.finished_audit,
+            stream: humaux_application::distill::CandidateStream {
+                tenant_id: stream.tenant_id.0,
+                scope_kind: stream.scope_kind,
+                scope_id: stream.scope_id,
+                domain: stream.domain,
+                projection_kind: stream.projection_kind,
+                projection_version: stream.projection_version,
+            },
             consistency_token_ttl,
             subjects,
         },
-        &crate::bootstrap::MEMORY_ATTRIBUTION,
     )
     .await
 }
@@ -731,17 +730,10 @@ pub(crate) async fn reject(
 ) -> Result<RejectOutcome, ErrorCode> {
     // No ticket is issued, but the same scope gate (and the pair's provisioning) applies.
     let (authorization, _stream) = confirmed_write_scope(&pool, &write, &bootstrap).await?;
-    distill_repo::reject_candidate_atomically(
-        &pool,
+    humaux_application::distill::reject_candidate(
+        &crate::bootstrap::candidate_decision_store(&pool),
         &authorization,
-        RejectRequest {
-            request_id: write.request.request_id(),
-            request_fingerprint: write.request_fingerprint,
-            reservation_ttl: write.reservation_ttl,
-            candidate_id,
-            claim: write.claim,
-            finished_audit: write.finished_audit,
-        },
+        candidate_write(write, candidate_id),
     )
     .await
 }
@@ -1281,4 +1273,49 @@ pub(crate) async fn grep(
         "next_cursor": next_cursor,
         "consistency": "per_call_snapshot",
     }))
+}
+
+// §36/§77: preserve the gate's exact bindings and provenance across the application boundary.
+fn candidate_write(
+    write: ConfirmedWrite,
+    candidate_id: Uuid,
+) -> humaux_application::distill::CandidateWrite {
+    let a = write.finished_audit;
+    let c = write.claim;
+    humaux_application::distill::CandidateWrite {
+        request_id: write.request.request_id(),
+        request_fingerprint: write.request_fingerprint,
+        reservation_ttl: write.reservation_ttl,
+        candidate_id,
+        confirmation: humaux_application::distill::CandidateConfirmation {
+            op: c.op,
+            target_id: c.target_id,
+            successor_id: c.successor_id,
+            nonce_sha256: c.nonce_sha256,
+            request_sha256: c.request_sha256,
+        },
+        audit: humaux_application::distill::CandidateAudit {
+            event_id: a.event_id.0,
+            ts: a.ts,
+            tenant_id: a.tenant_id.0,
+            actor_type: a.actor_type,
+            actor_id: a.actor_id,
+            action: a.action,
+            resource_type: a.resource_type,
+            resource_id: a.resource_id,
+            result: a.result,
+            request_id: a.request_id,
+            trace_id: a.trace_id,
+            client_ip: a.client_ip,
+            user_agent_hash: a.user_agent_hash,
+            risk_tags: a.risk_tags,
+            before_fingerprint: a.before_fingerprint,
+            after_fingerprint: a.after_fingerprint,
+            metadata: a
+                .metadata
+                .iter()
+                .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                .collect(),
+        },
+    }
 }
