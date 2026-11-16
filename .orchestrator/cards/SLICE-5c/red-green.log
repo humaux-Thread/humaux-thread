@@ -10,4 +10,4 @@ crates/adapters/src/private_inference_rpc.rs sha256=7cec95cc3542caf19beecb60c135
 crates/application/src/private_inference.rs sha256=e32b6b5a268eb0af817d3abbc03fd987e4601d415d7e24883125de6f6f42f03f
 crates/adapters/src/model_call_ledger.rs sha256=55278010c1ee2d3a9a8ad06d56676ec32a3375a09508cea6e2111b32a705165d
 PG RED result: run 43823108559 FAILED at reasoning_route_runtime.rs:651, test private_reserve_is_one_transaction_with_matching_disclosure, (iii) one transaction -> PostgreSQL 23514 private reasoning reserve must carry its matching disclosure (deferred COMMIT check).
-PG restored GREEN observation pointer: targeted run 43823549943, ref d7a12811bb88786274e75cffe01bfdc20955cd6b (immutable implementation SHA); CI result required, not yet claimed here. Subsequent commit only updates this evidence log.
+PG restored GREEN: targeted run 43823549943 checked out 76341c89f6f9806c5ee067da317d4343051050f7 (raw log ref); 1 passed, 0 failed, exit 0. Dispatch branch resolved at checkout, after evidence-only push. Subsequent commit only corrects this evidence log; source hashes above remain unchanged.
