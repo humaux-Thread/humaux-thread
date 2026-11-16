@@ -1702,51 +1702,6 @@ pub fn drill_closed_deps(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// D-F E5: a stored vector normalised in f32 matches Qdrant's copy within the tolerance; a 1e-3 nudge does not.
-    #[test]
-    fn vectors_compare_after_cosine_normalisation() {
-        let stored = [3.0_f32, 4.0, 0.0, 0.0];
-        assert!(vector_matches(&stored, &[0.6, 0.8, 0.0, 0.0]));
-        assert!(!vector_matches(&stored, &[0.601, 0.8, 0.0, 0.0]));
-        assert!(!vector_matches(&stored, &[0.6, 0.8, 0.0]));
-        assert!(!vector_matches(&[0.0; 4], &[0.0; 4]));
-    }
-
-    /// D-F E2: the allowed terminal outcomes are exactly the ones PG implies; anything else names its class.
-    #[test]
-    fn generation_outcomes_are_judged_against_pg() {
-        let t = |s: &str, c: Option<&str>, ea: Option<&str>, present: bool| {
-            (
-                s.to_owned(),
-                c.map(str::to_owned),
-                ea.map(str::to_owned),
-                present,
-            )
-        };
-        let (ok, failed, in_flight) = judge_generation(&[
-            t("DONE", None, Some("DONE"), true),
-            t("FAILED", Some("card_unbuildable"), Some("DONE"), true),
-            t("FAILED", Some("distill_failed"), Some("FAILED"), true),
-            t("FAILED", Some("distill_failed"), Some("DONE"), true),
-            t("FAILED", Some("no_visible_memory_record"), None, true),
-            t("FAILED", Some("transient_exhausted"), Some("DONE"), true),
-            t("LOST", None, Some("DONE"), true),
-            t("ISSUED", None, Some("DONE"), true),
-        ]);
-        assert_eq!(ok.get("card_unbuildable"), Some(&1));
-        assert_eq!(ok.get("distill_failed"), Some(&1));
-        assert_eq!(ok.get("no_visible_memory_record"), Some(&1));
-        assert_eq!(failed.get("distill_failed"), Some(&1));
-        assert_eq!(failed.get("transient_exhausted"), Some(&1));
-        assert_eq!(failed.get("LOST"), Some(&1));
-        assert_eq!(in_flight, 1);
-    }
-}
-
 /// Assemble the projection maintenance port; all adapter DTOs remain private to this wiring.
 /// # Errors
 /// Preserves Qdrant setup and worker-label binding failures.
@@ -1884,5 +1839,50 @@ impl humaux_application::projection_maintenance::ProjectionMaintenancePort
             json: report.json,
             strays: report.strays,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// D-F E5: a stored vector normalised in f32 matches Qdrant's copy within the tolerance; a 1e-3 nudge does not.
+    #[test]
+    fn vectors_compare_after_cosine_normalisation() {
+        let stored = [3.0_f32, 4.0, 0.0, 0.0];
+        assert!(vector_matches(&stored, &[0.6, 0.8, 0.0, 0.0]));
+        assert!(!vector_matches(&stored, &[0.601, 0.8, 0.0, 0.0]));
+        assert!(!vector_matches(&stored, &[0.6, 0.8, 0.0]));
+        assert!(!vector_matches(&[0.0; 4], &[0.0; 4]));
+    }
+
+    /// D-F E2: the allowed terminal outcomes are exactly the ones PG implies; anything else names its class.
+    #[test]
+    fn generation_outcomes_are_judged_against_pg() {
+        let t = |s: &str, c: Option<&str>, ea: Option<&str>, present: bool| {
+            (
+                s.to_owned(),
+                c.map(str::to_owned),
+                ea.map(str::to_owned),
+                present,
+            )
+        };
+        let (ok, failed, in_flight) = judge_generation(&[
+            t("DONE", None, Some("DONE"), true),
+            t("FAILED", Some("card_unbuildable"), Some("DONE"), true),
+            t("FAILED", Some("distill_failed"), Some("FAILED"), true),
+            t("FAILED", Some("distill_failed"), Some("DONE"), true),
+            t("FAILED", Some("no_visible_memory_record"), None, true),
+            t("FAILED", Some("transient_exhausted"), Some("DONE"), true),
+            t("LOST", None, Some("DONE"), true),
+            t("ISSUED", None, Some("DONE"), true),
+        ]);
+        assert_eq!(ok.get("card_unbuildable"), Some(&1));
+        assert_eq!(ok.get("distill_failed"), Some(&1));
+        assert_eq!(ok.get("no_visible_memory_record"), Some(&1));
+        assert_eq!(failed.get("distill_failed"), Some(&1));
+        assert_eq!(failed.get("transient_exhausted"), Some(&1));
+        assert_eq!(failed.get("LOST"), Some(&1));
+        assert_eq!(in_flight, 1);
     }
 }
