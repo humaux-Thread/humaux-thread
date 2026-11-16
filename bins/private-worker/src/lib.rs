@@ -1,5 +1,5 @@
 //! `humaux-private-worker` — Bounded Phase 9 private contribution worker orchestration.
-//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json, sha2, uuid]; services=[PostgreSQL(role_private_worker)]; env=[]; modules=[adapters::byok, adapters::contribution_execution_ingress, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::contribution_scan, adapters::jobs, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, application::contribute, application::contribution_execution, domain::error, domain::evidence]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json, sha2, uuid]; services=[PostgreSQL(role_private_worker)]; env=[]; modules=[adapters::byok, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::contribution_scan, adapters::jobs, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, application::contribute, application::contribution_execution, domain::error, domain::evidence]
 //! Called-by: [crate(humaux-consolidation-worker), private-worker::distill, private-worker::inference_rpc, tests]
 //! Invariants: [a routed call's health observation (ruling E3 (b)) is best effort: it is logged with a static class
 //!   and never fails or re-settles a job]
@@ -27,17 +27,13 @@ mod stages;
 
 use humaux_adapters::{
     byok::ReasoningProviderError,
-    contribution_execution_ingress::{
-        ContributionExecutionIngress, ContributionExecutionIngressError,
-    },
     contribution_execution_repo::{
         ContributionExecutionRead, ContributionExecutionRepo, ContributionExecutionRepoError,
-        ContributionJobLease, EnqueuedContributionExecution,
+        ContributionJobLease,
     },
     contribution_reasoner::{
         ContributionDispatchOutcome, ContributionReasoner, DispatchedContributionCall,
-        ParsedContributionAssessment, assessment_prompt_contract, coverage_prompt_contract,
-        parse_assessment, parse_coverage_probe,
+        ParsedContributionAssessment, parse_assessment, parse_coverage_probe,
     },
     contribution_scan::{ContributionScanOutcome, ContributionScanner},
     jobs::{self, ClaimedJob, JobStatus, JobsError},
@@ -50,8 +46,9 @@ use humaux_application::{
     contribution_execution::{
         AssessmentCompletion, AssessmentCompletionEvidence, AssessmentCompletionValue,
         CandidateCompletionEvidence, ContributionExecutionId, ContributionExecutionState,
-        CoverageCompletion, CoverageCompletionValue, DefiniteProviderFailure, ReservationDecision,
-        SuccessfulCoverageReceipt,
+        CoverageCompletion, CoverageCompletionValue, DefiniteProviderFailure,
+        EnqueuedContributionExecution, ManualContributionPort, ReservationDecision,
+        SuccessfulCoverageReceipt, start_manual_contribution,
     },
 };
 use humaux_domain::{error::ErrorCode, evidence::payload_sha256};
@@ -69,29 +66,20 @@ const DEFINITE_PROVIDER_ERROR_CLASS: &str = "PROVIDER_PERMANENT";
 /// itself accepts only the existing verified ID-free preparation input and a caller idempotency
 /// key; it cannot receive rights, policy, source hashes, durable identities, or a fingerprint.
 pub struct StartManualContributionCommand<'a> {
-    ingress: ContributionExecutionIngress<'a>,
+    ingress: &'a dyn ManualContributionPort,
 }
 
 impl<'a> StartManualContributionCommand<'a> {
-    pub const fn new(pool: &'a PrivateWorkerDbPool) -> Self {
-        Self {
-            ingress: ContributionExecutionIngress::new(pool),
-        }
+    pub const fn new(ingress: &'a dyn ManualContributionPort) -> Self {
+        Self { ingress }
     }
 
     pub async fn execute(
         &self,
         request: ContributionPreparationInput,
         idempotency_key: String,
-    ) -> Result<EnqueuedContributionExecution, ContributionExecutionIngressError> {
-        self.ingress
-            .start_manual(
-                request,
-                idempotency_key,
-                coverage_prompt_contract(),
-                assessment_prompt_contract(),
-            )
-            .await
+    ) -> Result<EnqueuedContributionExecution, ErrorCode> {
+        start_manual_contribution(self.ingress, request, idempotency_key).await
     }
 }
 

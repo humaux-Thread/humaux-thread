@@ -4071,9 +4071,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `public.phase9_public_coverage_for_probe`
 - service `PostgreSQL(any)`
 
-#### `adapters::contribution_execution_ingress`
-- service `PostgreSQL(any)`
-
 #### `adapters::contribution_execution_repo`
 - reads `private.contribution_execution_sources`
 - reads `private.contribution_executions`
@@ -14459,6 +14456,7 @@ modules naming it:
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
 - `adapters::contribution_entry_repo`
+- `adapters::contribution_execution_ingress`
 - `adapters::contribution_reasoner`
 - `adapters::contribution_scan`
 - `adapters::coord_repo`
@@ -15530,6 +15528,7 @@ modules naming it:
 - `application::consolidate`
 - `application::continuity`
 - `application::contribute`
+- `application::contribution_execution`
 - `application::coordination`
 - `application::distill`
 - `application::private_inference`
