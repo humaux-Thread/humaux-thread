@@ -6,7 +6,7 @@
 //!   control.user_emails, control.users, ops.email_delivery_events, ops.email_outbox]
 //!   x=[control.login_challenge_issue, control.session_issue], PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::email, adapters::postgres, adapters::session_repo, application::auth,
-//!   application::session, application::signed_token, gateway::admission, gateway::auth_pages, gateway::guard,
+//!   application::login, application::session, application::signed_token, gateway::bootstrap, gateway::admission, gateway::auth_pages, gateway::guard,
 //!   gateway::limiter,
 //!   humaux-testkit, protocol::edge]
 //! Called-by: [cargo-test]
@@ -217,9 +217,17 @@ fn pages_config() -> AuthPagesConfig {
     }
 }
 
+fn login_port(
+    guard: &GatewayGuard,
+    config: &AuthPagesConfig,
+) -> Arc<dyn humaux_application::login::PasswordlessLoginPort> {
+    humaux_gateway::bootstrap::passwordless_login_port(guard, config)
+}
+
 /// The production router on a loopback socket, with connect info as `main` serves it.
 async fn start(guard: Arc<GatewayGuard>) -> (SocketAddr, JoinHandle<()>) {
     let config = pages_config();
+    let login = login_port(&guard, &config);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind loopback");
@@ -227,7 +235,8 @@ async fn start(guard: Arc<GatewayGuard>) -> (SocketAddr, JoinHandle<()>) {
     let server = tokio::spawn(async move {
         axum::serve(
             listener,
-            auth_pages::router(guard, config).into_make_service_with_connect_info::<SocketAddr>(),
+            auth_pages::router(guard, config, login)
+                .into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
         .expect("serve loopback /auth/*");
@@ -260,7 +269,12 @@ async fn start_admitted(
     })
     .keyed_by_client(Arc::clone(&guard));
     let app = admission::wrap(
-        auth_pages::router(guard, pages_config()).merge(Router::new().route("/hold", hold)),
+        {
+            let config = pages_config();
+            let login = login_port(&guard, &config);
+            auth_pages::router(guard, config, login)
+        }
+        .merge(Router::new().route("/hold", hold)),
         Router::new(),
         Arc::new(admission),
     );
