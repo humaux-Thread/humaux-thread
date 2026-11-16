@@ -4,7 +4,7 @@
 //!   successor, and a project_task relation correction revokes its derived rows, down the inheritance chain, in its
 //!   own transaction; M29 T06c: a `remember.put` `project_id` reaches A1 end to end.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, serde_json, sqlx];
-//!   services=[PostgreSQL(owner) r=[private.evidence_objects, private.memory_project_revocations,
+//!   services=[PostgreSQL(owner) r=[control.confirm_tokens, private.evidence_objects, private.memory_project_revocations,
 //!   private.memory_projects, private.memory_records, private.memory_subjects] w=[control.tenants, control.workspaces, coord.task_runs,
 //!   private.continuity_projects, private.distill_candidates, private.evidence_projects, private.evidence_task_runs,
 //!   private.memory_project_revocations, private.memory_projects, private.project_task_relations, private.subjects]
@@ -622,6 +622,43 @@ fn g_t06a_confirm_reads_the_source_evidence() {
         let claim =
             governance_ops::confirm(&handle.rt, &handle.runtime, &auth, op, candidate_id, None);
         let request_id = Uuid::now_v7();
+        // ADR-0130 D7a: a downstream policy error must roll back the already-consumed token
+        // and BMO reservation, so this same token can still drive the successful call below.
+        let failed = handle
+            .rt
+            .block_on(distill_repo::confirm_candidate_atomically(
+                &handle.runtime,
+                &auth,
+                ConfirmRequest {
+                    request_id,
+                    request_fingerprint: governance_ops::fingerprint(),
+                    reservation_ttl: Duration::from_secs(30),
+                    candidate_id,
+                    candidate_sha256: candidate_sha256.clone(),
+                    stream: governance_ops::stream(handle.tenant_id, handle.workspace_id),
+                    claim: claim.clone(),
+                    finished_audit: governance_ops::audit(&auth, op, request_id, false),
+                    consistency_token_ttl: Duration::MAX,
+                    subjects: humaux_domain::subject::SubjectDeclaration::default(),
+                },
+                &AttributionLadder,
+            ));
+        assert!(matches!(
+            failed,
+            Err(humaux_domain::error::ErrorCode::InvalidInput)
+        ));
+        let consumed: bool = handle
+            .admin
+            .query_one(
+                "SELECT consumed_at IS NOT NULL FROM control.confirm_tokens WHERE nonce_sha256=$1 FOR UPDATE",
+                &[&claim.nonce_sha256.as_slice()],
+            )
+            .expect("owner checks token rollback")
+            .get(0);
+        assert!(
+            !consumed,
+            "candidate confirmation token must roll back with a downstream error"
+        );
         let outcome = handle
             .rt
             .block_on(distill_repo::confirm_candidate_atomically(

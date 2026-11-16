@@ -1,8 +1,8 @@
 //! `adapters::distill_repo` — SQL half of the Distill hop (ADR-0016), through [`PrivateWorkerDbPool`] only: take the
 //!   one `EVIDENCE_ACCEPTED` outbox row of a claimed `DERIVED_DISTILL` job (ADR-0058), load that Evidence, record the
 //!   §16.1.1 processing run, insert the authorized memories, settle the job and its outbox row together.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, ops.outbox, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations, projection.stream_log] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding, private.lock_publish_source]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::confirm_token_repo, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject, humaux-adapters, projection::stream]
-//! Called-by: [adapters::context_repo, gateway::mcp_application, gateway::memory, private-worker::distill, private-worker::main, tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, ops.outbox, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations, projection.stream_log] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding, private.lock_publish_source]]; env=[CARGO_MANIFEST_DIR]; modules=[application::distill, adapters::confirm_token_repo, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::confirm, application::consolidate, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::subject, humaux-adapters, projection::stream]
+//! Called-by: [adapters::context_repo, gateway::bootstrap, gateway::memory, private-worker::distill, private-worker::main, tests]
 //! Invariants: [memories, run completion, the job settle and the outbox flip commit in ONE transaction whose first
 //!   statement is the job's generation-fenced finish (ADR-0058 D-E), so a superseded worker's inserts roll back; a job
 //!   only ever takes the outbox row of its own Evidence; every read runs under role_private_worker grants + RLS with the acting
@@ -742,26 +742,8 @@ pub struct ConfirmRequest {
     pub subjects: SubjectDeclaration,
 }
 
-#[derive(Debug, Clone)]
-pub struct ConfirmDone {
-    /// The new active UserConfirmed Memory.
-    pub memory_id: Uuid,
-    /// The new UserConfirmed Evidence.
-    pub evidence_id: Uuid,
-    pub candidate_id: Uuid,
-    pub stream_seq: i64,
-    pub commit_seq: i64,
-    pub consistency_token: String,
-    /// §6.1.3: every subject M is linked to after the hook ran (explicit + inherited from the
-    /// candidate's source Evidence declaration).
-    pub subject_ids: Vec<Uuid>,
-}
-
-/// Success-shaped outcome: an executed confirm, or a refused one carrying a §52.1 sub-reason.
-pub enum ConfirmOutcome {
-    Confirmed(ConfirmDone),
-    Refused(ConflictReason),
-}
+/// Business results shared with application callers (§36).
+pub use humaux_application::distill::{ConfirmDone, ConfirmOutcome, RejectOutcome};
 
 /// Trusted application inputs for `memory.reject`.
 pub struct RejectRequest {
@@ -771,11 +753,6 @@ pub struct RejectRequest {
     pub candidate_id: Uuid,
     pub claim: ConfirmationClaim,
     pub finished_audit: AuditEvent,
-}
-
-pub enum RejectOutcome {
-    Rejected(Uuid),
-    Refused(ConflictReason),
 }
 
 /// One PENDING candidate as `memory.enumerate {candidates:true}` returns it.
@@ -1508,5 +1485,128 @@ mod contract_tests {
         ] {
             assert!(db.contains(&memory_type_db_str(memory_type).to_owned()));
         }
+    }
+}
+
+/// PG implementation of the complete candidate decision boundary (ADR-0130 D7a).
+pub struct PostgresCandidateDecisionStore<'a> {
+    pool: &'a RuntimeDbPool,
+    attribution: &'a dyn memory_repo::MemoryAttribution,
+}
+
+impl<'a> PostgresCandidateDecisionStore<'a> {
+    /// Wire the existing pool and lifecycle attribution door at ingress assembly.
+    pub fn new(
+        pool: &'a RuntimeDbPool,
+        attribution: &'a dyn memory_repo::MemoryAttribution,
+    ) -> Self {
+        Self { pool, attribution }
+    }
+}
+
+type CandidateWriteParts = (Uuid, String, Duration, Uuid, ConfirmationClaim, AuditEvent);
+
+fn candidate_write_parts(
+    write: humaux_application::distill::CandidateWrite,
+) -> Result<CandidateWriteParts, ErrorCode> {
+    let a = write.audit;
+    let mut metadata = humaux_domain::audit::AuditMetadata::new();
+    for (key, value) in a.metadata {
+        metadata.insert(key, value)?;
+    }
+    let audit = AuditEvent {
+        event_id: AuditEventId(a.event_id),
+        ts: a.ts,
+        tenant_id: humaux_domain::ids::TenantId(a.tenant_id),
+        actor_type: a.actor_type,
+        actor_id: a.actor_id,
+        action: a.action,
+        resource_type: a.resource_type,
+        resource_id: a.resource_id,
+        result: a.result,
+        request_id: a.request_id,
+        trace_id: a.trace_id,
+        client_ip: a.client_ip,
+        user_agent_hash: a.user_agent_hash,
+        risk_tags: a.risk_tags,
+        before_fingerprint: a.before_fingerprint,
+        after_fingerprint: a.after_fingerprint,
+        metadata,
+    };
+    let c = write.confirmation;
+    let claim = ConfirmationClaim {
+        op: c.op,
+        target_id: c.target_id,
+        successor_id: c.successor_id,
+        nonce_sha256: c.nonce_sha256,
+        request_sha256: c.request_sha256,
+    };
+    Ok((
+        write.request_id,
+        write.request_fingerprint,
+        write.reservation_ttl,
+        write.candidate_id,
+        claim,
+        audit,
+    ))
+}
+
+#[async_trait::async_trait]
+impl humaux_application::distill::CandidateDecisionStore for PostgresCandidateDecisionStore<'_> {
+    async fn confirm(
+        &self,
+        auth: &AuthorizationScope,
+        command: humaux_application::distill::ConfirmCandidate,
+    ) -> Result<ConfirmOutcome, ErrorCode> {
+        let (request_id, request_fingerprint, reservation_ttl, candidate_id, claim, finished_audit) =
+            candidate_write_parts(command.write)?;
+        let s = command.stream;
+        let stream = StreamKey::new(
+            humaux_domain::ids::TenantId(s.tenant_id),
+            s.scope_kind,
+            s.scope_id,
+            s.domain,
+            s.projection_kind,
+            s.projection_version,
+        );
+        confirm_candidate_atomically(
+            self.pool,
+            auth,
+            ConfirmRequest {
+                request_id,
+                request_fingerprint,
+                reservation_ttl,
+                candidate_id,
+                candidate_sha256: command.candidate_sha256,
+                stream,
+                claim,
+                finished_audit,
+                consistency_token_ttl: command.consistency_token_ttl,
+                subjects: command.subjects,
+            },
+            self.attribution,
+        )
+        .await
+    }
+    async fn reject(
+        &self,
+        auth: &AuthorizationScope,
+        command: humaux_application::distill::CandidateWrite,
+    ) -> Result<RejectOutcome, ErrorCode> {
+        let (request_id, request_fingerprint, reservation_ttl, candidate_id, claim, finished_audit) =
+            candidate_write_parts(command)?;
+        reject_candidate_atomically(
+            self.pool,
+            auth,
+            RejectRequest {
+                request_id,
+                request_fingerprint,
+                reservation_ttl,
+                candidate_id,
+                claim,
+                finished_audit,
+            },
+        )
+        .await
     }
 }

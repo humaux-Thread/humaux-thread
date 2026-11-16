@@ -357,6 +357,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::correct`
 
+#### `application::distill`
+
 #### `application::entitlement`
 
 #### `application::pin`
@@ -1879,6 +1881,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::correct`
 
+#### `application::distill`
+
 #### `application::pin`
 
 #### `application::recall_read`
@@ -2462,6 +2466,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::coordination`
 
 #### `application::correct`
+
+#### `application::distill`
 
 #### `application::forget`
 
@@ -3291,6 +3297,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::coordination`
 
 #### `application::correct`
+
+#### `application::distill`
 
 #### `application::entitlement`
 
@@ -4393,6 +4401,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::correct`
 
+#### `application::distill`
+
 #### `application::pin`
 
 #### `application::recall_read`
@@ -5104,6 +5114,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::correct`
 
+#### `application::distill`
+
 #### `application::pin`
 
 #### `application::recall_read`
@@ -5738,6 +5750,7 @@ executed by:
 ### `control.confirm_tokens`
 read by:
 - (no process): `adapters::tests::candidates`
+- (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::note_replace`
 - (no process): `gateway::tests::mcp_forget`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -14443,6 +14456,7 @@ modules naming it:
 - `adapters::contribution_reasoner`
 - `adapters::contribution_scan`
 - `adapters::coord_repo`
+- `adapters::distill_repo`
 - `adapters::email`
 - `adapters::email::sink`
 - `adapters::email::smtp`
@@ -15392,6 +15406,7 @@ modules naming it:
 - `application::contribution_execution`
 - `application::coordination`
 - `application::correct`
+- `application::distill`
 - `application::entitlement`
 - `application::login`
 - `application::notify`
@@ -15508,6 +15523,7 @@ modules naming it:
 - `application::continuity`
 - `application::contribute`
 - `application::coordination`
+- `application::distill`
 - `application::recall_read`
 - `application::remember`
 - `application::retrieval_embedding_port`
@@ -15525,6 +15541,7 @@ modules naming it:
 - `application::contribute`
 - `application::contribution_execution`
 - `application::correct`
+- `application::distill`
 - `application::forget`
 - `application::oauth`
 - `application::pin`

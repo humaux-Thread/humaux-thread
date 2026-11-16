@@ -1,5 +1,5 @@
 //! `gateway::mcp_application` — Gateway implementation of the native MCP application port.
-//! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-protocol, humaux-testkit, postgres, serde, serde_json, time, tokio, uuid]; services=[PostgreSQL(role_gateway) r=[private.memory_records] w=[control.w2_test_request_intervals] x=[private.publish_continuity_facet, private.register_continuity_project], HTTP(gateway)]; env=[HUMAUX_CONTINUITY_DIRECT_PREAUTH_SAME_KEY, HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID, HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[adapters::affect_repo, adapters::byok, adapters::confirm_token_repo, adapters::coord_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::postgres, adapters::subject_repo, application::continuity, application::coordination, application::recall_read, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source, domain::subject, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::memory, gateway::recall, gateway::remember, protocol::mcp, protocol::mcp_catalog]
+//! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-protocol, humaux-testkit, postgres, serde, serde_json, time, tokio, uuid]; services=[PostgreSQL(role_gateway) r=[private.memory_records] w=[control.w2_test_request_intervals] x=[private.publish_continuity_facet, private.register_continuity_project], HTTP(gateway)]; env=[HUMAUX_CONTINUITY_DIRECT_PREAUTH_SAME_KEY, HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID, HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[application::distill, adapters::affect_repo, adapters::byok, adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::postgres, adapters::subject_repo, application::continuity, application::coordination, application::recall_read, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source, domain::subject, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::memory, gateway::recall, gateway::remember, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [gateway::bootstrap, tests]
 //! Invariants: [no path mints and accepts in one call; the canonical catalog validates wire arguments before dispatch runs; a valid contract with no local implementation is denied by GatewayGuard, never silently no-op'd]
 //! Spec: Baseline §33.10; §34.0.1; §78.1; ADR-0030; ADR-0031
@@ -22,8 +22,6 @@ use humaux_adapters::affect_repo;
 use humaux_adapters::byok::json_has_nul;
 use humaux_adapters::confirm_token_repo::ConfirmationClaim;
 use humaux_adapters::coord_repo;
-use humaux_adapters::distill_repo::ConfirmOutcome;
-use humaux_adapters::distill_repo::RejectOutcome;
 use humaux_adapters::memory_governance_repo;
 use humaux_adapters::memory_governance_repo::ArchiveResult;
 use humaux_adapters::memory_governance_repo::RestoreResult;
@@ -37,6 +35,8 @@ use humaux_adapters::subject_repo;
 use humaux_application::continuity::ContinuityEvidenceSource;
 use humaux_application::continuity::ContinuityMemorySource;
 use humaux_application::coordination;
+use humaux_application::distill::ConfirmOutcome;
+use humaux_application::distill::RejectOutcome;
 use humaux_application::recall_read::Lifecycle;
 use humaux_application::recall_read::MemoryEnumerationParams;
 use humaux_application::recall_read::MemoryGetTarget;

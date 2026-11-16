@@ -351,6 +351,7 @@ owned_tables = [
   "private.processing_runs",
 ]
 may_depend_on = [
+  "identity_access",
   "contract_kernel",
   "commercial",
   "coordination",
