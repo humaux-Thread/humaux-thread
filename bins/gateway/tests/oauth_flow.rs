@@ -1,6 +1,6 @@
 //! `gateway::tests::oauth_flow` — G-M02-7/8/9/14 through real HTTP, role_gateway and PostgreSQL doors.
-//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol,
-//!   humaux-testkit, postgres, serde_json, time, tokio, uuid];
+//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol,
+//!   humaux-testkit, postgres, rand, serde_json, time, tokio, uuid];
 //!   services=[HTTP(loopback), PostgreSQL(any) w=[control.oauth_authorization_codes, control.oauth_client_registrations,
 //!   control.oauth_grants, control.oauth_refresh_tokens, control.tenants, control.users]
 //!   x=[control.bump_user_security_epoch], PostgreSQL(role_gateway)]; env=[CI, HUMAUX_TEST_PG_DSN];
@@ -716,5 +716,59 @@ fn g_m02_7_duplicate_and_absent_parameters_fail_without_minting() {
         assert_eq!(grant_count(&mut h), 0);
         success(&post(&h, address, &body), 3600);
         assert_eq!(grant_count(&mut h), 1);
+    });
+}
+
+#[test]
+fn g_m02_7_disabled_client_spends_code_without_issuing_grant() {
+    run_db_fixture::<OAuthFixture, _>("G-M02-7 closed grant", |mut h| {
+        let address = serve(&h, 7200);
+        let code = issue_code(&h);
+        h.admin.execute("UPDATE control.oauth_client_registrations SET disabled_at=now() WHERE client_id=$1", &[&h.client_id]).unwrap();
+        denied(
+            &post(&h, address, &code_form(&h, &code, &[])),
+            OAuthReason::GRANT_CLOSED,
+        );
+        denied(
+            &post(&h, address, &code_form(&h, &code, &[])),
+            OAuthReason::CODE_INVALID,
+        );
+        assert_eq!(grant_count(&mut h), 0);
+    });
+}
+
+#[test]
+fn g_m02_8_wrong_resource_rolls_back_rotation() {
+    run_db_fixture::<OAuthFixture, _>("G-M02-8 resource rollback", |mut h| {
+        let address = serve(&h, 7200);
+        let tokens = issued(&h, address);
+        let body = form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", tokens["refresh_token"].as_str().unwrap()),
+            ("client_id", &h.client_id),
+            ("resource", "https://foreign.example.test/mcp"),
+        ]);
+        denied(
+            &post(&h, address, &body),
+            OAuthReason::REFRESH_RESOURCE_MISMATCH,
+        );
+        success(&refresh(&h, address, &tokens, &h.client_id), 3600);
+        assert_eq!(grant_count(&mut h), 1);
+    });
+}
+
+#[test]
+fn g_m02_8_unknown_refresh_secret_cannot_mint() {
+    run_db_fixture::<OAuthFixture, _>("G-M02-8 unknown secret", |mut h| {
+        let address = serve(&h, 7200);
+        let unknown = hex::encode(rand::random::<[u8; 32]>());
+        let body = form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &unknown),
+            ("client_id", &h.client_id),
+            ("resource", RESOURCE),
+        ]);
+        denied(&post(&h, address, &body), OAuthReason::REFRESH_REJECTED);
+        assert_eq!(grant_count(&mut h), 0);
     });
 }

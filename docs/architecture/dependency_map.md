@@ -2250,18 +2250,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `private.note_heads`
 - service `PostgreSQL(any)`
 
-#### `adapters::oauth_repo`
-- executes `control.oauth_client_lookup`
-- executes `control.oauth_client_register`
-- executes `control.oauth_code_consume`
-- executes `control.oauth_code_issue`
-- executes `control.oauth_grant_issue`
-- executes `control.oauth_grant_lookup`
-- executes `control.oauth_grant_revoke`
-- executes `control.oauth_refresh_family_revoke`
-- executes `control.oauth_refresh_rotate`
-- service `PostgreSQL(any)`
-
 #### `adapters::operation_receipt`
 - reads `control.memberships`
 - reads `control.tenants`
@@ -2478,6 +2466,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::login`
 
 #### `application::oauth`
+
+#### `application::oauth_exchange`
 
 #### `application::pin`
 
@@ -6285,8 +6275,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_client_register`
@@ -6295,8 +6285,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_client_registrations`
@@ -6318,9 +6308,9 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - (no process): `adapters::tests::oauth_persistence`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_code_issue`
@@ -6329,8 +6319,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_issue`
@@ -6339,8 +6329,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_lookup`
@@ -6349,8 +6339,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_revoke`
@@ -6359,8 +6349,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grants`
@@ -6382,8 +6372,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_refresh_rotate`
@@ -6392,8 +6382,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_refresh_tokens`
@@ -14312,6 +14302,7 @@ modules naming it:
 - `adapters::memory_governance_repo`
 - `adapters::memory_repo`
 - `adapters::model_call_ledger`
+- `adapters::oauth_repo`
 - `adapters::operation_receipt`
 - `adapters::private_inference_rpc`
 - `adapters::processing_status`
@@ -14472,6 +14463,7 @@ modules naming it:
 - `adapters::login_repo`
 - `adapters::mechanism_observation`
 - `adapters::memory_repo`
+- `adapters::oauth_repo`
 - `adapters::private_inference_rpc`
 - `adapters::projection_worker`
 - `adapters::read_materialize`
@@ -14663,7 +14655,6 @@ modules naming it:
 - `adapters::distill_reasoner`
 - `adapters::maintenance_repo`
 - `adapters::mechanism_observation`
-- `adapters::oauth_repo`
 - `adapters::private_projection_registry`
 - `adapters::projection_worker`
 - `adapters::provisioning`
@@ -15425,6 +15416,7 @@ modules naming it:
 - `application::login`
 - `application::notify`
 - `application::oauth`
+- `application::oauth_exchange`
 - `application::pin`
 - `application::processing_status`
 - `application::public_dispatch`
@@ -15463,6 +15455,7 @@ why: token/RNG source for auth, referral codes and supersede confirm tokens
 
 modules naming it:
 - `application::auth`
+- `application::oauth_exchange`
 - `application::referral`
 - `application::session`
 - `application::signed_token`
@@ -15489,6 +15482,7 @@ modules naming it:
 - `application::contribution_execution`
 - `application::forget`
 - `application::oauth`
+- `application::oauth_exchange`
 - `application::referral`
 - `application::session`
 - `application::signed_token`
@@ -15502,6 +15496,7 @@ modules naming it:
 - `application::consolidate`
 - `application::continuity`
 - `application::contribute`
+- `application::oauth_exchange`
 - `application::referral`
 - `application::session`
 - `application::signed_token`
@@ -15523,6 +15518,7 @@ modules naming it:
 - `application::contribution_execution`
 - `application::entitlement`
 - `application::notify`
+- `application::oauth_exchange`
 - `application::projection_maintenance`
 - `application::recall_read`
 - `application::remember`
@@ -15546,6 +15542,7 @@ modules naming it:
 - `application::distill`
 - `application::health`
 - `application::login`
+- `application::oauth_exchange`
 - `application::private_inference`
 - `application::projection_maintenance`
 - `application::public_dispatch`
@@ -15571,6 +15568,7 @@ modules naming it:
 - `application::distill`
 - `application::forget`
 - `application::oauth`
+- `application::oauth_exchange`
 - `application::pin`
 - `application::private_inference`
 - `application::projection_maintenance`
@@ -15595,6 +15593,7 @@ modules naming it:
 - `application::coordination`
 - `application::health`
 - `application::oauth`
+- `application::oauth_exchange`
 - `application::recall_read`
 - `application::remember`
 
@@ -17372,8 +17371,8 @@ modules naming it:
 - `gateway::guard`
 - `gateway::mcp_application`
 - `gateway::memory`
-- `gateway::oauth_http`
 - `gateway::tests::mcp_gateway`
+- `gateway::tests::oauth_flow`
 - `tests`
 
 ### humaux-gateway → `time` (normal)
@@ -17462,10 +17461,11 @@ modules naming it:
 - `tests`
 
 ### humaux-gateway → `rand` (normal)
-why: OS CSPRNG for opaque OAuth refresh secrets
+why: well-formed unknown OAuth refresh secrets in HTTP negative tests
 
 modules naming it:
-- `gateway::oauth_http`
+- `gateway::tests::oauth_flow`
+- `tests`
 
 ### humaux-gateway → `tokio` (dev)
 why: freeze the production limiter clock for exact hierarchy/restart assertions
