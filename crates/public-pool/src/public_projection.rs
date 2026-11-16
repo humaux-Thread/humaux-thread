@@ -479,6 +479,38 @@ fn point_id(kind: &str, object_id: Uuid, revision: i64) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
+struct PublicDispatch<'a> {
+    pool: &'a humaux_adapters::postgres::PublicWorkerDbPool,
+    projection: &'a dyn PublicProjectionPort,
+}
+
+#[async_trait::async_trait]
+impl humaux_application::public_dispatch::PublicDispatchPort for PublicDispatch<'_> {
+    async fn drain_outbox(
+        &self,
+        tenant_id: humaux_domain::ids::TenantId,
+        limit: i64,
+    ) -> Result<u64, humaux_domain::error::ErrorCode> {
+        crate::public_repo::drain_outbox(self.pool, tenant_id, limit).await
+    }
+    async fn run_once(
+        &self,
+        tenant_id: humaux_domain::ids::TenantId,
+        lease_owner: &str,
+        limit: i64,
+    ) -> Result<u64, humaux_domain::error::ErrorCode> {
+        crate::public_repo::run_once(self.pool, tenant_id, lease_owner, limit, self.projection)
+            .await
+    }
+    async fn run_anonymous_once(
+        &self,
+        lease_owner: &str,
+        limit: i64,
+    ) -> Result<u64, humaux_domain::error::ErrorCode> {
+        crate::public_repo::run_anonymous_once(self.pool, lease_owner, limit, self.projection).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,37 +603,5 @@ mod tests {
         row["payload"]["projection_live"] = json!(true);
         row["score"] = json!("NaN");
         assert!(parse_candidate(&row).is_err());
-    }
-}
-
-struct PublicDispatch<'a> {
-    pool: &'a humaux_adapters::postgres::PublicWorkerDbPool,
-    projection: &'a dyn PublicProjectionPort,
-}
-
-#[async_trait::async_trait]
-impl humaux_application::public_dispatch::PublicDispatchPort for PublicDispatch<'_> {
-    async fn drain_outbox(
-        &self,
-        tenant_id: humaux_domain::ids::TenantId,
-        limit: i64,
-    ) -> Result<u64, humaux_domain::error::ErrorCode> {
-        crate::public_repo::drain_outbox(self.pool, tenant_id, limit).await
-    }
-    async fn run_once(
-        &self,
-        tenant_id: humaux_domain::ids::TenantId,
-        lease_owner: &str,
-        limit: i64,
-    ) -> Result<u64, humaux_domain::error::ErrorCode> {
-        crate::public_repo::run_once(self.pool, tenant_id, lease_owner, limit, self.projection)
-            .await
-    }
-    async fn run_anonymous_once(
-        &self,
-        lease_owner: &str,
-        limit: i64,
-    ) -> Result<u64, humaux_domain::error::ErrorCode> {
-        crate::public_repo::run_anonymous_once(self.pool, lease_owner, limit, self.projection).await
     }
 }
