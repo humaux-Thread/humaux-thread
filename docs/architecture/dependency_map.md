@@ -18791,7 +18791,6 @@ modules naming it:
 why: serde_json dependency
 
 modules naming it:
-- `humaux-private-worker`
 - `private-worker::distill`
 - `private-worker::route_providers`
 - `private-worker::tests::contribution_execution_runner`
@@ -18806,7 +18805,6 @@ modules naming it:
 why: sha2 dependency
 
 modules naming it:
-- `humaux-private-worker`
 - `private-worker::route_providers`
 - `private-worker::tests::contribution_execution_runner`
 - `private-worker::tests::distill_hop_e2e`
@@ -18923,7 +18921,6 @@ modules naming it:
 why: sha2 dependency
 
 modules naming it:
-- `humaux-private-worker`
 - `private-worker::route_providers`
 - `private-worker::tests::contribution_execution_runner`
 - `private-worker::tests::distill_hop_e2e`
