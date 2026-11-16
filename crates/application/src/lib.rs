@@ -49,3 +49,6 @@ pub mod public_dispatch;
 
 /// Registered query embedding execution (ADR-0012).
 pub mod query_embedding_execution;
+
+/// Private inference RPC lifecycle.
+pub mod private_inference;
