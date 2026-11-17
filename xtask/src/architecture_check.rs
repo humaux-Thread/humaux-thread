@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 94, "HEX-LAYER")
+    hex_exact(actual, baseline, 86, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -1980,7 +1980,7 @@ fn hex_boundary_gate(root: &Path, writer: bool) -> Verdict {
     let (file, ceiling, label) = if writer {
         ("xtask/hex_writer_baseline.txt", 46, "HEX-WRITER")
     } else {
-        ("xtask/hex_context_baseline.txt", 463, "HEX-CONTEXT")
+        ("xtask/hex_context_baseline.txt", 450, "HEX-CONTEXT")
     };
     let actual = if writer {
         hex_writer_actual(root)

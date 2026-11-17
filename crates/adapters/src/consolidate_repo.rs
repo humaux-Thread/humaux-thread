@@ -1,6 +1,6 @@
 //! `adapters::consolidate_repo` — §11.6/§11.7 Private Memory Consolidation SQL, through [`ConsolidationDbPool`] only.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sha2, sqlx]; services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.jobs, private.context_bindings, private.events, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_rollup_sources, private.memory_rollups] x=[control.current_reasoning_route_binding, private.lock_publish_source]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::jobs, adapters::memory_governance_repo, adapters::memory_repo, adapters::postgres, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::consolidate, domain::authority, domain::consolidate, domain::error, domain::ids, domain::ticket_family, projection::stream]
-//! Called-by: [adapters::consolidation_reasoner, adapters::distill_reasoner, humaux-consolidation-worker, tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sha2, sqlx]; services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.jobs, private.context_bindings, private.events, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_rollup_sources, private.memory_rollups] x=[control.current_reasoning_route_binding, private.lock_publish_source]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::consolidation_reasoner, adapters::jobs, adapters::memory_governance_repo, adapters::memory_repo, adapters::postgres, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::consolidate, application::consolidation_execution, domain::authority, domain::consolidate, domain::error, domain::ids, domain::ticket_family, projection::stream]
+//! Called-by: [adapters::consolidation_reasoner, adapters::distill_reasoner, tests]
 //! Invariants: [input selection and materialization happen in ONE REPEATABLE READ READ WRITE transaction (§11.7), so
 //!   no concurrent insert can leak into a run; a lost lease is LostRace and an unknown source UnknownSource, never a
 //!   partial publish; the rollup ticket lands on the source memory's home stream (ADR-0057 D-M)]
@@ -38,9 +38,12 @@ use sqlx::types::Uuid;
 use sqlx::types::time::OffsetDateTime;
 
 use humaux_application::consolidate::{
-    ReasoningRouteBindingId, ReasoningRouteBindingVersion, RollupAuthorityViolation,
-    SourceAuthority, validate_rollup_before_publish,
+    ContentSha256, PrivateReasoningError, PrivateReasoningResult, ReasoningRouteBindingId,
+    ReasoningRouteBindingVersion, RollupAuthorityViolation, SourceAuthority,
+    validate_rollup_before_publish,
 };
+use humaux_application::consolidation_execution::{ConsolidationStore, RollupParts, RollupWire};
+pub use humaux_application::consolidation_execution::{MaterializedInput, PublishOutcome};
 use humaux_domain::authority::{AuthorityClass, EvidenceId, MemoryId};
 use humaux_domain::consolidate::{AutoMutableMemoryId, ClassifiedMemoryId, classify};
 use humaux_domain::error::ErrorCode;
@@ -234,22 +237,6 @@ struct Candidate {
     input_version: i64,
     fingerprint: Vec<u8>,
     has_active_binding: bool,
-}
-
-/// One row [`select_and_materialize_inputs`] actually wrote to
-/// `private.memory_consolidation_inputs` — the tuple §11.8's `input_manifest_hash` must be
-/// computed over (memory_id, input_version, source_hash, ordinal), so the caller never has to
-/// re-derive it from a bare id list.
-#[derive(Debug, Clone)]
-pub struct MaterializedInput {
-    pub memory_id: AutoMutableMemoryId,
-    pub input_version: i64,
-    pub source_hash: Vec<u8>,
-    pub ordinal: i32,
-    /// §11.6 source closure: the input memory's own in-domain Evidence (PRIMARY preferred),
-    /// resolved in the same snapshot SELECT so `publish_rollup`'s `(memory_id, evidence_id)`
-    /// pairs come from the materialized inputs, not a second read.
-    pub evidence_id: EvidenceId,
 }
 
 /// §14/§15.1 `ops.outbox.event_type` `publish_rollup` emits for a published rollup — the one
@@ -522,24 +509,6 @@ pub async fn select_and_materialize_inputs(
 
     txn.commit().await?;
     Ok(accepted)
-}
-
-/// Outcome of [`publish_rollup`] — the three terminal `ConsolidationRunState`s it can reach
-/// (`SUCCEEDED` / `SUCCEEDED_NO_OUTPUT` / `STALE_INPUT`; `FAILED` is the caller's to set on an
-/// inference error, before ever calling this function), plus `LostLease`, which reaches NO
-/// terminal state because the whole transaction rolled back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PublishOutcome {
-    Published {
-        rollup_id: Uuid,
-    },
-    NoOutput,
-    StaleInput,
-    /// The caller passed a [`crate::jobs::DerivedLease`] fence and the job it names was already
-    /// re-claimed by another worker (its `attempt` moved). NOTHING was written: the rollup, its
-    /// closure rows, the ticket and the run's terminal status all rolled back with the fence
-    /// check, so the worker that now holds the job publishes the one and only rollup.
-    LostLease,
 }
 
 /// §11.7: "运行完成准备 publish rollup 时，再验证 input memory version/source_hash. 如果任一
@@ -859,6 +828,119 @@ pub async fn retry_stale_input(
 
 fn stale_publish_sqlstate(code: Option<&str>) -> bool {
     matches!(code, Some("40001" | "40P01"))
+}
+
+/// The production `build_rollup` (§11.6/§11.9): the private worker's JSON reply parsed
+/// fail-closed against exactly this run's materialized `(memory_id, evidence_id)` pairs —
+/// `parse_rollup_output` can only ever pick sources from ids the run itself recorded, and the
+/// rollup body is the reply's `content` string wrapped as `{"content": ...}`.
+pub fn build_rollup(
+    inputs: &[MaterializedInput],
+    result: &PrivateReasoningResult,
+) -> Result<RollupParts, PrivateReasoningError> {
+    let allowed: Vec<(AutoMutableMemoryId, EvidenceId)> = inputs
+        .iter()
+        .map(|input| (input.memory_id, input.evidence_id))
+        .collect();
+    let (content, class, sources) =
+        crate::consolidation_reasoner::parse_rollup_output(&result.output_bytes, &allowed)
+            .map_err(|code| {
+                PrivateReasoningError::new(format!("ROLLUP_OUTPUT_REJECTED:{code:?}"))
+            })?;
+    Ok((serde_json::json!({ "content": content }), class, sources))
+}
+
+#[async_trait::async_trait]
+impl ConsolidationStore for ConsolidationDbPool {
+    type Error = ConsolidateRepoError;
+    type Lease<'a> = crate::jobs::DerivedLease<'a>;
+
+    async fn create_run(
+        &self,
+        tenant_id: Uuid,
+        domain_id: Uuid,
+        workspace_id: Option<Uuid>,
+    ) -> Result<Uuid, Self::Error> {
+        create_run(self, tenant_id, domain_id, workspace_id).await
+    }
+
+    async fn select_inputs(
+        &self,
+        run_id: Uuid,
+        tenant_id: Uuid,
+        domain_id: Uuid,
+        workspace_id: Option<Uuid>,
+        max_inputs: i64,
+    ) -> Result<Vec<MaterializedInput>, Self::Error> {
+        select_and_materialize_inputs(self, run_id, tenant_id, domain_id, workspace_id, max_inputs)
+            .await
+    }
+
+    async fn recover_input_error(
+        &self,
+        tenant_id: Uuid,
+        run_id: Uuid,
+        error: Self::Error,
+    ) -> Result<PublishOutcome, Self::Error> {
+        retry_stale_input(self, tenant_id, run_id, None, Err(error)).await
+    }
+
+    async fn publish_rollup(
+        &self,
+        run_id: Uuid,
+        tenant_id: Uuid,
+        workspace_id: Option<Uuid>,
+        content: serde_json::Value,
+        rollup_class: AuthorityClass,
+        manifest_hash: Option<&[u8]>,
+        sources: &[(AutoMutableMemoryId, EvidenceId)],
+        fence: Option<&Self::Lease<'_>>,
+    ) -> Result<PublishOutcome, Self::Error> {
+        publish_rollup(
+            self,
+            run_id,
+            tenant_id,
+            workspace_id,
+            content,
+            rollup_class,
+            manifest_hash,
+            sources,
+            fence,
+        )
+        .await
+    }
+
+    async fn resolve_binding(
+        &self,
+        tenant_id: Uuid,
+        domain_id: Uuid,
+    ) -> Result<Option<(ReasoningRouteBindingId, ReasoningRouteBindingVersion)>, Self::Error> {
+        resolve_consolidate_binding(self, tenant_id, domain_id).await
+    }
+
+    fn error_class(error: &Self::Error) -> ErrorCode {
+        match error {
+            ConsolidateRepoError::HomeStream(code) => *code,
+            ConsolidateRepoError::Db(_) | ConsolidateRepoError::Jobs(_) => {
+                ErrorCode::DependencyUnavailable
+            }
+            _ => ErrorCode::InvalidInput,
+        }
+    }
+}
+
+impl RollupWire for ConsolidationDbPool {
+    fn manifest_hash(&self, inputs: &[MaterializedInput]) -> ContentSha256 {
+        crate::consolidation_reasoner::compute_input_manifest_hash(inputs)
+    }
+
+    fn decode_rollup(
+        &self,
+        inputs: &[MaterializedInput],
+        result: &PrivateReasoningResult,
+    ) -> Result<RollupParts, PrivateReasoningError> {
+        build_rollup(inputs, result)
+    }
 }
 
 #[cfg(test)]

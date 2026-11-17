@@ -12,9 +12,7 @@
 //!   HUMAUX_CONSOLIDATION_WORKER_DIAL_TIMEOUT_SECS, HUMAUX_CONSOLIDATION_WORKER_LEASE_SECS,
 //!   HUMAUX_CONSOLIDATION_WORKER_MAX_ATTEMPTS, HUMAUX_CONSOLIDATION_WORKER_MAX_INPUTS,
 //!   HUMAUX_CONSOLIDATION_WORKER_POLL_INTERVAL_SECS, HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID, HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH,
-//!   HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR, HUMAUX_TEST_PG_DSN]; modules=[adapters::consolidate_repo, adapters::jobs, adapters::postgres,
-//!   application::consolidate, humaux-consolidation-worker, humaux-testkit,
-//!   testkit::fixture_purge, testkit::reaped]
+//!   HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR, HUMAUX_TEST_PG_DSN]; modules=[adapters::consolidate_repo, adapters::jobs, adapters::postgres, application::consolidate, application::consolidation_execution, humaux-testkit, testkit::fixture_purge, testkit::reaped]
 //! Called-by: [cargo-test]
 //! Invariants: [one tenant-less pass completes both tenants' work, claims each job exactly once under RLS, and a
 //!   killed worker's expired lease is re-claimed with the result written once; an isolation-setup failure is a
@@ -44,6 +42,7 @@
 //! visible SKIP and return — same fixture shape as `tests/run_once_e2e.rs`.
 
 use humaux_adapters::consolidate_repo::PublishOutcome;
+use humaux_adapters::consolidate_repo::build_rollup;
 use humaux_adapters::jobs::{self, DerivedJobType};
 use humaux_adapters::postgres::ConsolidationDbPool;
 use humaux_application::consolidate::{
@@ -51,7 +50,7 @@ use humaux_application::consolidate::{
     ProviderTraceRef, ReasoningRouteBindingId, ReasoningRouteBindingVersion,
     SealedPrivateReasoningRequest,
 };
-use humaux_consolidation_worker::{DispatchConfig, build_rollup, dispatch_pass, run_once_bound};
+use humaux_consolidation_worker::{DispatchConfig, dispatch_pass, run_once_bound};
 use humaux_testkit::fixture_purge::purge_tenant_fixture_sql;
 use humaux_testkit::reaped::SpawnReaped;
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
