@@ -4,11 +4,7 @@
 //! Invariants: [no processing loop or business decisions; health observation is best effort and never changes settlement]
 //! Spec: ADR-0130 D2; ADR-0060 E3
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use humaux_adapters::{
     byok::ssrf,
@@ -36,7 +32,7 @@ use humaux_application::distill_execution::DistillDispatchConfig;
 use humaux_application::private_inference::PrivateInferenceCallsPort;
 use humaux_domain::{authority::AuthorityClass, error::ErrorCode};
 
-use crate::route_providers::{self, EnvCredentialMap, RouteProviders};
+use crate::route_providers::{self, RouteProviders};
 use uuid::Uuid;
 
 /// Failure of a bounded contribution run, preserving the claim and execution error classes.
@@ -224,20 +220,8 @@ pub fn reasoner_config(permit_ttl: Duration) -> Result<ContributionReasonerConfi
 }
 
 /// Bind each admitted locator to its provider instance (ADR-0060 D-B).
-pub fn admitted_providers(
-    credentials: EnvCredentialMap,
-    recipients: BTreeMap<Uuid, Vec<String>>,
-    regions: BTreeSet<String>,
-    resolver: Arc<dyn ssrf::DnsResolver>,
-    http_timeout: Duration,
-) -> Box<ProviderFor> {
-    let routes = Arc::new(RouteProviders::new(
-        credentials,
-        recipients,
-        regions,
-        resolver,
-        http_timeout,
-    ));
+pub fn admitted_providers(routes: RouteProviders) -> Box<ProviderFor> {
+    let routes = Arc::new(routes);
     Box::new(move |route: &ReasoningAdmissionLocator| routes.provider_for(route))
 }
 

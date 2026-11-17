@@ -63,7 +63,7 @@ use humaux_application::distill_execution::DistillCallBudget;
 use humaux_private_worker::bootstrap::{self, InferenceRuntime};
 use humaux_private_worker::distill::{self, DistillDispatchConfig};
 use humaux_private_worker::inference_rpc::{RpcState, bind_socket, serve};
-use humaux_private_worker::route_providers;
+use humaux_private_worker::route_providers::{self, RouteProviders};
 use humaux_telemetry::metrics::{
     OpsListener, dns_pin_deferred_total, families, parse_ops_addr, process_routes, serve_loopback,
     write_family,
@@ -387,8 +387,9 @@ async fn bootstrap() -> Result<Bootstrap, ModeFailure> {
         recipients.len(),
         regions.len()
     );
-    let providers =
-        bootstrap::admitted_providers(credentials, recipients, regions, resolver, http_timeout);
+    // ADR-0060 D-B T31: this is the sole production RouteProviders constructor.
+    let routes = RouteProviders::new(credentials, recipients, regions, resolver, http_timeout);
+    let providers = bootstrap::admitted_providers(routes);
     Ok(Bootstrap {
         inference: InferenceRuntime::new(pool, config, providers, health_renew_seconds),
         http_timeout,
