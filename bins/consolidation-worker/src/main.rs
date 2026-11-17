@@ -45,12 +45,8 @@
 //! tenant context through the ordinary repos, and the route binding is resolved per tenant
 //! through the narrow 0147 resolver (`consolidate_repo::resolve_consolidate_binding`).
 //!
-//!
-//! The application decodes the private worker's typed
-//! JSON reply parsed fail-closed against this run's own materialized `(memory_id, evidence_id)`
-//! pairs (`humaux_adapters::consolidation_reasoner::parse_rollup_output`, shared with the
-//! private worker). §11.6's guard holds by construction — the closure still has no DB
-//! capability and can only pick sources from ids the run itself recorded.
+//! The §11.8 reply decoder validates the private worker's JSON against this run's materialized
+//! `(memory_id, evidence_id)` source pairs. The run uses only those source IDs (§11.6).
 //!
 //! Card 34 / ADR-0061 D-B: `--serve` opens a loopback ops listener (`/metrics`, `/status`). No §41.2 family is
 //! counted in this process yet, so `/metrics` is empty and Prometheus' `up` is the resident liveness signal (E10).

@@ -830,6 +830,119 @@ fn stale_publish_sqlstate(code: Option<&str>) -> bool {
     matches!(code, Some("40001" | "40P01"))
 }
 
+/// The production `build_rollup` (§11.6/§11.9): the private worker's JSON reply parsed
+/// fail-closed against exactly this run's materialized `(memory_id, evidence_id)` pairs —
+/// `parse_rollup_output` can only ever pick sources from ids the run itself recorded, and the
+/// rollup body is the reply's `content` string wrapped as `{"content": ...}`.
+pub fn build_rollup(
+    inputs: &[MaterializedInput],
+    result: &PrivateReasoningResult,
+) -> Result<RollupParts, PrivateReasoningError> {
+    let allowed: Vec<(AutoMutableMemoryId, EvidenceId)> = inputs
+        .iter()
+        .map(|input| (input.memory_id, input.evidence_id))
+        .collect();
+    let (content, class, sources) =
+        crate::consolidation_reasoner::parse_rollup_output(&result.output_bytes, &allowed)
+            .map_err(|code| {
+                PrivateReasoningError::new(format!("ROLLUP_OUTPUT_REJECTED:{code:?}"))
+            })?;
+    Ok((serde_json::json!({ "content": content }), class, sources))
+}
+
+#[async_trait::async_trait]
+impl ConsolidationStore for ConsolidationDbPool {
+    type Error = ConsolidateRepoError;
+    type Lease<'a> = crate::jobs::DerivedLease<'a>;
+
+    async fn create_run(
+        &self,
+        tenant_id: Uuid,
+        domain_id: Uuid,
+        workspace_id: Option<Uuid>,
+    ) -> Result<Uuid, Self::Error> {
+        create_run(self, tenant_id, domain_id, workspace_id).await
+    }
+
+    async fn select_inputs(
+        &self,
+        run_id: Uuid,
+        tenant_id: Uuid,
+        domain_id: Uuid,
+        workspace_id: Option<Uuid>,
+        max_inputs: i64,
+    ) -> Result<Vec<MaterializedInput>, Self::Error> {
+        select_and_materialize_inputs(self, run_id, tenant_id, domain_id, workspace_id, max_inputs)
+            .await
+    }
+
+    async fn recover_input_error(
+        &self,
+        tenant_id: Uuid,
+        run_id: Uuid,
+        error: Self::Error,
+    ) -> Result<PublishOutcome, Self::Error> {
+        retry_stale_input(self, tenant_id, run_id, None, Err(error)).await
+    }
+
+    async fn publish_rollup(
+        &self,
+        run_id: Uuid,
+        tenant_id: Uuid,
+        workspace_id: Option<Uuid>,
+        content: serde_json::Value,
+        rollup_class: AuthorityClass,
+        manifest_hash: Option<&[u8]>,
+        sources: &[(AutoMutableMemoryId, EvidenceId)],
+        fence: Option<&Self::Lease<'_>>,
+    ) -> Result<PublishOutcome, Self::Error> {
+        publish_rollup(
+            self,
+            run_id,
+            tenant_id,
+            workspace_id,
+            content,
+            rollup_class,
+            manifest_hash,
+            sources,
+            fence,
+        )
+        .await
+    }
+
+    async fn resolve_binding(
+        &self,
+        tenant_id: Uuid,
+        domain_id: Uuid,
+    ) -> Result<Option<(ReasoningRouteBindingId, ReasoningRouteBindingVersion)>, Self::Error> {
+        resolve_consolidate_binding(self, tenant_id, domain_id).await
+    }
+
+    fn error_class(error: &Self::Error) -> ErrorCode {
+        match error {
+            ConsolidateRepoError::HomeStream(code) => *code,
+            ConsolidateRepoError::Db(_) | ConsolidateRepoError::Jobs(_) => {
+                ErrorCode::DependencyUnavailable
+            }
+            _ => ErrorCode::InvalidInput,
+        }
+    }
+}
+
+impl RollupWire for ConsolidationDbPool {
+    fn manifest_hash(&self, inputs: &[MaterializedInput]) -> ContentSha256 {
+        crate::consolidation_reasoner::compute_input_manifest_hash(inputs)
+    }
+
+    fn decode_rollup(
+        &self,
+        inputs: &[MaterializedInput],
+        result: &PrivateReasoningResult,
+    ) -> Result<RollupParts, PrivateReasoningError> {
+        build_rollup(inputs, result)
+    }
+}
+
 #[cfg(test)]
 #[test]
 fn publish_transaction_sqlstates_are_exact() {
@@ -1047,118 +1160,5 @@ mod binding_predicate_tests {
             "DELETE FROM control.tenants WHERE tenant_id = $1",
             &[&tenant_id],
         );
-    }
-}
-
-/// The production `build_rollup` (§11.6/§11.9): the private worker's JSON reply parsed
-/// fail-closed against exactly this run's materialized `(memory_id, evidence_id)` pairs —
-/// `parse_rollup_output` can only ever pick sources from ids the run itself recorded, and the
-/// rollup body is the reply's `content` string wrapped as `{"content": ...}`.
-pub fn build_rollup(
-    inputs: &[MaterializedInput],
-    result: &PrivateReasoningResult,
-) -> Result<RollupParts, PrivateReasoningError> {
-    let allowed: Vec<(AutoMutableMemoryId, EvidenceId)> = inputs
-        .iter()
-        .map(|input| (input.memory_id, input.evidence_id))
-        .collect();
-    let (content, class, sources) =
-        crate::consolidation_reasoner::parse_rollup_output(&result.output_bytes, &allowed)
-            .map_err(|code| {
-                PrivateReasoningError::new(format!("ROLLUP_OUTPUT_REJECTED:{code:?}"))
-            })?;
-    Ok((serde_json::json!({ "content": content }), class, sources))
-}
-
-#[async_trait::async_trait]
-impl ConsolidationStore for ConsolidationDbPool {
-    type Error = ConsolidateRepoError;
-    type Lease<'a> = crate::jobs::DerivedLease<'a>;
-
-    async fn create_run(
-        &self,
-        tenant_id: Uuid,
-        domain_id: Uuid,
-        workspace_id: Option<Uuid>,
-    ) -> Result<Uuid, Self::Error> {
-        create_run(self, tenant_id, domain_id, workspace_id).await
-    }
-
-    async fn select_inputs(
-        &self,
-        run_id: Uuid,
-        tenant_id: Uuid,
-        domain_id: Uuid,
-        workspace_id: Option<Uuid>,
-        max_inputs: i64,
-    ) -> Result<Vec<MaterializedInput>, Self::Error> {
-        select_and_materialize_inputs(self, run_id, tenant_id, domain_id, workspace_id, max_inputs)
-            .await
-    }
-
-    async fn recover_input_error(
-        &self,
-        tenant_id: Uuid,
-        run_id: Uuid,
-        error: Self::Error,
-    ) -> Result<PublishOutcome, Self::Error> {
-        retry_stale_input(self, tenant_id, run_id, None, Err(error)).await
-    }
-
-    async fn publish_rollup(
-        &self,
-        run_id: Uuid,
-        tenant_id: Uuid,
-        workspace_id: Option<Uuid>,
-        content: serde_json::Value,
-        rollup_class: AuthorityClass,
-        manifest_hash: Option<&[u8]>,
-        sources: &[(AutoMutableMemoryId, EvidenceId)],
-        fence: Option<&Self::Lease<'_>>,
-    ) -> Result<PublishOutcome, Self::Error> {
-        publish_rollup(
-            self,
-            run_id,
-            tenant_id,
-            workspace_id,
-            content,
-            rollup_class,
-            manifest_hash,
-            sources,
-            fence,
-        )
-        .await
-    }
-
-    async fn resolve_binding(
-        &self,
-        tenant_id: Uuid,
-        domain_id: Uuid,
-    ) -> Result<Option<(ReasoningRouteBindingId, ReasoningRouteBindingVersion)>, Self::Error> {
-        resolve_consolidate_binding(self, tenant_id, domain_id).await
-    }
-
-    fn error_class(error: &Self::Error) -> ErrorCode {
-        match error {
-            ConsolidateRepoError::HomeStream(code) => *code,
-            ConsolidateRepoError::Db(_) | ConsolidateRepoError::Jobs(_) => {
-                ErrorCode::DependencyUnavailable
-            }
-            _ => ErrorCode::InvalidInput,
-        }
-    }
-}
-
-impl RollupWire for ConsolidationDbPool {
-    fn manifest_hash(&self, inputs: &[MaterializedInput]) -> ContentSha256 {
-        crate::consolidation_reasoner::compute_input_manifest_hash(inputs)
-    }
-
-    fn decode_rollup(
-        &self,
-        inputs: &[MaterializedInput],
-        result: &PrivateReasoningResult,
-    ) -> Result<RollupParts, PrivateReasoningError> {
-        build_rollup(inputs, result)
     }
 }
