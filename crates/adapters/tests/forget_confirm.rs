@@ -592,6 +592,29 @@ fn g_m19_2_closure_grew_is_refused_before_writes() {
                 reason: "manifest_changed"
             })
         ));
+        let mut presented = ConfirmationClaim {
+            request_sha256: None,
+            ..claim
+        };
+        assert!(matches!(
+            h.rt.block_on(forget_repo::accept_previewed(
+                &h.runtime,
+                &h.auth,
+                request.request_id,
+                &mut presented,
+            )),
+            Err(ForgetRepoError::Refused {
+                code: ErrorCode::Conflict,
+                reason: "manifest_changed"
+            })
+        ));
+        assert_eq!(
+            presented.request_sha256,
+            Some(confirmation_digest(
+                DeletionScopeKind::EvidenceClosure,
+                &request.manifest_hash
+            )),
+        );
         assert_eq!(footprint(&mut h), (0, 0, 0, 0, 0));
         check(&world, &h, BTreeSet::from([world.ctrl, world.gated]));
     });

@@ -1,6 +1,6 @@
 //! `application::lifecycle_execution` — whole-transaction memory governance ports (§36; ADR-0130).
 //! Depends-on: crates=[async-trait, humaux-domain, serde_json, time, uuid]; services=[]; env=[]; modules=[application::remember, domain::affect, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::subject]
-//! Called-by: [adapters::affect_repo, adapters::context_repo, adapters::memory_governance_repo, adapters::subject_repo, application::affect, gateway::bootstrap, gateway::memory, tests]
+//! Called-by: [adapters::affect_repo, adapters::context_repo, adapters::memory_governance_repo, adapters::subject_repo, application::affect, gateway::bootstrap, gateway::guard, gateway::memory, tests]
 //! Invariants: [one port call owns one complete PG transaction; authorization and final read gate remain unchanged]
 //! Spec: §36; ADR-0130
 use crate::remember::AffectInput;
