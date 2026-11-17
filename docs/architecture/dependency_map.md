@@ -2350,13 +2350,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.register_continuity_project`
 - service `PostgreSQL(role_gateway)`
 
-#### `adapters::credential_repo`
-- reads `control.workspace_memberships`
-- executes `control.api_key_lookup`
-- executes `control.api_key_rehash`
-- executes `control.api_key_touch_last_used`
-- service `PostgreSQL(any)`
-
 #### `adapters::disclosure`
 - writes `ops.data_disclosure_sources`
 - writes `ops.data_disclosures`
@@ -2688,6 +2681,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::affect`
 
+#### `application::api_key`
+
 #### `application::archive`
 
 #### `application::auth`
@@ -2797,6 +2792,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::lifecycle`
 
 #### `domain::memory`
+
+#### `domain::network`
 
 #### `domain::note`
 
@@ -5872,8 +5869,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::credential_repo`
 - (no process): `gateway::tests::service_credentials`
-- process(humaux-gateway): `adapters::credential_repo`
 
 ### `control.api_key_rehash`
 read by:
@@ -5881,9 +5878,9 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::credential_repo`
 - (no process): `gateway::tests::service_credentials`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::credential_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.api_key_touch_last_used`
@@ -5892,8 +5889,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::credential_repo`
 - (no process): `gateway::tests::service_credentials`
-- process(humaux-gateway): `adapters::credential_repo`
 
 ### `control.api_keys`
 read by:
@@ -8228,11 +8225,11 @@ executed by:
 
 ### `control.workspace_memberships`
 read by:
+- (no process): `adapters::credential_repo`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-gateway): `adapters::credential_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
@@ -15054,6 +15051,7 @@ modules naming it:
 - `adapters::contribution_reasoner`
 - `adapters::contribution_scan`
 - `adapters::coord_repo`
+- `adapters::credential_repo`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
 - `adapters::entitlement_repo`
@@ -15223,6 +15221,7 @@ modules naming it:
 - `adapters::contribution_reasoner`
 - `adapters::contribution_scan`
 - `adapters::coord_repo`
+- `adapters::credential_repo`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
 - `adapters::email`
@@ -16320,6 +16319,7 @@ why: object-safe async ports (PrivateReasoningPort et al.)
 
 modules naming it:
 - `application::affect`
+- `application::api_key`
 - `application::billing`
 - `application::consolidate`
 - `application::continuity`
@@ -17872,6 +17872,7 @@ modules naming it:
 why: use-case layer (ports + orchestration) this package wires
 
 modules naming it:
+- `gateway::auth`
 - `gateway::auth_pages`
 - `gateway::billing_webhook`
 - `gateway::bootstrap`
@@ -17959,7 +17960,6 @@ modules naming it:
 why: MCP/HTTP edge protocol types and middleware
 
 modules naming it:
-- `gateway::auth`
 - `gateway::auth_pages`
 - `gateway::bootstrap`
 - `gateway::guard`

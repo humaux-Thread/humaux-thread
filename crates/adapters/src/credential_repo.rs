@@ -1,6 +1,6 @@
 //! `adapters::credential_repo` — Gateway-only read adapter for §73.5.1 service credential bindings.
-//! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(any) r=[control.workspace_memberships] x=[control.api_key_lookup, control.api_key_rehash, control.api_key_touch_last_used]]; env=[]; modules=[adapters::postgres, domain::error, domain::identity]
-//! Called-by: [gateway::auth, tests]
+//! Depends-on: crates=[humaux-domain, sqlx, async-trait, humaux-application]; services=[PostgreSQL(any) r=[control.workspace_memberships] x=[control.api_key_lookup, control.api_key_rehash, control.api_key_touch_last_used]]; env=[]; modules=[adapters::postgres, domain::error, domain::identity, application::api_key, domain::ids]
+//! Called-by: [tests]
 //! Invariants: [returns database facts only (HMAC and authorization stay in the auth layer); the workspace-ceiling
 //!   read runs only after a user-bound key validates, so a bad key does no membership work; a PG error is
 //!   DependencyUnavailable; a verifier is rewritten only through the epoch-gated, window-bounded api_key_rehash door (ADR-0059 D-H, migration 0204)]
@@ -14,8 +14,11 @@
 //! layer runs only after `validate_api_key` succeeds for a user-bound credential (ADR-0035, card
 //! 13) — so a machine credential or a bad key does no membership DB work.
 
+use humaux_application::api_key::{ApiKeyRecord, ApiKeyStatus, CredentialFacts, CredentialStore};
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::MembershipState;
+use humaux_domain::identity::PrincipalId;
+use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use sqlx::Row;
 use sqlx::types::Uuid;
 use sqlx::types::time::OffsetDateTime;
@@ -287,4 +290,61 @@ pub async fn rehash(
         .fetch_one(pool.pool())
         .await
         .map_err(db_error)
+}
+
+#[async_trait::async_trait]
+impl CredentialStore for RuntimeDbPool {
+    async fn lookup(&self, prefix: &str) -> Result<Option<CredentialFacts>, ErrorCode> {
+        let Some(row) = lookup(self, prefix).await? else {
+            return Ok(None);
+        };
+        Ok(Some(CredentialFacts {
+            principal: PrincipalId(row.api_key_id),
+            tenant_id: TenantId(row.tenant_id),
+            key: ApiKeyRecord {
+                key_hash: row.key_hash,
+                status: ApiKeyStatus::from_db_str(&row.status).ok_or(ErrorCode::Unauthorized)?,
+                allowed_cidrs: row
+                    .allowed_cidrs
+                    .iter()
+                    .map(|s| s.parse().map_err(|_| ErrorCode::Unauthorized))
+                    .collect::<Result<_, _>>()?,
+                expires_at: row.expires_at.map(Into::into),
+                revoked_at: row.revoked_at.map(Into::into),
+            },
+            scopes: row.scopes,
+            authorization_version: row.authorization_version,
+            user_id: row.user_id.map(UserId),
+            workspace_id: row.workspace_id.map(WorkspaceId),
+            tenant_security_epoch: row.tenant_security_epoch,
+            user_security_epoch: row.user_security_epoch,
+            tenant_state: row.tenant_state,
+            live_tenant_security_epoch: row.live_tenant_security_epoch,
+            user_state: row.user_state,
+            live_user_security_epoch: row.live_user_security_epoch,
+            membership_state: row.membership_state,
+        }))
+    }
+    async fn live_workspaces(
+        &self,
+        tenant: TenantId,
+        user: UserId,
+    ) -> Result<Vec<WorkspaceId>, ErrorCode> {
+        Ok(load_live_workspace_ids(self, tenant.0, user.0)
+            .await?
+            .into_iter()
+            .map(WorkspaceId)
+            .collect())
+    }
+    async fn rehash(
+        &self,
+        principal: PrincipalId,
+        old: &[u8],
+        new: &[u8],
+    ) -> Result<Option<bool>, ErrorCode> {
+        rehash(self, principal.0, old, new).await
+    }
+    async fn mark_used(&self, principal: PrincipalId) -> Result<(), ErrorCode> {
+        mark_used(self, principal.0).await
+    }
 }

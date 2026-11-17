@@ -17,7 +17,7 @@ humaux-application = { path = "../../crates/application" }
 humaux-contracts = { path = "../../crates/contracts" }
 # why: domain ids, errors and value types shared across layers; used-by: [gateway::auth, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, tests]
 humaux-domain = { path = "../../crates/domain" }
-# why: MCP/HTTP edge protocol types and middleware; used-by: [gateway::auth, gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, tests]
+# why: MCP/HTTP edge protocol types and middleware; used-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, tests]
 humaux-protocol = { path = "../../crates/protocol" }
 # why: projection cards/serving types for recall and ingest; used-by: [gateway::context, gateway::memory, gateway::recall, gateway::remember, tests]
 humaux-projection = { path = "../../crates/projection" }
