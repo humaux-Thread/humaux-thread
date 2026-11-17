@@ -1,10 +1,10 @@
-//! `adapters::request_guard_repo` — RequestGuard's first PostgreSQL persistence seam: effective-entitlement reads and
+//! `adapters::request_guard_repo` — PostgreSQL effective-entitlement reads and
 //!   FORCE-RLS operational-audit writes.
 //! Depends-on: crates=[humaux-domain, serde_json, sqlx]; services=[PostgreSQL(role_gateway)
 //!   r=[control.entitlement_snapshots] x=[control.audit_event_insert]]; env=[]; modules=[adapters::postgres,
 //!   adapters::quota_repo, domain::audit, domain::error, domain::identity, domain::ids]
 //! Called-by: [adapters::audited_read_quota, adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::independent_audit, adapters::memory_governance_repo, adapters::operation_receipt, tests]
-//! Invariants: [policy stays in RequestGuard; this reads the effective entitlement snapshot (its staged successor
+//! Invariants: [this reads the effective entitlement snapshot (its staged successor
 //!   once that is in force, ADR-0072 D-A) and commits quota transitions together with the §77 audit row in one
 //!   transaction; a missing entitlement is EntitlementRequired]
 //! Spec: Baseline §72.2.1; §77; ADR-0072

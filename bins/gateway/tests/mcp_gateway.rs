@@ -5205,14 +5205,32 @@ fn read_quota_reservation_audit_failure_rolls_back() {
                 owner: handle.owner_client().expect("isolated fixture owner"),
                 name: Some(constraint.clone()),
             };
-            cleanup.owner.batch_execute(&format!("ALTER TABLE control.audit_events ADD CONSTRAINT {constraint} CHECK (tenant_id <> '{tenant}'::uuid OR action <> 'MCP_QUOTA_RESERVED') NOT VALID")).expect("fail only this tenant's reserve audit");
+            cleanup
+                .owner
+                .batch_execute(&format!(
+                    "ALTER TABLE control.audit_events ADD CONSTRAINT {constraint}
+                 CHECK (tenant_id <> '{tenant}'::uuid OR action <> 'MCP_QUOTA_RESERVED') NOT VALID"
+                ))
+                .expect("fail only this tenant's reserve audit");
             let (status, response) = quota_memory_get(handle, bearer, id);
             cleanup.clear().expect("remove fixture fault");
             assert_eq!(status, 200, "{response}");
             assert_tool_error(&response, "INTERNAL");
-            let denied = handle.admin.query_one("SELECT request_id FROM control.audit_events WHERE tenant_id=$1 AND resource_id='memory.get' AND action='MCP_REQUEST_DENIED' AND result='INTERNAL'", &[&tenant]).expect("exactly one denial audit");
+            let denied = handle
+                .admin
+                .query_one(
+                    "SELECT request_id FROM control.audit_events
+                 WHERE tenant_id=$1 AND resource_id='memory.get'
+                   AND action='MCP_REQUEST_DENIED' AND result='INTERNAL'",
+                    &[&tenant],
+                )
+                .expect("exactly one denial audit");
             let request: String = denied.get(0);
-            let reservation_count: i64 = handle.admin.query_one("SELECT count(*) FROM control.usage_reservations WHERE tenant_id=$1 AND request_id=$2", &[&tenant, &Uuid::parse_str(&request).unwrap()]).unwrap().get(0);
+            let request_uuid = Uuid::parse_str(&request).expect("guard request UUID");
+            let reservation_count: i64 = handle.admin.query_one(
+                "SELECT count(*) FROM control.usage_reservations WHERE tenant_id=$1 AND request_id=$2",
+                &[&tenant, &request_uuid],
+            ).expect("check denied request's reservation").get(0);
             assert_eq!(
                 reservation_count, 0,
                 "reserve audit failed but a reservation committed"
@@ -5222,7 +5240,14 @@ fn read_quota_reservation_audit_failure_rolls_back() {
                 before,
                 "window counters escaped rollback"
             );
-            let actions = handle.admin.query("SELECT action FROM control.audit_events WHERE tenant_id=$1 AND request_id=$2 AND resource_id='memory.get'", &[&tenant, &request]).unwrap();
+            let actions = handle
+                .admin
+                .query(
+                    "SELECT action FROM control.audit_events
+                 WHERE tenant_id=$1 AND request_id=$2 AND resource_id='memory.get'",
+                    &[&tenant, &request],
+                )
+                .expect("read every operation audit for this request");
             assert_eq!(
                 actions
                     .iter()
