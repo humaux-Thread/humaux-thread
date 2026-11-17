@@ -7,8 +7,7 @@
 //!   control.tenants, ops.jobs, ops.outbox, private.events, private.evidence_objects,
 //!   private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence,
 //!   private.memory_records, private.memory_rollup_sources, private.memory_rollups, projection.stream_checkpoints,
-//!   projection.stream_log]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::consolidate_repo, adapters::postgres,
-//!   application::consolidate, domain::authority, humaux-consolidation-worker, humaux-testkit]
+//!   projection.stream_log]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::consolidate_repo, adapters::postgres, application::consolidate, application::consolidation_execution, domain::authority, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [run_once against a real ConsolidationDbPool: empty input makes no provider call (§11.5.1) and the
 //!   publish path leaves exactly the §11.7-§11.9 rows; no DSN / unreachable / unmigrated DB is a visible SKIP]
@@ -382,6 +381,8 @@ fn run_once_publishes_rollup_from_inference_result() {
 /// error types still compose.
 #[test]
 fn run_once_error_displays() {
-    let e = RunOnceError::Reasoning(PrivateReasoningError::new("plain marker, no secret"));
+    let e = RunOnceError::<humaux_adapters::consolidate_repo::ConsolidateRepoError>::Reasoning(
+        PrivateReasoningError::new("plain marker, no secret"),
+    );
     assert!(!format!("{e}").is_empty());
 }
