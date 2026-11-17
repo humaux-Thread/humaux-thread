@@ -1,7 +1,7 @@
 //! `application::contribution_execution` — Phase 9 R4 application contract for one durable two-stage contribution
 //!   execution.
 //! Depends-on: crates=[async-trait, humaux-domain, serde_json, sha2, uuid]; services=[]; env=[]; modules=[application::consolidate, application::contribute, domain::error, domain::evidence]
-//! Called-by: [adapters::contribution_execution_ingress, adapters::contribution_execution_repo, adapters::contribution_reasoner, humaux-private-worker, tests]
+//! Called-by: [adapters::contribution_execution_ingress, adapters::contribution_execution_repo, adapters::contribution_reasoner, humaux-private-worker, private-worker::bootstrap, tests]
 //! Invariants: [only newly reserved permits dispatch; exact late completion retries only a fresh-lease refusal; each durable transition remains one adapter transaction]
 //! Spec: none
 //!
@@ -997,6 +997,24 @@ pub trait ContributionExecutionPort: Sync {
     ) -> Result<bool, ContributionExecutionFailure<Self::Error>>;
     fn is_fresh_lease_required(error: &ContributionExecutionFailure<Self::Error>) -> bool;
 }
+/// Claims the exact contribution job type from the process queue (ADR-0130 D2).
+///
+/// Completion and terminal settlement remain coupled to workflow writes in
+/// `ContributionExecutionPort`. The contribution runner does not renew leases.
+pub trait ContributionJobLease: Sync {
+    /// Opaque queue failure for the process to translate.
+    type Error: Send;
+
+    /// Claim at most `limit` contribution jobs with the requested lease.
+    fn claim(
+        &self,
+        tenant_id: Uuid,
+        lease_owner: &str,
+        lease_seconds: f64,
+        limit: i64,
+    ) -> impl std::future::Future<Output = Result<Vec<ContributionClaim>, Self::Error>> + Send;
+}
+
 /// Consumer-owned health observation boundary; process assembly supplies its implementation.
 pub trait ContributionRouteHealth: Sync {
     /// Best effort, after persistence; failure must never change job settlement (ADR-0060 E3).
@@ -1029,6 +1047,39 @@ impl<'a, P: ContributionExecutionPort, H: ContributionRouteHealth>
             config,
         })
     }
+    /// Claim at most one exact contribution job, then run its persisted workflow.
+    pub async fn run_once<J, E>(
+        &self,
+        jobs: &J,
+        tenant_id: Uuid,
+    ) -> Result<ContributionRunOnceReport, E>
+    where
+        J: ContributionJobLease,
+        E: From<J::Error> + From<ErrorCode> + From<ContributionExecutionFailure<P::Error>>,
+    {
+        if tenant_id.is_nil() {
+            return Err(ErrorCode::InvalidInput.into());
+        }
+        let mut claimed = jobs
+            .claim(
+                tenant_id,
+                &self.config.lease_owner,
+                self.config.lease_seconds,
+                1,
+            )
+            .await?;
+        let Some(job) = claimed.pop() else {
+            return Ok(ContributionRunOnceReport::Idle);
+        };
+        if !claimed.is_empty() {
+            return Err(ContributionExecutionFailure::<P::Error>::Invariant(
+                "bounded claim returned more than one job",
+            )
+            .into());
+        }
+        self.run_claimed(tenant_id, job).await.map_err(E::from)
+    }
+
     /// Runs the already claimed contribution while preserving the generation fence.
     pub async fn run_claimed(
         &self,

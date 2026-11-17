@@ -1,0 +1,187 @@
+//! `private-worker::bootstrap` — Adapter construction and direct delegation for consumer ports (ADR-0130 D2).
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, uuid]; services=[PostgreSQL(role_private_worker)]; env=[]; modules=[adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::contribution_scan, adapters::jobs, adapters::postgres, adapters::reasoning_route_admission, application::contribution_execution, domain::error]
+//! Called-by: [private-worker::inference_rpc, private-worker::route_providers, tests]
+//! Invariants: [no processing loop or business decisions; health observation is best effort and never changes settlement]
+//! Spec: ADR-0130 D2; ADR-0060 E3
+
+use humaux_adapters::{
+    contribution_execution_repo::ContributionExecutionRepoError,
+    contribution_reasoner::{self, ContributionReasoner},
+    contribution_scan::ContributionScanner,
+    jobs::{self, JobStatus, JobsError},
+    postgres::PrivateWorkerDbPool,
+    reasoning_route_admission,
+};
+use humaux_application::contribution_execution::{
+    ContributionClaim, ContributionExecutionFailure, ContributionExecutionRunnerConfig,
+    ContributionExecutionUseCase, ContributionJobLease, ContributionRouteHealth,
+    ContributionRunOnceReport,
+};
+use humaux_domain::error::ErrorCode;
+use uuid::Uuid;
+
+/// Failure of a bounded contribution run, preserving the claim and execution error classes.
+#[derive(Debug)]
+pub enum ContributionExecutionRunnerError {
+    Jobs(JobsError),
+    Repository(ContributionExecutionRepoError),
+    Domain(ErrorCode),
+    InvalidClaim(&'static str),
+    Invariant(&'static str),
+}
+
+impl std::fmt::Display for ContributionExecutionRunnerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Jobs(error) => write!(f, "contribution claim failed: {error}"),
+            Self::Repository(error) => write!(f, "contribution repository failed: {error}"),
+            Self::Domain(error) => write!(f, "contribution contract failed: {error}"),
+            Self::InvalidClaim(message) => write!(f, "invalid contribution claim: {message}"),
+            Self::Invariant(message) => write!(f, "contribution invariant failed: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for ContributionExecutionRunnerError {}
+
+impl From<JobsError> for ContributionExecutionRunnerError {
+    fn from(value: JobsError) -> Self {
+        Self::Jobs(value)
+    }
+}
+
+impl From<ContributionExecutionRepoError> for ContributionExecutionRunnerError {
+    fn from(value: ContributionExecutionRepoError) -> Self {
+        Self::Repository(value)
+    }
+}
+
+impl From<ErrorCode> for ContributionExecutionRunnerError {
+    fn from(value: ErrorCode) -> Self {
+        Self::Domain(value)
+    }
+}
+
+impl From<ContributionExecutionFailure<ContributionExecutionRepoError>>
+    for ContributionExecutionRunnerError
+{
+    fn from(failure: ContributionExecutionFailure<ContributionExecutionRepoError>) -> Self {
+        match failure {
+            ContributionExecutionFailure::Port(error) => Self::Repository(error),
+            ContributionExecutionFailure::Domain(error) => Self::Domain(error),
+            ContributionExecutionFailure::InvalidClaim(message) => Self::InvalidClaim(message),
+            ContributionExecutionFailure::Invariant(message) => Self::Invariant(message),
+        }
+    }
+}
+
+/// Process-owned claim and adapter assembly; the application runs the claimed contribution.
+pub struct ContributionExecutionRunner<'a, 'provider> {
+    pool: &'a PrivateWorkerDbPool,
+    reasoner: &'a ContributionReasoner<'provider>,
+    scanner: &'a ContributionScanner,
+    config: ContributionExecutionRunnerConfig,
+}
+impl<'a, 'provider> ContributionExecutionRunner<'a, 'provider> {
+    /// Assemble the worker capabilities for the bounded contribution use case.
+    pub fn new(
+        pool: &'a PrivateWorkerDbPool,
+        reasoner: &'a ContributionReasoner<'provider>,
+        scanner: &'a ContributionScanner,
+        config: ContributionExecutionRunnerConfig,
+    ) -> Result<Self, ErrorCode> {
+        config.validate()?;
+        Ok(Self {
+            pool,
+            reasoner,
+            scanner,
+            config,
+        })
+    }
+    /// Run one exact contribution job through the application use case.
+    pub async fn run_once(
+        &self,
+        tenant_id: Uuid,
+    ) -> Result<ContributionRunOnceReport, ContributionExecutionRunnerError> {
+        let io = contribution_reasoner::contribution_execution_io(
+            self.pool,
+            self.reasoner,
+            self.scanner,
+        );
+        ContributionExecutionUseCase::new(&io, self, self.config.clone())?
+            .run_once(self, tenant_id)
+            .await
+    }
+}
+
+impl ContributionJobLease for ContributionExecutionRunner<'_, '_> {
+    type Error = JobsError;
+
+    async fn claim(
+        &self,
+        tenant_id: Uuid,
+        lease_owner: &str,
+        lease_seconds: f64,
+        limit: i64,
+    ) -> Result<Vec<ContributionClaim>, Self::Error> {
+        Ok(
+            jobs::private_claim(self.pool, tenant_id, lease_owner, lease_seconds, limit)
+                .await?
+                .into_iter()
+                .map(|job| ContributionClaim {
+                    job_id: job.job_id,
+                    tenant_id: job.tenant_id,
+                    job_type: job.job_type,
+                    processing: job.status == JobStatus::Processing,
+                    attempt: job.attempt,
+                    lease_owner: job.lease_owner,
+                    has_lease_expiry: job.lease_expires_at.is_some(),
+                    has_stream_key: job.stream_key.is_some(),
+                    has_stream_seq: job.stream_seq.is_some(),
+                    payload: job.payload,
+                })
+                .collect(),
+        )
+    }
+}
+
+/// Ruling E3 (b): records the route health one routed call observed through the owner definer —
+/// after a SUCCEEDED call a renewal (rate-limited by the definer), after a provider-refused key
+/// (`credential_rejected`) one INVALID account row. Best effort: a failure is logged with a static
+/// class and changes no settle — the next admission then sees the older observation (§11.2.5:
+/// stale health parks, it never admits). The one call shape for distill, the consolidation RPC and the
+/// contribution runner.
+pub async fn observe_route_health(
+    pool: &PrivateWorkerDbPool,
+    tenant_id: Uuid,
+    model_call_id: Uuid,
+    credential_rejected: bool,
+    valid_for_seconds: i64,
+) {
+    // dep: PostgreSQL(role_private_worker) — control.observe_reasoning_route_health (0206/0209, E3)
+    match reasoning_route_admission::observe_route_health(
+        pool,
+        tenant_id,
+        model_call_id,
+        credential_rejected,
+        valid_for_seconds,
+    )
+    .await
+    {
+        Ok((None, None)) => {}
+        Ok((provider, account)) => eprintln!(
+            "humaux-private-worker: route health observed tenant={tenant_id} model_call_id={model_call_id} credential_rejected={credential_rejected} provider_observation={} account_observation={}",
+            provider.map_or_else(|| "-".to_owned(), |id| id.to_string()),
+            account.map_or_else(|| "-".to_owned(), |id| id.to_string()),
+        ),
+        Err(_) => eprintln!(
+            "humaux-private-worker: route health observe failed tenant={tenant_id} model_call_id={model_call_id} class=WORKER_DB_ERROR"
+        ),
+    }
+}
+
+impl ContributionRouteHealth for ContributionExecutionRunner<'_, '_> {
+    async fn observe_route_health(&self, tenant: Uuid, call: Uuid, rejected: bool, seconds: i64) {
+        observe_route_health(self.pool, tenant, call, rejected, seconds).await;
+    }
+}

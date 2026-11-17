@@ -4849,9 +4849,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `humaux-local-secret-scan`
 - service `subprocess(gitleaks)`
 
-#### `humaux-private-worker`
-- service `PostgreSQL(role_private_worker)`
-
 #### `humaux-telemetry`
 - service `HTTP(loopback)`
 
@@ -4882,6 +4879,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `infra-network::http`
 - service `HTTP(loopback)`
+
+#### `private-worker::bootstrap`
+- service `PostgreSQL(role_private_worker)`
 
 #### `private-worker::distill`
 - env `HUMAUX_PRIVATE_WORKER_CANDIDATE_TTL_SECONDS`
@@ -14333,8 +14333,8 @@ executed by:
 - `adapters::tests::support::contribution_fixture`
 - `adapters::tests::task_grant_contract`
 - `consolidation-worker::tests::consolidation_hop_e2e`
-- `humaux-private-worker`
 - `maintenance::tests::drill`
+- `private-worker::bootstrap`
 - `private-worker::inference_rpc`
 - `private-worker::main`
 - `private-worker::route_providers`
@@ -18716,7 +18716,7 @@ modules naming it:
 why: humaux-adapters dependency
 
 modules naming it:
-- `humaux-private-worker`
+- `private-worker::bootstrap`
 - `private-worker::distill`
 - `private-worker::inference_rpc`
 - `private-worker::main`
@@ -18736,6 +18736,7 @@ why: humaux-application dependency
 
 modules naming it:
 - `humaux-private-worker`
+- `private-worker::bootstrap`
 - `private-worker::distill`
 - `private-worker::inference_rpc`
 - `private-worker::route_providers`
@@ -18749,6 +18750,7 @@ why: humaux-domain dependency
 
 modules naming it:
 - `humaux-private-worker`
+- `private-worker::bootstrap`
 - `private-worker::distill`
 - `private-worker::main`
 - `private-worker::route_providers`
@@ -18847,7 +18849,7 @@ modules naming it:
 why: uuid dependency
 
 modules naming it:
-- `humaux-private-worker`
+- `private-worker::bootstrap`
 - `private-worker::distill`
 - `private-worker::inference_rpc`
 - `private-worker::main`
@@ -18891,7 +18893,7 @@ modules naming it:
 why: uuid dependency
 
 modules naming it:
-- `humaux-private-worker`
+- `private-worker::bootstrap`
 - `private-worker::distill`
 - `private-worker::inference_rpc`
 - `private-worker::main`

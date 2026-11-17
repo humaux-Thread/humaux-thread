@@ -19,7 +19,7 @@ workspace = true
 # binary's own Cargo.toml comment). This skeleton only wires the DB pool; the BYOK provider
 # client and its OpenBao/transport backends are pending wiring (openbao.rs / infra-egress's
 # richer transport are still stubs, see `crates/adapters/src/byok.rs`'s module doc).
-# why: humaux-adapters dependency; used-by: [humaux-private-worker, private-worker::distill, private-worker::inference_rpc, private-worker::main, private-worker::tests::contribution_execution_runner, private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e, private-worker::tests::start_manual_contribution_command_0131, tests]
+# why: humaux-adapters dependency; used-by: [private-worker::bootstrap, private-worker::distill, private-worker::inference_rpc, private-worker::main, private-worker::tests::contribution_execution_runner, private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e, private-worker::tests::start_manual_contribution_command_0131, tests]
 humaux-adapters = { path = "../../crates/adapters" }
 # why: humaux-application dependency; used-by: [humaux-private-worker, private-worker::distill, private-worker::inference_rpc, private-worker::tests::contribution_execution_runner, private-worker::tests::start_manual_contribution_command_0131, tests]
 humaux-application = { path = "../../crates/application" }
@@ -49,7 +49,7 @@ sha2 = "0.11"
 hex = "0.4"
 # why: tokio dependency; used-by: [private-worker::inference_rpc, private-worker::main, private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e, private-worker::tests::start_manual_contribution_command_0131, tests]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
-# why: uuid dependency; used-by: [humaux-private-worker, private-worker::distill, private-worker::inference_rpc, private-worker::main, private-worker::tests::contribution_execution_runner, private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e, private-worker::tests::start_manual_contribution_command_0131, tests]
+# why: uuid dependency; used-by: [private-worker::bootstrap, private-worker::distill, private-worker::inference_rpc, private-worker::main, private-worker::tests::contribution_execution_runner, private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e, private-worker::tests::start_manual_contribution_command_0131, tests]
 uuid = { version = "1.25.0", features = ["serde", "v7"] }
 
 [dev-dependencies]
@@ -57,7 +57,7 @@ uuid = { version = "1.25.0", features = ["serde", "v7"] }
 async-trait = "0.1"
 # why: postgres dependency; used-by: [private-worker::tests::contribution_execution_runner, private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e, private-worker::tests::start_manual_contribution_command_0131, tests]
 postgres = { version = "0.19", features = ["with-uuid-1", "with-serde_json-1"] }
-# why: uuid dependency; used-by: [humaux-private-worker, private-worker::distill, private-worker::inference_rpc, private-worker::main, private-worker::tests::contribution_execution_runner, private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e, private-worker::tests::start_manual_contribution_command_0131, tests]
+# why: uuid dependency; used-by: [private-worker::bootstrap, private-worker::distill, private-worker::inference_rpc, private-worker::main, private-worker::tests::contribution_execution_runner, private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e, private-worker::tests::start_manual_contribution_command_0131, tests]
 uuid = { version = "1.25.0", features = ["v4"] }
 # `tests/distill_hop_e2e.rs` (ADR-0016): live MiniMax + live DB, visible SKIP / `HUMAUX_REQUIRE_*`
 # panic via the shared testkit; the projection leg drives the real

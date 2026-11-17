@@ -4,7 +4,7 @@
 //!   modules=[adapters::byok, adapters::contribution_entry_repo, adapters::contribution_execution_repo,
 //!   adapters::contribution_reasoner, adapters::contribution_scan, adapters::disclosure, adapters::jobs,
 //!   adapters::reasoning_route_admission, adapters::tests::support::contribution_fixture, application::contribute,
-//!   application::contribution_execution, domain::error, humaux-private-worker, humaux-testkit]
+//!   application::contribution_execution, domain::error, humaux-testkit, private-worker::bootstrap]
 //! Called-by: [cargo-test]
 //! Invariants: [no external model or production credential; admin SQL only seeds, injects faults and observes,
 //!   mutations go through the typed runner; without a DB the test SKIPs unless HUMAUX_REQUIRE_DB, then panics]

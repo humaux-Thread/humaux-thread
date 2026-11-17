@@ -96,11 +96,6 @@ bins/private-worker/src/inference_rpc.rs:humaux_adapters::contribution_reasoner:
 bins/private-worker/src/inference_rpc.rs:humaux_adapters::contribution_reasoner::ContributionReasonerConfig
 bins/private-worker/src/inference_rpc.rs:humaux_adapters::disclosure::DeletionCapability
 bins/private-worker/src/inference_rpc.rs:humaux_adapters::reasoning_route_admission::ProviderFor
-bins/private-worker/src/lib.rs:humaux_adapters::contribution_execution_repo::ContributionExecutionRepoError
-bins/private-worker/src/lib.rs:humaux_adapters::contribution_reasoner::ContributionReasoner
-bins/private-worker/src/lib.rs:humaux_adapters::contribution_scan::ContributionScanner
-bins/private-worker/src/lib.rs:humaux_adapters::jobs::JobStatus
-bins/private-worker/src/lib.rs:humaux_adapters::jobs::JobsError
 bins/private-worker/src/main.rs:humaux_adapters::byok::ssrf::DnsResolver
 bins/private-worker/src/main.rs:humaux_adapters::byok::ssrf::PinnedDnsResolver
 bins/private-worker/src/main.rs:humaux_adapters::contribution_reasoner::ContributionReasonerConfig

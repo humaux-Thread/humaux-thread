@@ -1,7 +1,7 @@
 //! `adapters::contribution_execution_repo` — Typed bindings for migration 0131's eight exposed contribution execution
 //!   commands.
 //! Depends-on: crates=[hex, humaux-application, humaux-domain, serde_json, sha2, sqlx]; services=[PostgreSQL(any) r=[private.contribution_execution_sources, private.contribution_executions, private.reserve_contribution_a, private.reserve_contribution_b] x=[private.commit_contribution_candidate, private.complete_contribution_a_exact, private.complete_contribution_b_exact, private.enqueue_contribution_execution, private.mark_contribution_reconciliation_required, private.reserve_contribution_a, private.reserve_contribution_b, private.settle_contribution_terminal_job]]; env=[]; modules=[adapters::disclosure, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, application::contribute, application::contribution_execution, domain::dataclass, domain::evidence, domain::public]
-//! Called-by: [adapters::contribution_execution_ingress, adapters::contribution_reasoner, humaux-private-worker, tests]
+//! Called-by: [adapters::contribution_execution_ingress, adapters::contribution_reasoner, private-worker::bootstrap, tests]
 //! Invariants: [execution state transitions are read back from PostgreSQL; an unknown state or invalid input is a
 //!   typed ContributionExecutionRepoError, never assumed progress]
 //! Spec: none
