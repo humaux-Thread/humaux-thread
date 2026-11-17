@@ -1,6 +1,6 @@
 //! `adapters::credential_repo` — Gateway-only read adapter for §73.5.1 service credential bindings.
 //! Depends-on: crates=[humaux-domain, sqlx, async-trait, humaux-application]; services=[PostgreSQL(any) r=[control.workspace_memberships] x=[control.api_key_lookup, control.api_key_rehash, control.api_key_touch_last_used]]; env=[]; modules=[adapters::postgres, domain::error, domain::identity, application::api_key, domain::ids]
-//! Called-by: [tests]
+//! Called-by: [gateway::bootstrap, tests]
 //! Invariants: [returns database facts only (HMAC and authorization stay in the auth layer); the workspace-ceiling
 //!   read runs only after a user-bound key validates, so a bad key does no membership work; a PG error is
 //!   DependencyUnavailable; a verifier is rewritten only through the epoch-gated, window-bounded api_key_rehash door (ADR-0059 D-H, migration 0204)]
@@ -292,10 +292,22 @@ pub async fn rehash(
         .map_err(db_error)
 }
 
+/// §73.5 gateway-role binding for the service-credential port.
+pub struct PostgresCredentialStore<'a> {
+    pool: &'a RuntimeDbPool,
+}
+
+impl<'a> PostgresCredentialStore<'a> {
+    /// Reuse the process pool and the existing scoped SQL functions.
+    pub fn new(pool: &'a RuntimeDbPool) -> Self {
+        Self { pool }
+    }
+}
+
 #[async_trait::async_trait]
-impl CredentialStore for RuntimeDbPool {
+impl CredentialStore for PostgresCredentialStore<'_> {
     async fn lookup(&self, prefix: &str) -> Result<Option<CredentialFacts>, ErrorCode> {
-        let Some(row) = lookup(self, prefix).await? else {
+        let Some(row) = lookup(self.pool, prefix).await? else {
             return Ok(None);
         };
         Ok(Some(CredentialFacts {
@@ -330,7 +342,7 @@ impl CredentialStore for RuntimeDbPool {
         tenant: TenantId,
         user: UserId,
     ) -> Result<Vec<WorkspaceId>, ErrorCode> {
-        Ok(load_live_workspace_ids(self, tenant.0, user.0)
+        Ok(load_live_workspace_ids(self.pool, tenant.0, user.0)
             .await?
             .into_iter()
             .map(WorkspaceId)
@@ -342,9 +354,9 @@ impl CredentialStore for RuntimeDbPool {
         old: &[u8],
         new: &[u8],
     ) -> Result<Option<bool>, ErrorCode> {
-        rehash(self, principal.0, old, new).await
+        rehash(self.pool, principal.0, old, new).await
     }
     async fn mark_used(&self, principal: PrincipalId) -> Result<(), ErrorCode> {
-        mark_used(self, principal.0).await
+        mark_used(self.pool, principal.0).await
     }
 }

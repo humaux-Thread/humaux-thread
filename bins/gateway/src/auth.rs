@@ -143,7 +143,7 @@ pub async fn authenticate_service_credential(
     let (prefix, raw_key) = parse_bearer_credential(authorization_header)?;
     let store = crate::bootstrap::credential_store(pool);
     let credential = authenticate_key(
-        store,
+        &store,
         prefix,
         raw_key,
         pepper,

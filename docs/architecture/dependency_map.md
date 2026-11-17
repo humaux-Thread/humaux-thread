@@ -2350,6 +2350,13 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.register_continuity_project`
 - service `PostgreSQL(role_gateway)`
 
+#### `adapters::credential_repo`
+- reads `control.workspace_memberships`
+- executes `control.api_key_lookup`
+- executes `control.api_key_rehash`
+- executes `control.api_key_touch_last_used`
+- service `PostgreSQL(any)`
+
 #### `adapters::disclosure`
 - writes `ops.data_disclosure_sources`
 - writes `ops.data_disclosures`
@@ -5869,8 +5876,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::credential_repo`
 - (no process): `gateway::tests::service_credentials`
+- process(humaux-gateway): `adapters::credential_repo`
 
 ### `control.api_key_rehash`
 read by:
@@ -5878,9 +5885,9 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::credential_repo`
 - (no process): `gateway::tests::service_credentials`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::credential_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.api_key_touch_last_used`
@@ -5889,8 +5896,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::credential_repo`
 - (no process): `gateway::tests::service_credentials`
+- process(humaux-gateway): `adapters::credential_repo`
 
 ### `control.api_keys`
 read by:
@@ -8225,11 +8232,11 @@ executed by:
 
 ### `control.workspace_memberships`
 read by:
-- (no process): `adapters::credential_repo`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::e2e_seed`
+- process(humaux-gateway): `adapters::credential_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
@@ -21571,9 +21578,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3776` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3781` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3786` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3783` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3788` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3793` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
