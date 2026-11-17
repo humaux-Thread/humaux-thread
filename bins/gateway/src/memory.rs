@@ -878,12 +878,7 @@ pub(crate) async fn write_binding(
     let (authorization, stream) = confirmed_write_scope(&pool, &write, &bootstrap).await?;
     // The PINNED / MANDATORY row is scoped to the narrowed, provisioned request workspace.
     let workspace = WorkspaceId(stream.scope_id);
-    let purpose = purpose.map(|p| match p {
-        humaux_domain::context::BindingPurpose::ReferenceOnly => BindingPurpose::ReferenceOnly,
-        humaux_domain::context::BindingPurpose::AdoptTaskInstruction => {
-            BindingPurpose::AdoptTaskInstruction
-        }
-    });
+    let purpose = purpose.map(domain_to_app_binding_purpose);
     let request = BindingWriteRequest {
         request_id: write.request.request_id(),
         request_fingerprint: write.request_fingerprint,
@@ -1387,5 +1382,35 @@ fn lifecycle_stream(s: StreamKey) -> humaux_application::lifecycle_execution::Li
         domain: s.domain,
         projection_kind: s.projection_kind,
         projection_version: s.projection_version,
+    }
+}
+
+fn domain_to_app_binding_purpose(
+    purpose: humaux_domain::context::BindingPurpose,
+) -> BindingPurpose {
+    match purpose {
+        humaux_domain::context::BindingPurpose::ReferenceOnly => BindingPurpose::ReferenceOnly,
+        humaux_domain::context::BindingPurpose::AdoptTaskInstruction => {
+            BindingPurpose::AdoptTaskInstruction
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::domain_to_app_binding_purpose;
+    use humaux_application::lifecycle_execution::BindingPurpose as AppBindingPurpose;
+    use humaux_domain::context::BindingPurpose as DomainBindingPurpose;
+
+    #[test]
+    fn binding_purpose_maps_every_domain_variant() {
+        assert_eq!(
+            domain_to_app_binding_purpose(DomainBindingPurpose::ReferenceOnly),
+            AppBindingPurpose::ReferenceOnly
+        );
+        assert_eq!(
+            domain_to_app_binding_purpose(DomainBindingPurpose::AdoptTaskInstruction),
+            AppBindingPurpose::AdoptTaskInstruction
+        );
     }
 }

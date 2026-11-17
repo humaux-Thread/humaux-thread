@@ -392,6 +392,7 @@ const REQUIRED_FACETS_WHERE: &str = "m.tenant_id = $1 \
 // 「超没超硬上限」不是「差几个 token」）；真 tokenizer 落地后换掉这一处即可。
 const EST_TOKENS_EXPR: &str = "GREATEST(1, (octet_length(m.content::text) / 4))::int4";
 
+// ponytail: shared-file legacy re-export for cross-module callers (adapters::continuity_read, adapters::forget_repo, adapters::read_materialize); upgrade path: import crate::read_gate::visibility_from_row directly in those callers (#520 P2-READ) and remove this re-export.
 pub(crate) use crate::read_gate::visibility_from_row;
 
 fn scope_chain_params(scope: &Scope) -> (Vec<String>, Vec<Uuid>) {
