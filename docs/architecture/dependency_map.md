@@ -2428,6 +2428,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - service `PostgreSQL(role_gateway)`
 
+#### `adapters::independent_audit`
+
 #### `adapters::jobs`
 - reads `ops.claim_derived_work`
 - writes `ops.jobs`
@@ -2709,6 +2711,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::distill_execution`
 
 #### `application::forget`
+
+#### `application::independent_audit`
 
 #### `application::lifecycle_execution`
 
@@ -14832,6 +14836,7 @@ modules naming it:
 - `adapters::forget_repo`
 - `adapters::grep_repo`
 - `adapters::health`
+- `adapters::independent_audit`
 - `adapters::login_repo`
 - `adapters::maintenance_repo`
 - `adapters::mechanism_observation`
@@ -15056,6 +15061,7 @@ modules naming it:
 - `adapters::forget_repo`
 - `adapters::grep_repo`
 - `adapters::health`
+- `adapters::independent_audit`
 - `adapters::jobs`
 - `adapters::login_repo`
 - `adapters::memory_governance_repo`
@@ -15112,6 +15118,7 @@ modules naming it:
 - `adapters::tests::read_gate_closure`
 - `adapters::tests::reasoning_route_runtime`
 - `adapters::tests::recall_envelope_g23`
+- `adapters::tests::request_guard`
 - `adapters::tests::retrieve_read_your_writes`
 - `adapters::tests::stream_repo`
 - `adapters::tests::support::continuity_0137_fixture`
@@ -15225,6 +15232,7 @@ modules naming it:
 - `adapters::forget_repo`
 - `adapters::grep_repo`
 - `adapters::health`
+- `adapters::independent_audit`
 - `adapters::jobs`
 - `adapters::login_repo`
 - `adapters::mechanism_observation`
@@ -16186,6 +16194,7 @@ modules naming it:
 - `application::entitlement`
 - `application::forget`
 - `application::health`
+- `application::independent_audit`
 - `application::lifecycle_execution`
 - `application::login`
 - `application::notify`
@@ -16321,6 +16330,7 @@ modules naming it:
 - `application::distill_execution`
 - `application::forget`
 - `application::health`
+- `application::independent_audit`
 - `application::lifecycle_execution`
 - `application::login`
 - `application::oauth_exchange`
@@ -21561,9 +21571,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3769` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3774` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3779` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3776` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3781` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3786` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
