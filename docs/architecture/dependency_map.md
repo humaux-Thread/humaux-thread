@@ -481,6 +481,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::pin`
 
+#### `application::private_inference`
+
 #### `application::recall_read`
 
 #### `application::remember`
@@ -2221,6 +2223,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::pin`
 
+#### `application::private_inference`
+
 #### `application::projection_execution`
 
 #### `application::query_embedding_execution`
@@ -3156,6 +3160,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::lifecycle_execution`
 
 #### `application::pin`
+
+#### `application::private_inference`
 
 #### `application::projection_execution`
 
@@ -4418,7 +4424,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `PRIVATE_WORKER_PG_DSN`
 
 #### `private-worker::inference_rpc`
-- service `PostgreSQL(role_private_worker)`
 - service `UDS(serve)`
 
 #### `private-worker::main`
@@ -5102,6 +5107,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::lifecycle_execution`
 
 #### `application::pin`
+
+#### `application::private_inference`
 
 #### `application::projection_execution`
 
@@ -13637,7 +13644,6 @@ executed by:
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `maintenance::tests::drill`
 - `private-worker::bootstrap`
-- `private-worker::inference_rpc`
 - `private-worker::main`
 - `private-worker::route_providers`
 - `private-worker::tests::derived_dispatch_e2e`
@@ -18065,6 +18071,7 @@ modules naming it:
 - `private-worker::bootstrap`
 - `private-worker::distill`
 - `private-worker::inference_rpc`
+- `private-worker::main`
 - `private-worker::route_providers`
 - `private-worker::tests::contribution_execution_runner`
 - `private-worker::tests::distill_hop_e2e`
@@ -18078,7 +18085,6 @@ modules naming it:
 - `humaux-private-worker`
 - `private-worker::bootstrap`
 - `private-worker::distill`
-- `private-worker::main`
 - `private-worker::route_providers`
 - `private-worker::tests::contribution_execution_runner`
 - `private-worker::tests::derived_dispatch_e2e`

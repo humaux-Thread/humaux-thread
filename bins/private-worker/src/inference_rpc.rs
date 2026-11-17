@@ -1,6 +1,6 @@
 //! `private-worker::inference_rpc` — §11.8 ADR-0012-pattern inference-only RPC — the Unix-domain-socket side
 //!   `humaux-private-worker` serves for `humaux-consolidation-worker`.
-//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-infra-cell, serde, tokio, uuid]; services=[PostgreSQL(role_private_worker), UDS(serve)]; env=[]; modules=[adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::postgres, adapters::private_inference_rpc, adapters::reasoning_route_admission, application::consolidate, application::private_inference, private-worker::bootstrap, infra-cell::uds]
+//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-infra-cell, serde, tokio, uuid]; services=[UDS(serve)]; env=[]; modules=[adapters::private_inference_rpc, application::consolidate, application::private_inference, infra-cell::uds, private-worker::bootstrap]
 //! Called-by: [private-worker::main, tests]
 //! Invariants: [the caller is authenticated by kernel peer credential before the body is read; every field reasoned
 //!   over comes from the claimed ops.private_inference_rpc_calls row, never the wire body; unknown or expired calls
@@ -17,9 +17,9 @@
 //! `reasoning_domain_id`/`binding_id`/`purpose` than what it registered.
 //!
 //! §11.8 hard boundary (enforced by construction, not by this file's own discipline): this
-//! handler dispatches on the CLAIMED row's purpose to exactly one [`PrivateReasoningPort`]
-//! implementation — [`ConsolidationReasoner`] for `Consolidate` (ADR-0015: the run id comes
-//! from the claimed registration row, never the wire body), [`ContributionReasoner`] for
+//! handler dispatches on the CLAIMED row's purpose to exactly one `PrivateReasoningPort`
+//! implementation — `ConsolidationReasoner` for `Consolidate` (ADR-0015: the run id comes
+//! from the claimed registration row, never the wire body), `ContributionReasoner` for
 //! everything else — and never builds a `PgPool`/repository capability from the RPC body, nor
 //! accepts a `memory_id` to mutate.
 
@@ -33,16 +33,10 @@ use axum::{Json, Router, middleware};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use humaux_adapters::consolidation_reasoner::{ConsolidationCallBinding, ConsolidationReasoner};
-use humaux_adapters::contribution_reasoner::{ContributionReasoner, ContributionReasonerConfig};
-use humaux_adapters::disclosure::DeletionCapability;
-use humaux_adapters::postgres::PrivateWorkerDbPool;
 use humaux_adapters::private_inference_rpc::reasoning_failure;
-use humaux_adapters::reasoning_route_admission::ProviderFor;
-use humaux_application::consolidate::{
-    PrivateReasoningDomainId, PrivateReasoningPort, PrivateReasoningPurpose,
-    ReasoningRouteBindingId, ReasoningRouteBindingVersion, SealedPrivateReasoningRequest,
-};
+use humaux_application::consolidate::infer_claimed;
+
+use crate::bootstrap::InferenceRuntime;
 use humaux_application::private_inference::{
     self, ClaimedRegistration, FinishOutcome, InferenceExecution, InferenceOutcome,
     PrivateInferenceExecutionPort, StoredOutcome,
@@ -109,13 +103,8 @@ impl
 /// What every RPC call shares for the process lifetime.
 pub struct RpcState {
     pub expected_consolidation_uid: u32,
-    pub calls: PrivateWorkerDbPool,
-    pub config: ContributionReasonerConfig,
-    /// ADR-0060 D-E: maps the registered binding's admitted route to its provider instance; the
-    /// wire never names a route.
-    pub providers: Box<ProviderFor>,
-    /// Ruling E3 (`HUMAUX_PRIVATE_WORKER_HEALTH_RENEW_SECS`): validity of worker-observed health.
-    pub health_renew_seconds: i64,
+    /// Reasoner and claim/finish capabilities assembled by the process.
+    pub inference: InferenceRuntime,
 }
 
 /// §决定2: rejects before the handler's `Json<PrivateInferenceRpcRequest>` extractor ever
@@ -225,24 +214,12 @@ fn failed_envelope(call_id: Uuid, message: String) -> PrivateInferenceRpcEnvelop
     }
 }
 
-/// §11.8's closed purpose set, DB string -> Rust, the read-side inverse of
-/// `private_inference_rpc::purpose_db_str`.
-fn purpose_from_db_str(s: &str) -> Option<PrivateReasoningPurpose> {
-    Some(match s {
-        "Distill" => PrivateReasoningPurpose::Distill,
-        "Consolidate" => PrivateReasoningPurpose::Consolidate,
-        "Vision" => PrivateReasoningPurpose::Vision,
-        "ContributionDeidentify" => PrivateReasoningPurpose::ContributionDeidentify,
-        _ => return None,
-    })
-}
-
 async fn execute(
     state: &Arc<RpcState>,
     wire: PrivateInferenceRpcRequest,
 ) -> Result<PrivateInferenceRpcEnvelope, WorkerRpcError> {
     match private_inference::execute(
-        &state.calls,
+        state.inference.calls(),
         &WorkerInference(state),
         wire.call_id,
         wire.tenant_hint,
@@ -299,7 +276,7 @@ impl PrivateInferenceExecutionPort for WorkerInference<'_> {
 }
 
 /// §11.8: rebuilds the sealed request from the claimed registration row (never the wire body —
-/// module doc) and dispatches on its purpose to the one production [`PrivateReasoningPort`]
+/// module doc) and dispatches on its purpose to the one production `PrivateReasoningPort`
 /// implementation for that purpose (module doc). Binding decision #2's exact call site. Also
 /// returns the admitted route's fields when the reasoner got that far (ADR-0060 D-M).
 async fn infer(
@@ -307,71 +284,9 @@ async fn infer(
     call_id: Uuid,
     registration: &ClaimedRegistration,
 ) -> (PrivateInferenceRpcEnvelope, Option<String>) {
-    let Some(purpose) = purpose_from_db_str(&registration.purpose) else {
-        return (
-            failed_envelope(call_id, "INVALID_REGISTRATION".to_owned()),
-            None,
-        );
-    };
-    let Ok(input_manifest_hash) = <[u8; 32]>::try_from(registration.input_manifest_hash.as_slice())
-    else {
-        return (
-            failed_envelope(call_id, "INVALID_REGISTRATION".to_owned()),
-            None,
-        );
-    };
-    let sealed = SealedPrivateReasoningRequest {
-        reasoning_domain_id: PrivateReasoningDomainId(registration.reasoning_domain_id),
-        binding_id: ReasoningRouteBindingId(registration.binding_id),
-        binding_version: ReasoningRouteBindingVersion(registration.binding_version),
-        input_manifest_hash: humaux_application::consolidate::ContentSha256(input_manifest_hash),
-        purpose,
-        contribution_attempt: None,
-    };
-    let (result, route) = match purpose {
-        PrivateReasoningPurpose::Consolidate => {
-            let Some(consolidation_run_id) = registration.consolidation_run_id else {
-                return (
-                    failed_envelope(call_id, "INVALID_REGISTRATION".to_owned()),
-                    None,
-                );
-            };
-            let Ok(reasoner) = ConsolidationReasoner::new(
-                &state.calls,
-                state.providers.as_ref(),
-                clone_config(&state.config),
-                ConsolidationCallBinding {
-                    tenant_id: registration.tenant_id,
-                    consolidation_run_id,
-                },
-            ) else {
-                return (failed_envelope(call_id, "INVALID_CONFIG".to_owned()), None);
-            };
-            let result = reasoner.infer(sealed).await;
-            if let Some((model_call_id, credential_rejected)) = reasoner.observed_call() {
-                crate::observe_route_health(
-                    &state.calls,
-                    registration.tenant_id,
-                    model_call_id,
-                    credential_rejected,
-                    state.health_renew_seconds,
-                )
-                .await;
-            }
-            (result, reasoner.route_fields().map(str::to_owned))
-        }
-        PrivateReasoningPurpose::Distill
-        | PrivateReasoningPurpose::Vision
-        | PrivateReasoningPurpose::ContributionDeidentify => {
-            let Ok(reasoner) = ContributionReasoner::new_for_execution(
-                &state.calls,
-                state.providers.as_ref(),
-                clone_config(&state.config),
-            ) else {
-                return (failed_envelope(call_id, "INVALID_CONFIG".to_owned()), None);
-            };
-            (reasoner.infer(sealed).await, None)
-        }
+    let (result, route) = match infer_claimed(&state.inference, registration).await {
+        Ok(execution) => execution,
+        Err(message) => return (failed_envelope(call_id, message.to_owned()), None),
     };
     let envelope = match result {
         Ok(result) => PrivateInferenceRpcEnvelope {
@@ -387,22 +302,4 @@ async fn infer(
         Err(error) => failed_envelope(call_id, reasoning_failure(&error)),
     };
     (envelope, route)
-}
-
-/// `ContributionReasonerConfig` has no `Clone` (`Duration`/`String`/enum fields only, but no
-/// derive) — this handler's config is fixed for the process lifetime, so a field-by-field copy
-/// here is simpler than adding a derive this crate's own file scope does not include. `pub`
-/// because the binary's `--distill-*` modes (ADR-0016) hand one copy per pass to the same type.
-pub fn clone_config(config: &ContributionReasonerConfig) -> ContributionReasonerConfig {
-    ContributionReasonerConfig {
-        permit_ttl: config.permit_ttl,
-        deletion_capability: match config.deletion_capability {
-            DeletionCapability::Supported => DeletionCapability::Supported,
-            DeletionCapability::Unsupported => DeletionCapability::Unsupported,
-            DeletionCapability::Unknown => DeletionCapability::Unknown,
-        },
-        system_prompt: config.system_prompt.clone(),
-        json_schema: config.json_schema.clone(),
-        max_output_tokens: config.max_output_tokens,
-    }
 }

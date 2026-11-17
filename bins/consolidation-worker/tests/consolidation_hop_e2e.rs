@@ -16,7 +16,7 @@
 //!   ops.reasoning_provider_health_observations, private.events, private.evidence_objects,
 //!   private.memory_consolidation_inputs, private.memory_evidence, private.memory_records,
 //!   private.subjects] x=[private.link_memory_subjects], MiniMax, UDS(private-worker),
-//!   UDS(serve)]; env=[HUMAUX_MINIMAX_DNS_PINS, HUMAUX_TEST_PG_DSN, MINIMAX_API_KEY]; modules=[adapters::byok, adapters::byok::ssrf, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::postgres, adapters::private_inference_rpc, adapters::reasoning_route_admission, application::consolidate, application::consolidation_execution, consolidation-worker::inference_client, domain::authority, humaux-testkit, private-worker::inference_rpc, testkit::fixture_purge]
+//!   UDS(serve)]; env=[HUMAUX_MINIMAX_DNS_PINS, HUMAUX_TEST_PG_DSN, MINIMAX_API_KEY]; modules=[adapters::byok, adapters::byok::ssrf, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::postgres, adapters::private_inference_rpc, adapters::reasoning_route_admission, application::consolidate, application::consolidation_execution, consolidation-worker::inference_client, domain::authority, humaux-testkit, private-worker::bootstrap, private-worker::inference_rpc, testkit::fixture_purge]
 //! Called-by: [cargo-test]
 //! Invariants: [no key -> visible SKIP for the live-MiniMax tests only; no DB -> SKIP for all;
 //!   HUMAUX_REQUIRE_MINIMAX/HUMAUX_REQUIRE_DB turn either skip into a panic via skip_or_fail (ADR-0005)]
@@ -230,10 +230,12 @@ async fn spawn_private_worker(
 ) {
     let state = Arc::new(humaux_private_worker::inference_rpc::RpcState {
         expected_consolidation_uid,
-        calls,
-        config: contribution_config(),
-        providers,
-        health_renew_seconds: 1800,
+        inference: humaux_private_worker::bootstrap::InferenceRuntime::new(
+            calls,
+            contribution_config(),
+            providers,
+            1800,
+        ),
     });
     // Same `bind_socket` + `serve` pair the binary's `--serve-rpc` mode runs — nothing here
     // reimplements the accept loop, so this harness proves the production listener.
