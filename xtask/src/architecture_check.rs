@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 72, "HEX-LAYER")
+    hex_exact(actual, baseline, 63, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -14441,6 +14441,79 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             "{retrieve_restored:?}"
         );
         println!("SLICE-10a read-gate bypass (adapters::retrieve): restored GREEN");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// ADR-0130 (SLICE-11a): `retrieval-worker::main` rejects all 9 eliminated adapter types, and read-gate bypasses
+    /// fail the read-gate check.
+    #[test]
+    fn hex_boundary_slice11a_entry_red_green() {
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("slice11a-boundary-{}", std::process::id()));
+        hex_copy_boundary_fixture(&real_root(), &root);
+        let worker_main = root.join("bins/retrieval-worker/src/main.rs");
+        let original_main = fs::read_to_string(&worker_main).unwrap();
+        for (use_case, symbol) in [
+            ("build_embedding_provider", "disclosure::DisclosureSource"),
+            (
+                "boot_checks (fingerprint)",
+                "private_projection_registry::PrivateProjectionRegistryError",
+            ),
+            (
+                "run_projection_worker (embedder)",
+                "projection_worker::CardEmbedder",
+            ),
+            (
+                "run_projection_worker (pass config)",
+                "projection_worker::PassConfig",
+            ),
+            (
+                "run_projection_worker (pass outcome)",
+                "projection_worker::PassOutcome",
+            ),
+            (
+                "run_projection_worker (shared deps)",
+                "projection_worker::SharedProjectionDeps",
+            ),
+            ("projection_mode (family)", "qdrant::RetrievalFamily"),
+            ("ServeConfig::pass (backoff)", "stream_repo::Backoff"),
+            ("projection_mode (claim family)", "stream_repo::ClaimFamily"),
+        ] {
+            fs::write(
+                &worker_main,
+                format!("{original_main}\nuse humaux_adapters::{symbol};\n"),
+            )
+            .unwrap();
+            let red = hex_layer_gate(&root);
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.contains(symbol))),
+                "{red:?}"
+            );
+            println!("SLICE-11a {use_case}: RED {red:?}");
+            fs::write(&worker_main, &original_main).unwrap();
+            let green = hex_layer_gate(&root);
+            assert!(matches!(green, Verdict::Pass), "{green:?}");
+            println!("SLICE-11a {use_case}: restored GREEN");
+        }
+
+        // Read-gate negative control: bypassing the single read gate fails G-M08-2 RED, then restores GREEN.
+        fs::write(
+            &worker_main,
+            format!("use humaux_adapters::read_gate::visibility_readable;\n{original_main}"),
+        )
+        .unwrap();
+        let bypass = m08_2_can_read_one_home(&root);
+        assert!(
+            matches!(&bypass, Verdict::Fail(lines) if lines.iter().any(|line| line.contains("bins/retrieval-worker/src/main.rs"))),
+            "{bypass:?}"
+        );
+        println!("SLICE-11a read-gate bypass (retrieval-worker::main): RED {bypass:?}");
+        fs::write(&worker_main, &original_main).unwrap();
+        let restored = m08_2_can_read_one_home(&root);
+        assert!(matches!(restored, Verdict::Pass), "{restored:?}");
+        println!("SLICE-11a read-gate bypass (retrieval-worker::main): restored GREEN");
         fs::remove_dir_all(root).unwrap();
     }
 

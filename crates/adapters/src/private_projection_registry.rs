@@ -6,7 +6,7 @@
 //!   PostgreSQL(role_retrieval_worker)]; env=[];
 //!   modules=[adapters::placement_repo, adapters::postgres, domain::authority, domain::identity, domain::ids,
 //!   projection::card, projection::embedding_fingerprint, projection::note_chunks, projection::serving]
-//! Called-by: [adapters::projection_worker, adapters::retrieve, retrieval-worker::main, tests]
+//! Called-by: [adapters::projection_worker, adapters::retrieve, tests]
 //! Invariants: [sole private point-id resolver: binds a Qdrant point id to a Memory in PostgreSQL and re-checks the
 //!   source fence and §37 deletion overlay in the registration transaction; no Qdrant IO here; cross-tenant/workspace, collisions and lost races are typed errors, never a
 //!   guessed binding; a registration that carries a vector writes it in the SAME transaction as the registry row

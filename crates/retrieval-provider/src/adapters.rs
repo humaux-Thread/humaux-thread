@@ -434,6 +434,27 @@ pub fn embedding_provider_for(
     }
 }
 
+/// Worker-process constructor for [`embedding_provider_for`]: supplies the batch-level placeholder
+/// `DisclosureSource::Memory(Uuid::nil())` inside `provider_execution` until the model catalog lands
+/// (tracked in coord task 7e6da2f9). Only `embed_cards` (no memory ids) ever reads that fallback;
+/// `embed_cards_for_memories` builds one real `DisclosureSource::Memory` per card.
+pub fn embedding_provider_for_worker(
+    provider_id: &str,
+    pool: RetrievalWorkerDbPool,
+    processor: ProcessorId,
+    model: EmbeddingModelDescriptor,
+    region: impl Into<String>,
+) -> Result<Arc<dyn EmbeddingProvider>, ErrorCode> {
+    embedding_provider_for(
+        provider_id,
+        pool,
+        processor,
+        model,
+        region,
+        DisclosureSource::Memory(uuid::Uuid::nil()),
+    )
+}
+
 /// and non-zero), `estimated_input_tokens` (this crate's own char-count estimate) otherwise —
 /// a response that omits `usage` must not silently record a real, billed call as zero tokens.
 fn parse_embedding_response(

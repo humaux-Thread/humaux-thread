@@ -1,7 +1,7 @@
 //! `adapters::projection_worker` — T-projection-worker: makes `humaux-retrieval-worker` actually index private
 //!   memories per §17.4's contract, restated verbatim in the task card: "upsert -> await/verify search-visible
 //!   according to adapter policy -> commit stream checkpoint".
-//! Depends-on: crates=[async-trait, humaux-domain, humaux-infra-cell, humaux-local-secret-scan, humaux-projection,
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-infra-cell, humaux-local-secret-scan, humaux-projection,
 //!   serde_json, sha2, sqlx]; services=[PostgreSQL(any) r=[private.evidence_objects,
 //!   private.identity_note_materializations, private.memory_evidence, private.memory_records, private.memory_subjects,
 //!   projection.card_profile_policies, projection.embedding_fingerprints, projection.memory_vectors,
@@ -9,8 +9,8 @@
 //!   w=[ops.outbox, projection.stream_log],
 //!   PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::affect_repo, adapters::postgres,
 //!   adapters::private_projection_registry, adapters::qdrant, adapters::remember, adapters::stream_repo,
-//!   domain::affect, domain::authority, domain::dataclass, domain::egress, domain::error, domain::identity,
-//!   domain::ids, domain::memory, domain::subject, humaux-local-secret-scan, infra-cell::permit,
+//!   application::projection_execution, domain::affect, domain::authority, domain::dataclass, domain::egress, domain::error, domain::identity,
+//!   domain::ids, domain::memory, domain::subject, domain::ticket_family, humaux-local-secret-scan, infra-cell::permit,
 //!   infra-cell::transport, projection::card, projection::note_chunks, projection::serving, projection::stream]
 //! Called-by: [adapters::rebuild, gateway::bootstrap, maintenance::drill, retrieval-worker::main, tests]
 //! Invariants: [run_claimed_pass claims across tenants by lease and processes one family's tickets sequentially in one
@@ -141,6 +141,7 @@ use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId};
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use humaux_domain::memory::MemoryType;
 use humaux_domain::subject::SubjectId;
+use humaux_domain::ticket_family::TicketFamily;
 use humaux_infra_cell::{CellAccessPermit, IntraCellHttpTransport};
 use humaux_local_secret_scan::{LocalSecretScanner, SealedRetrievalCard, SealedSource};
 use humaux_projection::card::{CardBuildOutcome, CardInput, EgressDisposition, RetrievalCard};
@@ -460,27 +461,7 @@ pub async fn card_profile_policy_row(
     .await
 }
 
-/// ADR-0068 D-I, the boot check of the binary's own projection: `None` when the row exists and its hash (NULL
-/// included) names a profile this build knows; otherwise the refusal line (exit 2, an operator must change
-/// something). A missing row is refused here, never read as legacy: migration 0238 seeds the serving projection's
-/// row, so its absence is a broken deployment, and a worker that guessed would build slots the ledger does not count.
-pub fn note_chunk_policy_refusal(row: Option<Option<&str>>) -> Option<String> {
-    match row {
-        None => Some(
-            "boot refused: card_profile_policy_missing: the projection has no card profile policy row \
-             (ADR-0068 D-I)"
-                .to_owned(),
-        ),
-        Some(hash) => NoteChunkPolicy::from_profile_hash(hash).err().map(
-            |UnknownNoteChunkProfile(hash)| {
-                format!(
-                    "boot refused: card_profile_policy_unknown: note chunk profile {hash:?} is not \
-                     a profile this build knows (ADR-0068 D-I)"
-                )
-            },
-        ),
-    }
-}
+pub use humaux_application::projection_execution::note_chunk_policy_refusal;
 
 /// ADR-0083 D-A/D-E, U4: whether `tenant` allows text processing INSIDE the Data Cell (§17.6), i.e. whether a point of
 /// this tenant carries a `bm25` sparse vector and the sparse leg may run for it. `false` is the §17.6 "extreme policy"
@@ -2204,6 +2185,158 @@ pub async fn run_claimed_pass_for_run(
     only_run: OnlyRun,
 ) -> Result<PassOutcome, ErrorCode> {
     claimed_pass(shared, cfg, Some(only_run)).await
+}
+
+struct FnCardEmbedder<F>(F);
+
+#[async_trait::async_trait]
+impl<F, Fut> CardEmbedder for FnCardEmbedder<F>
+where
+    F: Fn(TenantId, u32, Vec<SealedRetrievalCard>, Vec<Uuid>) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<Vec<Vec<f32>>, ErrorCode>> + Send,
+{
+    async fn embed_cards(
+        &self,
+        tenant_id: TenantId,
+        dimension: u32,
+        cards: &[SealedRetrievalCard],
+        memory_ids: &[Uuid],
+    ) -> Result<Vec<Vec<f32>>, ErrorCode> {
+        (self.0)(tenant_id, dimension, cards.to_vec(), memory_ids.to_vec()).await
+    }
+}
+
+struct ProjectionWorkerAdapter {
+    deps: SharedProjectionDeps,
+}
+
+/// Process-assembly constructor for [`humaux_application::projection_execution::ProjectionWorkerPort`]:
+/// keeps [`SharedProjectionDeps`] and [`CardEmbedder`] inside the adapter boundary so the worker entry
+/// crate wires only runtime dependencies.
+#[allow(clippy::too_many_arguments)]
+pub fn projection_worker_port<F, Fut>(
+    pool: RetrievalWorkerDbPool,
+    embed_cards: F,
+    scanner: Arc<LocalSecretScanner>,
+    transport: Arc<dyn IntraCellHttpTransport>,
+    mint_permit: Arc<dyn Fn() -> Option<CellAccessPermit> + Send + Sync>,
+    embedding_version: String,
+    dimension: u32,
+    processor_id: ProcessorId,
+    sleep: Arc<dyn Fn(Duration) -> Sleep + Send + Sync>,
+) -> Arc<dyn humaux_application::projection_execution::ProjectionWorkerPort>
+where
+    F: Fn(TenantId, u32, Vec<SealedRetrievalCard>, Vec<Uuid>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<Vec<Vec<f32>>, ErrorCode>> + Send + 'static,
+{
+    Arc::new(ProjectionWorkerAdapter {
+        deps: SharedProjectionDeps {
+            pool,
+            embedder: Arc::new(FnCardEmbedder(embed_cards)),
+            scanner,
+            transport,
+            mint_permit,
+            embedding_version,
+            dimension,
+            processor_id,
+            sleep,
+            dependency_down: AtomicBool::new(false),
+        },
+    })
+}
+
+#[async_trait::async_trait]
+impl humaux_application::projection_execution::ProjectionWorkerPort for ProjectionWorkerAdapter {
+    async fn bind_embedding_fingerprint(
+        &self,
+        family: TicketFamily,
+        inputs: &humaux_application::projection_execution::FingerprintInputs,
+    ) -> Result<Option<String>, humaux_application::projection_execution::WorkerOutcome> {
+        let registry_inputs = private_projection_registry::worker_fingerprint_inputs(
+            &inputs.provider,
+            &inputs.model_id,
+            &inputs.model_revision,
+            self.deps.dimension,
+            family.projection_version(),
+        );
+        match private_projection_registry::bind_embedding_fingerprint(
+            &self.deps.pool,
+            &self.deps.embedding_version,
+            &registry_inputs,
+        )
+        .await
+        {
+            Ok(_) => Ok(None),
+            Err(
+                PrivateProjectionRegistryError::FingerprintMismatch
+                | PrivateProjectionRegistryError::InvalidInput,
+            ) => Err(
+                humaux_application::projection_execution::WorkerOutcome::ConfigFailed(
+                    humaux_application::projection_execution::BOOT_REFUSED.to_owned(),
+                ),
+            ),
+            Err(error) => Ok(Some(format!("fingerprint binding: {error}"))),
+        }
+    }
+
+    async fn check_card_profile_policy(
+        &self,
+        family: TicketFamily,
+    ) -> Result<Option<String>, humaux_application::projection_execution::WorkerOutcome> {
+        match card_profile_policy_row(
+            &self.deps.pool,
+            family.domain(),
+            family.projection_kind(),
+            family.projection_version(),
+        )
+        .await
+        {
+            Ok(row) => match note_chunk_policy_refusal(row.as_ref().map(Option::as_deref)) {
+                None => Ok(None),
+                Some(reason) => Err(
+                    humaux_application::projection_execution::WorkerOutcome::ConfigFailed(reason),
+                ),
+            },
+            Err(error) => Ok(Some(format!("card profile policy read: {error}"))),
+        }
+    }
+
+    async fn run_claimed_pass(
+        &self,
+        config: &humaux_application::projection_execution::PassConfig,
+    ) -> Result<humaux_application::projection_execution::PassOutcome, ErrorCode> {
+        let placement = match config.family {
+            TicketFamily::PrivateMemory => qdrant::RetrievalFamily::PrivateMemoryV1,
+        };
+        let claim = ClaimFamily::of(placement).ok_or(ErrorCode::InvalidInput)?;
+        let adapter_cfg = PassConfig {
+            claim,
+            lease_owner: config.lease_owner.clone(),
+            lease_secs: config.lease_secs,
+            batch: config.batch,
+            per_tenant_cap: config.per_tenant_cap,
+            max_attempts: config.max_attempts,
+            backoff: Backoff {
+                base_secs: config.backoff.base_secs,
+                max_secs: config.backoff.max_secs,
+            },
+        };
+        let outcome = run_claimed_pass(&self.deps, &adapter_cfg).await?;
+        Ok(humaux_application::projection_execution::PassOutcome {
+            last_error: outcome.last_error,
+            claimed: outcome.claimed,
+            done: outcome.done,
+            skipped: outcome.skipped,
+            failed: outcome.failed,
+            retried: outcome.retried,
+            refunded: outcome.refunded,
+            pending: outcome.pending,
+            lost_lease: outcome.lost_lease,
+            placement_missing: outcome.placement_missing,
+            placement_invalid: outcome.placement_invalid,
+            claim_ms: outcome.claim_ms,
+        })
+    }
 }
 
 async fn claimed_pass(

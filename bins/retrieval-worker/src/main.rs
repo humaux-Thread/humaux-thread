@@ -1,5 +1,5 @@
 //! `retrieval-worker::main` — `humaux-retrieval-worker` 进程入口（最小必要进程集见 §4.2；admin 探针契约见 §4.4）。
-//! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-domain, humaux-infra-cell,
+//! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell,
 //!   humaux-local-secret-scan, humaux-retrieval-provider, humaux-telemetry, tokio, uuid];
 //!   services=[HTTP(loopback), PostgreSQL(role_retrieval_worker), Qdrant(*), UDS(serve)]; env=[HUMAUX_RETRIEVAL_WORKER_PG_POOL_MAX_CONNECTIONS, CARGO_PKG_VERSION,
 //!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_RETRIEVAL_WORKER_ALLOW_SAME_UID, HUMAUX_RETRIEVAL_WORKER_BACKOFF_BASE_SECS,
@@ -16,10 +16,8 @@
 //!   HUMAUX_RETRIEVAL_WORKER_QDRANT_HOST, HUMAUX_RETRIEVAL_WORKER_QDRANT_PORT, HUMAUX_RETRIEVAL_WORKER_QDRANT_TLS,
 //!   HUMAUX_RETRIEVAL_WORKER_REGION, HUMAUX_RETRIEVAL_WORKER_RPC_SOCKET_PATH,
 //!   HUMAUX_RETRIEVAL_WORKER_SERVE_METRICS_ADDR, HUMAUX_RETRIEVAL_WORKER_SERVE_RPC_METRICS_ADDR];
-//!   modules=[adapters::disclosure,
-//!   adapters::postgres, adapters::private_projection_registry, adapters::projection_worker, adapters::qdrant,
-//!   adapters::stream_repo, domain::egress,
-//!   domain::error, domain::ids, humaux-local-secret-scan, humaux-telemetry, infra-cell::permit, infra-cell::resource,
+//!   modules=[adapters::postgres, adapters::projection_worker, application::projection_execution, domain::egress,
+//!   domain::error, domain::ticket_family, humaux-local-secret-scan, humaux-telemetry, infra-cell::permit, infra-cell::resource,
 //!   infra-cell::transport, infra-cell::uds, retrieval-provider::adapters, retrieval-provider::contract, retrieval-provider::metrics,
 //!   retrieval-worker::rerank, retrieval-worker::rpc, telemetry::metrics]
 //! Called-by: [process(humaux-retrieval-worker)]
@@ -61,32 +59,26 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     process::ExitCode,
-    sync::atomic::AtomicBool,
+    sync::Arc,
     time::Duration,
 };
 
-use async_trait::async_trait;
-use humaux_adapters::disclosure::DisclosureSource;
 use humaux_adapters::postgres::RetrievalWorkerDbPool;
-use humaux_adapters::private_projection_registry::{
-    PrivateProjectionRegistryError, bind_embedding_fingerprint, worker_fingerprint_inputs,
+use humaux_adapters::projection_worker::projection_worker_port;
+use humaux_application::projection_execution::{
+    BackoffConfig, FingerprintInputs, PassConfig, PassOutcome, ProjectionRuntimePort,
+    ProjectionWorkerPort, WorkerOutcome, run_projection_worker,
 };
-use humaux_adapters::projection_worker::{
-    CardEmbedder, PassConfig, PassOutcome, SharedProjectionDeps, card_profile_policy_row,
-    note_chunk_policy_refusal, run_claimed_pass,
-};
-use humaux_adapters::qdrant::RetrievalFamily;
-use humaux_adapters::stream_repo::{Backoff, ClaimFamily};
 use humaux_domain::egress::ProcessorId;
 use humaux_domain::error::ErrorCode;
-use humaux_domain::ids::TenantId;
+use humaux_domain::ticket_family::TicketFamily;
 use humaux_infra_cell::{
     CallerId, CellId, HttpIntraCellTransport, IntraCellHttpTransport, IntraCellMethod,
     IntraCellRequest, IntraCellResource, IntraCellResourceRegistry, ResourceEntry,
     authorize_cell_access,
 };
 use humaux_local_secret_scan::{LocalSecretScanner, LocalSecretScannerConfig, SealedRetrievalCard};
-use humaux_retrieval_provider::adapters::embedding_provider_for;
+use humaux_retrieval_provider::adapters::embedding_provider_for_worker;
 use humaux_retrieval_provider::contract::{EmbeddingModelDescriptor, EmbeddingProvider, ModelId};
 use humaux_retrieval_provider::metrics as provider_metrics;
 use humaux_telemetry::metrics::{
@@ -94,7 +86,6 @@ use humaux_telemetry::metrics::{
     write_histogram,
 };
 use humaux_telemetry::{start_line, version_line};
-use std::sync::Arc;
 use uuid::Uuid;
 
 fn required(name: &str) -> Result<String, String> {
@@ -251,17 +242,17 @@ impl ServeConfig {
         Ok(config)
     }
 
-    /// The pass knobs under this process's own lease owner. `claim` is derived from
+    /// The pass knobs under this process's own lease owner. `family` is derived from
     /// [`PROJECTION_FAMILY`] (card 21: no triple in the environment).
-    fn pass(&self, claim: ClaimFamily, lease_owner: String) -> PassConfig {
+    fn pass(&self, family: TicketFamily, lease_owner: String) -> PassConfig {
         PassConfig {
-            claim,
+            family,
             lease_owner,
             lease_secs: self.lease_secs as f64,
             batch: self.batch,
             per_tenant_cap: self.per_tenant_cap,
             max_attempts: self.max_attempts,
-            backoff: Backoff {
+            backoff: BackoffConfig {
                 base_secs: self.backoff_base_secs as f64,
                 max_secs: self.backoff_max_secs as f64,
             },
@@ -269,39 +260,8 @@ impl ServeConfig {
     }
 }
 
-/// The §17 retrieval family this process projects into. Single point of truth for BOTH the
-/// §17.3 placement family the ADR-0052 claim joins and — through
-/// [`RetrievalFamily::ticket_family`] — the §15.1 ticket triple it claims, so the two can never
-/// name different families (card 21).
-const PROJECTION_FAMILY: RetrievalFamily = RetrievalFamily::PrivateMemoryV1;
-
-/// ADR-0064 D-C: the one line a fingerprint refusal prints (exit 2, never retried).
-const BOOT_REFUSED: &str = "boot refused: fingerprint_mismatch: HUMAUX_RETRIEVAL_WORKER_EMBEDDING_VERSION is bound \
-                            to another model fingerprint (ADR-0064 D-C)";
-
-/// Local wrapper making a real [`EmbeddingProvider`] satisfy [`CardEmbedder`] — see that
-/// trait's doc in `crates/adapters/src/projection_worker.rs` for why the orphan rule forces
-/// this indirection here rather than a blanket impl on the provider type in
-/// `humaux-adapters` (neither trait nor type is local to that crate; both are local, or the
-/// wrapper is, only here — the one crate that depends on both with no cycle).
-struct EmbedderAdapter(Arc<dyn EmbeddingProvider>);
-
-#[async_trait]
-impl CardEmbedder for EmbedderAdapter {
-    async fn embed_cards(
-        &self,
-        tenant_id: TenantId,
-        dimension: u32,
-        cards: &[SealedRetrievalCard],
-        memory_ids: &[Uuid],
-    ) -> Result<Vec<Vec<f32>>, ErrorCode> {
-        Ok(self
-            .0
-            .embed_cards_for_memories(tenant_id, dimension, cards, memory_ids)
-            .await?
-            .vectors)
-    }
-}
+/// The §15.1 ticket family this process projects into (card 21: single source of truth).
+const PROJECTION_FAMILY: TicketFamily = TicketFamily::PrivateMemory;
 
 // §48.1 / ADR-0065 D-A/D-B: all process entry points share one validated ceiling.
 async fn connect_pool(dsn: &str) -> Result<RetrievalWorkerDbPool, String> {
@@ -468,10 +428,6 @@ async fn projection_mode(resident: bool) -> Result<(), Outcome> {
     // ADR-0068 D-F / §78.1: the projection modes are the only ones that batch cards, so the cap is required before any
     // connection — unset or 0 refuses boot here (exit 2), never a pass that fails on every poll.
     parse::<std::num::NonZeroU32>("HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MAX_BATCH_ITEMS")?;
-    // §78.1 / card 21: the ticket triple is DERIVED from the retrieval family this process
-    // projects into; `None` would be a wiring bug, not a deployment shape.
-    let claim = ClaimFamily::of(PROJECTION_FAMILY)
-        .ok_or_else(|| format!("{PROJECTION_FAMILY:?} is not a §15.1 ticket-stream family"))?;
     let config = ServeConfig::from_lookup(|name| env::var(name).ok())?;
     let dimension = parse::<u32>("HUMAUX_RETRIEVAL_WORKER_DIMENSION")?;
     if dimension == 0 {
@@ -480,75 +436,36 @@ async fn projection_mode(resident: bool) -> Result<(), Outcome> {
         ));
     }
     let embedding_version = required("HUMAUX_RETRIEVAL_WORKER_EMBEDDING_VERSION")?;
-    let projection_version = claim.projection_version.clone();
     let dsn = required("HUMAUX_RETRIEVAL_WORKER_PG_DSN")?;
     let processor_id = egress_processor_id()?;
     let (registry, transport) = build_cell_access()?;
     let scanner = Arc::new(build_scanner()?);
     // Per-process owner: every settle/retry/release is fenced on it plus the claim's attempts,
     // so two resident workers never both write one ticket.
-    let pass = config.pass(claim, format!("humaux-retrieval-worker/{}", Uuid::now_v7()));
+    let pass = config.pass(
+        PROJECTION_FAMILY,
+        format!("humaux-retrieval-worker/{}", Uuid::now_v7()),
+    );
 
     // Both handlers are installed before the first pass (the consolidation worker's reason:
     // a signal during pass one must not hit the default disposition mid-pass).
-    let mut shutdown = Shutdown::install().map_err(Outcome::Runtime)?;
-    // Connected lazily and kept: a database that is down at start (or later) is a logged failed
-    // pass in `--serve`, retried next poll — never a crash loop the supervisor has to absorb.
-    let mut shared: Option<SharedProjectionDeps> = None;
-    loop {
-        if shared.is_none() {
-            match connect_shared(
-                &dsn,
-                dimension,
-                &embedding_version,
-                processor_id,
-                &registry,
-                &transport,
-                &scanner,
-            )
-            .await
-            {
-                // ADR-0064 D-C: no pass runs until the label is bound to this model's fingerprint, and ADR-0068 D-I:
-                // none until the projection's card profile policy names a profile this build knows.
-                Ok(deps) => match boot_checks(&deps, &projection_version, &pass.claim).await? {
-                    None => shared = Some(deps),
-                    Some(error) if resident => {
-                        eprintln!("humaux-retrieval-worker: projection pass failed: {error}")
-                    }
-                    Some(error) => return Err(Outcome::Runtime(error)),
-                },
-                Err(error) if resident => {
-                    eprintln!("humaux-retrieval-worker: projection pass failed: {error}")
-                }
-                Err(error) => return Err(Outcome::Runtime(error)),
-            }
-        }
-        if let Some(deps) = &shared {
-            match projection_iteration(run_claimed_pass(deps, &pass)).await {
-                Ok(outcome) => println!("humaux-retrieval-worker: {}", pass_line(&outcome)),
-                Err(error) if resident => {
-                    eprintln!("humaux-retrieval-worker: projection pass failed: {error}")
-                }
-                Err(error) => {
-                    return Err(Outcome::Runtime(format!("projection pass failed: {error}")));
-                }
-            }
-        }
-        if !resident {
-            return Ok(());
-        }
-        // ADR-0037: the signal is only ever observed BETWEEN passes. A pass settles, retries or
-        // releases every ticket it claimed before it returns, so exiting here never leaves a live
-        // lease only expiry could free. Shutdown latency is one pass: the supervisor's grace must
-        // exceed BATCH × worst-case ticket time (docs/ops/supervision.md).
-        tokio::select! {
-            () = tokio::time::sleep(config.poll_interval) => {}
-            () = shutdown.recv() => {
-                eprintln!("humaux-retrieval-worker: signal received between passes, exiting");
-                return Ok(());
-            }
-        }
-    }
+    let shutdown = Shutdown::install().map_err(Outcome::Runtime)?;
+    let mut runtime = WorkerRuntime {
+        dsn,
+        dimension,
+        embedding_version,
+        processor_id,
+        registry,
+        transport,
+        scanner,
+        shutdown,
+    };
+    run_projection_worker(&mut runtime, &pass, config.poll_interval, resident)
+        .await
+        .map_err(|err| match err {
+            WorkerOutcome::ConfigFailed(reason) => Outcome::Failed(reason),
+            WorkerOutcome::Runtime(reason) => Outcome::Runtime(reason),
+        })
 }
 
 /// One line per pass (ADR-0052 D-F); `claim_ms` is the claim-latency sample the ADR reports.
@@ -570,117 +487,98 @@ fn pass_line(o: &PassOutcome) -> String {
     )
 }
 
-/// ADR-0064 D-C: binds `deps`' label to the fingerprint of the configured model, read under the
-/// names `build_embedder` read them (so they exist once `deps` does). `Err` = refused — a label bound
-/// to another model can never become right by retrying, so every mode exits 2; `Ok(Some(_))` = a
-/// database failure, retried next poll in `--serve`.
-async fn bind_label(
-    deps: &SharedProjectionDeps,
-    projection_version: &str,
-) -> Result<Option<String>, Outcome> {
-    let provider = required("HUMAUX_RETRIEVAL_WORKER_EMBEDDING_PROVIDER")?;
-    let model_id = required("HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MODEL")?;
-    let model_revision = required("HUMAUX_RETRIEVAL_WORKER_MODEL_REVISION")?;
-    let inputs = worker_fingerprint_inputs(
-        &provider,
-        &model_id,
-        &model_revision,
-        deps.dimension,
-        projection_version,
-    );
-    match bind_embedding_fingerprint(&deps.pool, &deps.embedding_version, &inputs).await {
-        Ok(_) => Ok(None),
-        Err(
-            PrivateProjectionRegistryError::FingerprintMismatch
-            | PrivateProjectionRegistryError::InvalidInput,
-        ) => Err(Outcome::Failed(BOOT_REFUSED.to_owned())),
-        Err(error) => Ok(Some(format!("fingerprint binding: {error}"))),
-    }
-}
-
-/// The two boot refusals that need the database: the label's fingerprint binding ([`bind_label`]), then the
-/// projection's card profile policy ([`check_policy`]). Same contract as both.
-async fn boot_checks(
-    deps: &SharedProjectionDeps,
-    projection_version: &str,
-    claim: &ClaimFamily,
-) -> Result<Option<String>, Outcome> {
-    match bind_label(deps, projection_version).await? {
-        None => check_policy(deps, claim).await,
-        retry => Ok(retry),
-    }
-}
-
-/// ADR-0068 D-I: the projection's `card_profile_policies` row must exist and name a profile this build knows. `Err` =
-/// refused (exit 2 in every mode: a missing row or an unknown hash never becomes right by retrying); `Ok(Some(_))` = a
-/// database failure, retried next poll in `--serve`.
-async fn check_policy(
-    deps: &SharedProjectionDeps,
-    claim: &ClaimFamily,
-) -> Result<Option<String>, Outcome> {
-    match card_profile_policy_row(
-        &deps.pool,
-        &claim.domain,
-        &claim.projection_kind,
-        &claim.projection_version,
-    )
-    .await
-    {
-        Ok(row) => policy_outcome(note_chunk_policy_refusal(
-            row.as_ref().map(Option::as_deref),
-        ))
-        .map(|()| None),
-        Err(error) => Ok(Some(format!("card profile policy read: {error}"))),
-    }
-}
-
-/// ADR-0068 D-I: a policy refusal is configuration — [`Outcome::Failed`], exit 2.
-fn policy_outcome(refusal: Option<String>) -> Result<(), Outcome> {
-    refusal.map_or(Ok(()), |reason| Err(Outcome::Failed(reason)))
-}
-
-/// The database-bound half of [`SharedProjectionDeps`]: the worker pool and the embedder (whose
-/// disclosure ledger needs its own pool). Everything else was validated before the loop.
-async fn connect_shared(
-    dsn: &str,
+struct WorkerRuntime {
+    dsn: String,
     dimension: u32,
-    embedding_version: &str,
+    embedding_version: String,
     processor_id: ProcessorId,
-    registry: &IntraCellResourceRegistry,
-    transport: &Arc<HttpIntraCellTransport>,
-    scanner: &Arc<LocalSecretScanner>,
-) -> Result<SharedProjectionDeps, String> {
-    // dep: PostgreSQL(role_retrieval_worker) — the projection runner's claim/settle pool
-    let pool = connect_pool(dsn)
-        .await
-        .map_err(|e| format!("retrieval worker database role connection failed: {e}"))?;
-    let embedder = build_embedder(dsn, dimension)
-        .await
-        .map_err(|outcome| match outcome {
-            Outcome::NotApplicable(reason) | Outcome::Failed(reason) | Outcome::Runtime(reason) => {
-                reason
+    registry: IntraCellResourceRegistry,
+    transport: Arc<HttpIntraCellTransport>,
+    scanner: Arc<LocalSecretScanner>,
+    shutdown: Shutdown,
+}
+
+#[async_trait::async_trait]
+impl ProjectionRuntimePort for WorkerRuntime {
+    async fn connect(&self) -> Result<(Arc<dyn ProjectionWorkerPort>, FingerprintInputs), String> {
+        let dsn = &self.dsn;
+        // dep: PostgreSQL(role_retrieval_worker) — the projection runner's claim/settle pool
+        let pool = connect_pool(dsn)
+            .await
+            .map_err(|e| format!("retrieval worker database role connection failed: {e}"))?;
+        let provider = build_embedding_provider(dsn, self.dimension)
+            .await
+            .map_err(|outcome| match outcome {
+                Outcome::NotApplicable(reason)
+                | Outcome::Failed(reason)
+                | Outcome::Runtime(reason) => reason,
+            })?;
+        let fingerprint_inputs = FingerprintInputs {
+            provider: required("HUMAUX_RETRIEVAL_WORKER_EMBEDDING_PROVIDER")?,
+            model_id: required("HUMAUX_RETRIEVAL_WORKER_EMBEDDING_MODEL")?,
+            model_revision: required("HUMAUX_RETRIEVAL_WORKER_MODEL_REVISION")?,
+        };
+        let embed_cards =
+            move |tenant_id, dimension, cards: Vec<SealedRetrievalCard>, memory_ids: Vec<Uuid>| {
+                let provider = Arc::clone(&provider);
+                async move {
+                    Ok(provider
+                        .embed_cards_for_memories(tenant_id, dimension, &cards, &memory_ids)
+                        .await?
+                        .vectors)
+                }
+            };
+        let transport: Arc<dyn IntraCellHttpTransport> = self.transport.clone();
+        let registry = self.registry.clone();
+        let port = projection_worker_port(
+            pool,
+            embed_cards,
+            self.scanner.clone(),
+            transport,
+            // ADR-0052 D-F: one permit per ticket, so no permit outlives its PERMIT_TTL.
+            Arc::new(move || {
+                authorize_cell_access(&registry, IntraCellResource::QDRANT_REST, PERMIT_TTL).ok()
+            }),
+            self.embedding_version.clone(),
+            self.dimension,
+            // Card 21: the SAME §7.4 identity the embedding provider discloses under; advance_prefix
+            // writes it into projection.stream_checkpoints.projection_processor_id (0171).
+            self.processor_id,
+            // The pass's background lease heartbeat waits on this process's runtime timer.
+            Arc::new(|period| Box::pin(tokio::time::sleep(period))),
+        );
+        Ok((port, fingerprint_inputs))
+    }
+
+    async fn run_instrumented_pass(
+        &self,
+        worker: &dyn ProjectionWorkerPort,
+        pass: &PassConfig,
+    ) -> Result<PassOutcome, ErrorCode> {
+        projection_iteration(worker.run_claimed_pass(pass)).await
+    }
+
+    fn on_pass_ok(&self, outcome: &PassOutcome) {
+        println!("humaux-retrieval-worker: {}", pass_line(outcome));
+    }
+
+    fn on_pass_error(&self, message: &str) {
+        eprintln!("humaux-retrieval-worker: projection pass failed: {message}");
+    }
+
+    async fn wait_for_next_poll_or_shutdown(&mut self, poll_interval: Duration) -> bool {
+        // ADR-0037: the signal is only ever observed BETWEEN passes. A pass settles, retries or
+        // releases every ticket it claimed before it returns, so exiting here never leaves a live
+        // lease only expiry could free. Shutdown latency is one pass: the supervisor's grace must
+        // exceed BATCH × worst-case ticket time (docs/ops/supervision.md).
+        tokio::select! {
+            () = tokio::time::sleep(poll_interval) => true,
+            () = self.shutdown.recv() => {
+                eprintln!("humaux-retrieval-worker: signal received between passes, exiting");
+                false
             }
-        })?;
-    let transport: Arc<dyn IntraCellHttpTransport> = transport.clone();
-    let registry = registry.clone();
-    Ok(SharedProjectionDeps {
-        pool,
-        embedder,
-        scanner: scanner.clone(),
-        transport,
-        // ADR-0052 D-F: one permit per ticket, so no permit outlives its PERMIT_TTL.
-        mint_permit: Arc::new(move || {
-            authorize_cell_access(&registry, IntraCellResource::QDRANT_REST, PERMIT_TTL).ok()
-        }),
-        embedding_version: embedding_version.to_owned(),
-        dimension,
-        // Card 21: the SAME §7.4 identity the embedding provider discloses under; advance_prefix
-        // writes it into projection.stream_checkpoints.projection_processor_id (0171).
-        processor_id,
-        // The pass's background lease heartbeat waits on this process's runtime timer.
-        sleep: Arc::new(|period| Box::pin(tokio::time::sleep(period))),
-        dependency_down: AtomicBool::new(false),
-    })
+        }
+    }
 }
 
 /// SIGTERM/Ctrl-C, as one awaitable — copied from `bins/consolidation-worker/src/main.rs` (a
@@ -837,24 +735,15 @@ async fn build_embedding_provider(
     })?;
     // §78.1: the provider is configuration, not code — the id selects the adapter inside
     // `humaux_retrieval_provider::adapters` (§19 Gate 3/7 keeps the concrete type there).
-    let provider = embedding_provider_for(
+    let provider = embedding_provider_for_worker(
         &required("HUMAUX_RETRIEVAL_WORKER_EMBEDDING_PROVIDER")?,
         embedder_pool,
         egress_processor_id()?,
         model,
         required("HUMAUX_RETRIEVAL_WORKER_REGION")?,
-        DisclosureSource::Memory(Uuid::nil()),
     )
     .map_err(|_| "could not construct the configured embedding provider".to_owned())?;
     Ok(provider)
-}
-
-async fn build_embedder(
-    dsn: &str,
-    dimension: u32,
-) -> Result<std::sync::Arc<dyn CardEmbedder>, Outcome> {
-    let provider = build_embedding_provider(dsn, dimension).await?;
-    Ok(std::sync::Arc::new(EmbedderAdapter(provider)))
 }
 
 /// ADR-0012 `--serve-rpc` entry point: the Unix-domain-socket query-embedding RPC listener,
@@ -980,13 +869,15 @@ mod rpc_mode {
 
 #[cfg(test)]
 mod config_tests {
-    use super::{
-        ClaimFamily, Outcome, PROJECTION_FAMILY, ServeConfig, egress_processor_id,
-        note_chunk_policy_refusal, policy_outcome,
-    };
+    use super::{Outcome, PROJECTION_FAMILY, ServeConfig, egress_processor_id};
+    use humaux_application::projection_execution::note_chunk_policy_refusal;
     use humaux_domain::ticket_family::TicketFamily;
     use std::collections::HashMap;
     use uuid::Uuid;
+
+    fn policy_outcome(refusal: Option<String>) -> Result<(), Outcome> {
+        refusal.map_or(Ok(()), |reason| Err(Outcome::Failed(reason)))
+    }
 
     const PASS_KEYS: [&str; 7] = [
         "HUMAUX_RETRIEVAL_WORKER_BATCH",
@@ -1073,12 +964,11 @@ mod config_tests {
     /// injection: restore `parse::<Uuid>("…TENANT_ID")` in the projection mode ⇒ red.
     #[test]
     fn run_once_reads_no_tenant_pin() {
-        let claim = ClaimFamily::of(PROJECTION_FAMILY).expect("a ticket family");
         let pass = ServeConfig::from_lookup(|k| full().get(k).cloned())
             .expect("no tenant key needed")
-            .pass(claim.clone(), "owner".to_owned());
-        assert_eq!(pass.claim, claim);
-        assert_eq!(claim.projection_version, "v1");
+            .pass(PROJECTION_FAMILY, "owner".to_owned());
+        assert_eq!(pass.family, PROJECTION_FAMILY);
+        assert_eq!(pass.family.projection_version(), "v1");
         let source = include_str!("main.rs");
         for suffix in ["TENANT_ID", "SCOPE_KIND", "SCOPE_ID", "QDRANT_COLLECTION"] {
             let name = format!("{}{suffix}", "HUMAUX_RETRIEVAL_WORKER_");
@@ -1132,9 +1022,7 @@ mod config_tests {
     /// nobody writes.
     #[test]
     fn ticket_triple_is_derived_from_the_projection_family() {
-        let family = PROJECTION_FAMILY
-            .ticket_family()
-            .expect("the projected family is a §15.1 ticket stream");
+        let family = PROJECTION_FAMILY;
         assert_eq!(family, TicketFamily::PrivateMemory);
         assert_eq!(family.domain(), "private_memory");
         assert_eq!(family.projection_kind(), "PRIVATE_MEMORY");
