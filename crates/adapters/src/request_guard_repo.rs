@@ -1,15 +1,15 @@
-//! `adapters::request_guard_repo` — RequestGuard's first PostgreSQL persistence seam: effective-entitlement reads and
+//! `adapters::request_guard_repo` — PostgreSQL effective-entitlement reads and
 //!   FORCE-RLS operational-audit writes.
 //! Depends-on: crates=[humaux-domain, serde_json, sqlx]; services=[PostgreSQL(role_gateway)
 //!   r=[control.entitlement_snapshots] x=[control.audit_event_insert]]; env=[]; modules=[adapters::postgres,
 //!   adapters::quota_repo, domain::audit, domain::error, domain::identity, domain::ids]
-//! Called-by: [adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::independent_audit, adapters::memory_governance_repo, adapters::operation_receipt, gateway::guard, tests]
-//! Invariants: [policy stays in RequestGuard; this reads the effective entitlement snapshot (its staged successor
+//! Called-by: [adapters::audited_read_quota, adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::independent_audit, adapters::memory_governance_repo, adapters::operation_receipt, tests]
+//! Invariants: [this reads the effective entitlement snapshot (its staged successor
 //!   once that is in force, ADR-0072 D-A) and commits quota transitions together with the §77 audit row in one
 //!   transaction; a missing entitlement is EntitlementRequired]
 //! Spec: Baseline §72.2.1; §77; ADR-0072
 //!
-//! Policy stays in RequestGuard. This adapter reads the effective snapshot and commits
+//! Policy belongs to the commercial application. This adapter reads the effective snapshot and commits
 //! read-request quota transitions together with §77's audit writer, preserving the rule
 //! that runtime pools and SQL transactions never escape the adapter layer.
 
@@ -33,7 +33,7 @@ type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 /// Read-only database facts from the sole effective-entitlement projection (§76).
 ///
 /// This is intentionally not `application::entitlement::EntitlementSnapshot`: `project` is
-/// that type's sole constructor. RequestGuard only needs the already-projected facts.
+/// that type's sole constructor. Read admission only needs the already-projected facts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EffectiveEntitlementFacts {
     pub effective: Value,

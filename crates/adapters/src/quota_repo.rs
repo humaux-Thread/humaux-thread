@@ -1,12 +1,12 @@
 //! `adapters::quota_repo` — §72.2.1: durable, tenant-bound quota reservations.
-//! Depends-on: crates=[humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) w=[control.quota_windows,
+//! Depends-on: crates=[humaux-application, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) w=[control.quota_windows,
 //!   control.usage_reservations] x=[control.issue_quota_window,
 //!   control.reap_quota_reservations, control.renew_quota_period], PostgreSQL(role_gateway),
 //!   PostgreSQL(role_maintenance)]; env=[];
 //!   modules=[adapters::postgres, domain::error, domain::identity, domain::ids]
-//! Called-by: [adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo,
+//! Called-by: [adapters::audited_read_quota, adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo,
 //!   adapters::operation_receipt, adapters::request_guard_repo,
-//!   gateway::guard, maintenance::main, maintenance::serve, tests, xtask::e2e_seed]
+//!   maintenance::main, maintenance::serve, tests, xtask::e2e_seed]
 //! Invariants: [the gateway only consumes existing quota windows; only role_maintenance can issue, renew or reap them;
 //!   exhaustion is QuotaExhausted and a PG error DependencyUnavailable, never an allow;
 //!   `quota_window_horizon_seconds` has one
@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use crate::postgres::{MaintenanceDbPool, RuntimeDbPool};
 
-pub const BMO_ENTITLEMENT: &str = "mcp.billable_operations.per_period";
+pub use humaux_application::read_quota::BMO_ENTITLEMENT;
 type Txn<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

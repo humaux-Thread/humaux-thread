@@ -37,7 +37,7 @@ async-trait = "0.1"
 axum = "0.8"
 # why: derive (de)serialization for wire/DTO types; used-by: [gateway::context, gateway::mcp_application, gateway::memory, gateway::rerank_client, gateway::retrieval_embedding_client]
 serde = { version = "1", features = ["derive"] }
-# why: JSON payloads and envelopes; used-by: [gateway::context, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, tests]
+# why: JSON payloads and envelopes; used-by: [gateway::context, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, tests]
 serde_json = { version = "1", features = ["raw_value"] }
 # why: sha256 digests for hashes, fingerprints and scope_hash; used-by: [gateway::guard, gateway::retrieval_embedding_client, tests]
 sha2 = "0.10"

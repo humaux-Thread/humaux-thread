@@ -1701,6 +1701,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `private.memory_projects`
 - service `PostgreSQL(any)`
 
+#### `adapters::audited_read_quota`
+
 #### `adapters::billing_repo`
 - writes `control.billing_inbox`
 - service `PostgreSQL(role_gateway)`
@@ -2212,6 +2214,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::pin`
 
 #### `application::query_embedding_execution`
+
+#### `application::read_quota`
 
 #### `application::recall_read`
 
@@ -14059,6 +14063,7 @@ modules naming it:
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::audit_sink`
+- `adapters::audited_read_quota`
 - `adapters::billing_processor_repo`
 - `adapters::billing_repo`
 - `adapters::byok`
@@ -14298,6 +14303,7 @@ why: pure application-layer types/logic this adapter wraps in SQL
 
 modules naming it:
 - `adapters::affect_repo`
+- `adapters::audited_read_quota`
 - `adapters::billing_processor_repo`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -14330,6 +14336,7 @@ modules naming it:
 - `adapters::private_inference_rpc`
 - `adapters::processing_status`
 - `adapters::provisioning`
+- `adapters::quota_repo`
 - `adapters::read_materialize`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
@@ -14470,6 +14477,7 @@ why: dyn-compatible async trait objects (EmailProvider et al.)
 modules naming it:
 - `adapters::affect_repo`
 - `adapters::attribution_repo`
+- `adapters::audited_read_quota`
 - `adapters::byok`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -15463,6 +15471,7 @@ modules naming it:
 - `application::pin`
 - `application::processing_status`
 - `application::public_dispatch`
+- `application::read_quota`
 - `application::recall_read`
 - `application::referral`
 - `application::remember`
@@ -15567,6 +15576,7 @@ modules naming it:
 - `application::notify`
 - `application::oauth_exchange`
 - `application::projection_maintenance`
+- `application::read_quota`
 - `application::recall_read`
 - `application::remember`
 - `tests`
@@ -15601,6 +15611,7 @@ modules naming it:
 - `application::projection_maintenance`
 - `application::public_dispatch`
 - `application::query_embedding_execution`
+- `application::read_quota`
 - `application::recall_read`
 - `application::remember`
 - `application::retrieval_embedding_port`
@@ -15655,8 +15666,10 @@ modules naming it:
 - `application::lifecycle_execution`
 - `application::oauth`
 - `application::oauth_exchange`
+- `application::read_quota`
 - `application::recall_read`
 - `application::remember`
+- `tests`
 
 ### humaux-application → `tokio` (dev)
 why: async executor for #[tokio::test] fixtures of async ports
@@ -17376,7 +17389,6 @@ modules naming it:
 - `gateway::bootstrap`
 - `gateway::context`
 - `gateway::continuity`
-- `gateway::guard`
 - `gateway::mcp_application`
 - `gateway::memory`
 - `gateway::oauth_http`
@@ -20833,9 +20845,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3783` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3788` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3793` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3791` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3796` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3801` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
