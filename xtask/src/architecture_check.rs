@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 115, "HEX-LAYER")
+    hex_exact(actual, baseline, 110, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -1431,6 +1431,7 @@ const HEX_LAYER_EXCLUDED: &[&str] = &[
     "bins/billing-worker/src/main.rs",            // Startup probe; no processing loop (§71.2).
     "bins/worker/src/main.rs",                    // Unwired process scaffold (§4.2).
     "bins/consolidation-worker/src/dsn.rs",       // DSN resolution only (§4.2).
+    "bins/private-worker/src/bootstrap.rs",       // ADR-0130 D2 / M20-SHARED-JOB-CLAIM composition.
     "bins/private-worker/src/dsn.rs",             // DSN resolution only (§4.2).
     "bins/private-worker/src/route_providers.rs", // Provider/credential assembly (§39).
     "bins/consolidation-worker/src/inference_client.rs", // Outbound inference RPC port (§11.8).
