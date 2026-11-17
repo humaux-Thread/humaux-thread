@@ -1,11 +1,12 @@
 //! `gateway::guard` — §83: one business admission path for every canonical MCP operation.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry, serde_json, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::confirm_token_repo, adapters::postgres, adapters::quota_repo, adapters::request_guard_repo, application::remember, application::supersede, domain::affect, domain::audit, domain::confirm, domain::continuity, domain::coordination, domain::error, domain::identity, domain::ids, domain::selection, domain::source, domain::subject, gateway::auth, gateway::bootstrap, gateway::limiter, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry, serde_json, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::confirm_token_repo, adapters::postgres, adapters::quota_repo, adapters::request_guard_repo, application::independent_audit, application::remember, application::supersede, domain::affect, domain::audit, domain::confirm, domain::continuity, domain::coordination, domain::error, domain::identity, domain::ids, domain::selection, domain::source, domain::subject, gateway::auth, gateway::bootstrap, gateway::limiter, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::oauth_http, gateway::status, tests]
 //! Invariants: [no path mints and accepts in one call; transport owns HTTP validation only; this layer is the sole place that authenticates, authorizes and admits a request, so an operation that bypasses it is a bug, not a variant path]
 //! Spec: Baseline §83; §52.1; ADR-0018; ADR-0028; ADR-0030; ADR-0054; ADR-0065 D-D; ADR-0125
 //!
 //! Transport owns HTTP validation; this layer owns authentication through finalization.
 
+use humaux_application::independent_audit::{AuditIdentity, record_independent_audit};
 use humaux_application::remember::{
     self, AtomicRememberRequest, AtomicRememberResult, NoteIntake, RememberCommand, SourcedPutError,
 };
@@ -21,7 +22,7 @@ use humaux_adapters::{
     confirm_token_repo::{self, ConfirmationClaim},
     postgres::RuntimeDbPool,
     quota_repo::{self, QuotaReservation},
-    request_guard_repo::{self, AuditTenant, EffectiveEntitlementFacts},
+    request_guard_repo::{self, EffectiveEntitlementFacts},
 };
 use humaux_domain::{
     affect::AffectWriteOp,
@@ -534,7 +535,7 @@ impl GatewayGuard {
                 surface,
                 Some(code),
             );
-            request_guard_repo::audit_event_insert(&self.pool, AuditTenant::System, &event).await?;
+            self.record_audit(None, &event).await?;
         }
         result
     }
@@ -1253,11 +1254,7 @@ impl GatewayGuard {
         // replace the retryable unknown outcome with a purported failure.
         let _ = tokio::time::timeout(
             self.settings.finalize_timeout,
-            request_guard_repo::audit_event_insert(
-                &self.pool,
-                AuditTenant::Authenticated(admitted.request.authorization()),
-                &observation,
-            ),
+            self.record_audit(Some(admitted.request.authorization()), &observation),
         )
         .await;
     }
@@ -1546,11 +1543,24 @@ impl GatewayGuard {
         error: Option<ErrorCode>,
     ) -> Result<(), ErrorCode> {
         let event = self.audit_event(context, network, auth, action, operation, error);
-        request_guard_repo::audit_event_insert(
-            &self.pool,
-            auth.map(AuditTenant::Authenticated)
-                .unwrap_or(AuditTenant::System),
-            &event,
+        self.record_audit(auth, &event).await
+    }
+
+    async fn record_audit(
+        &self,
+        auth: Option<&AuthorizationScope>,
+        event: &AuditEvent,
+    ) -> Result<(), ErrorCode> {
+        let identity = auth.map_or(AuditIdentity::System, |authorization| {
+            AuditIdentity::Authorized {
+                tenant_id: authorization.tenant_id(),
+                user_id: authorization.user_id(),
+            }
+        });
+        record_independent_audit(
+            &crate::bootstrap::independent_audit_store(&self.pool),
+            identity,
+            event,
         )
         .await?;
         Ok(())

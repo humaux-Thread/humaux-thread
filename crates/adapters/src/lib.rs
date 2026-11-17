@@ -57,6 +57,7 @@ pub mod exact_census;
 pub mod forget_repo;
 pub mod grep_repo;
 pub mod health;
+pub mod independent_audit;
 pub mod jobs;
 pub mod login_repo;
 pub mod maintenance_repo;

@@ -21,6 +21,7 @@ pub mod correct;
 pub mod distill;
 pub mod entitlement;
 pub mod forget;
+pub mod independent_audit;
 pub mod ingest;
 pub mod login;
 pub mod notify;
