@@ -1,7 +1,7 @@
 //! `infra-cell::resource` — ADR-0003 / §83.4 `intra-cell-resource-registry`: the closed set of same-Cell resources a
 //!   caller may ever name, and the deploy-supplied table that resolves one to an actual endpoint.
 //! Depends-on: crates=[humaux-domain, uuid]; services=[]; env=[]; modules=[domain::boundary, infra-cell::permit]
-//! Called-by: [adapters::mechanism_observation, adapters::provisioning, adapters::rebuild, admin::cell_resources,
+//! Called-by: [adapters::mechanism_observation, adapters::provisioning, adapters::rebuild, adapters::retrieve, admin::cell_resources,
 //!   gateway::bootstrap, gateway::recall, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit,
 //!   infra-cell::transport, public-worker::main, retrieval-worker::main, tests, maintenance::switch_visible]
 //! Invariants: [a caller can name only an IntraCellResource variant (no raw URL escape hatch); the

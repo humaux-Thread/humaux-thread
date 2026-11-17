@@ -1,7 +1,7 @@
 //! `adapters::retrieval_query_log` — the one INSERT into `ops.retrieval_query_log` (migration 0258), the query-hash log
 //!   `gateway::recall` writes once per answered recall (ADR-0081 D-A, the in-repo part of G-RET-6).
 //! Depends-on: crates=[serde_json, sqlx]; services=[PostgreSQL(role_gateway) w=[ops.retrieval_query_log]]; env=[]; modules=[]
-//! Called-by: [adapters::retrieve, gateway::recall]
+//! Called-by: [adapters::retrieve]
 //! Invariants: [role_gateway holds INSERT on the table and nothing else, so this module has no read, update or delete;
 //!   the query arrives only as a 32-byte HMAC and the kid of the key behind it, never as text; the transaction the
 //!   caller passes has bound humaux.tenant_id (the table's WITH CHECK refuses any other tenant); the INSERT names
