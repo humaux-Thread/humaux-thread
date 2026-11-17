@@ -1300,6 +1300,10 @@ path = "bins/maintenance/tests/support/throwaway.rs"
 contexts = ["data_rights", "job_execution", "knowledge_backup"]
 
 [[shared_file]]
+path = "bins/private-worker/src/bootstrap.rs"
+contexts = ["job_execution", "knowledge_curation", "public_knowledge"]
+
+[[shared_file]]
 path = "bins/private-worker/src/distill.rs"
 contexts = ["knowledge_curation", "provider_execution"]
 

@@ -1,6 +1,6 @@
 //! `private-worker::inference_rpc` — §11.8 ADR-0012-pattern inference-only RPC — the Unix-domain-socket side
 //!   `humaux-private-worker` serves for `humaux-consolidation-worker`.
-//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-infra-cell, serde, tokio, uuid]; services=[PostgreSQL(role_private_worker), UDS(serve)]; env=[]; modules=[adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::postgres, adapters::private_inference_rpc, adapters::reasoning_route_admission, application::consolidate, application::private_inference, humaux-private-worker, infra-cell::uds]
+//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-infra-cell, serde, tokio, uuid]; services=[PostgreSQL(role_private_worker), UDS(serve)]; env=[]; modules=[adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::postgres, adapters::private_inference_rpc, adapters::reasoning_route_admission, application::consolidate, application::private_inference, private-worker::bootstrap, infra-cell::uds]
 //! Called-by: [private-worker::main, tests]
 //! Invariants: [the caller is authenticated by kernel peer credential before the body is read; every field reasoned
 //!   over comes from the claimed ops.private_inference_rpc_calls row, never the wire body; unknown or expired calls
