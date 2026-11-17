@@ -991,7 +991,6 @@ kind:
 
 processes:
 - process(cargo-xtask)
-- process(humaux-consolidation-worker)
 - process(humaux-gateway)
 - process(humaux-maintenance)
 - process(humaux-private-worker)
@@ -6054,7 +6053,6 @@ kind:
 
 processes:
 - process(cargo-xtask)
-- process(humaux-consolidation-worker)
 - process(humaux-gateway)
 - process(humaux-maintenance)
 - process(humaux-private-worker)
@@ -6180,7 +6178,6 @@ kind:
 
 processes:
 - process(cargo-xtask)
-- process(humaux-consolidation-worker)
 - process(humaux-gateway)
 - process(humaux-maintenance)
 - process(humaux-private-worker)
@@ -6198,7 +6195,6 @@ kind:
 
 processes:
 - process(cargo-xtask)
-- process(humaux-consolidation-worker)
 - process(humaux-gateway)
 - process(humaux-maintenance)
 - process(humaux-private-worker)

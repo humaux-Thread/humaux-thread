@@ -16,11 +16,7 @@
 //!   ops.reasoning_provider_health_observations, private.events, private.evidence_objects,
 //!   private.memory_consolidation_inputs, private.memory_evidence, private.memory_records,
 //!   private.subjects] x=[private.link_memory_subjects], MiniMax, UDS(private-worker),
-//!   UDS(serve)]; env=[HUMAUX_MINIMAX_DNS_PINS, HUMAUX_TEST_PG_DSN, MINIMAX_API_KEY]; modules=[adapters::byok,
-//!   adapters::byok::ssrf, adapters::consolidate_repo, adapters::consolidation_reasoner,
-//!   adapters::contribution_reasoner, adapters::disclosure, adapters::postgres, adapters::private_inference_rpc,
-//!   adapters::reasoning_route_admission, application::consolidate, consolidation-worker::inference_client,
-//!   domain::authority, humaux-consolidation-worker, humaux-testkit, private-worker::inference_rpc, testkit::fixture_purge]
+//!   UDS(serve)]; env=[HUMAUX_MINIMAX_DNS_PINS, HUMAUX_TEST_PG_DSN, MINIMAX_API_KEY]; modules=[adapters::byok, adapters::byok::ssrf, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::postgres, adapters::private_inference_rpc, adapters::reasoning_route_admission, application::consolidate, application::consolidation_execution, consolidation-worker::inference_client, domain::authority, humaux-testkit, private-worker::inference_rpc, testkit::fixture_purge]
 //! Called-by: [cargo-test]
 //! Invariants: [no key -> visible SKIP for the live-MiniMax tests only; no DB -> SKIP for all;
 //!   HUMAUX_REQUIRE_MINIMAX/HUMAUX_REQUIRE_DB turn either skip into a panic via skip_or_fail (ADR-0005)]
@@ -49,6 +45,7 @@ use humaux_adapters::byok::{
     ReasoningProviderError, StructuredReasoningRequest, StructuredReasoningResponse, TokenUsage,
     UserReasoningProvider, VisionReasoningRequest, VisionReasoningResponse, ssrf,
 };
+use humaux_adapters::consolidate_repo::build_rollup;
 use humaux_adapters::consolidate_repo::{PublishOutcome, ROLLUP_TICKET_EVENT_TYPE};
 use humaux_adapters::consolidation_reasoner::MANIFEST_MISMATCH;
 use humaux_adapters::contribution_reasoner::ContributionReasonerConfig;
@@ -63,7 +60,7 @@ use humaux_application::consolidate::{
     ReasoningRouteBindingId, ReasoningRouteBindingVersion, SealedPrivateReasoningRequest,
 };
 use humaux_consolidation_worker::inference_client::UdsInferenceClient;
-use humaux_consolidation_worker::{RunOnceError, build_rollup, run_once, run_once_bound};
+use humaux_consolidation_worker::{RunOnceError, run_once, run_once_bound};
 use humaux_domain::authority::AuthorityClass;
 use humaux_testkit::fixture_purge::purge_tenant_fixture_sql;
 use humaux_testkit::{ExternalDep, skip_or_fail};

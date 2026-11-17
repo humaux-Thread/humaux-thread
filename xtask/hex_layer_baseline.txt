@@ -7,14 +7,6 @@ bins/admin/src/mechanism.rs:humaux_adapters::mechanism_observation::RuntimeObser
 bins/admin/src/probe.rs:humaux_adapters::health::AdminProbeSample
 bins/billing-worker/src/process.rs:humaux_adapters::billing_processor_repo::PaymentFacts
 bins/billing-worker/src/process.rs:humaux_adapters::billing_processor_repo::Txn
-bins/consolidation-worker/src/lib.rs:humaux_adapters::consolidate_repo::ConsolidateRepoError
-bins/consolidation-worker/src/lib.rs:humaux_adapters::consolidate_repo::MaterializedInput
-bins/consolidation-worker/src/lib.rs:humaux_adapters::consolidate_repo::PublishOutcome
-bins/consolidation-worker/src/lib.rs:humaux_adapters::jobs::ClaimedJob
-bins/consolidation-worker/src/lib.rs:humaux_adapters::jobs::DerivedJobType
-bins/consolidation-worker/src/lib.rs:humaux_adapters::jobs::DerivedLease
-bins/consolidation-worker/src/lib.rs:humaux_adapters::jobs::DerivedWorkOutcome
-bins/consolidation-worker/src/lib.rs:humaux_adapters::jobs::JobsError
 bins/gateway/src/auth.rs:humaux_adapters::credential_repo::CredentialRecord
 bins/gateway/src/auth_pages.rs:humaux_adapters::email::RecipientAllowlist
 bins/gateway/src/context.rs:humaux_adapters::serving_repo::FamilyReadState

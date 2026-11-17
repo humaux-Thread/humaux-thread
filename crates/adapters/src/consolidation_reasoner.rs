@@ -4,7 +4,7 @@
 //!   prompt/schema contract ([`consolidation_prompt_contract`]) and the rollup output parser
 //!   ([`parse_rollup_output`]).
 //! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.private_reasoning_domains, control.tenants, control.users, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::byok, adapters::consolidate_repo, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_reasoner, adapters::memory_repo, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, domain::authority, domain::consolidate, domain::dataclass, domain::error, domain::ledger]
-//! Called-by: [adapters::distill_reasoner, humaux-consolidation-worker, private-worker::inference_rpc, private-worker::main, tests]
+//! Called-by: [adapters::consolidate_repo, adapters::distill_reasoner, private-worker::inference_rpc, private-worker::main, tests]
 //! Invariants: [reads only under role_private_worker's SELECT grants and writes only §7.4 disclosure-ledger rows; the
 //!   run is located by the registered call id, never a caller-supplied memory id; admission or provider failure
 //!   returns an error with no private.* write]
