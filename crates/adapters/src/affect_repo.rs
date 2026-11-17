@@ -2,8 +2,8 @@
 //!   onto `private.memory_affects` ([`annotate`]) and the ONE set-based read ([`AFFECTS_FOR_MEMORIES_SQL`] /
 //!   [`affects_for_memories_in_txn`]) every reader shares — the PG hydrate re-check (`read_materialize`), the
 //!   projection worker's payload build, and `memory.get` / `memory.enumerate` / the recall rerank.
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[private.memory_evidence, private.memory_records] w=[private.evidence_affects, private.memory_affects]]; env=[]; modules=[adapters::confirm_token_repo, adapters::memory_governance_repo, adapters::postgres, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::affect, domain::affect, domain::authority, domain::error, domain::identity, domain::subject, projection::stream]
-//! Called-by: [adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::projection_worker, adapters::read_materialize, adapters::remember, gateway::mcp_application, gateway::memory, gateway::recall, tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[private.memory_evidence, private.memory_records] w=[private.evidence_affects, private.memory_affects]]; env=[]; modules=[adapters::confirm_token_repo, adapters::memory_governance_repo, adapters::postgres, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::affect, application::lifecycle_execution, domain::affect, domain::authority, domain::error, domain::identity, domain::ids, domain::subject, projection::stream]
+//! Called-by: [adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::projection_worker, adapters::read_materialize, adapters::remember, gateway::bootstrap, gateway::mcp_application, gateway::recall, tests]
 //! Invariants: [affect rows are INSERT-only through the one row issuer insert_rows (declared rows via insert_in_txn,
 //!   inferred DISTILL rows via insert_inferred_in_txn) and never decayed on write; the one read lets an EXPLICIT row
 //!   shadow every DISTILL row of its memory; everything runs under
@@ -26,7 +26,6 @@
 //! (id or key) is `INVALID_INPUT` through `subject_repo`'s own rule-1/2 resolver — never an
 //! auto-registration (mirrors card 8).
 
-use humaux_application::affect::{ObservedAffect, effective_intensity_at};
 use humaux_domain::affect::{
     AffectAnnotation, AffectFilter, AffectKind, AffectOrigin, AffectTargetScope,
     AffectTargetScopeKind, BasisPointRange, BasisPoints, EmotionLabel,
@@ -50,29 +49,11 @@ use crate::subject_repo;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
-/// One stored `private.memory_affects` row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AffectRow {
-    pub affect_id: Uuid,
-    pub memory_id: Uuid,
-    pub evidence_id: Uuid,
-    pub annotation: AffectAnnotation,
-    pub observed_at: OffsetDateTime,
-    /// The write-time policy captured on a MOOD row; `None` for an EMOTION.
-    pub half_life: Option<MoodHalfLife>,
-}
+/// Application-owned affect DTOs and read-time derivation (§8.5.1; ADR-0130).
+pub use humaux_application::affect::{AffectRow, AnnotateDone, observed};
 
 /// Application-owned annotation input (§8.5.1).
 pub use humaux_application::remember::AffectInput;
-
-/// Result of [`annotate`]: the new immutable rows and the re-projection ticket they issued.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AnnotateDone {
-    pub memory_id: Uuid,
-    pub affect_ids: Vec<Uuid>,
-    pub stream_seq: i64,
-    pub commit_seq: i64,
-}
 
 fn db_error(error: sqlx::Error) -> ErrorCode {
     match error {
@@ -203,23 +184,6 @@ pub async fn affects_for_memories(
         .map_err(db_error)?;
     txn.rollback().await.map_err(db_error)?;
     Ok(rows)
-}
-
-/// Read-time derivation (ADR-0030 D-B): each row with its `effective_intensity(now)` — raw for an
-/// EMOTION, `raw · 2^(−Δt/half_life)` for a MOOD. Never persisted.
-pub fn observed(rows: &[AffectRow], now: OffsetDateTime) -> Vec<ObservedAffect> {
-    rows.iter()
-        .map(|row| ObservedAffect {
-            memory_id: row.memory_id,
-            annotation: row.annotation.clone(),
-            effective_intensity: effective_intensity_at(
-                row.annotation.intensity,
-                row.observed_at.unix_timestamp(),
-                now.unix_timestamp(),
-                row.half_life,
-            ),
-        })
-        .collect()
 }
 
 /// Which row the sole affect issuer writes: a memory's own annotation (`memory_affects`, the
@@ -495,6 +459,49 @@ pub async fn annotate(
         stream_seq,
         commit_seq,
     })
+}
+
+/// PG implementation of the §8.5.1 affect read/write boundary (ADR-0130).
+pub struct PostgresAffectStore<'a> {
+    pool: &'a RuntimeDbPool,
+}
+
+impl<'a> PostgresAffectStore<'a> {
+    /// Assemble the existing PG affect store over `pool`.
+    #[must_use]
+    pub fn new(pool: &'a RuntimeDbPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait::async_trait]
+impl humaux_application::affect::AffectStore for PostgresAffectStore<'_> {
+    async fn affects_for_memories(
+        &self,
+        auth: &AuthorizationScope,
+        memory_ids: &[Uuid],
+    ) -> Result<Vec<AffectRow>, ErrorCode> {
+        affects_for_memories(self.pool, auth, memory_ids).await
+    }
+
+    async fn annotate(
+        &self,
+        auth: &AuthorizationScope,
+        stream: &humaux_application::lifecycle_execution::LifecycleStream,
+        memory_id: MemoryId,
+        inputs: &[AffectInput],
+        mood_half_life: MoodHalfLife,
+    ) -> Result<AnnotateDone, ErrorCode> {
+        let stream = StreamKey::new(
+            humaux_domain::ids::TenantId(stream.tenant_id),
+            stream.scope_kind.clone(),
+            stream.scope_id,
+            stream.domain.clone(),
+            stream.projection_kind.clone(),
+            stream.projection_version.clone(),
+        );
+        annotate(self.pool, auth, &stream, memory_id, inputs, mood_half_life).await
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

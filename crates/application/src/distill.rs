@@ -1,5 +1,5 @@
 //! `application::distill` — Candidate confirmation/rejection use cases (§36; ADR-0130 D2/D7a).
-//! Depends-on: crates=[async-trait, humaux-domain, uuid]; services=[]; env=[]; modules=[domain::confirm, domain::error, domain::identity, domain::subject]
+//! Depends-on: crates=[async-trait, humaux-domain, serde_json, time, uuid]; services=[]; env=[]; modules=[domain::confirm, domain::error, domain::identity, domain::ids, domain::subject]
 //! Called-by: [gateway::bootstrap, adapters::distill_repo, gateway::memory, gateway::mcp_application]
 //! Invariants: [one store call owns the entire transaction; confirmation is explicit]
 //! Spec: §36; ADR-0026; ADR-0130
@@ -9,9 +9,12 @@ use humaux_domain::{
     confirm::DestructiveOp,
     error::{ConflictReason, ErrorCode},
     identity::AuthorizationScope,
+    ids::WorkspaceId,
     subject::SubjectDeclaration,
 };
+use serde_json::Value;
 use std::time::{Duration, SystemTime};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Trusted request provenance; the adapter constructs the audit record (§77).
@@ -147,6 +150,21 @@ pub enum RejectOutcome {
     Refused(ConflictReason),
 }
 
+/// One PENDING candidate as `memory.enumerate {candidates:true}` returns it.
+#[derive(Debug, Clone)]
+pub struct PendingCandidate {
+    pub candidate_id: Uuid,
+    pub candidate_sha256: Vec<u8>,
+    pub candidate_body: Value,
+    pub requested_class: String,
+    pub memory_type: String,
+    pub rejection_reason: String,
+    pub confidence: f32,
+    pub source_evidence_id: Uuid,
+    pub created_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
+}
+
 /// Whole-transaction candidate decision boundary (ADR-0130 D7a).
 #[async_trait]
 pub trait CandidateDecisionStore: Send + Sync {
@@ -162,6 +180,13 @@ pub trait CandidateDecisionStore: Send + Sync {
         auth: &AuthorizationScope,
         command: CandidateWrite,
     ) -> Result<RejectOutcome, ErrorCode>;
+    /// List PENDING candidates visible to `auth` in `workspace` (§36; ADR-0026 D-E).
+    async fn list_pending(
+        &self,
+        auth: &AuthorizationScope,
+        workspace: WorkspaceId,
+        limit: i64,
+    ) -> Result<Vec<PendingCandidate>, ErrorCode>;
 }
 
 /// Execute an explicit candidate confirmation (§36).
@@ -180,4 +205,14 @@ pub async fn reject_candidate(
     command: CandidateWrite,
 ) -> Result<RejectOutcome, ErrorCode> {
     store.reject(auth, command).await
+}
+
+/// List visible PENDING candidates for a workspace (§36; ADR-0026 D-E).
+pub async fn list_pending_candidates(
+    store: &dyn CandidateDecisionStore,
+    auth: &AuthorizationScope,
+    workspace: WorkspaceId,
+    limit: i64,
+) -> Result<Vec<PendingCandidate>, ErrorCode> {
+    store.list_pending(auth, workspace, limit).await
 }

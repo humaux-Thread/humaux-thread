@@ -1,7 +1,7 @@
 //! `application::affect` — pure read-side policy of the §8.5.1 affect axis (ADR-0030 D-D): evaluating an explicit
 //!   [`AffectFilter`] over observed annotations and the bounded mood-congruent late rerank.
-//! Depends-on: crates=[humaux-domain, uuid]; services=[]; env=[]; modules=[domain::affect]
-//! Called-by: [adapters::affect_repo, adapters::read_materialize, gateway::recall, tests]
+//! Depends-on: crates=[async-trait, humaux-domain, time, uuid]; services=[]; env=[]; modules=[application::lifecycle_execution, application::remember, domain::affect, domain::authority, domain::error, domain::identity]
+//! Called-by: [adapters::affect_repo, adapters::read_materialize, gateway::bootstrap, gateway::memory, gateway::recall, tests]
 //! Invariants: []
 //! Spec: §8.5.1; ADR-0030
 //!
@@ -18,11 +18,82 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use humaux_domain::affect::{
     AffectAnnotation, AffectFilter, BasisPoints, MoodHalfLife, MoodPoint, effective_intensity,
     memory_congruence,
 };
+use humaux_domain::{authority::MemoryId, error::ErrorCode, identity::AuthorizationScope};
+use time::OffsetDateTime;
 use uuid::Uuid;
+
+use crate::lifecycle_execution::LifecycleStream;
+use crate::remember::AffectInput;
+
+/// One stored `private.memory_affects` row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AffectRow {
+    pub affect_id: Uuid,
+    pub memory_id: Uuid,
+    pub evidence_id: Uuid,
+    pub annotation: AffectAnnotation,
+    pub observed_at: OffsetDateTime,
+    /// The write-time policy captured on a MOOD row; `None` for an EMOTION.
+    pub half_life: Option<MoodHalfLife>,
+}
+
+/// Result of [`annotate`]: the new immutable rows and the re-projection ticket they issued.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotateDone {
+    pub memory_id: Uuid,
+    pub affect_ids: Vec<Uuid>,
+    pub stream_seq: i64,
+    pub commit_seq: i64,
+}
+
+/// Whole-transaction affect read/write boundary (§8.5.1; ADR-0130).
+#[async_trait]
+pub trait AffectStore: Send + Sync {
+    /// Fetch stored affect rows visible to `auth` for `memory_ids`.
+    async fn affects_for_memories(
+        &self,
+        auth: &AuthorizationScope,
+        memory_ids: &[Uuid],
+    ) -> Result<Vec<AffectRow>, ErrorCode>;
+
+    /// Append immutable affect rows and issue the re-projection ticket in one transaction.
+    async fn annotate(
+        &self,
+        auth: &AuthorizationScope,
+        stream: &LifecycleStream,
+        memory_id: MemoryId,
+        inputs: &[AffectInput],
+        mood_half_life: MoodHalfLife,
+    ) -> Result<AnnotateDone, ErrorCode>;
+}
+
+/// Fetch affect rows for `memory_ids` under `auth` (§8.5.1).
+pub async fn affects_for_memories(
+    store: &dyn AffectStore,
+    auth: &AuthorizationScope,
+    memory_ids: &[Uuid],
+) -> Result<Vec<AffectRow>, ErrorCode> {
+    store.affects_for_memories(auth, memory_ids).await
+}
+
+/// Append affect annotations to an active head memory (§8.5.1; ADR-0030 D-C).
+pub async fn annotate(
+    store: &dyn AffectStore,
+    auth: &AuthorizationScope,
+    stream: &LifecycleStream,
+    memory_id: MemoryId,
+    inputs: &[AffectInput],
+    mood_half_life: MoodHalfLife,
+) -> Result<AnnotateDone, ErrorCode> {
+    store
+        .annotate(auth, stream, memory_id, inputs, mood_half_life)
+        .await
+}
 
 /// One stored annotation as the read side sees it: the immutable row plus its derived,
 /// never-persisted `effective_intensity`.
@@ -31,6 +102,23 @@ pub struct ObservedAffect {
     pub memory_id: Uuid,
     pub annotation: AffectAnnotation,
     pub effective_intensity: BasisPoints,
+}
+
+/// Read-time derivation (ADR-0030 D-B): each row with its `effective_intensity(now)` — raw for an
+/// EMOTION, `raw · 2^(−Δt/half_life)` for a MOOD. Never persisted.
+pub fn observed(rows: &[AffectRow], now: OffsetDateTime) -> Vec<ObservedAffect> {
+    rows.iter()
+        .map(|row| ObservedAffect {
+            memory_id: row.memory_id,
+            annotation: row.annotation.clone(),
+            effective_intensity: effective_intensity_at(
+                row.annotation.intensity,
+                row.observed_at.unix_timestamp(),
+                now.unix_timestamp(),
+                row.half_life,
+            ),
+        })
+        .collect()
 }
 
 /// `effective_intensity(now)` for one row from unix-second timestamps: elapsed saturates at zero

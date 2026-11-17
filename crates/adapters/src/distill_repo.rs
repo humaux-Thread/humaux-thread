@@ -2,7 +2,7 @@
 //!   one `EVIDENCE_ACCEPTED` outbox row of a claimed `DERIVED_DISTILL` job (ADR-0058), load that Evidence, record the
 //!   §16.1.1 processing run, insert the authorized memories, settle the job and its outbox row together.
 //! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-projection, serde_json, sha2, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, ops.outbox, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations, projection.stream_log] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding, private.lock_publish_source]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::distill_reasoner, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::confirm, application::consolidate, application::distill, application::distill_execution, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::policy, domain::subject, humaux-adapters, projection::fingerprint, projection::stream]
-//! Called-by: [adapters::context_repo, adapters::distill_reasoner, adapters::jobs, gateway::bootstrap, gateway::memory, private-worker::main, private-worker::route_providers, tests]
+//! Called-by: [adapters::context_repo, adapters::distill_reasoner, adapters::jobs, gateway::bootstrap, private-worker::main, private-worker::route_providers, tests]
 //! Invariants: [memories, run completion, the job settle and the outbox flip commit in ONE transaction whose first
 //!   statement is the job's generation-fenced finish (ADR-0058 D-E), so a superseded worker's inserts roll back; a job
 //!   only ever takes the outbox row of its own Evidence; every read runs under role_private_worker grants + RLS with the acting
@@ -735,19 +735,7 @@ pub struct RejectRequest {
 }
 
 /// One PENDING candidate as `memory.enumerate {candidates:true}` returns it.
-#[derive(Debug, Clone)]
-pub struct PendingCandidate {
-    pub candidate_id: Uuid,
-    pub candidate_sha256: Vec<u8>,
-    pub candidate_body: Value,
-    pub requested_class: String,
-    pub memory_type: String,
-    pub rejection_reason: String,
-    pub confidence: f32,
-    pub source_evidence_id: Uuid,
-    pub created_at: OffsetDateTime,
-    pub expires_at: OffsetDateTime,
-}
+pub use humaux_application::distill::PendingCandidate;
 
 /// The candidate columns the confirm materialize needs, read under RLS (tenant + the lock sha).
 struct LockedCandidate {
@@ -1519,6 +1507,15 @@ impl humaux_application::distill::CandidateDecisionStore for PostgresCandidateDe
             },
         )
         .await
+    }
+
+    async fn list_pending(
+        &self,
+        auth: &AuthorizationScope,
+        workspace: humaux_domain::ids::WorkspaceId,
+        limit: i64,
+    ) -> Result<Vec<PendingCandidate>, ErrorCode> {
+        list_pending_candidates(self.pool, auth, workspace, limit).await
     }
 }
 

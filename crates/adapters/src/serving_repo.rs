@@ -1,6 +1,6 @@
 //! `adapters::serving_repo` — §16.2 换代期读路由 SQL + §16.3 无裁量切换事务(T5.2/T5.3).
 //! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sqlx]; services=[PostgreSQL(any) r=[projection.processing_gaps] w=[projection.stream_checkpoints], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::stream_repo, application::recall_read, domain::error, domain::identity, projection::serving, projection::stream, retrieval::completeness]
-//! Called-by: [adapters::retrieve, gateway::context, gateway::memory, gateway::recall, maintenance::projection_serve, tests]
+//! Called-by: [adapters::retrieve, gateway::context, gateway::recall, maintenance::projection_serve, tests]
 //! Invariants: [only fetches the numbers and performs the atomic serving switch UPDATE; the switch decision is
 //!   humaux_projection::serving's pure arithmetic; cross-tenant or unauthenticated calls are typed errors;
 //!   family_read_state reads initialised/serving (and, with `UnservedLedger::Read` on an unserved key, the real
@@ -229,13 +229,7 @@ pub struct FamilyReadState {
 /// is initialised but its family has no serving version. A route that never reports them must say
 /// [`UnservedLedger::Skip`] (ADR-0110 D-A: `memory.get` reads the frontier only, recall / context / enumerate keep
 /// the closure); a bare `bool` would let a new caller pay the closure by default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnservedLedger {
-    /// Close the ledger and count the pipeline: [`FamilyReadState::unserved`] is `Some` on an unserved key.
-    Read,
-    /// Touch neither `stream_log` nor `stream_point_ledger`: [`FamilyReadState::unserved`] is `None`.
-    Skip,
-}
+pub use humaux_application::recall_read::UnservedLedger;
 
 /// ADR-0053 D-E: [`FamilyReadState`] for `key`, both facts read in one REPEATABLE READ, READ ONLY
 /// snapshot under `role_gateway` (table-level SELECT on `stream_checkpoints`, §6.2.2). Same

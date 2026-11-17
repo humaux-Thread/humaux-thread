@@ -1,6 +1,6 @@
 //! `application::recall_read` — ordered candidates enter one authoritative snapshot (Baseline §23 / ADR-0130).
 //! Depends-on: crates=[async-trait, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, time, uuid]; services=[]; env=[]; modules=[domain::affect, domain::authority, domain::context, domain::error, domain::identity, domain::ids, domain::note, domain::subject, projection::note_chunks, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, retrieval::signals]
-//! Called-by: [adapters::context_repo, adapters::exact_census, adapters::grep_repo, adapters::memory_repo, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, gateway::context, gateway::mcp_application, gateway::memory, gateway::recall, tests]
+//! Called-by: [adapters::context_repo, adapters::exact_census, adapters::grep_repo, adapters::memory_repo, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, gateway::bootstrap, gateway::context, gateway::mcp_application, gateway::memory, gateway::recall, tests]
 //! Invariants: [the read port owns the complete same-snapshot hydration; candidates confer no authority]
 //! Spec: Baseline §15.5; §22; §23; ADR-0130 D7.2
 
@@ -1018,4 +1018,146 @@ impl<P: ContextAssemblyReadPort + ?Sized> ContextAssemblyReadPort for std::sync:
     ) -> Result<MaterializedContext, ErrorCode> {
         self.as_ref().assemble_context(request).await
     }
+}
+
+/// Whether `family_read_state` reads the key's O(stream) ledger closure and pipeline counts when the key
+/// is initialised but its family has no serving version. A route that never reports them must say
+/// [`UnservedLedger::Skip`] (ADR-0110 D-A: `memory.get` reads the frontier only, recall / context / enumerate keep
+/// the closure); a bare `bool` would let a new caller pay the closure by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnservedLedger {
+    /// Close the ledger and count the pipeline: `FamilyReadState::unserved` is `Some` on an unserved key.
+    Read,
+    /// Touch neither `stream_log` nor `stream_point_ledger`: `FamilyReadState::unserved` is `None`.
+    Skip,
+}
+
+/// ADR-0069 D-B: the longest pattern accepted, in Unicode scalars (the contract's `maxLength`).
+pub const MAX_PATTERN_CHARS: usize = 512;
+
+/// One validated `memory.grep` request.
+#[derive(Debug, Clone)]
+pub struct GrepQuery {
+    pattern: String,
+    lifecycle: Lifecycle,
+    page_size: u16,
+    after: Option<(Uuid, i64)>,
+    budget: Option<std::time::Duration>,
+}
+
+impl GrepQuery {
+    /// `after` is the last `(memory_id, line_no)` of the previous page (from a verified cursor); `budget` overrides the
+    /// role's statement timeout for this read (`None` = the pool's §78 setting).
+    ///
+    /// # Errors
+    /// [`ErrorCode::InvalidInput`] for an empty pattern, one longer than [`MAX_PATTERN_CHARS`], one containing a line
+    /// break (a hit is one line, ADR-0069 D-B), or a page size outside 1..=100.
+    pub fn new(
+        pattern: &str,
+        lifecycle: Lifecycle,
+        page_size: u16,
+        after: Option<(Uuid, i64)>,
+        budget: Option<std::time::Duration>,
+    ) -> Result<Self, ErrorCode> {
+        if pattern.is_empty()
+            || pattern.chars().count() > MAX_PATTERN_CHARS
+            || pattern.contains(['\n', '\r'])
+            || !(1..=100).contains(&page_size)
+        {
+            return Err(ErrorCode::InvalidInput);
+        }
+        Ok(Self {
+            pattern: pattern.to_owned(),
+            lifecycle,
+            page_size,
+            after,
+            budget,
+        })
+    }
+
+    pub fn pattern(&self) -> &str {
+        &self.pattern
+    }
+
+    pub const fn lifecycle(&self) -> Lifecycle {
+        self.lifecycle
+    }
+
+    pub const fn page_size(&self) -> u16 {
+        self.page_size
+    }
+
+    pub const fn after(&self) -> Option<(Uuid, i64)> {
+        self.after
+    }
+
+    pub const fn budget(&self) -> Option<std::time::Duration> {
+        self.budget
+    }
+}
+
+/// One matching line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrepHit {
+    /// The memory the line belongs to.
+    pub memory_id: Uuid,
+    /// 1-based, over `MEMORY_TEXT`'s lines.
+    pub line_no: i64,
+    /// The matching line.
+    pub line: String,
+    /// The line before it, `None` on the first line.
+    pub before: Option<String>,
+    /// The line after it, `None` on the last line.
+    pub after: Option<String>,
+    /// Every matching line of this memory in the whole result, not only this page's.
+    pub memory_matching_lines: i64,
+    /// `active` or `superseded`.
+    pub status: String,
+    /// Whether the memory is archived (only with an `archive` selection that admits archived rows).
+    pub archived: bool,
+}
+
+/// One keyset page with the totals of the same snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrepPage {
+    /// This page's hits, ordered by `(memory_id, line_no)`.
+    pub items: Vec<GrepHit>,
+    /// Every matching line in the caller's view, in this snapshot.
+    pub total_matching_lines: i64,
+    /// The memories those lines belong to.
+    pub total_memories: i64,
+    /// Whether hits follow this page.
+    pub has_more: bool,
+}
+
+impl GrepPage {
+    /// The keyset position after this page's last hit, `None` when nothing follows.
+    pub fn next_after(&self) -> Option<(Uuid, i64)> {
+        if !self.has_more {
+            return None;
+        }
+        self.items.last().map(|hit| (hit.memory_id, hit.line_no))
+    }
+}
+
+/// Literal substring grep boundary in one REPEATABLE READ snapshot (§33; ADR-0069; ADR-0130).
+#[async_trait]
+pub trait GrepStore: Send + Sync {
+    /// Execute one `memory.grep` page read over `workspace`.
+    async fn grep(
+        &self,
+        authorization: &AuthorizationScope,
+        workspace: humaux_domain::ids::WorkspaceId,
+        query: &GrepQuery,
+    ) -> Result<GrepPage, ErrorCode>;
+}
+
+/// Execute `memory.grep` through the read store port (§33; ADR-0069).
+pub async fn grep_memories(
+    store: &dyn GrepStore,
+    authorization: &AuthorizationScope,
+    workspace: humaux_domain::ids::WorkspaceId,
+    query: &GrepQuery,
+) -> Result<GrepPage, ErrorCode> {
+    store.grep(authorization, workspace, query).await
 }
