@@ -20,7 +20,8 @@ pub mod dsn;
 pub mod inference_rpc;
 pub mod route_providers;
 
-mod bootstrap;
+/// Process-owned adapter assembly (ADR-0130 D2).
+pub mod bootstrap;
 mod stages;
 
 pub use bootstrap::{

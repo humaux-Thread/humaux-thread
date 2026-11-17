@@ -1,6 +1,6 @@
 //! `adapters::byok::ssrf` — §11.4 Custom / OpenAI-compatible Endpoint Security.
 //! Depends-on: crates=[humaux-infra-egress]; services=[]; env=[]; modules=[infra-egress::raw]
-//! Called-by: [adapters::byok, private-worker::main, private-worker::route_providers, tests, xtask::e2e_onboard, xtask::e2e_seed]
+//! Called-by: [adapters::byok, private-worker::bootstrap, private-worker::route_providers, tests, xtask::e2e_onboard, xtask::e2e_seed]
 //! Invariants: [every custom endpoint URL and every redirect hop passes validate_custom_endpoint; a forbidden or
 //!   unresolvable address is an SsrfError before any connection is made (§11.4)]
 //! Spec: Baseline §11.4; §83.4

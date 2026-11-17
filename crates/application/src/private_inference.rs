@@ -1,6 +1,6 @@
 //! `application::private_inference` — Private inference RPC lifecycle.
 //! Depends-on: crates=[async-trait, tokio, uuid]; services=[]; env=[]; modules=[]
-//! Called-by: [private-worker::inference_rpc, adapters::private_inference_rpc]
+//! Called-by: [adapters::private_inference_rpc, application::consolidate, private-worker::bootstrap, private-worker::inference_rpc]
 //! Invariants: [only a fresh claim executes; persistence stays in the PG adapter]
 //! Spec: Baseline §11.8; ADR-0130 step 5
 

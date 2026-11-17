@@ -2,7 +2,7 @@
 //!   `OpenAiCompatibleProvider` per admitted Profile@version, built from the route, behind the deployment's
 //!   deny-only credential map, recipient ↔ host list and region list (ADR-0060 D-B, D-C, D-J, D-L).
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json, sha2, time, tokio, uuid]; services=[HTTP(provider endpoint), PostgreSQL(role_private_worker)]; env=[HUMAUX_PRIVATE_WORKER_CREDENTIALS, HUMAUX_PRIVATE_WORKER_EGRESS_RECIPIENTS, HUMAUX_PRIVATE_WORKER_REGIONS]; modules=[adapters::attribution_repo, adapters::byok, adapters::byok::ssrf, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::distill_repo, adapters::postgres, adapters::reasoning_route_admission, application::distill_execution, domain::error, private-worker::bootstrap, private-worker::distill]
-//! Called-by: [private-worker::main, tests]
+//! Called-by: [private-worker::bootstrap, private-worker::main, tests]
 //! Invariants: [an instance is built only from an admitted locator and only after its credential reference is mapped,
 //!   its recipient names the host it dials and its region is allowed — no DNS lookup or client build before that;
 //!   instances are keyed by (tenant, profile_id, profile_version) and never shared across tenants; a credential

@@ -1,6 +1,6 @@
 //! `application::distill_execution` — Claimed-job Distill use case (§16.1.1; ADR-0058; ADR-0130 D2/D7a).
 //! Depends-on: crates=[async-trait, humaux-domain, serde_json, time, uuid]; services=[]; env=[]; modules=[application::consolidate, domain::affect, domain::authority, domain::error, domain::memory]
-//! Called-by: [adapters::distill_reasoner, adapters::distill_repo, adapters::jobs, private-worker::distill, private-worker::route_providers, tests]
+//! Called-by: [adapters::distill_reasoner, adapters::distill_repo, adapters::jobs, private-worker::bootstrap, private-worker::distill, private-worker::main, private-worker::route_providers, tests]
 //! Invariants: [provider attempts are admitted before sending; result persistence owns one fenced transaction]
 //! Spec: §16.1.1; ADR-0058; ADR-0130
 use crate::consolidate::PrivateReasoningError;

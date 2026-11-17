@@ -21,9 +21,9 @@ workspace = true
 # richer transport are still stubs, see `crates/adapters/src/byok.rs`'s module doc).
 # why: humaux-adapters dependency; used-by: [private-worker::bootstrap, private-worker::distill, private-worker::inference_rpc, private-worker::main, private-worker::tests::contribution_execution_runner, private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e, private-worker::tests::start_manual_contribution_command_0131, tests]
 humaux-adapters = { path = "../../crates/adapters" }
-# why: humaux-application dependency; used-by: [humaux-private-worker, private-worker::distill, private-worker::inference_rpc, private-worker::tests::contribution_execution_runner, private-worker::tests::start_manual_contribution_command_0131, tests]
+# why: humaux-application dependency; used-by: [humaux-private-worker, private-worker::bootstrap, private-worker::distill, private-worker::inference_rpc, private-worker::main, private-worker::tests::contribution_execution_runner, private-worker::tests::start_manual_contribution_command_0131, tests]
 humaux-application = { path = "../../crates/application" }
-# why: humaux-domain dependency; used-by: [humaux-private-worker, private-worker::distill, private-worker::main, private-worker::tests::contribution_execution_runner, private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e, tests]
+# why: humaux-domain dependency; used-by: [humaux-private-worker, private-worker::bootstrap, private-worker::distill, private-worker::route_providers, private-worker::tests::contribution_execution_runner, private-worker::tests::derived_dispatch_e2e, private-worker::tests::distill_hop_e2e, private-worker::tests::m29_attribution_e2e, tests]
 humaux-domain = { path = "../../crates/domain" }
 # why: humaux-infra-cell dependency; used-by: [private-worker::tests::distill_hop_e2e, tests]
 humaux-infra-cell = { path = "../../crates/infra-cell" }

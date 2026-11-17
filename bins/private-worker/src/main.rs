@@ -1,6 +1,6 @@
 //! `private-worker::main` — `humaux-private-worker` process entry (§4.2 minimal process set; §4.4 admin probe
 //!   contract; §11/§11.1 T4.4+T4.5; §11.8 ADR-0015 inference RPC).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-telemetry, tokio, uuid]; services=[HTTP(loopback), PostgreSQL(role_private_worker)]; env=[HUMAUX_PRIVATE_WORKER_PG_POOL_MAX_CONNECTIONS, CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_PRIVATE_WORKER_ALLOW_SAME_UID, HUMAUX_PRIVATE_WORKER_CONSOLIDATION_UID, HUMAUX_PRIVATE_WORKER_CREDENTIALS, HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_MAX_CALLS, HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_HARD_DEADLINE_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_IN_FLIGHT, HUMAUX_PRIVATE_WORKER_DISTILL_LEASE_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_MAX_ATTEMPTS, HUMAUX_PRIVATE_WORKER_DISTILL_NOT_READY_PARK_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_POLL_INTERVAL_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_SERVE_METRICS_ADDR, HUMAUX_PRIVATE_WORKER_DNS_PINS, HUMAUX_PRIVATE_WORKER_EGRESS_RECIPIENTS, HUMAUX_PRIVATE_WORKER_HEALTH_RENEW_SECS, HUMAUX_PRIVATE_WORKER_HTTP_TIMEOUT_SECS, HUMAUX_PRIVATE_WORKER_PERMIT_TTL_SECS, HUMAUX_PRIVATE_WORKER_REGIONS, HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH, HUMAUX_PRIVATE_WORKER_SERVE_RPC_METRICS_ADDR, refused:HUMAUX_PRIVATE_WORKER_{CAPABILITIES, CHAT_URL, EGRESS_PROCESSOR_ID, KEY_ENV, MODEL_ID, MODEL_REVISION, PROVIDER_ID, REGION}]; modules=[adapters::byok::ssrf, private-worker::dsn, adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_repo, adapters::jobs, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, domain::authority, humaux-telemetry, infra-cell::uds, private-worker::distill, private-worker::inference_rpc, private-worker::route_providers, private-worker::stages, telemetry::metrics]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-infra-cell, humaux-telemetry, tokio, uuid]; services=[HTTP(loopback), PostgreSQL(role_private_worker)]; env=[HUMAUX_PRIVATE_WORKER_PG_POOL_MAX_CONNECTIONS, CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_PRIVATE_WORKER_ALLOW_SAME_UID, HUMAUX_PRIVATE_WORKER_CONSOLIDATION_UID, HUMAUX_PRIVATE_WORKER_CREDENTIALS, HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_MAX_CALLS, HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_HARD_DEADLINE_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_IN_FLIGHT, HUMAUX_PRIVATE_WORKER_DISTILL_LEASE_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_MAX_ATTEMPTS, HUMAUX_PRIVATE_WORKER_DISTILL_NOT_READY_PARK_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_POLL_INTERVAL_SECS, HUMAUX_PRIVATE_WORKER_DISTILL_SERVE_METRICS_ADDR, HUMAUX_PRIVATE_WORKER_DNS_PINS, HUMAUX_PRIVATE_WORKER_EGRESS_RECIPIENTS, HUMAUX_PRIVATE_WORKER_HEALTH_RENEW_SECS, HUMAUX_PRIVATE_WORKER_HTTP_TIMEOUT_SECS, HUMAUX_PRIVATE_WORKER_PERMIT_TTL_SECS, HUMAUX_PRIVATE_WORKER_REGIONS, HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH, HUMAUX_PRIVATE_WORKER_SERVE_RPC_METRICS_ADDR, refused:HUMAUX_PRIVATE_WORKER_{CAPABILITIES, CHAT_URL, EGRESS_PROCESSOR_ID, KEY_ENV, MODEL_ID, MODEL_REVISION, PROVIDER_ID, REGION}]; modules=[adapters::distill_repo, adapters::model_call_ledger, adapters::postgres, application::distill_execution, humaux-telemetry, infra-cell::uds, private-worker::bootstrap, private-worker::distill, private-worker::dsn, private-worker::inference_rpc, private-worker::route_providers, private-worker::stages, telemetry::metrics]
 //! Called-by: [process(humaux-private-worker)]
 //! Invariants: [the only process holding both role_private_worker DB write and BYOK decrypt capability (§11.1); a
 //!   missing/invalid env value or unreachable DSN exits non-zero before serving; no provider, model, endpoint,
@@ -56,19 +56,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use humaux_adapters::byok::ssrf;
-use humaux_adapters::consolidation_reasoner::consolidation_prompt_contract;
-use humaux_adapters::contribution_reasoner::ContributionReasonerConfig;
-use humaux_adapters::disclosure::DeletionCapability;
 use humaux_adapters::distill_repo;
-use humaux_adapters::jobs;
 use humaux_adapters::model_call_ledger;
 use humaux_adapters::postgres::PrivateWorkerDbPool;
-use humaux_adapters::reasoning_route_admission::{ProviderFor, ReasoningAdmissionLocator};
-use humaux_domain::authority::AuthorityClass;
+use humaux_application::distill_execution::DistillCallBudget;
+use humaux_private_worker::bootstrap::{self, InferenceRuntime};
 use humaux_private_worker::distill::{self, DistillDispatchConfig};
-use humaux_private_worker::inference_rpc::{RpcState, bind_socket, clone_config, serve};
-use humaux_private_worker::route_providers::{self, RouteProviders};
+use humaux_private_worker::inference_rpc::{RpcState, bind_socket, serve};
+use humaux_private_worker::route_providers;
 use humaux_telemetry::metrics::{
     OpsListener, dns_pin_deferred_total, families, parse_ops_addr, process_routes, serve_loopback,
     write_family,
@@ -337,10 +332,7 @@ fn refuse_removed_keys(lookup: impl Fn(&str) -> Option<String>) -> Result<(), St
 /// `--distill-serve`) — one bootstrap, so the Distill hop and the RPC listener can never drift on
 /// which keys, recipients and regions they hold (§4.2 one process; ADR-0060 D-B).
 struct Bootstrap {
-    pool: PrivateWorkerDbPool,
-    config: ContributionReasonerConfig,
-    /// ADR-0060 D-B: admitted route → its Profile@version's instance ([`RouteProviders`]).
-    providers: Box<ProviderFor>,
+    inference: InferenceRuntime,
     /// The provider transport timeout; the distill dispatcher sizes `ops.begin_call`'s window
     /// from it (ADR-0058 D-K).
     http_timeout: Duration,
@@ -373,30 +365,11 @@ async fn bootstrap() -> Result<Bootstrap, ModeFailure> {
     // inside `PinnedDnsResolver`, so an empty/absent spec is exactly the old default. The
     // forbidden-range check still runs on the pins. ADR-0039 判据0: this one resolver is handed
     // to every instance, which derives both its §11.4 check and its dial from it.
-    let pins = ssrf::PinnedDnsResolver::parse(
-        &env::var("HUMAUX_PRIVATE_WORKER_DNS_PINS").unwrap_or_default(),
-    )
-    .map_err(|e| format!("invalid configuration: HUMAUX_PRIVATE_WORKER_DNS_PINS ({e:?})"))?;
-    let dns_pins_configured = !pins.is_empty();
-    let resolver: Arc<dyn ssrf::DnsResolver> = Arc::new(pins);
-
-    // The Consolidate path takes prompt/schema/budget from the shared contract itself
-    // (`ConsolidationReasoner`, ADR-0015 D2); these three fields only have to satisfy
-    // `ContributionReasonerConfig::validate` for the config to be accepted at all.
-    // ADR-0058 D-O: any ceiling satisfies `validate`; the highest storable one is the widest menu.
-    let contract = consolidation_prompt_contract(AuthorityClass::ProjectConstraint);
-    let config = ContributionReasonerConfig {
-        permit_ttl: Duration::from_secs(parse::<u64>("HUMAUX_PRIVATE_WORKER_PERMIT_TTL_SECS")?),
-        // ponytail: no deployment has told us the endpoint's deletion semantics yet; make it
-        // per-recipient when a provider that does promise deletion is onboarded (ADR-0060 L7).
-        deletion_capability: DeletionCapability::Unknown,
-        system_prompt: contract.system_prompt,
-        json_schema: contract.json_schema,
-        max_output_tokens: contract.max_output_tokens,
-    };
-    config
-        .validate()
-        .map_err(|code| format!("invalid configuration: {code:?}"))?;
+    let (resolver, dns_pins_configured) =
+        bootstrap::dns_resolver(&env::var("HUMAUX_PRIVATE_WORKER_DNS_PINS").unwrap_or_default())?;
+    let config = bootstrap::reasoner_config(Duration::from_secs(parse::<u64>(
+        "HUMAUX_PRIVATE_WORKER_PERMIT_TTL_SECS",
+    )?))?;
 
     // dep: PostgreSQL(role_private_worker) — role-scoped pool call
     let pool = connect_pool(&dsn).await.map_err(|e| {
@@ -414,17 +387,10 @@ async fn bootstrap() -> Result<Bootstrap, ModeFailure> {
         recipients.len(),
         regions.len()
     );
-    let routes = Arc::new(RouteProviders::new(
-        credentials,
-        recipients,
-        regions,
-        resolver,
-        http_timeout,
-    ));
+    let providers =
+        bootstrap::admitted_providers(credentials, recipients, regions, resolver, http_timeout);
     Ok(Bootstrap {
-        pool,
-        config,
-        providers: Box::new(move |route: &ReasoningAdmissionLocator| routes.provider_for(route)),
+        inference: InferenceRuntime::new(pool, config, providers, health_renew_seconds),
         http_timeout,
         health_renew_seconds,
         dns_pins_configured,
@@ -446,19 +412,10 @@ async fn serve_rpc() -> Result<(), ModeFailure> {
             .ok()
             .as_deref(),
     )?;
-    let Bootstrap {
-        pool,
-        config,
-        providers,
-        health_renew_seconds,
-        ..
-    } = bootstrap().await?;
+    let Bootstrap { inference, .. } = bootstrap().await?;
     let state = Arc::new(RpcState {
         expected_consolidation_uid: consolidation_uid,
-        calls: pool,
-        config,
-        providers,
-        health_renew_seconds,
+        inference,
     });
 
     let listener = bind_socket(std::path::Path::new(&socket_path)).map_err(|error| {
@@ -505,9 +462,7 @@ async fn distill_mode(resident: bool) -> Result<(), ModeFailure> {
         None
     };
     let Bootstrap {
-        pool,
-        config,
-        providers,
+        inference,
         http_timeout,
         health_renew_seconds,
         dns_pins_configured,
@@ -524,7 +479,7 @@ async fn distill_mode(resident: bool) -> Result<(), ModeFailure> {
         not_ready_park_seconds: parse::<u64>("HUMAUX_PRIVATE_WORKER_DISTILL_NOT_READY_PARK_SECS")?
             as f64,
         max_attempts: parse::<i32>("HUMAUX_PRIVATE_WORKER_DISTILL_MAX_ATTEMPTS")?,
-        budget: jobs::DistillCallBudget {
+        budget: DistillCallBudget {
             window_seconds: parse::<u64>("HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS")?
                 as f64,
             max_calls: parse::<i32>("HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_MAX_CALLS")?,
@@ -539,11 +494,9 @@ async fn distill_mode(resident: bool) -> Result<(), ModeFailure> {
              BUDGET_MAX_CALLS must be >= 1)"
         )
     })?;
-    let runtime =
-        route_providers::distill_runtime(&pool, &*providers, clone_config(&config), &dispatch)
-            .map_err(|code| {
-                ModeFailure::runtime(format!("distill configuration rejected: {code:?}"))
-            })?;
+    let runtime = inference.distill_runtime(&dispatch).map_err(|code| {
+        ModeFailure::runtime(format!("distill configuration rejected: {code:?}"))
+    })?;
     let mut shutdown = Shutdown::install().map_err(ModeFailure::runtime)?;
     let Some(poll) = poll_interval else {
         let report = distill::dispatch_pass(&runtime, &dispatch)
