@@ -1,8 +1,8 @@
 //! `adapters::note_repo` — the verbatim note lane's write half: the identity contract and the one authorised Memory of
 //!   `memory.note_put`, written inside the caller's Evidence transaction (ADR-0067 D-A/D-B/D-C/D-E), plus the exact-duplicate
 //!   key of a create (M06-3).
-//! Depends-on: crates=[hex, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.identity_note_materializations, private.memory_records, projection.stream_log] w=[private.identity_note_materializations, private.memory_records, private.note_heads]]; env=[]; modules=[adapters::memory_repo, adapters::remember, domain::authority, domain::error, domain::evidence, domain::note]
-//! Called-by: [adapters::operation_receipt, adapters::remember, gateway::guard, gateway::mcp_application, tests]
+//! Depends-on: crates=[hex, humaux-application, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.identity_note_materializations, private.memory_records, projection.stream_log] w=[private.identity_note_materializations, private.memory_records, private.note_heads]]; env=[]; modules=[adapters::memory_repo, adapters::remember, domain::authority, domain::error, domain::evidence, domain::note]
+//! Called-by: [adapters::operation_receipt, adapters::remember, tests]
 //! Invariants: [no SQL here commits; the Memory is written only through memory_repo::insert_memory_in_txn (the workspace's single
 //!   memory INSERT); the contract row is written after the Memory and before the EVIDENCE_ACCEPTED outbox row so the 0235
 //!   enqueue trigger skips distill; the authority decision precedes every write; a replacement supersedes exactly the
@@ -22,7 +22,7 @@ use humaux_domain::authority::AuthorityClass;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::evidence::EvidenceOriginClass;
 use humaux_domain::note::{
-    NoteBody, NoteKind, POLICY_VERSION, REPRESENTATION, STRATEGY_IDENTITY_NOTE_V1, authorize_note,
+    NoteKind, POLICY_VERSION, REPRESENTATION, STRATEGY_IDENTITY_NOTE_V1, authorize_note,
 };
 use sqlx::Row;
 use sqlx::types::Uuid;
@@ -30,18 +30,8 @@ use sqlx::types::Uuid;
 use crate::memory_repo::{self, AttributionSource, LoadedEvidence, MemoryProducer, NewMemory};
 use crate::remember::{RememberCommand, RememberError};
 
-/// One note as the gateway edge validated it (ADR-0067 D-C/D-D/D-E).
-#[derive(Debug, Clone)]
-pub struct NoteIntake {
-    /// The author's classification; selects the stored `memory_type`.
-    pub kind: NoteKind,
-    /// The stored title: explicit or derived (`domain::note::note_title`).
-    pub title: String,
-    /// The validated verbatim body and its digest.
-    pub body: NoteBody,
-    /// The exact authority the caller asked for (default `PrivateKnowledge`); granted as asked or refused.
-    pub requested: AuthorityClass,
-}
+/// Trusted application note input (ADR-0067).
+pub use humaux_application::remember::NoteIntake;
 
 /// ADR-0067 D-J: which note a `memory.note_put` writes a version of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,7 +323,7 @@ mod tests {
         let mut note = NoteIntake {
             kind: NoteKind::Decision,
             title: "t".into(),
-            body: NoteBody::new("b").unwrap(),
+            body: humaux_domain::note::NoteBody::new("b").unwrap(),
             requested: AuthorityClass::PrivateKnowledge,
         };
         assert!(matches!(

@@ -14393,6 +14393,7 @@ fn native_mcp_memory_note_put_is_listed_called_refused_and_remember_put_is_uncha
             );
 
             // G03: the same key returns the original ids and writes nothing.
+            let mut changed_note = args.clone();
             let (status, replay) = raw_request(
                 address,
                 &headers,
@@ -14403,6 +14404,18 @@ fn native_mcp_memory_note_put_is_listed_called_refused_and_remember_put_is_uncha
             let replayed = assert_tool_response(&replay, ToolName::Memory);
             assert_eq!(replayed["memory_id"], stored["memory_id"]);
             assert_eq!(replayed["evidence_id"], stored["evidence_id"]);
+            assert_eq!(durable_counts(blocking_counts(&mut handle)), durable_counts(after_first));
+
+            // §34.0.1: changing the body on the same note-create key is refused before any new write.
+            changed_note["content"] = json!("another decision");
+            let (status, conflict) = raw_request(
+                address,
+                &headers,
+                &rpc(4, "tools/call", call_params("memory", changed_note)),
+            )
+            .await;
+            assert_eq!(status, 200, "{conflict}");
+            assert_tool_error(&conflict, "CONFLICT");
             assert_eq!(durable_counts(blocking_counts(&mut handle)), durable_counts(after_first));
 
             // G17: "\u0061" (a JSON escape on the wire) and "a" decode to the same body and share a body digest; the Evidence digests (raw bytes) differ.

@@ -3,7 +3,7 @@
 //!   r=[control.private_reasoning_domains, ops.outbox, private.evidence_sources, projection.stream_log] w=[private.events, private.evidence_projects, private.evidence_sources,
 //!   private.evidence_task_runs, private.ingest_tickets] x=[private.declared_project_visible]];
 //!   env=[]; modules=[adapters::affect_repo, adapters::coord_repo, adapters::evidence_repo, adapters::memory_repo, adapters::note_repo, adapters::operation_receipt, adapters::postgres, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::remember, domain::attribution, domain::continuity, domain::coordination, domain::error, domain::evidence, domain::identity, domain::ids, domain::source, projection::stream]
-//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::projection_worker, gateway::guard, tests]
+//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::projection_worker, gateway::bootstrap, tests]
 //! Invariants: [role_gateway's single Evidence write path, one transaction in §60 order; ingest tickets are only
 //!   UPDATEd (no INSERT grant); the stream ticket and its outbox row come only from stream_repo::issue_ticket_in_txn
 //!   (M09 D1), after the Evidence and note writes; an exhausted batch or non-future token expiry is a RememberError

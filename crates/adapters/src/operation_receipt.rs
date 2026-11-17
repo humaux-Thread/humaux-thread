@@ -1,7 +1,7 @@
 //! `adapters::operation_receipt` — §34.0.1 local `remember.put`: one transaction for business, BMO, audit, and
 //!   receipt.
-//! Depends-on: crates=[hex, humaux-application, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, domain::audit, domain::authority, domain::confirm, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source]
-//! Called-by: [adapters::remember, gateway::guard, gateway::mcp_application, tests]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, application::remember, domain::audit, domain::authority, domain::confirm, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source]
+//! Called-by: [adapters::remember, gateway::bootstrap, gateway::mcp_application, tests]
 //! Invariants: [receipts are written in the operation's own transaction; a failed COMMIT response is an unknown
 //!   outcome, never permission to repeat the write; tenant/visibility failures are TenantBoundary/NotFound; a note
 //!   replacement checks its receipt before it locks the note head, and consumes its token only under that lock
@@ -279,6 +279,31 @@ pub async fn remember_for_task_run_atomically(
     project: Option<ProjectId>,
 ) -> Result<AtomicRememberResult, ErrorCode> {
     stored(atomically(pool, auth, request, None, None, task_run, project).await?)
+}
+
+/// The PG note-create port binds the same attribution ladder as note replacement (ADR-0067).
+pub struct PostgresNoteStore<'a> {
+    pool: &'a RuntimeDbPool,
+    attribution: &'a dyn MemoryAttribution,
+}
+
+impl<'a> PostgresNoteStore<'a> {
+    /// Bind the runtime role and the configured attribution ladder.
+    pub fn new(pool: &'a RuntimeDbPool, attribution: &'a dyn MemoryAttribution) -> Self {
+        Self { pool, attribution }
+    }
+}
+
+#[async_trait::async_trait]
+impl humaux_application::remember::NoteStore for PostgresNoteStore<'_> {
+    async fn put(
+        &self,
+        authorization: &AuthorizationScope,
+        request: AtomicRememberRequest,
+        note: NoteIntake,
+    ) -> Result<AtomicRememberResult, ErrorCode> {
+        note_put_atomically(self.pool, authorization, request, note, self.attribution).await
+    }
 }
 
 /// ADR-0067 D-A: `memory.note_put` — [`remember_atomically`]'s receipt / replay / BMO / audit machinery, plus the identity
