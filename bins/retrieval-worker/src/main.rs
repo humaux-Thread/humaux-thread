@@ -501,11 +501,12 @@ struct WorkerRuntime {
 #[async_trait::async_trait]
 impl ProjectionRuntimePort for WorkerRuntime {
     async fn connect(&self) -> Result<(Arc<dyn ProjectionWorkerPort>, FingerprintInputs), String> {
+        let dsn = &self.dsn;
         // dep: PostgreSQL(role_retrieval_worker) — the projection runner's claim/settle pool
-        let pool = connect_pool(&self.dsn)
+        let pool = connect_pool(dsn)
             .await
             .map_err(|e| format!("retrieval worker database role connection failed: {e}"))?;
-        let provider = build_embedding_provider(&self.dsn, self.dimension)
+        let provider = build_embedding_provider(dsn, self.dimension)
             .await
             .map_err(|outcome| match outcome {
                 Outcome::NotApplicable(reason)
