@@ -1,7 +1,7 @@
 //! `gateway::rerank_client` — the gateway's client of the retrieval worker's local rerank RPC (ADR-0084 D-B): the
 //!   [`RerankPort`] the recall path calls, its UDS implementation, and the [`RerankLane`] (port plus the deployment
 //!   model pin) the runtime carries.
-//! Depends-on: crates=[async-trait, humaux-infra-cell, humaux-retrieval, serde, serde_json, uuid]; services=[];
+//! Depends-on: crates=[async-trait, humaux-application, humaux-infra-cell, humaux-retrieval, serde, serde_json, uuid]; services=[];
 //!   env=[]; modules=[gateway::retrieval_embedding_client, infra-cell::permit, infra-cell::resource, retrieval::rerank]
 //! Called-by: [gateway::bootstrap, gateway::recall, tests]
 //! Invariants: [the call flows through the one closed IntraCellResource::RETRIEVAL_EMBEDDING_RPC registry/permit and
@@ -14,10 +14,10 @@
 //! The wait for the answer is not here: [`crate::recall`] bounds the whole call with the registered
 //! `rerank_timeout_ms` (ADR-0084 D-E, U7), so one place owns the timeout whichever port is behind it.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+pub use humaux_application::recall_read::{RerankAnswer, RerankCall, RerankLane, RerankPort};
 use humaux_infra_cell::{IntraCellResource, IntraCellResourceRegistry, authorize_cell_access};
 use humaux_retrieval::rerank::ModelIdentity;
 use serde::{Deserialize, Serialize};
@@ -29,71 +29,6 @@ use crate::retrieval_embedding_client::{exchange_on, split_http_response};
 const SCHEMA_VERSION: u16 = 1;
 /// ADR-0084 D-B: the rerank route on the worker's serve socket.
 const RERANK_PATH: &str = "/v1/rerank";
-
-/// One rerank call: the query and the documents to score against it, in-Cell text that is never sealed and never
-/// logged.
-pub struct RerankCall<'a> {
-    /// Names the call in the worker's counts and timings.
-    pub call_id: Uuid,
-    /// The query exactly as the caller sent it.
-    pub query: &'a str,
-    /// One document per hydrated, visible Memory (ADR-0084 D-C 3).
-    pub documents: &'a [String],
-    /// The registered `rerank_max_len`: the token cap of one (query, document) pair.
-    pub max_len: u32,
-}
-
-/// What a port answered.
-#[derive(Debug, Clone, PartialEq)]
-pub enum RerankAnswer {
-    /// Every document scored: one raw logit per document in request order, and the identity the worker reported.
-    Scored {
-        /// One raw logit per document.
-        scores: Vec<f32>,
-        /// The model identity the worker reported.
-        model: ModelIdentity,
-    },
-    /// No usable scores. `class` is a short machine-stable tag for the operator line.
-    Failed {
-        /// Why: `permit`, `encode`, `transport`, `non_2xx`, `malformed`, `not_scored` or `count_mismatch`.
-        class: &'static str,
-    },
-}
-
-/// The seam the recall path scores through; the production implementation is [`GatewayRerankClient`].
-#[async_trait]
-pub trait RerankPort: Send + Sync {
-    /// Scores every document of `call` against its query, or says why not. All or nothing.
-    async fn rerank(&self, call: RerankCall<'_>) -> RerankAnswer;
-}
-
-/// The rerank lane of a [`crate::recall::SemanticRecallRuntime`]: the port and the deployment model pin (ADR-0084 D-E)
-/// the identity each reply reports is compared with.
-#[derive(Clone)]
-pub struct RerankLane {
-    port: Arc<dyn RerankPort>,
-    pin: ModelIdentity,
-}
-
-impl RerankLane {
-    /// A lane over `port` that accepts only scores of the model `pin` names.
-    #[must_use]
-    pub fn new(port: Arc<dyn RerankPort>, pin: ModelIdentity) -> Self {
-        Self { port, pin }
-    }
-
-    /// The port to score through.
-    #[must_use]
-    pub fn port(&self) -> &dyn RerankPort {
-        self.port.as_ref()
-    }
-
-    /// The pinned model identity.
-    #[must_use]
-    pub fn pin(&self) -> &ModelIdentity {
-        &self.pin
-    }
-}
 
 /// `POST /v1/rerank` request body (`deny_unknown_fields` on the worker's side: these are exactly its fields).
 #[derive(Serialize)]

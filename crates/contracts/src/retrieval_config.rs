@@ -1,6 +1,6 @@
 //! `contracts::retrieval_config` — Typed retrieval-profile configuration (§50 / §55.6).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[contracts::config_registry]
-//! Called-by: [gateway::bootstrap, gateway::recall, retrieval-worker::rerank, retrieval-worker::rpc, retrieval::request, tests]
+//! Called-by: [adapters::retrieve, gateway::bootstrap, retrieval-worker::rerank, retrieval-worker::rpc, retrieval::request, tests]
 //! Invariants: [the six depth/fusion values (`top_k`, `cand_multiplier`, `leg_depth`, `rrf_k`, `sparse_leg_enabled`,
 //!   `sparse_timeout_ms`) and the five rerank values (`rerank_enabled`, `rerank_depth`, `rerank_max_len`, `rerank_timeout_ms`,
 //!   `rerank_threads`) are read here and nowhere else; each is bounds-checked when the registry loads]

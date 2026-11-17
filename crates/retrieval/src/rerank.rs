@@ -2,7 +2,7 @@
 //!   constructor of `provenance.rerank_model_id`, the order-only step, the settlement of an executor's answer, and the
 //!   one place its degradations are emitted.
 //! Depends-on: crates=[humaux-telemetry]; services=[]; env=[]; modules=[retrieval::envelope, telemetry::degrade]
-//! Called-by: [gateway::bootstrap, gateway::recall, gateway::rerank_client, tests]
+//! Called-by: [application::recall_read, gateway::bootstrap, gateway::rerank_client, tests]
 //! Invariants: [the rendered `provenance.rerank_model_id` is built by exactly one constructor, `RerankModelId::render`,
 //!   and differs whenever any part of the D-A identity differs, and the field is given a `used` value in exactly one
 //!   place, `settle` (the source scan `rerank_provenance_constructor` counts both `== 1`); `order_by_score` only reorders: the output id set equals the input set, ties follow fused rank, and a

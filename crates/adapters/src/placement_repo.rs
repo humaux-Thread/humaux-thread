@@ -1,7 +1,7 @@
 //! `adapters::placement_repo` — §17.3 `projection.tenant_placements` access: the gateway's read-only lookup and the
 //!   projection worker's point-counter writer (migration 0068).
 //! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(any) r=[projection.tenant_placements] w=[projection.tenant_placements]]; env=[]; modules=[adapters::postgres, adapters::qdrant, domain::error, domain::ids]
-//! Called-by: [adapters::private_projection_registry, adapters::stream_repo, gateway::recall]
+//! Called-by: [adapters::private_projection_registry, adapters::retrieve, adapters::stream_repo]
 //! Invariants: [the gateway read is SELECT-only under role_gateway and a missing row means not indexed yet, never a
 //!   fallback to another tenant's placement; the one counter writer moves point_count/bytes_estimate only inside the
 //!   caller's binding transaction, only by a delta that caller's own point write produced, and never below zero]
