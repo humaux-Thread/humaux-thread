@@ -2704,6 +2704,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::affect`
 
+#### `application::api_key`
+
 #### `application::archive`
 
 #### `application::auth`
@@ -2813,6 +2815,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::lifecycle`
 
 #### `domain::memory`
+
+#### `domain::network`
 
 #### `domain::note`
 
@@ -15097,6 +15101,7 @@ modules naming it:
 - `adapters::contribution_reasoner`
 - `adapters::contribution_scan`
 - `adapters::coord_repo`
+- `adapters::credential_repo`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
 - `adapters::entitlement_repo`
@@ -15266,6 +15271,7 @@ modules naming it:
 - `adapters::contribution_reasoner`
 - `adapters::contribution_scan`
 - `adapters::coord_repo`
+- `adapters::credential_repo`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
 - `adapters::email`
@@ -16364,6 +16370,7 @@ why: object-safe async ports (PrivateReasoningPort et al.)
 
 modules naming it:
 - `application::affect`
+- `application::api_key`
 - `application::billing`
 - `application::consolidate`
 - `application::continuity`
@@ -17917,6 +17924,7 @@ modules naming it:
 why: use-case layer (ports + orchestration) this package wires
 
 modules naming it:
+- `gateway::auth`
 - `gateway::auth_pages`
 - `gateway::billing_webhook`
 - `gateway::bootstrap`
@@ -18004,7 +18012,6 @@ modules naming it:
 why: MCP/HTTP edge protocol types and middleware
 
 modules naming it:
-- `gateway::auth`
 - `gateway::auth_pages`
 - `gateway::bootstrap`
 - `gateway::guard`
@@ -21620,9 +21627,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3806` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3811` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3816` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3813` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3818` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3823` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection

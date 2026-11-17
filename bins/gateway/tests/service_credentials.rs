@@ -994,6 +994,18 @@ fn api_key_rehash_is_epoch_gated_once_and_audited() {
         assert_eq!(audits, 0);
 
         pepper_door_in_txn(&mut txn, "credential_pepper_epoch_advance");
+        // ADR-0059 D-H: verifier and audit must both disappear on rollback.
+        {
+            let mut attempt = db_ok(txn.transaction());
+            assert!(rehash_in_txn(&mut attempt, &key, &new).1);
+            let (changed, audits) = hash_and_audits_in_txn(&mut attempt, tenant, &key);
+            assert!(changed == new, "rehash visible in the attempt");
+            assert_eq!(audits, 1);
+            db_ok(attempt.rollback());
+            let (restored, audits) = hash_and_audits_in_txn(&mut txn, tenant, &key);
+            assert!(restored == old, "verifier escaped the rehash rollback");
+            assert_eq!(audits, 0, "audit escaped the rehash rollback");
+        }
         assert!(
             rehash_in_txn(&mut txn, &key, &new).1,
             "window open: rewritten"
