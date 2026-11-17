@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 131, "HEX-LAYER")
+    hex_exact(actual, baseline, 125, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -14187,6 +14187,39 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             fs::write(&path, &original).unwrap();
             assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
             println!("SLICE-9a {case}: restored GREEN");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// §80.1: each atomic-create entry rejects its former PG import.
+    #[test]
+    fn hex_boundary_slice8c_entry_red_green() {
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("slice8c-boundary-{}", std::process::id()));
+        hex_copy_boundary_fixture(&real_root(), &root);
+        let guard = root.join("bins/gateway/src/guard.rs");
+        let original = fs::read_to_string(&guard).unwrap();
+        for (operation, symbol) in [
+            ("remember.put", "remember::PostgresRememberStore"),
+            ("memory.note_put", "note_repo::NoteIntake"),
+        ] {
+            fs::write(
+                &guard,
+                format!("{original}\nuse humaux_adapters::{symbol};\n"),
+            )
+            .unwrap();
+            let red = hex_layer_gate(&root);
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.contains(symbol))),
+                "{red:?}"
+            );
+            println!("SLICE-8c {operation}: RED {red:?}");
+            fs::write(&guard, &original).unwrap();
+            let green = hex_layer_gate(&root);
+            assert!(matches!(green, Verdict::Pass), "{green:?}");
+            println!("SLICE-8c {operation}: restored GREEN");
         }
         fs::remove_dir_all(root).unwrap();
     }

@@ -1,19 +1,21 @@
 //! `application::remember` — Remember intake and whole-write application port (§34 / §58; ADR-0130 D2/D7a).
 //! Depends-on: crates=[async-trait, humaux-domain, serde_json, time, uuid]; services=[];
-//!   env=[]; modules=[domain::affect, domain::audit, domain::continuity, domain::coordination, domain::error, domain::evidence, domain::identity, domain::ids, domain::source, domain::subject]
-//! Called-by: [adapters::remember, application::lifecycle_execution, gateway::guard, gateway::remember]
+//!   env=[]; modules=[domain::affect, domain::audit, domain::authority, domain::continuity, domain::coordination, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source, domain::subject]
+//! Called-by: [adapters::operation_receipt, adapters::remember, application::lifecycle_execution, gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::remember]
 //! Invariants: [one port call owns the complete PG transaction; no transaction handles cross this boundary]
 //! Spec: §8.5.1; §34.0.1; §58; §60
 
 use humaux_domain::{
     affect::{AffectAnnotation, MoodHalfLife},
     audit::AuditEvent,
+    authority::AuthorityClass,
     continuity::ProjectId,
     coordination::{FencingToken, TaskRunId},
     error::{ConflictReason, ErrorCode},
     evidence::{EvidenceOriginClass, EvidencePayloadSha256},
     identity::AuthorizationScope,
     ids::WorkspaceId,
+    note::{NoteBody, NoteKind},
     source::SourceIdentity,
     subject::{SubjectDeclaration, SubjectKey},
 };
@@ -231,4 +233,39 @@ pub async fn remember(
     store
         .store(authorization, request, task_run, project, source)
         .await
+}
+
+/// One note as the gateway edge validated it (ADR-0067 D-C/D-D/D-E).
+#[derive(Debug, Clone)]
+pub struct NoteIntake {
+    /// The author's classification; selects the stored `memory_type`.
+    pub kind: NoteKind,
+    /// The stored title: explicit or derived (`domain::note::note_title`).
+    pub title: String,
+    /// The validated verbatim body and its digest.
+    pub body: NoteBody,
+    /// The exact authority the caller asked for (default `PrivateKnowledge`); granted as asked or refused.
+    pub requested: AuthorityClass,
+}
+
+/// Commit a new note, its receipt, BMO and audit together (ADR-0067 D-A / §34.0.1).
+#[async_trait::async_trait]
+pub trait NoteStore: Send + Sync {
+    /// Return the committed or replayed result from the original receipt transaction.
+    async fn put(
+        &self,
+        authorization: &AuthorizationScope,
+        request: AtomicRememberRequest,
+        note: NoteIntake,
+    ) -> Result<AtomicRememberResult, ErrorCode>;
+}
+
+/// Accept a new identity note through the complete transaction port (ADR-0067 D-A).
+pub async fn put_note(
+    store: &dyn NoteStore,
+    authorization: &AuthorizationScope,
+    request: AtomicRememberRequest,
+    note: NoteIntake,
+) -> Result<AtomicRememberResult, ErrorCode> {
+    store.put(authorization, request, note).await
 }
