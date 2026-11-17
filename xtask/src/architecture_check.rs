@@ -14097,12 +14097,6 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             "use humaux_adapters as bypass; fn boundary() { let _: bypass::affect_repo::BoundaryDto; }",
             "LAYER qualified alias bypass",
         );
-        mutate(
-            3,
-            "bins/gateway/src/guard.rs",
-            "use humaux_adapters::confirm_token_repo::ConfirmationClaim;",
-            "LAYER SLICE-8g confirmed write adapter regression",
-        );
         // SLICE-7a: the resident health entry must consume the application sampling contract.
         mutate(
             3,
@@ -14317,9 +14311,9 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// §80.1: the standalone audit entry rejects its former PG type.
+    /// §80.1: the guard rejects the former PG types for standalone audits and confirmed writes.
     #[test]
-    fn hex_boundary_slice8f_entry_red_green() {
+    fn hex_boundary_slice8f_8g_entry_red_green() {
         let root = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir)
@@ -14327,22 +14321,26 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         hex_copy_boundary_fixture(&real_root(), &root);
         let guard = root.join("bins/gateway/src/guard.rs");
         let original = fs::read_to_string(&guard).unwrap();
-        let symbol = "request_guard_repo::AuditTenant";
-        fs::write(
-            &guard,
-            format!("{original}\nuse humaux_adapters::{symbol};\n"),
-        )
-        .unwrap();
-        let red = hex_layer_gate(&root);
-        assert!(
-            matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.contains(symbol))),
-            "{red:?}"
-        );
-        println!("SLICE-8f RED {red:?}");
-        fs::write(&guard, &original).unwrap();
-        let green = hex_layer_gate(&root);
-        assert!(matches!(green, Verdict::Pass), "{green:?}");
-        println!("SLICE-8f restored GREEN");
+        for (slice, symbol) in [
+            ("SLICE-8f", "request_guard_repo::AuditTenant"),
+            ("SLICE-8g", "confirm_token_repo::ConfirmationClaim"),
+        ] {
+            fs::write(
+                &guard,
+                format!("{original}\nuse humaux_adapters::{symbol};\n"),
+            )
+            .unwrap();
+            let red = hex_layer_gate(&root);
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.contains(symbol))),
+                "{red:?}"
+            );
+            println!("{slice} RED {red:?}");
+            fs::write(&guard, &original).unwrap();
+            let green = hex_layer_gate(&root);
+            assert!(matches!(green, Verdict::Pass), "{green:?}");
+            println!("{slice} restored GREEN");
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
