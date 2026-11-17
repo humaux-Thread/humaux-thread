@@ -1653,6 +1653,23 @@ async fn assert_host_origin_rejections(
     );
 }
 
+// §83: only a successful login for this same request can precede the tenant-scoped refusal.
+fn denials_after_login(handle: &mut Handle, action: &str, result: &str) -> i64 {
+    tokio::task::block_in_place(|| {
+        handle
+            .admin
+            .query_one(
+                "SELECT count(*) FROM control.audit_events d JOIN control.audit_events l \
+         ON l.tenant_id=d.tenant_id AND l.request_id=d.request_id \
+         WHERE d.tenant_id=$1 AND d.action=$2 AND d.result=$3 \
+         AND l.action='MCP_AUTH_LOGIN' AND l.result='OK' AND l.audit_seq < d.audit_seq",
+                &[&handle.tenant_id, &action, &result],
+            )
+            .expect("isolated tenant authorization audit")
+            .get(0)
+    })
+}
+
 async fn assert_request_boundary_denials(
     handle: &mut Handle,
     address: SocketAddr,
@@ -1665,6 +1682,7 @@ async fn assert_request_boundary_denials(
             "operation":"put", "content":"must not route", "idempotency_key":format!("foreign-{}", Uuid::now_v7()), "workspace_id":Uuid::now_v7()
         }),
     );
+    let denials_before = denials_after_login(handle, "MCP_SCOPE_DENIED", "FORBIDDEN");
     let foreign_before = blocking_counts(handle);
     let (status, response) = raw_request(address, &headers, &rpc(8, "tools/call", foreign)).await;
     assert_eq!(
@@ -1674,6 +1692,12 @@ async fn assert_request_boundary_denials(
     assert_eq!(
         durable_counts(blocking_counts(handle)),
         durable_counts(foreign_before)
+    );
+
+    assert_eq!(response["error"]["data"]["code"], "FORBIDDEN");
+    assert_eq!(
+        denials_after_login(handle, "MCP_SCOPE_DENIED", "FORBIDDEN"),
+        denials_before + 1
     );
 
     let no_auth = [
@@ -1692,6 +1716,7 @@ async fn assert_request_boundary_denials(
         status, 401,
         "missing bearer must map to HTTP 401: {response}"
     );
+    assert_eq!(response["error"]["data"]["code"], "UNAUTHORIZED");
     assert_eq!(
         durable_counts(blocking_counts(handle)),
         durable_counts(unauth_before)
@@ -1718,6 +1743,7 @@ async fn assert_request_boundary_denials(
         status, 401,
         "revoked credential is read fresh on each HTTP request: {response}"
     );
+    assert_eq!(response["error"]["data"]["code"], "UNAUTHORIZED");
     assert_eq!(
         durable_counts(blocking_counts(handle)),
         durable_counts(revoked_before)
@@ -1755,6 +1781,53 @@ async fn assert_authenticated_transport_negatives(
     assert!(no_bmo_after.4 > no_bmo_before.4, "denial is audited");
 
     assert_request_boundary_denials(handle, address, credential).await;
+}
+
+/// §83: both keys lack the batch entitlement. Only the writer reaches that check.
+#[test]
+fn missing_grant_precedes_entitlement_and_entitlement_precedes_batch() {
+    run_db_fixture::<Fixture, _>("batch admission denial order", |mut handle| {
+        let rt = handle.rt.handle().clone();
+        let runtime = rt
+            .block_on(handle.fresh_runtime())
+            .expect("fresh checked gateway pool");
+        let app = application(&handle, runtime);
+        let cases = [
+            (
+                SyntheticCredentialScopes::ContextRead,
+                403,
+                "FORBIDDEN",
+                "MCP_SCOPE_DENIED",
+            ),
+            (
+                SyntheticCredentialScopes::RememberWrite,
+                402,
+                "ENTITLEMENT_REQUIRED",
+                "MCP_REQUEST_DENIED",
+            ),
+        ];
+        rt.block_on(async {
+            let (address, server) = start(app).await;
+            for (scopes, expected_status, code, action) in cases {
+                let prefix = format!("batch{}", Uuid::now_v7().simple());
+                let wire = format!("{prefix}.{}", "a".repeat(32));
+                let key = tokio::task::block_in_place(|| handle.seed_synthetic_service_credential(
+                    scopes, &prefix, &wire, &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
+                ));
+                let audits = denials_after_login(&mut handle, action, code);
+                let before = durable_counts(blocking_counts(&mut handle));
+                let params = call_params("remember", json!({
+                    "operation":"begin_batch", "client_batch_id":Uuid::now_v7(), "declared_count":1
+                }));
+                let (status, response) = raw_request(address, &tool_call_headers("remember",&key.bearer), &rpc(1,"tools/call",params)).await;
+                assert_eq!(status, expected_status, "{response}");
+                assert_eq!(response["error"]["data"]["code"], code);
+                assert_eq!(denials_after_login(&mut handle, action, code), audits + 1);
+                assert_eq!(durable_counts(blocking_counts(&mut handle)), before);
+            }
+            server.abort();
+        });
+    });
 }
 
 fn assert_ack_loss_durable_outcome(handle: &mut Handle, before: (i64, i64, i64, i64, i64)) {
