@@ -4849,6 +4849,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `humaux-local-secret-scan`
 - service `subprocess(gitleaks)`
 
+#### `humaux-private-worker`
+
 #### `humaux-telemetry`
 - service `HTTP(loopback)`
 
@@ -18849,6 +18851,7 @@ modules naming it:
 why: uuid dependency
 
 modules naming it:
+- `humaux-private-worker`
 - `private-worker::bootstrap`
 - `private-worker::distill`
 - `private-worker::inference_rpc`
@@ -18893,6 +18896,7 @@ modules naming it:
 why: uuid dependency
 
 modules naming it:
+- `humaux-private-worker`
 - `private-worker::bootstrap`
 - `private-worker::distill`
 - `private-worker::inference_rpc`

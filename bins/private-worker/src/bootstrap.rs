@@ -1,5 +1,5 @@
 //! `private-worker::bootstrap` — Adapter construction and direct delegation for consumer ports (ADR-0130 D2).
-//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, uuid]; services=[PostgreSQL(role_private_worker)]; env=[]; modules=[adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::contribution_scan, adapters::jobs, adapters::postgres, adapters::reasoning_route_admission, application::contribution_execution, domain::error]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, uuid]; services=[PostgreSQL(role_private_worker)]; env=[]; modules=[adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::contribution_scan, adapters::jobs, adapters::postgres, adapters::reasoning_route_admission, application::contribution_execution, domain::error, humaux-private-worker]
 //! Called-by: [private-worker::inference_rpc, private-worker::route_providers, tests]
 //! Invariants: [no processing loop or business decisions; health observation is best effort and never changes settlement]
 //! Spec: ADR-0130 D2; ADR-0060 E3
@@ -159,25 +159,15 @@ pub async fn observe_route_health(
     valid_for_seconds: i64,
 ) {
     // dep: PostgreSQL(role_private_worker) — control.observe_reasoning_route_health (0206/0209, E3)
-    match reasoning_route_admission::observe_route_health(
+    let observation = reasoning_route_admission::observe_route_health(
         pool,
         tenant_id,
         model_call_id,
         credential_rejected,
         valid_for_seconds,
     )
-    .await
-    {
-        Ok((None, None)) => {}
-        Ok((provider, account)) => eprintln!(
-            "humaux-private-worker: route health observed tenant={tenant_id} model_call_id={model_call_id} credential_rejected={credential_rejected} provider_observation={} account_observation={}",
-            provider.map_or_else(|| "-".to_owned(), |id| id.to_string()),
-            account.map_or_else(|| "-".to_owned(), |id| id.to_string()),
-        ),
-        Err(_) => eprintln!(
-            "humaux-private-worker: route health observe failed tenant={tenant_id} model_call_id={model_call_id} class=WORKER_DB_ERROR"
-        ),
-    }
+    .await;
+    crate::log_route_health(tenant_id, model_call_id, credential_rejected, observation);
 }
 
 impl ContributionRouteHealth for ContributionExecutionRunner<'_, '_> {

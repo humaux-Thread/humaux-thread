@@ -1,6 +1,6 @@
 //! `humaux-private-worker` — Bounded Phase 9 private contribution worker orchestration.
-//! Depends-on: crates=[humaux-application, humaux-domain]; services=[]; env=[]; modules=[application::contribute, application::contribution_execution, domain::error]
-//! Called-by: [crate(humaux-consolidation-worker), tests]
+//! Depends-on: crates=[humaux-application, humaux-domain, uuid]; services=[]; env=[]; modules=[application::contribute, application::contribution_execution, domain::error]
+//! Called-by: [crate(humaux-consolidation-worker), private-worker::bootstrap, tests]
 //! Invariants: [the manual contribution command accepts the verified preparation and a caller idempotency key]
 //! Spec: ADR-0012; ADR-0016; ADR-0060 E3
 //!
@@ -36,6 +36,7 @@ use humaux_application::{
     },
 };
 use humaux_domain::error::ErrorCode;
+use uuid::Uuid;
 
 /// Production-core MANUAL contribution command owned by the private-worker process.
 ///
@@ -57,5 +58,25 @@ impl<'a> StartManualContributionCommand<'a> {
         idempotency_key: String,
     ) -> Result<EnqueuedContributionExecution, ErrorCode> {
         start_manual_contribution(self.ingress, request, idempotency_key).await
+    }
+}
+
+// ADR-0060 E3: observation is diagnostic only; provider and account values are row IDs.
+fn log_route_health<E>(
+    tenant_id: Uuid,
+    model_call_id: Uuid,
+    credential_rejected: bool,
+    observation: Result<(Option<i64>, Option<i64>), E>,
+) {
+    match observation {
+        Ok((None, None)) => {}
+        Ok((provider, account)) => eprintln!(
+            "humaux-private-worker: route health observed tenant={tenant_id} model_call_id={model_call_id} credential_rejected={credential_rejected} provider_observation={} account_observation={}",
+            provider.map_or_else(|| "-".to_owned(), |id| id.to_string()),
+            account.map_or_else(|| "-".to_owned(), |id| id.to_string()),
+        ),
+        Err(_) => eprintln!(
+            "humaux-private-worker: route health observe failed tenant={tenant_id} model_call_id={model_call_id} class=WORKER_DB_ERROR"
+        ),
     }
 }
