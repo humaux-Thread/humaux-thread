@@ -1,5 +1,5 @@
 //! `gateway::guard` — §83: one business admission path for every canonical MCP operation.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry, serde_json, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::confirm_token_repo, adapters::postgres, adapters::quota_repo, adapters::request_guard_repo, application::independent_audit, application::remember, application::supersede, domain::affect, domain::audit, domain::confirm, domain::continuity, domain::coordination, domain::error, domain::identity, domain::ids, domain::selection, domain::source, domain::subject, gateway::auth, gateway::bootstrap, gateway::limiter, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::confirm_token_repo, adapters::postgres, application::read_quota, application::independent_audit, application::remember, application::supersede, domain::affect, domain::audit, domain::confirm, domain::continuity, domain::coordination, domain::error, domain::identity, domain::ids, domain::selection, domain::source, domain::subject, gateway::auth, gateway::bootstrap, gateway::limiter, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::oauth_http, gateway::status, tests]
 //! Invariants: [no path mints and accepts in one call; transport owns HTTP validation only; this layer is the sole place that authenticates, authorizes and admits a request, so an operation that bypasses it is a bug, not a variant path]
 //! Spec: Baseline §83; §52.1; ADR-0018; ADR-0028; ADR-0030; ADR-0054; ADR-0065 D-D; ADR-0125
@@ -7,6 +7,7 @@
 //! Transport owns HTTP validation; this layer owns authentication through finalization.
 
 use humaux_application::independent_audit::{AuditIdentity, record_independent_audit};
+use humaux_application::read_quota::{self, ChargePolicy, ReadQuotaStore, ReservationLease};
 use humaux_application::remember::{
     self, AtomicRememberRequest, AtomicRememberResult, NoteIntake, RememberCommand, SourcedPutError,
 };
@@ -21,8 +22,6 @@ use std::{
 use humaux_adapters::{
     confirm_token_repo::{self, ConfirmationClaim},
     postgres::RuntimeDbPool,
-    quota_repo::{self, QuotaReservation},
-    request_guard_repo::{self, EffectiveEntitlementFacts},
 };
 use humaux_domain::{
     affect::AffectWriteOp,
@@ -46,7 +45,7 @@ use humaux_protocol::{
 };
 use humaux_telemetry::metrics::{Family, families, write_family};
 use sha2::{Digest, Sha256};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::limiter::{Limiter, RatePolicy, Subject};
@@ -256,8 +255,8 @@ struct AdmittedOperation {
     charge_policy: ChargePolicy,
 }
 
-struct ReadCompletion<'a> {
-    reservation: Option<&'a QuotaReservation>,
+struct ReadCompletion<'a, R> {
+    reservation: Option<&'a R>,
     consume: bool,
     error: Option<ErrorCode>,
 }
@@ -1355,12 +1354,12 @@ impl GatewayGuard {
             }
             self.postauth_rate(context, request.authorization(), operation.operation_key())
                 .await?;
-            let facts = request_guard_repo::read_effective_entitlements(
-                &self.pool,
+            let policy = read_quota::charge_policy_for(
+                &crate::bootstrap::read_quota_store(&self.pool),
                 request.authorization(),
+                operation.feature_key(),
             )
             .await?;
-            let policy = quota_policy(&facts, operation.feature_key())?;
             if matches!(
                 operation.meter_kind(),
                 MeterKind::BatchReservation | MeterKind::BatchConsumption
@@ -1422,9 +1421,10 @@ impl GatewayGuard {
         F: FnOnce(AuthorizedRequest) -> Fut,
         Fut: Future<Output = Result<T, ErrorCode>>,
     {
+        let store = crate::bootstrap::read_quota_store(&self.pool);
         let reservation_started = Instant::now();
         let reservation = match self
-            .reserve_read(context, operation, raw_arguments, admitted)
+            .reserve_read(&store, context, operation, raw_arguments, admitted)
             .await
         {
             Ok(value) => value,
@@ -1454,7 +1454,7 @@ impl GatewayGuard {
         };
         let settled = tokio::time::timeout(
             self.settings.finalize_timeout,
-            self.finish_read(context, operation, admitted, completion),
+            self.finish_read(&store, context, operation, admitted, completion),
         )
         .await
         .map_err(|_| ErrorCode::DependencyUnavailable)??;
@@ -1464,13 +1464,14 @@ impl GatewayGuard {
         result
     }
 
-    async fn reserve_read(
+    async fn reserve_read<S: ReadQuotaStore<Audit = AuditEvent>>(
         &self,
+        store: &S,
         context: &McpHttpContext,
         operation: &OperationDescriptor,
         raw_arguments: &str,
         admitted: &AdmittedOperation,
-    ) -> Result<Option<QuotaReservation>, ErrorCode> {
+    ) -> Result<Option<S::Reservation>, ErrorCode> {
         if operation.meter_kind() == MeterKind::Zero {
             return Ok(None);
         }
@@ -1485,8 +1486,8 @@ impl GatewayGuard {
         let digest = hex::encode(Sha256::digest(raw_arguments.as_bytes()));
         let result = tokio::time::timeout(
             self.settings.finalize_timeout,
-            request_guard_repo::reserve_read_with_audit(
-                &self.pool,
+            read_quota::reserve_read(
+                store,
                 admitted.request.authorization(),
                 operation.operation_key(),
                 &digest,
@@ -1504,12 +1505,13 @@ impl GatewayGuard {
         result
     }
 
-    async fn finish_read(
+    async fn finish_read<S: ReadQuotaStore<Audit = AuditEvent>>(
         &self,
+        store: &S,
         context: &McpHttpContext,
         operation: &OperationDescriptor,
         admitted: &AdmittedOperation,
-        completion: ReadCompletion<'_>,
+        completion: ReadCompletion<'_, S::Reservation>,
     ) -> Result<bool, ErrorCode> {
         let event = self.audit_event(
             context,
@@ -1519,8 +1521,8 @@ impl GatewayGuard {
             operation.operation_key(),
             completion.error,
         );
-        let settled = request_guard_repo::settle_read_with_audit(
-            &self.pool,
+        let settled = read_quota::settle_read(
+            store,
             admitted.request.authorization(),
             completion.reservation,
             completion.consume,
@@ -1625,130 +1627,9 @@ impl GatewayGuard {
     }
 }
 
-enum ChargePolicy {
-    SuccessOnly,
-    CompletedBusinessCalls,
-}
-
-impl ChargePolicy {
-    fn consumes<T>(&self, result: &Result<T, ErrorCode>) -> bool {
-        result.is_ok()
-            || (matches!(self, Self::CompletedBusinessCalls)
-                && matches!(
-                    result,
-                    Err(ErrorCode::NotFound
-                        | ErrorCode::Conflict
-                        | ErrorCode::ProjectionLag
-                        | ErrorCode::CannotEstablishCompleteness)
-                ))
-    }
-}
-
-fn quota_policy(
-    facts: &EffectiveEntitlementFacts,
-    feature: &str,
-) -> Result<ChargePolicy, ErrorCode> {
-    if feature != quota_repo::BMO_ENTITLEMENT {
-        return Err(ErrorCode::Internal);
-    }
-    let policy = facts
-        .effective
-        .get(feature)
-        .and_then(|v| v.as_object())
-        .ok_or(ErrorCode::EntitlementRequired)?;
-    if policy
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .is_none_or(|n| n > i64::MAX as u64)
-        || !matches!(
-            policy.get("period").and_then(|v| v.as_str()),
-            Some("calendar_month" | "subscription_period")
-        )
-    {
-        return Err(ErrorCode::EntitlementRequired);
-    }
-    let parse = |key| {
-        policy
-            .get(key)
-            .and_then(|v| v.as_str())
-            .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
-            .ok_or(ErrorCode::EntitlementRequired)
-    };
-    let start = parse("period_start")?;
-    let end = parse("period_end")?;
-    if start >= end
-        || facts.observed_at < start
-        || facts.observed_at >= end
-        || facts.computed_at > facts.observed_at
-    {
-        return Err(ErrorCode::EntitlementRequired);
-    }
-    match policy.get("charge_policy").and_then(|v| v.as_str()) {
-        Some("success_only") => Ok(ChargePolicy::SuccessOnly),
-        Some("completed_business_calls") => Ok(ChargePolicy::CompletedBusinessCalls),
-        _ => Err(ErrorCode::EntitlementRequired),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
-    fn snapshot() -> EffectiveEntitlementFacts {
-        let observed_at = OffsetDateTime::parse("2026-08-28T00:00:00Z", &Rfc3339).unwrap();
-        EffectiveEntitlementFacts {
-            effective: json!({quota_repo::BMO_ENTITLEMENT: {
-                "limit": 50,
-                "period": "subscription_period",
-                "period_start": "2026-08-28T00:00:00Z",
-                "period_end": "2026-09-28T00:00:00Z",
-                "charge_policy": "success_only"
-            }}),
-            source_grant_ids: vec![],
-            computed_at: observed_at,
-            observed_at,
-        }
-    }
-
-    #[test]
-    fn entitlement_uses_projected_period_and_database_observation_time() {
-        let mut facts = snapshot();
-        assert!(quota_policy(&facts, quota_repo::BMO_ENTITLEMENT).is_ok());
-        facts.computed_at += time::Duration::seconds(1);
-        assert!(matches!(
-            quota_policy(&facts, quota_repo::BMO_ENTITLEMENT),
-            Err(ErrorCode::EntitlementRequired)
-        ));
-        facts = snapshot();
-        facts.observed_at = OffsetDateTime::parse("2026-09-28T00:00:00Z", &Rfc3339).unwrap();
-        assert!(matches!(
-            quota_policy(&facts, quota_repo::BMO_ENTITLEMENT),
-            Err(ErrorCode::EntitlementRequired)
-        ));
-        facts = snapshot();
-        facts.effective[quota_repo::BMO_ENTITLEMENT] = json!(50);
-        assert!(matches!(
-            quota_policy(&facts, quota_repo::BMO_ENTITLEMENT),
-            Err(ErrorCode::EntitlementRequired)
-        ));
-    }
-
-    #[test]
-    fn charge_policy_does_not_bill_infrastructure_or_authorization_failures() {
-        let ok: Result<(), ErrorCode> = Ok(());
-        assert!(ChargePolicy::SuccessOnly.consumes(&ok));
-        assert!(!ChargePolicy::SuccessOnly.consumes(&Err::<(), _>(ErrorCode::NotFound)));
-        assert!(ChargePolicy::CompletedBusinessCalls.consumes(&Err::<(), _>(ErrorCode::NotFound)));
-        for code in [
-            ErrorCode::Unauthorized,
-            ErrorCode::InvalidInput,
-            ErrorCode::Internal,
-            ErrorCode::DependencyUnavailable,
-        ] {
-            assert!(!ChargePolicy::CompletedBusinessCalls.consumes(&Err::<(), _>(code)));
-        }
-    }
 
     /// Exhaustive over `ToolName`: a new variant does not compile until it is placed in `TOOLS`.
     #[test]

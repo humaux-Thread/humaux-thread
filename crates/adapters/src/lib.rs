@@ -13,6 +13,7 @@ pub mod affect_repo;
 pub mod applicability_repo;
 pub mod attribution_repo;
 pub mod audit_sink;
+pub mod audited_read_quota;
 pub mod batch;
 /// §71.3: maintenance-only processor doors, isolated from gateway linkage.
 pub mod billing_processor_repo;
