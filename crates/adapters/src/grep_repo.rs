@@ -1,15 +1,13 @@
 //! `adapters::grep_repo` — ADR-0069 `memory.grep`: a literal, case-insensitive substring search over the caller's
 //!   authorized memories, one hit per matching line with ±1 line of context, true totals and a keyset page, all in one
 //!   snapshot.
-//! Depends-on: crates=[humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(role_gateway) r=[private.memory_records]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_materialize, application::recall_read, domain::error, domain::identity, domain::ids]
-//! Called-by: [gateway::memory, tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(role_gateway) r=[private.memory_records]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_materialize, application::recall_read, domain::error, domain::identity, domain::ids]
+//! Called-by: [gateway::bootstrap, tests]
 //! Invariants: [candidates, the final gate, the totals, the page and the context bodies come from ONE REPEATABLE READ
 //!   READ ONLY transaction; what a grep may count or show is exactly what the shared final gate admits
 //!   (`read_materialize::final_memory_ids_about_in_txn`: can_read, lifecycle, secret backing, tombstoned Evidence on
 //!   any stream), never a second predicate; a cancelled statement is a refusal, never a partial total]
 //! Spec: Baseline §33; §33.10; §22.1; §52; ADR-0069
-
-use std::time::Duration;
 
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::AuthorizationScope;
@@ -20,10 +18,9 @@ use sqlx::types::Uuid;
 use crate::context_repo::{ENUMERATION_SCOPE, set_authorization_local};
 use crate::postgres::RuntimeDbPool;
 use crate::read_materialize::final_memory_ids_about_in_txn;
-use humaux_application::recall_read::Lifecycle;
 
-/// ADR-0069 D-B: the longest pattern accepted, in Unicode scalars (the contract's `maxLength`).
-pub const MAX_PATTERN_CHARS: usize = 512;
+/// Application-owned grep types and query validation (ADR-0069; ADR-0130).
+pub use humaux_application::recall_read::{GrepHit, GrepPage, GrepQuery, MAX_PATTERN_CHARS};
 
 /// ADR-0069 D-C: the text a grep searches, and the text its line numbers and context come from — a bare-string
 /// content (the `memory.correct` shape) whole, otherwise the title, key claim and evidence excerpt joined by line
@@ -45,91 +42,6 @@ pub fn literal_like_pattern(literal: &str) -> String {
         .replace('%', "!%")
         .replace('_', "!_");
     format!("%{escaped}%")
-}
-
-/// One validated `memory.grep` request.
-#[derive(Debug, Clone)]
-pub struct GrepQuery {
-    pattern: String,
-    lifecycle: Lifecycle,
-    page_size: u16,
-    after: Option<(Uuid, i64)>,
-    budget: Option<Duration>,
-}
-
-impl GrepQuery {
-    /// `after` is the last `(memory_id, line_no)` of the previous page (from a verified cursor); `budget` overrides the
-    /// role's statement timeout for this read (`None` = the pool's §78 setting).
-    ///
-    /// # Errors
-    /// [`ErrorCode::InvalidInput`] for an empty pattern, one longer than [`MAX_PATTERN_CHARS`], one containing a line
-    /// break (a hit is one line, ADR-0069 D-B), or a page size outside 1..=100.
-    pub fn new(
-        pattern: &str,
-        lifecycle: Lifecycle,
-        page_size: u16,
-        after: Option<(Uuid, i64)>,
-        budget: Option<Duration>,
-    ) -> Result<Self, ErrorCode> {
-        if pattern.is_empty()
-            || pattern.chars().count() > MAX_PATTERN_CHARS
-            || pattern.contains(['\n', '\r'])
-            || !(1..=100).contains(&page_size)
-        {
-            return Err(ErrorCode::InvalidInput);
-        }
-        Ok(Self {
-            pattern: pattern.to_owned(),
-            lifecycle,
-            page_size,
-            after,
-            budget,
-        })
-    }
-}
-
-/// One matching line.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GrepHit {
-    /// The memory the line belongs to.
-    pub memory_id: Uuid,
-    /// 1-based, over [`MEMORY_TEXT`]'s lines.
-    pub line_no: i64,
-    /// The matching line.
-    pub line: String,
-    /// The line before it, `None` on the first line.
-    pub before: Option<String>,
-    /// The line after it, `None` on the last line.
-    pub after: Option<String>,
-    /// Every matching line of this memory in the whole result, not only this page's.
-    pub memory_matching_lines: i64,
-    /// `active` or `superseded`.
-    pub status: String,
-    /// Whether the memory is archived (only with an `archive` selection that admits archived rows).
-    pub archived: bool,
-}
-
-/// One keyset page with the totals of the same snapshot.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GrepPage {
-    /// This page's hits, ordered by `(memory_id, line_no)`.
-    pub items: Vec<GrepHit>,
-    /// Every matching line in the caller's view, in this snapshot.
-    pub total_matching_lines: i64,
-    /// The memories those lines belong to.
-    pub total_memories: i64,
-    /// Whether hits follow this page.
-    pub has_more: bool,
-}
-
-impl GrepPage {
-    /// The keyset position after this page's last hit, `None` when nothing follows.
-    pub fn next_after(&self) -> Option<(Uuid, i64)> {
-        if !self.has_more {
-            return None;
-        }
-        self.items.last().map(|hit| (hit.memory_id, hit.line_no))
-    }
 }
 
 /// ADR-0069 D-D: a statement cancelled by the budget (`57014`) means the totals cannot be vouched for; anything else
@@ -192,9 +104,15 @@ async fn admitted_candidates(
         .fetch_all(&mut **txn)
         .await
         .map_err(|e| read_error(&e))?;
-    let mut admitted =
-        final_memory_ids_about_in_txn(txn, authorization, &candidates, query.lifecycle, &[], None)
-            .await?;
+    let mut admitted = final_memory_ids_about_in_txn(
+        txn,
+        authorization,
+        &candidates,
+        query.lifecycle(),
+        &[],
+        None,
+    )
+    .await?;
     admitted.sort_unstable();
     Ok(admitted)
 }
@@ -219,7 +137,7 @@ pub async fn grep(
         .await
         .map_err(|e| read_error(&e))?;
     set_authorization_local(&mut txn, authorization).await?;
-    if let Some(budget) = query.budget {
+    if let Some(budget) = query.budget() {
         // A bound integer, not caller text: `SET` takes no parameters.
         sqlx::query(&format!(
             "SET LOCAL statement_timeout = {}",
@@ -229,17 +147,17 @@ pub async fn grep(
         .await
         .map_err(|e| read_error(&e))?;
     }
-    let like = literal_like_pattern(&query.pattern);
+    let like = literal_like_pattern(query.pattern());
     let authorized = admitted_candidates(&mut txn, authorization, workspace, query, &like).await?;
 
-    let (after_memory, after_line) = query.after.unzip();
+    let (after_memory, after_line) = query.after().unzip();
     let row = sqlx::query(&hits_sql())
         .bind(tenant)
         .bind(&authorized)
         .bind(&like)
         .bind(after_memory)
         .bind(after_line)
-        .bind(i64::from(query.page_size) + 1)
+        .bind(i64::from(query.page_size()) + 1)
         .fetch_one(&mut *txn)
         .await
         .map_err(|e| read_error(&e))?;
@@ -249,10 +167,10 @@ pub async fn grep(
     let mut page_memories: Vec<Uuid> = row.try_get("page_memories").map_err(decode)?;
     let mut page_lines: Vec<i64> = row.try_get("page_lines").map_err(decode)?;
     let mut page_counts: Vec<i64> = row.try_get("page_counts").map_err(decode)?;
-    let has_more = page_memories.len() > usize::from(query.page_size);
-    page_memories.truncate(usize::from(query.page_size));
-    page_lines.truncate(usize::from(query.page_size));
-    page_counts.truncate(usize::from(query.page_size));
+    let has_more = page_memories.len() > usize::from(query.page_size());
+    page_memories.truncate(usize::from(query.page_size()));
+    page_lines.truncate(usize::from(query.page_size()));
+    page_counts.truncate(usize::from(query.page_size()));
 
     let bodies = sqlx::query(&format!(
         "SELECT m.memory_id, {} AS body, m.status, m.archived_at IS NOT NULL AS archived \
@@ -301,6 +219,31 @@ pub async fn grep(
     })
 }
 
+/// PG implementation of the §33 literal grep boundary (ADR-0069; ADR-0130).
+pub struct PostgresGrepStore<'a> {
+    pool: &'a RuntimeDbPool,
+}
+
+impl<'a> PostgresGrepStore<'a> {
+    /// Assemble the existing PG grep store over `pool`.
+    #[must_use]
+    pub fn new(pool: &'a RuntimeDbPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait::async_trait]
+impl humaux_application::recall_read::GrepStore for PostgresGrepStore<'_> {
+    async fn grep(
+        &self,
+        authorization: &AuthorizationScope,
+        workspace: WorkspaceId,
+        query: &GrepQuery,
+    ) -> Result<GrepPage, ErrorCode> {
+        grep(self.pool, authorization, workspace, query).await
+    }
+}
+
 /// ADR-0069 D-C: line `line_no` (1-based) of `body` with its neighbours, split exactly as `string_to_array(body,
 /// E'\n')` splits (a `\r` stays on its line). `None` when the line does not exist.
 fn context(body: &str, line_no: i64) -> Option<(Option<String>, String, Option<String>)> {
@@ -318,6 +261,7 @@ fn context(body: &str, line_no: i64) -> Option<(Option<String>, String, Option<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use humaux_application::recall_read::Lifecycle;
 
     /// ADR-0069 D-B: `!`, `%` and `_` are escaped so each matches only itself. Fault: drop any one replace ⇒ red.
     #[test]

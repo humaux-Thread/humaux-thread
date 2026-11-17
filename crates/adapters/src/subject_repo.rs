@@ -1,11 +1,11 @@
 //! `adapters::subject_repo` — SQL half of the §6.1.3 Subject / Aboutness axis (ADR-0028, card 8): resolving an
 //!   explicit [`SubjectDeclaration`] under the caller's tenant RLS, and the Rust face of the ONE deterministic
 //!   resolve hook (`private.link_memory_subjects` / `private.link_rollup_subjects`, migration 0154).
-//! Depends-on: crates=[humaux-domain, serde_json, sqlx]; services=[PostgreSQL(role_gateway)
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx]; services=[PostgreSQL(role_gateway)
 //!   r=[private.memory_subjects] w=[private.evidence_subjects, private.subject_keys, private.subject_roles,
 //!   private.subjects] x=[private.link_memory_subjects, private.link_rollup_subjects]]; env=[];
-//!   modules=[adapters::confirm_token_repo, adapters::postgres, domain::error, domain::identity, domain::subject]
-//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::remember, gateway::mcp_application, gateway::memory, tests]
+//!   modules=[adapters::confirm_token_repo, adapters::postgres, application::lifecycle_execution, domain::error, domain::identity, domain::subject]
+//! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::remember, gateway::bootstrap, gateway::mcp_application, tests]
 //! Invariants: [the only Rust caller of the SQL subject-link hook; declarations commit with the write they belong to
 //!   or not at all; resolution never calls a model and an unknown id/key is InvalidInput]
 //! Spec: Baseline §6.1.3; ADR-0028
@@ -52,15 +52,7 @@ pub struct ResolvedSubject {
 
 /// One registered subject as `memory.enumerate {subjects:true}` lists it and as the two registry
 /// writes return it.
-#[derive(Debug, Clone)]
-pub struct SubjectListing {
-    pub subject_id: Uuid,
-    pub kind: SubjectKind,
-    pub display_name: String,
-    /// `(key_kind, key_value)` pairs registered for this subject.
-    pub keys: Vec<(SubjectKeyKind, String)>,
-    pub roles: Vec<SubjectRole>,
-}
+pub use humaux_application::lifecycle_execution::SubjectListing;
 
 fn db_error(error: sqlx::Error) -> ErrorCode {
     match error {
@@ -428,6 +420,49 @@ pub fn parse_declaration(value: &serde_json::Value) -> Result<SubjectDeclaration
             .collect::<Result<Vec<_>, _>>()?,
     };
     SubjectDeclaration::new(ids, keys)
+}
+
+/// PG implementation of the §6.1.3 subject registry boundary (ADR-0130).
+pub struct PostgresSubjectStore<'a> {
+    pool: &'a RuntimeDbPool,
+}
+
+impl<'a> PostgresSubjectStore<'a> {
+    /// Assemble the existing PG subject store over `pool`.
+    #[must_use]
+    pub fn new(pool: &'a RuntimeDbPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait::async_trait]
+impl humaux_application::lifecycle_execution::SubjectStore for PostgresSubjectStore<'_> {
+    async fn list_subjects(
+        &self,
+        auth: &AuthorizationScope,
+        limit: i64,
+    ) -> Result<Vec<SubjectListing>, ErrorCode> {
+        list_subjects(self.pool, auth, limit).await
+    }
+
+    async fn register_subject(
+        &self,
+        auth: &AuthorizationScope,
+        kind: SubjectKind,
+        display_name: &str,
+        roles: &[SubjectRole],
+    ) -> Result<SubjectListing, ErrorCode> {
+        register_subject(self.pool, auth, kind, display_name, roles).await
+    }
+
+    async fn link_key(
+        &self,
+        auth: &AuthorizationScope,
+        subject_id: SubjectId,
+        key: &SubjectKey,
+    ) -> Result<SubjectListing, ErrorCode> {
+        link_key(self.pool, auth, subject_id, key).await
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 //! `application::lifecycle_execution` — whole-transaction memory governance ports (§36; ADR-0130).
-//! Depends-on: crates=[async-trait, humaux-domain, serde_json, time, uuid]; services=[]; env=[]; modules=[application::remember, domain::affect, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::subject]
-//! Called-by: [adapters::memory_governance_repo, gateway::bootstrap, gateway::memory]
+//! Depends-on: crates=[async-trait, humaux-domain, serde_json, time, uuid]; services=[]; env=[]; modules=[application::remember, domain::affect, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::subject]
+//! Called-by: [adapters::affect_repo, adapters::context_repo, adapters::memory_governance_repo, adapters::subject_repo, application::affect, gateway::bootstrap, gateway::memory, tests]
 //! Invariants: [one port call owns one complete PG transaction; authorization and final read gate remain unchanged]
 //! Spec: §36; ADR-0130
 use crate::remember::AffectInput;
@@ -12,7 +12,10 @@ use humaux_domain::{
     error::{ConflictReason, ErrorCode},
     evidence::EvidencePayloadSha256,
     identity::AuthorizationScope,
-    subject::SubjectDeclaration,
+    ids::{TaskId, WorkspaceId},
+    subject::{
+        SubjectDeclaration, SubjectId, SubjectKey, SubjectKeyKind, SubjectKind, SubjectRole,
+    },
 };
 use std::time::{Duration, SystemTime};
 use time::OffsetDateTime;
@@ -326,4 +329,164 @@ pub async fn archive(
     command: ArchiveRequest,
 ) -> Result<ArchiveResult, ErrorCode> {
     store.archive(auth, command).await
+}
+
+/// One registered subject as `memory.enumerate {subjects:true}` lists it and as the two registry
+/// writes return it.
+#[derive(Debug, Clone)]
+pub struct SubjectListing {
+    pub subject_id: Uuid,
+    pub kind: SubjectKind,
+    pub display_name: String,
+    /// `(key_kind, key_value)` pairs registered for this subject.
+    pub keys: Vec<(SubjectKeyKind, String)>,
+    pub roles: Vec<SubjectRole>,
+}
+
+/// Tenant-scoped subject registry boundary (§6.1.3; ADR-0028; ADR-0130).
+#[async_trait]
+pub trait SubjectStore: Send + Sync {
+    /// List live (unmerged) subjects visible to `auth`.
+    async fn list_subjects(
+        &self,
+        auth: &AuthorizationScope,
+        limit: i64,
+    ) -> Result<Vec<SubjectListing>, ErrorCode>;
+
+    /// Register a new subject under `auth`.
+    async fn register_subject(
+        &self,
+        auth: &AuthorizationScope,
+        kind: SubjectKind,
+        display_name: &str,
+        roles: &[SubjectRole],
+    ) -> Result<SubjectListing, ErrorCode>;
+
+    /// Attach an external key to an existing subject under `auth`.
+    async fn link_key(
+        &self,
+        auth: &AuthorizationScope,
+        subject_id: SubjectId,
+        key: &SubjectKey,
+    ) -> Result<SubjectListing, ErrorCode>;
+}
+
+/// List registered subjects for `auth` (§6.1.3; ADR-0028).
+pub async fn list_subjects(
+    store: &dyn SubjectStore,
+    auth: &AuthorizationScope,
+    limit: i64,
+) -> Result<Vec<SubjectListing>, ErrorCode> {
+    store.list_subjects(auth, limit).await
+}
+
+/// Register one subject under the authenticated tenant (§6.1.3; ADR-0028 D-F).
+pub async fn register_subject(
+    store: &dyn SubjectStore,
+    auth: &AuthorizationScope,
+    kind: SubjectKind,
+    display_name: &str,
+    roles: &[SubjectRole],
+) -> Result<SubjectListing, ErrorCode> {
+    store
+        .register_subject(auth, kind, display_name, roles)
+        .await
+}
+
+/// Attach an external key to a registered subject (§6.1.3; ADR-0028 D-F).
+pub async fn link_subject_key(
+    store: &dyn SubjectStore,
+    auth: &AuthorizationScope,
+    subject_id: SubjectId,
+    key: &SubjectKey,
+) -> Result<SubjectListing, ErrorCode> {
+    store.link_key(auth, subject_id, key).await
+}
+
+/// Purpose of a confirmed `memory.bind` request within `knowledge_lifecycle` (ADR-0046; ADR-0130).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingPurpose {
+    /// Record the binding as an obligation only without writing a task authorization grant.
+    ReferenceOnly,
+    /// Write both the binding and the `private.task_binding_grants` row in one transaction.
+    AdoptTaskInstruction,
+}
+
+/// Trusted inputs of one confirmed pin/unpin/bind/unbind write (§36; ADR-0019; ADR-0045; ADR-0046).
+pub struct BindingWriteRequest {
+    pub request_id: Uuid,
+    pub request_fingerprint: String,
+    pub reservation_ttl: Duration,
+    pub memory: MemoryId,
+    pub workspace: WorkspaceId,
+    pub task: Option<TaskId>,
+    pub replaces_binding_id: Option<Uuid>,
+    pub purpose: Option<BindingPurpose>,
+    pub claim: LifecycleConfirmation,
+    pub finished_audit: LifecycleAudit,
+}
+
+/// Result of a confirmed pin/unpin/bind/unbind write (§36; ADR-0019 D-C).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BindingWriteOutcome {
+    pub binding_id: Uuid,
+    pub inserted: bool,
+    pub task_authorized: bool,
+}
+
+/// Whole-transaction confirmed context binding boundary (`knowledge_lifecycle`; ADR-0130).
+#[async_trait]
+pub trait BindingStore: Send + Sync {
+    /// Execute confirmed `memory.pin` atomically.
+    async fn pin_confirmed(
+        &self,
+        auth: &AuthorizationScope,
+        request: BindingWriteRequest,
+    ) -> Result<BindingWriteOutcome, ErrorCode>;
+
+    /// Execute confirmed `memory.unpin` atomically.
+    async fn unpin_confirmed(
+        &self,
+        auth: &AuthorizationScope,
+        request: BindingWriteRequest,
+    ) -> Result<BindingWriteOutcome, ErrorCode>;
+
+    /// Execute confirmed `memory.bind` atomically.
+    async fn bind_confirmed(
+        &self,
+        auth: &AuthorizationScope,
+        request: BindingWriteRequest,
+    ) -> Result<BindingWriteOutcome, ErrorCode>;
+
+    /// Execute confirmed `memory.unbind` atomically.
+    async fn unbind_confirmed(
+        &self,
+        auth: &AuthorizationScope,
+        request: BindingWriteRequest,
+    ) -> Result<BindingWriteOutcome, ErrorCode>;
+}
+
+/// Execute a confirmed context binding write (`pin` / `unpin` / `bind` / `unbind`) (§36).
+pub async fn write_binding(
+    store: &dyn BindingStore,
+    auth: &AuthorizationScope,
+    op: DestructiveOp,
+    request: BindingWriteRequest,
+) -> Result<BindingWriteOutcome, ErrorCode> {
+    match op {
+        DestructiveOp::MemoryPin => store.pin_confirmed(auth, request).await,
+        DestructiveOp::MemoryUnpin => store.unpin_confirmed(auth, request).await,
+        DestructiveOp::MemoryBind => store.bind_confirmed(auth, request).await,
+        DestructiveOp::MemoryUnbind => store.unbind_confirmed(auth, request).await,
+        DestructiveOp::MemorySupersede
+        | DestructiveOp::MemoryRestore
+        | DestructiveOp::MemoryArchive
+        | DestructiveOp::MemoryUnarchive
+        | DestructiveOp::MemoryCorrect
+        | DestructiveOp::MemoryConfirm
+        | DestructiveOp::MemoryReject
+        | DestructiveOp::MemoryForget
+        | DestructiveOp::AccountDelete
+        | DestructiveOp::MemoryNoteReplace => Err(ErrorCode::InvalidInput),
+    }
 }

@@ -1,5 +1,5 @@
 //! `gateway::memory` — Authenticated Memory reads through the existing final-body and Envelope boundaries.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, sha2, time, uuid]; services=[]; env=[]; modules=[adapters::affect_repo, adapters::context_repo, adapters::distill_repo, adapters::grep_repo, adapters::postgres, adapters::serving_repo, adapters::subject_repo, application::distill, application::forget, application::lifecycle_execution, application::recall_read, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::error, domain::evidence, domain::identity, domain::ids, domain::selection, domain::subject, gateway::bootstrap, gateway::context, gateway::guard, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::request]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, sha2, time, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::affect, application::distill, application::forget, application::lifecycle_execution, application::recall_read, application::remember, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::error, domain::evidence, domain::identity, domain::ids, domain::selection, domain::subject, gateway::bootstrap, gateway::context, gateway::guard, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::request]
 //! Called-by: [gateway::mcp_application]
 //! Invariants: [a read that cannot reach its final-body boundary returns the application error, never a partially materialized memory;
 //!   `memory.get` reports the ledger frontier from one `stream_checkpoints` lookup and never calls the ledger closure or the
@@ -8,42 +8,22 @@
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use humaux_adapters::affect_repo;
-use humaux_adapters::affect_repo::AffectInput;
-use humaux_adapters::affect_repo::AffectRow;
-use humaux_adapters::affect_repo::AnnotateDone;
-use humaux_adapters::context_repo;
-use humaux_adapters::context_repo::BindingWriteOutcome;
-use humaux_adapters::context_repo::BindingWriteRequest;
-use humaux_adapters::distill_repo;
-use humaux_adapters::distill_repo::PendingCandidate;
-use humaux_adapters::grep_repo;
-use humaux_adapters::grep_repo::GrepQuery;
 use humaux_adapters::postgres::RuntimeDbPool;
-use humaux_adapters::serving_repo::UnservedLedger;
-use humaux_adapters::subject_repo;
-use humaux_application::distill::ConfirmOutcome;
-use humaux_application::distill::RejectOutcome;
+use humaux_application::affect::{AffectRow, AnnotateDone};
+use humaux_application::distill::{ConfirmOutcome, PendingCandidate, RejectOutcome};
 use humaux_application::lifecycle_execution as memory_governance_repo;
-use humaux_application::lifecycle_execution::ArchiveRequest;
-use humaux_application::lifecycle_execution::ArchiveResult;
-use humaux_application::lifecycle_execution::CorrectDone;
-use humaux_application::lifecycle_execution::CorrectRequest;
-use humaux_application::lifecycle_execution::RestoreRequest;
-use humaux_application::lifecycle_execution::RestoreResult;
-use humaux_application::lifecycle_execution::SupersedeOutcome;
-use humaux_application::lifecycle_execution::SupersedeRequest;
-use humaux_application::recall_read::EnumerationCensus;
-use humaux_application::recall_read::Lifecycle;
-use humaux_application::recall_read::MaterializedItem;
-use humaux_application::recall_read::MaterializedMemory;
-use humaux_application::recall_read::MemoryEnumerationParams;
-use humaux_application::recall_read::MemoryGetTarget;
-use humaux_application::recall_read::MemoryHistory;
-use humaux_application::recall_read::NoteEnumerationFilter;
-use humaux_application::recall_read::frontier_pipeline_block;
-use humaux_application::recall_read::materialize_memory_enumeration_filtered;
-use humaux_application::recall_read::materialize_memory_get_frontier_target;
+use humaux_application::lifecycle_execution::{
+    ArchiveRequest, ArchiveResult, BindingPurpose, BindingWriteOutcome, BindingWriteRequest,
+    CorrectDone, CorrectRequest, RestoreRequest, RestoreResult, SubjectListing, SupersedeOutcome,
+    SupersedeRequest,
+};
+use humaux_application::recall_read::{
+    EnumerationCensus, GrepQuery, Lifecycle, MaterializedItem, MaterializedMemory,
+    MemoryEnumerationParams, MemoryGetTarget, MemoryHistory, NoteEnumerationFilter, UnservedLedger,
+    frontier_pipeline_block, grep_memories, materialize_memory_enumeration_filtered,
+    materialize_memory_get_frontier_target,
+};
+use humaux_application::remember::AffectInput;
 use humaux_domain::{
     affect::{BasisPoints, MoodHalfLife},
     authority::MemoryId,
@@ -228,8 +208,13 @@ async fn affects_by_memory<L>(
             _ => None,
         })
         .collect();
-    let rows = affect_repo::affects_for_memories(pool, authorization, &memory_ids).await?;
-    let observed = affect_repo::observed(&rows, time::OffsetDateTime::now_utc());
+    let rows = humaux_application::affect::affects_for_memories(
+        &crate::bootstrap::affect_store(pool),
+        authorization,
+        &memory_ids,
+    )
+    .await?;
+    let observed = humaux_application::affect::observed(&rows, time::OffsetDateTime::now_utc());
     let mut out: BTreeMap<Uuid, Vec<AffectItem>> = BTreeMap::new();
     for (row, observed) in rows.into_iter().zip(observed) {
         out.entry(row.memory_id)
@@ -324,8 +309,13 @@ pub(crate) async fn list_candidates(
     let (authorization, _scope, _family, _stream, _serving) =
         read_scope(&pool, authorization, requested_workspace, &bootstrap).await?;
     let workspace = requested_workspace.ok_or(ErrorCode::DependencyUnavailable)?;
-    let rows =
-        distill_repo::list_pending_candidates(&pool, &authorization, workspace, limit).await?;
+    let rows = humaux_application::distill::list_pending_candidates(
+        &crate::bootstrap::candidate_decision_store(&pool),
+        &authorization,
+        workspace,
+        limit,
+    )
+    .await?;
     let candidates = rows
         .into_iter()
         .map(candidate_item)
@@ -612,8 +602,8 @@ pub(crate) struct SubjectsResult {
     snapshot_id: Uuid,
 }
 
-impl From<subject_repo::SubjectListing> for SubjectItem {
-    fn from(row: subject_repo::SubjectListing) -> Self {
+impl From<SubjectListing> for SubjectItem {
+    fn from(row: SubjectListing) -> Self {
         SubjectItem {
             subject_id: row.subject_id,
             kind: row.kind.as_str(),
@@ -644,7 +634,12 @@ pub(crate) async fn list_subjects(
 ) -> Result<SubjectsResult, ErrorCode> {
     let (authorization, _scope, _family, _stream, _serving) =
         read_scope(&pool, authorization, requested_workspace, &bootstrap).await?;
-    let rows = subject_repo::list_subjects(&pool, &authorization, limit).await?;
+    let rows = memory_governance_repo::list_subjects(
+        &crate::bootstrap::subject_store(&pool),
+        &authorization,
+        limit,
+    )
+    .await?;
     Ok(SubjectsResult {
         subjects: rows.into_iter().map(SubjectItem::from).collect(),
         snapshot_id: Uuid::now_v7(),
@@ -665,9 +660,15 @@ pub(crate) async fn register_subject(
 ) -> Result<SubjectItem, ErrorCode> {
     let (authorization, _stream) =
         write_scope(&pool, authorization, requested_workspace, &bootstrap).await?;
-    subject_repo::register_subject(&pool, &authorization, kind, &display_name, &roles)
-        .await
-        .map(SubjectItem::from)
+    memory_governance_repo::register_subject(
+        &crate::bootstrap::subject_store(&pool),
+        &authorization,
+        kind,
+        &display_name,
+        &roles,
+    )
+    .await
+    .map(SubjectItem::from)
 }
 
 /// §6.1.3 / ADR-0028 D-F `memory.subject_link_key`: attaches an exact external key to one of the
@@ -683,9 +684,14 @@ pub(crate) async fn link_subject_key(
 ) -> Result<SubjectItem, ErrorCode> {
     let (authorization, _stream) =
         write_scope(&pool, authorization, requested_workspace, &bootstrap).await?;
-    subject_repo::link_key(&pool, &authorization, subject_id, &key)
-        .await
-        .map(SubjectItem::from)
+    memory_governance_repo::link_subject_key(
+        &crate::bootstrap::subject_store(&pool),
+        &authorization,
+        subject_id,
+        &key,
+    )
+    .await
+    .map(SubjectItem::from)
 }
 
 /// `memory.annotate_affect` result shape (ADR-0030 D-C).
@@ -725,10 +731,10 @@ pub(crate) async fn annotate_affect(
 ) -> Result<AnnotateResult, ErrorCode> {
     let (authorization, stream) =
         write_scope(&pool, authorization, requested_workspace, &bootstrap).await?;
-    affect_repo::annotate(
-        &pool,
+    humaux_application::affect::annotate(
+        &crate::bootstrap::affect_store(&pool),
         &authorization,
-        &stream,
+        &lifecycle_stream(stream),
         memory_id,
         &inputs,
         mood_half_life,
@@ -872,6 +878,12 @@ pub(crate) async fn write_binding(
     let (authorization, stream) = confirmed_write_scope(&pool, &write, &bootstrap).await?;
     // The PINNED / MANDATORY row is scoped to the narrowed, provisioned request workspace.
     let workspace = WorkspaceId(stream.scope_id);
+    let purpose = purpose.map(|p| match p {
+        humaux_domain::context::BindingPurpose::ReferenceOnly => BindingPurpose::ReferenceOnly,
+        humaux_domain::context::BindingPurpose::AdoptTaskInstruction => {
+            BindingPurpose::AdoptTaskInstruction
+        }
+    });
     let request = BindingWriteRequest {
         request_id: write.request.request_id(),
         request_fingerprint: write.request_fingerprint,
@@ -881,35 +893,22 @@ pub(crate) async fn write_binding(
         task,
         replaces_binding_id,
         purpose,
-        claim: write.claim,
-        finished_audit: write.finished_audit,
+        claim: humaux_application::lifecycle_execution::LifecycleConfirmation {
+            op: write.claim.op,
+            target_id: write.claim.target_id,
+            successor_id: write.claim.successor_id,
+            nonce_sha256: write.claim.nonce_sha256,
+            request_sha256: write.claim.request_sha256,
+        },
+        finished_audit: lifecycle_audit(write.finished_audit),
     };
-    match op {
-        DestructiveOp::MemoryPin => {
-            context_repo::pin_confirmed(&pool, &authorization, request).await
-        }
-        DestructiveOp::MemoryUnpin => {
-            context_repo::unpin_confirmed(&pool, &authorization, request).await
-        }
-        // card 22b (ADR-0045): the MANDATORY/TASK pair. Same credential route, same confirm
-        // gate; `context_repo` re-reads §10.1 standing in the write transaction.
-        DestructiveOp::MemoryBind => {
-            context_repo::bind_confirmed(&pool, &authorization, request).await
-        }
-        DestructiveOp::MemoryUnbind => {
-            context_repo::unbind_confirmed(&pool, &authorization, request).await
-        }
-        DestructiveOp::MemorySupersede
-        | DestructiveOp::MemoryRestore
-        | DestructiveOp::MemoryArchive
-        | DestructiveOp::MemoryUnarchive
-        | DestructiveOp::MemoryCorrect
-        | DestructiveOp::MemoryConfirm
-        | DestructiveOp::MemoryReject
-        | DestructiveOp::MemoryForget
-        | DestructiveOp::AccountDelete
-        | DestructiveOp::MemoryNoteReplace => Err(ErrorCode::InvalidInput),
-    }
+    memory_governance_repo::write_binding(
+        &crate::bootstrap::binding_store(&pool),
+        &authorization,
+        op,
+        request,
+    )
+    .await
 }
 
 /// The read-route scope rule (memory.get / memory.enumerate and its `candidates` / `subjects`
@@ -1260,7 +1259,13 @@ pub(crate) async fn grep(
         after,
         None,
     )?;
-    let page = grep_repo::grep(&pool, &authorization, workspace, &query).await?;
+    let page = grep_memories(
+        &crate::bootstrap::grep_store(&pool),
+        &authorization,
+        workspace,
+        &query,
+    )
+    .await?;
     let expires = now.saturating_add(i64::try_from(params.ttl.as_secs()).unwrap_or(i64::MAX));
     let next_cursor = page.next_after().map(|(memory_id, line_no)| {
         Cursor::sign(
