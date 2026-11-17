@@ -573,6 +573,7 @@ files = [
   "crates/adapters/src/serving_repo.rs",
   "crates/adapters/src/stream_repo.rs",
   "crates/adapters/src/valkey.rs",
+  "crates/application/src/projection_execution.rs",
   "crates/application/src/projection_maintenance.rs",
   "crates/application/src/recall_read.rs",
   "crates/application/src/retrieval_embedding_port.rs",
