@@ -7,7 +7,6 @@ bins/admin/src/mechanism.rs:humaux_adapters::mechanism_observation::RuntimeObser
 bins/admin/src/probe.rs:humaux_adapters::health::AdminProbeSample
 bins/billing-worker/src/process.rs:humaux_adapters::billing_processor_repo::PaymentFacts
 bins/billing-worker/src/process.rs:humaux_adapters::billing_processor_repo::Txn
-bins/gateway/src/auth.rs:humaux_adapters::credential_repo::CredentialRecord
 bins/gateway/src/auth_pages.rs:humaux_adapters::email::RecipientAllowlist
 bins/gateway/src/context.rs:humaux_adapters::serving_repo::FamilyReadState
 bins/gateway/src/context.rs:humaux_adapters::serving_repo::UnservedLedger
