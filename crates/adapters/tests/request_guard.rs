@@ -1,9 +1,9 @@
 //! `adapters::tests::request_guard` — RequestGuard persistence acceptance against the dedicated real gateway-login
 //!   fixture.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, sqlx, tokio];
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-testkit, postgres, sqlx, tokio];
 //!   services=[PostgreSQL(owner) r=[control.audit_events] w=[control.entitlement_snapshots, control.memberships,
 //!   control.tenants, control.users] x=[control.audit_event_insert], PostgreSQL(role_gateway)];
-//!   env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, adapters::request_guard_repo,
+//!   env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::independent_audit, application::independent_audit, adapters::postgres, adapters::request_guard_repo,
 //!   domain::audit, domain::error, domain::identity, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [the effective entitlement snapshot gates every read request (missing = EntitlementRequired,
@@ -15,9 +15,9 @@ use std::str::FromStr;
 use std::time::SystemTime;
 
 use humaux_adapters::{
-    postgres::RuntimeDbPool,
-    request_guard_repo::{self, AuditTenant},
+    independent_audit::PostgresIndependentAudit, postgres::RuntimeDbPool, request_guard_repo,
 };
+use humaux_application::independent_audit::{AuditIdentity, record_independent_audit};
 use humaux_domain::{
     audit::{AuditEvent, AuditEventId, AuditMetadata, SYSTEM_TENANT_ID},
     error::ErrorCode,
@@ -250,9 +250,12 @@ fn gateway_audit_writer_requires_bound_force_rls_scope() {
             let audit = event(TenantId(TENANT_ID), &request_id);
             let stored = handle
                 .rt
-                .block_on(request_guard_repo::audit_event_insert(
-                    &handle.runtime,
-                    AuditTenant::Authenticated(&handle.authorization),
+                .block_on(record_independent_audit(
+                    &PostgresIndependentAudit::new(&handle.runtime),
+                    AuditIdentity::Authorized {
+                        tenant_id: handle.authorization.tenant_id(),
+                        user_id: handle.authorization.user_id(),
+                    },
                     &audit,
                 ))
                 .expect("gateway function writes after matching tenant GUC");
@@ -291,9 +294,12 @@ fn audit_tenant_is_closed_to_authenticated_scope_or_system() {
         |handle| {
             let wrong = event(TenantId(Uuid::now_v7()), "wrong-tenant");
             assert_eq!(
-                handle.rt.block_on(request_guard_repo::audit_event_insert(
-                    &handle.runtime,
-                    AuditTenant::Authenticated(&handle.authorization),
+                handle.rt.block_on(record_independent_audit(
+                    &PostgresIndependentAudit::new(&handle.runtime),
+                    AuditIdentity::Authorized {
+                        tenant_id: handle.authorization.tenant_id(),
+                        user_id: handle.authorization.user_id(),
+                    },
                     &wrong,
                 )),
                 Err(ErrorCode::TenantBoundary)
@@ -302,9 +308,9 @@ fn audit_tenant_is_closed_to_authenticated_scope_or_system() {
             let system = event(SYSTEM_TENANT_ID, &format!("system-{}", Uuid::now_v7()));
             let stored = handle
                 .rt
-                .block_on(request_guard_repo::audit_event_insert(
-                    &handle.runtime,
-                    AuditTenant::System,
+                .block_on(record_independent_audit(
+                    &PostgresIndependentAudit::new(&handle.runtime),
+                    AuditIdentity::System,
                     &system,
                 ))
                 .expect("fixed system tenant is valid for unattributable events");

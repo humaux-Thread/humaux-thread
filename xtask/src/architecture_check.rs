@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 116, "HEX-LAYER")
+    hex_exact(actual, baseline, 115, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -14269,6 +14269,35 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             assert!(matches!(green, Verdict::Pass), "{green:?}");
             println!("SLICE-8c {operation}: restored GREEN");
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// §80.1: the standalone audit entry rejects its former PG type.
+    #[test]
+    fn hex_boundary_slice8f_entry_red_green() {
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("slice8f-boundary-{}", std::process::id()));
+        hex_copy_boundary_fixture(&real_root(), &root);
+        let guard = root.join("bins/gateway/src/guard.rs");
+        let original = fs::read_to_string(&guard).unwrap();
+        let symbol = "request_guard_repo::AuditTenant";
+        fs::write(
+            &guard,
+            format!("{original}\nuse humaux_adapters::{symbol};\n"),
+        )
+        .unwrap();
+        let red = hex_layer_gate(&root);
+        assert!(
+            matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.contains(symbol))),
+            "{red:?}"
+        );
+        println!("SLICE-8f RED {red:?}");
+        fs::write(&guard, &original).unwrap();
+        let green = hex_layer_gate(&root);
+        assert!(matches!(green, Verdict::Pass), "{green:?}");
+        println!("SLICE-8f restored GREEN");
         fs::remove_dir_all(root).unwrap();
     }
 

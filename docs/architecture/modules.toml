@@ -650,6 +650,8 @@ id = "provider_execution"
 files = [
   "crates/application/src/query_embedding_execution.rs",
   "crates/adapters/src/audit_sink.rs",
+  "crates/adapters/src/independent_audit.rs",
+  "crates/application/src/independent_audit.rs",
   "crates/adapters/src/byok/ssrf.rs",
   "crates/adapters/src/byok.rs",
   "crates/adapters/src/cost_repo.rs",

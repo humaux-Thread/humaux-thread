@@ -2,8 +2,8 @@
 //!   FORCE-RLS operational-audit writes.
 //! Depends-on: crates=[humaux-domain, serde_json, sqlx]; services=[PostgreSQL(role_gateway)
 //!   r=[control.entitlement_snapshots] x=[control.audit_event_insert]]; env=[]; modules=[adapters::postgres,
-//!   adapters::quota_repo, domain::audit, domain::error, domain::identity]
-//! Called-by: [adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, gateway::guard, tests]
+//!   adapters::quota_repo, domain::audit, domain::error, domain::identity, domain::ids]
+//! Called-by: [adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::independent_audit, adapters::memory_governance_repo, adapters::operation_receipt, gateway::guard, tests]
 //! Invariants: [policy stays in RequestGuard; this reads the effective entitlement snapshot (its staged successor
 //!   once that is in force, ADR-0072 D-A) and commits quota transitions together with the §77 audit row in one
 //!   transaction; a missing entitlement is EntitlementRequired]
@@ -17,6 +17,7 @@ use humaux_domain::{
     audit::{AuditEvent, AuditEventId, McpAuditAction, SYSTEM_TENANT_ID},
     error::ErrorCode,
     identity::AuthorizationScope,
+    ids::{TenantId, UserId},
 };
 use serde_json::Value;
 use sqlx::types::time::OffsetDateTime;
@@ -48,6 +49,15 @@ pub enum AuditTenant<'a> {
     System,
 }
 
+impl AuditTenant<'_> {
+    fn authorized_ids(self) -> Option<(TenantId, Option<UserId>)> {
+        match self {
+            Self::Authenticated(auth) => Some((auth.tenant_id(), auth.user_id())),
+            Self::System => None,
+        }
+    }
+}
+
 fn db_error(error: sqlx::Error) -> ErrorCode {
     match error {
         sqlx::Error::RowNotFound => ErrorCode::NotFound,
@@ -66,15 +76,22 @@ async fn set_authorization_local(
     txn: &mut Txn<'_>,
     authorization: &AuthorizationScope,
 ) -> Result<(), ErrorCode> {
+    set_authorized_ids_local(txn, authorization.tenant_id(), authorization.user_id()).await
+}
+
+async fn set_authorized_ids_local(
+    txn: &mut Txn<'_>,
+    tenant_id: TenantId,
+    user_id: Option<UserId>,
+) -> Result<(), ErrorCode> {
     sqlx::query("SELECT set_config('humaux.tenant_id', $1, true)")
-        .bind(authorization.tenant_id().0.to_string())
+        .bind(tenant_id.0.to_string())
         .execute(&mut **txn)
         .await
         .map_err(db_error)?;
     sqlx::query("SELECT set_config('humaux.user_id', $1, true)")
         .bind(
-            authorization
-                .user_id()
+            user_id
                 .map(|id| id.0.to_string())
                 .unwrap_or_else(|| Uuid::nil().to_string()),
         )
@@ -151,9 +168,18 @@ pub async fn audit_event_insert(
     tenant: AuditTenant<'_>,
     event: &AuditEvent,
 ) -> Result<AuditEventId, ErrorCode> {
+    insert_bound_audit(pool, tenant.authorized_ids(), event).await
+}
+
+/// §77: bind trusted scope IDs or the fixed system tenant for a fresh audit transaction.
+pub(crate) async fn insert_bound_audit(
+    pool: &RuntimeDbPool,
+    authorized: Option<(TenantId, Option<UserId>)>,
+    event: &AuditEvent,
+) -> Result<AuditEventId, ErrorCode> {
     // dep: PostgreSQL(role_gateway) — transaction entry for `audit_event_insert`
     let mut txn = pool.pool().begin().await.map_err(db_error)?;
-    let id = audit_event_insert_in_txn(&mut txn, tenant, event).await?;
+    let id = insert_bound_audit_in_txn(&mut txn, authorized, event).await?;
     txn.commit().await.map_err(db_error)?;
     Ok(id)
 }
@@ -164,10 +190,15 @@ pub async fn audit_event_insert_in_txn(
     tenant: AuditTenant<'_>,
     event: &AuditEvent,
 ) -> Result<AuditEventId, ErrorCode> {
-    let expected_tenant = match tenant {
-        AuditTenant::Authenticated(authorization) => authorization.tenant_id(),
-        AuditTenant::System => SYSTEM_TENANT_ID,
-    };
+    insert_bound_audit_in_txn(txn, tenant.authorized_ids(), event).await
+}
+
+async fn insert_bound_audit_in_txn(
+    txn: &mut Txn<'_>,
+    authorized: Option<(TenantId, Option<UserId>)>,
+    event: &AuditEvent,
+) -> Result<AuditEventId, ErrorCode> {
+    let expected_tenant = authorized.map_or(SYSTEM_TENANT_ID, |(tenant_id, _)| tenant_id);
     if event.tenant_id != expected_tenant {
         return Err(ErrorCode::TenantBoundary);
     }
@@ -183,11 +214,9 @@ pub async fn audit_event_insert_in_txn(
             .collect(),
     );
 
-    match tenant {
-        AuditTenant::Authenticated(authorization) => {
-            set_authorization_local(txn, authorization).await?
-        }
-        AuditTenant::System => set_system_tenant_local(txn).await?,
+    match authorized {
+        Some((tenant_id, user_id)) => set_authorized_ids_local(txn, tenant_id, user_id).await?,
+        None => set_system_tenant_local(txn).await?,
     }
     let event_id: Uuid = sqlx::query_scalar(
         "SELECT control.audit_event_insert( \
