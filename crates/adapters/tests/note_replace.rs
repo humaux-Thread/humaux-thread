@@ -597,6 +597,43 @@ fn g28_one_replacement_adds_exactly_one_version_and_moves_the_head() {
         assert_eq!(residue(&mut handle), before, "a challenge writes nothing");
 
         let token = mint(&handle, &editor, &intent, TOKEN_TTL);
+        let (mut request, note, replacement) =
+            replace_parts(&handle, &editor, &intent, Some(presented(&token, &intent)));
+        // §77: a duplicate finished-audit ID fails after token consumption and the business write.
+        request.finished_audit.event_id = AuditEventId(
+            handle
+                .admin
+                .query_one(
+                    "SELECT audit_event_id FROM control.operation_receipts WHERE tenant_id=$1",
+                    &[&handle.tenant_id],
+                )
+                .expect("original note receipt")
+                .get(0),
+        );
+        assert!(matches!(
+            handle
+                .rt
+                .block_on(operation_receipt::note_replace_atomically(
+                    &handle.runtime,
+                    &editor.auth,
+                    request,
+                    note,
+                    replacement,
+                    &humaux_adapters::attribution_repo::AttributionLadder,
+                )),
+            Err(ErrorCode::Conflict)
+        ));
+        await_receipt_lock_release(&mut handle, &editor, &intent);
+        assert!(
+            !token_consumed(&mut handle, &token),
+            "failed audit burned the token"
+        );
+        assert_eq!(
+            residue(&mut handle),
+            before,
+            "failed audit rolls back the write"
+        );
+
         let done = stored(replace(
             &handle,
             &editor,
