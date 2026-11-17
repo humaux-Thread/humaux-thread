@@ -1,7 +1,7 @@
 //! `application::retrieve` — pure handoff from bootstrap-resolved config to the sole request constructor.
 //! Depends-on: crates=[humaux-retrieval]; services=[];
 //!   env=[]; modules=[retrieval::request]
-//! Called-by: [gateway::recall]
+//! Called-by: [application::recall_read]
 //! Invariants: []
 //! Spec: none
 

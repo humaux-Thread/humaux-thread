@@ -4,7 +4,7 @@
 //!   domain::ids, domain::memory, domain::subject, domain::ticket_family, infra-cell::permit, infra-cell::transport,
 //!   projection::card, projection::dense]
 //! Called-by: [adapters::placement_repo, adapters::projection_worker, adapters::provisioning,
-//!   adapters::rebuild, adapters::retrieve, adapters::stream_repo, gateway::recall,
+//!   adapters::rebuild, adapters::retrieve, adapters::stream_repo,
 //!   maintenance::drill, public-pool::public_projection, retrieval-worker::main, tests, maintenance::switch_visible]
 //! Invariants: [every wire call takes &dyn IntraCellHttpTransport carrying a CellAccessPermit; Qdrant down ->
 //!   QdrantTransportError to the caller, no fallback search; tombstoned points are filtered by the overlay, never

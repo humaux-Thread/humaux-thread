@@ -3,7 +3,7 @@
 //!   [`affects_for_memories_in_txn`]) every reader shares — the PG hydrate re-check (`read_materialize`), the
 //!   projection worker's payload build, and `memory.get` / `memory.enumerate` / the recall rerank.
 //! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[private.memory_evidence, private.memory_records] w=[private.evidence_affects, private.memory_affects]]; env=[]; modules=[adapters::confirm_token_repo, adapters::memory_governance_repo, adapters::postgres, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::affect, application::lifecycle_execution, domain::affect, domain::authority, domain::error, domain::identity, domain::ids, domain::subject, projection::stream]
-//! Called-by: [adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::projection_worker, adapters::read_materialize, adapters::remember, gateway::bootstrap, gateway::mcp_application, gateway::recall, tests]
+//! Called-by: [adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::projection_worker, adapters::read_materialize, adapters::remember, gateway::bootstrap, gateway::mcp_application, tests]
 //! Invariants: [affect rows are INSERT-only through the one row issuer insert_rows (declared rows via insert_in_txn,
 //!   inferred DISTILL rows via insert_inferred_in_txn) and never decayed on write; the one read lets an EXPLICIT row
 //!   shadow every DISTILL row of its memory; everything runs under

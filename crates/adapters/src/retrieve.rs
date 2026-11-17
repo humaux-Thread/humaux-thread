@@ -1,13 +1,13 @@
 //! `adapters::retrieve` — §15.5 Read-your-writes (`consistency_token` issue/decode/scope-check) and the PostgreSQL
 //!   delta overlay `recall`/`context` fall back to when serving Qdrant has not yet caught up to a token's write
 //!   (T3.8).
-//! Depends-on: crates=[async-trait, hex, hmac, humaux-application, humaux-domain, humaux-infra-cell, humaux-projection, humaux-retrieval, sha2, sqlx];
+//! Depends-on: crates=[async-trait, hex, hmac, humaux-application, humaux-contracts, humaux-domain, humaux-infra-cell, humaux-projection, humaux-retrieval, sha2, sqlx];
 //!   services=[PostgreSQL(role_gateway) r=[ops.outbox, private.evidence_objects, private.memory_evidence,
 //!   private.memory_records, projection.card_profile_policies, projection.rebuild_tickets, projection.stream_checkpoints,
 //!   projection.stream_log]];
 //!   env=[CARGO_MANIFEST_DIR];
-//!   modules=[adapters::context_repo, adapters::memory_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant, adapters::read_materialize, adapters::retrieval_query_log, adapters::serving_repo, adapters::stream_repo, application::recall_read, application::signed_token, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, infra-cell::permit, infra-cell::transport, projection::dense, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope]
-//! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::provisioning, adapters::read_materialize, adapters::remember, adapters::stream_repo, gateway::bootstrap, gateway::recall, maintenance::deploy_check, maintenance::switch_visible, tests]
+//!   modules=[adapters::context_repo, adapters::memory_repo, adapters::placement_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant, adapters::read_materialize, adapters::retrieval_query_log, adapters::serving_repo, adapters::stream_repo, application::recall_read, application::signed_token, contracts::retrieval_config, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope]
+//! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::provisioning, adapters::read_materialize, adapters::remember, adapters::stream_repo, gateway::bootstrap, maintenance::deploy_check, maintenance::switch_visible, tests]
 //! Invariants: [read-your-writes on role_gateway: an expired token, cross-tenant/workspace scope or a changed serving
 //!   projection is a typed RetrieveError, never a stale answer passed off as caught up; the read-route visible count
 //!   is caller-scoped (family_probe), the visibility-free stream count serves ops callers only (ADR-0057 D-C);
@@ -38,20 +38,33 @@
 //! accepted by [`recall_with_overlay`] without a compatibility parser.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Duration;
 
 use sqlx::Row;
 use sqlx::types::Uuid;
 use sqlx::types::time::OffsetDateTime;
 
+use humaux_application::recall_read::{
+    DenseLegFailure, HydrateRefusal, MaterializedBodies, MaterializedItem, MemoryText,
+    PlacementLookupError, PreparedDenseQuery, PreparedQueryDigest, RecallCandidate,
+    RecallCandidateIndexPort, RecallCandidateSearchRequest, RecallIndexPermit, RecallPlacement,
+    RecallPoint, RecallQueryLogCounts, RecallQueryLogPort, RecallReadState, RecallRoutePort,
+    UnservedLedger,
+};
 pub use humaux_application::signed_token::TokenKeys;
 use humaux_application::signed_token::{FIELD_SEP, TokenLabel, labelled_hmac};
+use humaux_contracts::retrieval_config::RETRIEVAL_GROUP_QUERY_MAX_CALLS;
 use humaux_domain::affect::AffectFilter;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::{TenantId, WorkspaceId};
 use humaux_domain::subject::SubjectId;
-use humaux_infra_cell::{CellAccessPermit, IntraCellHttpTransport};
-use humaux_projection::dense::build_stream_count_filter;
+use humaux_infra_cell::{
+    CellAccessPermit, IntraCellError, IntraCellHttpTransport, IntraCellResource,
+    IntraCellResourceRegistry, authorize_cell_access,
+};
+use humaux_projection::dense::{DenseQueryFilter, build_stream_count_filter};
 #[cfg(test)]
 use humaux_projection::note_chunks::CardSlot;
 use humaux_projection::serving::StreamFamily;
@@ -61,17 +74,21 @@ use humaux_retrieval::envelope::GroundingBlock;
 
 use crate::context_repo::stream_pipeline_counts_in_txn;
 use crate::memory_repo::memory_texts_in_txn;
+use crate::placement_repo::tenant_placement;
 use crate::postgres::RuntimeDbPool;
 use crate::private_projection_registry::{
     PrivateProjectionRegistryError, ProjectionPointId, ResolvedPrivateMemoryPoint,
     resolve_private_memory_points_in_txn,
 };
-use crate::qdrant::{DenseCandidate, PointId, VisibleCountFilter, count_visible_excluding_seqs};
+use crate::qdrant::{
+    DenseCandidate, DenseQuery, DenseQueryVersions, PointId, QdrantOperation, QdrantTransportError,
+    RetrievalFamily, TenantPlacementRow, VisibleCountFilter, count_visible_excluding_seqs,
+    ha_profile_for, query_dense, query_dense_groups_bounded, query_sparse_groups,
+};
 use crate::read_materialize::materialize_final_bodies_about_in_txn;
 use crate::retrieval_query_log::{self, QueryLogCounts};
 use crate::serving_repo::{self, ServingRepoError};
 use crate::stream_repo::close_ledger_in_txn;
-use humaux_application::recall_read::MemoryText;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
@@ -2071,4 +2088,320 @@ impl humaux_application::recall_read::RecallHydrationReadPort for RuntimeDbPool 
     }
 }
 
-use humaux_application::recall_read::{MaterializedBodies, MaterializedItem};
+impl From<RetrieveError> for HydrateRefusal {
+    fn from(error: RetrieveError) -> Self {
+        match error {
+            RetrieveError::CrossTenant
+            | RetrieveError::CrossWorkspace
+            | RetrieveError::UntrustedStreamFamily => HydrateRefusal::Forbidden,
+            RetrieveError::TokenMalformed(_) => HydrateRefusal::ConsistencyTokenRefused {
+                reason: "token_malformed",
+            },
+            RetrieveError::TokenExpired => HydrateRefusal::ConsistencyTokenRefused {
+                reason: "token_expired",
+            },
+            RetrieveError::TokenNotIssued => HydrateRefusal::ConsistencyTokenRefused {
+                reason: "token_not_issued",
+            },
+            RetrieveError::TokenKeysUnset => HydrateRefusal::TokenKeysUnset,
+            RetrieveError::Db(_) => HydrateRefusal::DependencyUnavailable {
+                class: "db_error".to_owned(),
+            },
+            other => HydrateRefusal::DependencyUnavailable {
+                class: other.to_string(),
+            },
+        }
+    }
+}
+
+fn recall_candidate_from_dense(candidate: DenseCandidate) -> RecallCandidate {
+    RecallCandidate {
+        point_id: match candidate.point_id {
+            PointId::Num(id) => RecallPoint::Num(id),
+            PointId::Uuid(id) => RecallPoint::Uuid(id),
+        },
+        score: candidate.score,
+        memory_id: candidate.memory_id,
+    }
+}
+
+fn sparse_failure_class(error: &QdrantTransportError) -> &'static str {
+    match error {
+        QdrantTransportError::Transport(_) => "transport",
+        QdrantTransportError::NonSuccessStatus { .. } => "non_2xx",
+        QdrantTransportError::UnexpectedResponseShape(_) => "unexpected_shape",
+        QdrantTransportError::InvalidCollectionName(_)
+        | QdrantTransportError::InvalidDenseQuery(_) => "invalid_query",
+    }
+}
+
+fn query_log_failure_reason(error: &RetrieveError) -> String {
+    match error {
+        RetrieveError::TokenKeysUnset => "token_keys_unset".to_owned(),
+        other => other.sqlstate().unwrap_or_else(|| "unknown".to_owned()),
+    }
+}
+
+/// PostgreSQL adapter implementing [`RecallRoutePort`] (`ADR-0130`: `retrieval_read_model`).
+pub struct PostgresRecallRouteStore<'a> {
+    pool: &'a RuntimeDbPool,
+}
+
+impl<'a> PostgresRecallRouteStore<'a> {
+    #[must_use]
+    pub fn new(pool: &'a RuntimeDbPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait::async_trait]
+impl RecallRoutePort for PostgresRecallRouteStore<'_> {
+    async fn private_memory_placement(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Option<RecallPlacement>, PlacementLookupError> {
+        match tenant_placement(self.pool, tenant_id, RetrievalFamily::PrivateMemoryV1).await {
+            Ok(Some(row)) => Ok(Some(RecallPlacement::new(row))),
+            Ok(None) => Ok(None),
+            Err(_) => Err(PlacementLookupError::LookupFailed),
+        }
+    }
+
+    async fn family_read_state(
+        &self,
+        authorization: &AuthorizationScope,
+        key: &StreamKey,
+        unserved: UnservedLedger,
+    ) -> Result<RecallReadState, ErrorCode> {
+        let adapter_unserved = match unserved {
+            UnservedLedger::Read => crate::serving_repo::UnservedLedger::Read,
+            UnservedLedger::Skip => crate::serving_repo::UnservedLedger::Skip,
+        };
+        let state =
+            serving_repo::family_read_state(self.pool, authorization, key, adapter_unserved)
+                .await
+                .map_err(|_| ErrorCode::DependencyUnavailable)?;
+        Ok(RecallReadState {
+            initialized: state.initialized,
+            serving: state.serving,
+            unserved: state.unserved,
+        })
+    }
+
+    async fn tombstoned_source_seqs(
+        &self,
+        authorization: &AuthorizationScope,
+        key: &StreamKey,
+    ) -> Result<Vec<i64>, ErrorCode> {
+        tombstoned_source_seqs(self.pool, authorization, key)
+            .await
+            .map_err(|_| ErrorCode::DependencyUnavailable)
+    }
+
+    async fn grouped_recall(&self, key: &StreamKey) -> Result<bool, ErrorCode> {
+        grouped_recall(self.pool, key)
+            .await
+            .map_err(|_| ErrorCode::DependencyUnavailable)
+    }
+}
+
+/// Same-Cell Qdrant + PostgreSQL adapter implementing [`RecallCandidateIndexPort`].
+pub struct QdrantRecallIndex<'a> {
+    pool: &'a RuntimeDbPool,
+    qdrant: &'a dyn IntraCellHttpTransport,
+    cell_registry: &'a IntraCellResourceRegistry,
+}
+
+impl<'a> QdrantRecallIndex<'a> {
+    #[must_use]
+    pub fn new(
+        pool: &'a RuntimeDbPool,
+        qdrant: &'a dyn IntraCellHttpTransport,
+        cell_registry: &'a IntraCellResourceRegistry,
+    ) -> Self {
+        Self {
+            pool,
+            qdrant,
+            cell_registry,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RecallCandidateIndexPort for QdrantRecallIndex<'_> {
+    fn build_query(
+        &self,
+        request: RecallCandidateSearchRequest<'_>,
+    ) -> Result<PreparedDenseQuery, ErrorCode> {
+        let placement = request
+            .placement
+            .downcast_ref::<TenantPlacementRow>()
+            .ok_or(ErrorCode::Internal)?;
+        let dense = DenseQuery::new(
+            request.authorization,
+            placement,
+            DenseQueryVersions {
+                projection: request.projection_version,
+                embedding: request.embedding_version,
+            },
+            request.vector,
+            request.limit,
+            Vec::new(),
+            ha_profile_for(QdrantOperation::ReadYourWriteStrict),
+        )
+        .map_err(|_| ErrorCode::DependencyUnavailable)?
+        .with_subject_ids(request.subject_ids)
+        .with_affect_filter(request.affect)
+        .in_workspace_stream(request.workspace_id, request.tombstoned_seqs);
+        Ok(PreparedDenseQuery::new(dense))
+    }
+
+    fn authorize_index_access(&self) -> Result<RecallIndexPermit, ErrorCode> {
+        authorize_cell_access(
+            self.cell_registry,
+            IntraCellResource::QDRANT_REST,
+            Duration::from_secs(30),
+        )
+        .map(RecallIndexPermit::new)
+        .map_err(|_| ErrorCode::DependencyUnavailable)
+    }
+
+    async fn search_dense(
+        &self,
+        permit: &RecallIndexPermit,
+        query: &PreparedDenseQuery,
+        grouped: bool,
+    ) -> Result<Vec<RecallCandidate>, DenseLegFailure> {
+        let Some(permit) = permit.downcast_ref::<CellAccessPermit>() else {
+            return Err(DenseLegFailure::Unavailable);
+        };
+        let Some(dense) = query.downcast_ref::<DenseQuery>() else {
+            return Err(DenseLegFailure::Unavailable);
+        };
+        let result = if grouped {
+            query_dense_groups_bounded(self.qdrant, permit, dense, RETRIEVAL_GROUP_QUERY_MAX_CALLS)
+                .await
+        } else {
+            query_dense(self.qdrant, permit, dense).await
+        };
+        match result {
+            Ok(candidates) => Ok(candidates
+                .into_iter()
+                .map(recall_candidate_from_dense)
+                .collect()),
+            Err(QdrantTransportError::Transport(IntraCellError::WriteDenied)) => {
+                Err(DenseLegFailure::WriteDenied)
+            }
+            Err(_) => Err(DenseLegFailure::Unavailable),
+        }
+    }
+
+    async fn search_sparse(
+        &self,
+        permit: &RecallIndexPermit,
+        query: &PreparedDenseQuery,
+        text: &str,
+        corpus: &DenseQueryFilter,
+    ) -> Result<Vec<RecallCandidate>, &'static str> {
+        let Some(permit) = permit.downcast_ref::<CellAccessPermit>() else {
+            return Err("invalid_query");
+        };
+        let Some(dense) = query.downcast_ref::<DenseQuery>() else {
+            return Err("invalid_query");
+        };
+        query_sparse_groups(self.qdrant, permit, dense, text, corpus)
+            .await
+            .map(|candidates| {
+                candidates
+                    .into_iter()
+                    .map(recall_candidate_from_dense)
+                    .collect()
+            })
+            .map_err(|error| sparse_failure_class(&error))
+    }
+
+    async fn visible_index_count(
+        &self,
+        permit: &RecallIndexPermit,
+        authorization: &AuthorizationScope,
+        placement: &RecallPlacement,
+        key: &StreamKey,
+        serving_version: Option<&str>,
+        ledger: &LedgerClosure,
+    ) -> Option<u64> {
+        let permit = permit.downcast_ref::<CellAccessPermit>()?;
+        let placement = placement.downcast_ref::<TenantPlacementRow>()?;
+        visible_index_count(
+            self.pool,
+            authorization,
+            IndexFace {
+                transport: self.qdrant,
+                permit,
+                collection: &placement.collection_name,
+            },
+            key,
+            serving_version,
+            ledger,
+        )
+        .await
+    }
+}
+
+/// PostgreSQL adapter implementing [`RecallQueryLogPort`] (ADR-0081 D-A).
+pub struct PostgresRecallQueryLogStore {
+    pool: Arc<RuntimeDbPool>,
+}
+
+impl PostgresRecallQueryLogStore {
+    #[must_use]
+    pub fn new(pool: Arc<RuntimeDbPool>) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait::async_trait]
+impl RecallQueryLogPort for PostgresRecallQueryLogStore {
+    fn prepare_digest(
+        &self,
+        tenant_id: TenantId,
+        query: &[u8],
+    ) -> Result<PreparedQueryDigest, String> {
+        query_hmac(tenant_id, query)
+            .map(PreparedQueryDigest::new)
+            .map_err(|error| query_log_failure_reason(&error))
+    }
+
+    fn query_log_limits(&self) -> (u32, Duration) {
+        query_log_limits(&self.pool)
+    }
+
+    async fn record_query(
+        &self,
+        tenant_id: TenantId,
+        workspace_id: WorkspaceId,
+        user_id: Option<Uuid>,
+        digest: &PreparedQueryDigest,
+        counts: &RecallQueryLogCounts,
+    ) -> Result<(), String> {
+        let Some(digest) = digest.downcast_ref::<QueryHmac>() else {
+            return Err("unknown".to_owned());
+        };
+        let counts = QueryLogCounts {
+            cand_k: counts.cand_k,
+            candidates: counts.candidates,
+            visible: counts.visible,
+            returned: counts.returned,
+            stage_ms: counts.stage_ms.clone(),
+        };
+        record_recall_query(
+            &self.pool,
+            tenant_id,
+            workspace_id,
+            user_id,
+            digest,
+            &counts,
+        )
+        .await
+        .map_err(|error| query_log_failure_reason(&error))
+    }
+}

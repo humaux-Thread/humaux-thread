@@ -1,7 +1,7 @@
 //! `retrieval::planner` — deterministic Retrieval Planner (§20).
 //! Depends-on: crates=[]; services=[];
 //!   env=[]; modules=[retrieval::predicate_registry]
-//! Called-by: [gateway::recall, retrieval::completeness, retrieval::envelope, retrieval::predicate_eval, retrieval::request, tests]
+//! Called-by: [application::recall_read, retrieval::completeness, retrieval::envelope, retrieval::predicate_eval, retrieval::request, tests]
 //! Invariants: []
 //! Spec: §20; §20.0; §20.2; §20.1; §22.5
 //!

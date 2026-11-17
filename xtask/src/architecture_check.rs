@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 110, "HEX-LAYER")
+    hex_exact(actual, baseline, 98, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -14299,6 +14299,99 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         let green = hex_layer_gate(&root);
         assert!(matches!(green, Verdict::Pass), "{green:?}");
         println!("SLICE-8f restored GREEN");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// ADR-0130 (SLICE-10a): `gateway::recall` rejects all 12 eliminated adapter types, and read-gate bypasses
+    /// fail the read-gate and layer gates.
+    #[test]
+    fn hex_boundary_slice10a_entry_red_green() {
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("slice10a-boundary-{}", std::process::id()));
+        hex_copy_boundary_fixture(&real_root(), &root);
+        let recall = root.join("bins/gateway/src/recall.rs");
+        let original_recall = fs::read_to_string(&recall).unwrap();
+        for (use_case, symbol) in [
+            ("recall.search (dense candidate)", "qdrant::DenseCandidate"),
+            ("recall.search (dense query)", "qdrant::DenseQuery"),
+            (
+                "recall.search (dense versions)",
+                "qdrant::DenseQueryVersions",
+            ),
+            ("recall.search (point id)", "qdrant::PointId"),
+            ("recall.search (qdrant op)", "qdrant::QdrantOperation"),
+            (
+                "recall.search (qdrant error)",
+                "qdrant::QdrantTransportError",
+            ),
+            (
+                "recall.search (retrieval family)",
+                "qdrant::RetrievalFamily",
+            ),
+            (
+                "recall.search (query log counts)",
+                "retrieval_query_log::QueryLogCounts",
+            ),
+            ("recall.search / visible_index_count", "retrieve::IndexFace"),
+            ("recall.search (query hmac)", "retrieve::QueryHmac"),
+            ("recall.search (retrieve error)", "retrieve::RetrieveError"),
+            (
+                "recall.search (unserved ledger)",
+                "serving_repo::UnservedLedger",
+            ),
+        ] {
+            fs::write(
+                &recall,
+                format!("{original_recall}\nuse humaux_adapters::{symbol};\n"),
+            )
+            .unwrap();
+            let red = hex_layer_gate(&root);
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.contains(symbol))),
+                "{red:?}"
+            );
+            println!("SLICE-10a {use_case}: RED {red:?}");
+            fs::write(&recall, &original_recall).unwrap();
+            let green = hex_layer_gate(&root);
+            assert!(matches!(green, Verdict::Pass), "{green:?}");
+            println!("SLICE-10a {use_case}: restored GREEN");
+        }
+
+        // Read-path negative control: bypassing the single read gate fails G-M08-2 RED, then restores GREEN.
+        fs::write(
+            &recall,
+            format!("use humaux_adapters::read_gate::visibility_readable;\n{original_recall}"),
+        )
+        .unwrap();
+        let recall_bypass = m08_2_can_read_one_home(&root);
+        assert!(
+            matches!(&recall_bypass, Verdict::Fail(lines) if lines.iter().any(|line| line.contains("bins/gateway/src/recall.rs"))),
+            "{recall_bypass:?}"
+        );
+        println!("SLICE-10a read-gate bypass (gateway::recall): RED {recall_bypass:?}");
+        fs::write(&recall, &original_recall).unwrap();
+        assert!(matches!(m08_2_can_read_one_home(&root), Verdict::Pass));
+        println!("SLICE-10a read-gate bypass (gateway::recall): restored GREEN");
+
+        let retrieve = root.join("crates/adapters/src/retrieve.rs");
+        let original_retrieve = fs::read_to_string(&retrieve).unwrap();
+        fs::write(
+            &retrieve,
+            format!("use crate::read_gate::visibility_readable;\n{original_retrieve}"),
+        )
+        .unwrap();
+        let retrieve_bypass = m08_2_can_read_one_home(&root);
+        assert!(
+            matches!(&retrieve_bypass, Verdict::Fail(lines) if lines.iter().any(|line| line.contains("crates/adapters/src/retrieve.rs"))),
+            "{retrieve_bypass:?}"
+        );
+        println!("SLICE-10a read-gate bypass (adapters::retrieve): RED {retrieve_bypass:?}");
+        fs::write(&retrieve, &original_retrieve).unwrap();
+        assert!(matches!(m08_2_can_read_one_home(&root), Verdict::Pass));
+        println!("SLICE-10a read-gate bypass (adapters::retrieve): restored GREEN");
+
         fs::remove_dir_all(root).unwrap();
     }
 

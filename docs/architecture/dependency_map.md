@@ -483,6 +483,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::remember`
 
+#### `application::retrieval_embedding_port`
+
+#### `application::retrieve`
+
 #### `application::signed_token`
 
 #### `application::supersede`
@@ -1003,6 +1007,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `projection::serving`
 
+#### `projection::sparse`
+
 #### `projection::stream`
 
 #### `protocol::edge`
@@ -1031,6 +1037,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::rerank`
 
 #### `retrieval::signals`
 
@@ -2024,6 +2032,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::remember`
 
+#### `application::retrieval_embedding_port`
+
+#### `application::retrieve`
+
 #### `application::signed_token`
 
 #### `application::supersede`
@@ -2174,6 +2186,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `projection::serving`
 
+#### `projection::sparse`
+
 #### `projection::stream`
 
 #### `retrieval::candidate`
@@ -2191,6 +2205,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::rerank`
 
 #### `retrieval::signals`
 
@@ -3658,6 +3674,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::remember`
 
+#### `application::retrieval_embedding_port`
+
+#### `application::retrieve`
+
 #### `application::role_rotation`
 
 #### `application::signed_token`
@@ -4301,6 +4321,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `projection::serving`
 
+#### `projection::sparse`
+
 #### `projection::stream`
 
 #### `protocol::edge`
@@ -4321,6 +4343,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::rerank`
 
 #### `retrieval::signals`
 
@@ -4774,6 +4798,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::remember`
 
+#### `application::retrieval_embedding_port`
+
+#### `application::retrieve`
+
 #### `application::signed_token`
 
 #### `application::supersede`
@@ -4949,6 +4977,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `projection::serving`
 
+#### `projection::sparse`
+
 #### `projection::stream`
 
 #### `retrieval::candidate`
@@ -4966,6 +4996,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::rerank`
 
 #### `retrieval::signals`
 
@@ -5582,6 +5614,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::remember`
 
+#### `application::retrieval_embedding_port`
+
+#### `application::retrieve`
+
 #### `application::signed_token`
 
 #### `application::supersede`
@@ -5704,6 +5740,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `projection::serving`
 
+#### `projection::sparse`
+
 #### `projection::stream`
 
 #### `retrieval-provider::adapters`
@@ -5814,6 +5852,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `retrieval::predicate_registry`
 
 #### `retrieval::request`
+
+#### `retrieval::rerank`
 
 #### `retrieval::signals`
 
@@ -14984,6 +15024,7 @@ modules naming it:
 - `adapters::coord_tree_repo`
 - `adapters::mechanism_observation`
 - `adapters::qdrant`
+- `adapters::retrieve`
 - `adapters::tests::continuity_publish`
 - `adapters::tests::qdrant_contract`
 - `tests`
@@ -16228,6 +16269,7 @@ why: trusted recall stream family and card slot identity
 modules naming it:
 - `application::projection_maintenance`
 - `application::recall_read`
+- `tests`
 
 ### humaux-application → `argon2` (normal)
 why: password hashing for auth.rs's H2 state machine
@@ -16404,6 +16446,7 @@ modules naming it:
 - `application::contribute`
 - `application::private_inference`
 - `application::query_embedding_execution`
+- `application::recall_read`
 - `tests`
 
 ### humaux-cache → `humaux-domain` (normal)
@@ -17886,6 +17929,7 @@ modules naming it:
 - `gateway::oauth_http`
 - `gateway::recall`
 - `gateway::remember`
+- `gateway::rerank_client`
 - `gateway::retrieval_embedding_client`
 - `gateway::tests::auth_pages`
 - `gateway::tests::console_csrf`
@@ -17907,7 +17951,6 @@ modules naming it:
 - `gateway::bootstrap`
 - `gateway::context`
 - `gateway::mcp_application`
-- `gateway::recall`
 - `gateway::tests::continuity_get`
 - `gateway::tests::coordinate_task`
 - `gateway::tests::cross_tenant_canary`
@@ -21577,9 +21620,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3776` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3781` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3786` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3806` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3811` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3816` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection

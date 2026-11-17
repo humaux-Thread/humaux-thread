@@ -2,7 +2,7 @@
 //!   the Qdrant cluster's built-in `qdrant/bm25`, processed inside the Data Cell, never an external Managed Retrieval
 //!   Provider).
 //! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[domain::identity, projection::dense]
-//! Called-by: [gateway::recall, tests]
+//! Called-by: [application::recall_read, tests]
 //! Invariants: [the filter an Executed lane carries is `build_dense_filter` with the caller's narrowing — with none it is
 //!   tenant + the §6.1.2 visibility disjunction, never wider than the AuthorizationScope; the gateway sends the
 //!   unnarrowed one as `params.idf.corpus`, so Qdrant counts document frequencies over the authorized universe only and
