@@ -1,6 +1,6 @@
 //! `adapters::context_repo` — §25.4 Mandatory Context Lane 的 SQL 侧。
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sha2, sqlx]; services=[PostgreSQL(any) r=[coord.tasks, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log] w=[ops.selection_snapshots, private.context_bindings, private.task_binding_grants]]; env=[]; modules=[adapters::confirm_token_repo, adapters::distill_repo, adapters::evidence_repo, adapters::exact_census, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::request_guard_repo, adapters::selection_repo, adapters::stream_repo, application::continuity, application::pin, application::recall_read, domain::audit, domain::authority, domain::confirm, domain::context, domain::dataclass, domain::error, domain::evidence, domain::grounding, domain::identity, domain::ids, domain::memory, domain::policy, domain::selection, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff]
-//! Called-by: [adapters::continuity_read, adapters::coord_repo, adapters::exact_census, adapters::forget_repo, adapters::grep_repo, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, gateway::memory, tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sha2, sqlx]; services=[PostgreSQL(any) r=[coord.tasks, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log] w=[ops.selection_snapshots, private.context_bindings, private.task_binding_grants]]; env=[]; modules=[adapters::confirm_token_repo, adapters::distill_repo, adapters::evidence_repo, adapters::exact_census, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::request_guard_repo, adapters::selection_repo, adapters::stream_repo, application::continuity, application::lifecycle_execution, application::pin, application::recall_read, domain::audit, domain::authority, domain::confirm, domain::context, domain::dataclass, domain::error, domain::evidence, domain::grounding, domain::identity, domain::ids, domain::memory, domain::policy, domain::selection, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff]
+//! Called-by: [adapters::continuity_read, adapters::coord_repo, adapters::exact_census, adapters::forget_repo, adapters::grep_repo, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, gateway::bootstrap, tests]
 //! Invariants: [pure reads on role_gateway; each selector enumerates twice without LIMIT so expected is never derived
 //!   from returned rows; both passes re-check readability through `read_gate::readable_memory_ids` (the read gate and
 //!   its six conjuncts live in `adapters::read_gate`, not restated here); a PG error is
@@ -2074,18 +2074,7 @@ pub struct BindingWriteRequest {
 }
 
 /// Result of a confirmed pin (D-C: idempotent) or unpin.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BindingWriteOutcome {
-    pub binding_id: Uuid,
-    /// pin: `false` when the row already existed (nothing inserted). unpin: always `false`.
-    pub inserted: bool,
-    /// card 22c (ADR-0046): does an ACTIVE task authorization exist for this binding now?
-    ///
-    /// Read back, not inferred from the request: on the idempotent `ReturnExisting` arm nothing
-    /// was written this call, so "the caller asked for ADOPT_TASK_INSTRUCTION" says nothing
-    /// about whether a grant is actually there. Always `false` for pin / unpin / unbind.
-    pub task_authorized: bool,
-}
+pub use humaux_application::lifecycle_execution::BindingWriteOutcome;
 
 /// Pure input contract (same shape as `memory_governance_repo::validate`): a real user, a
 /// well-formed reservation, the claim bound to exactly this op + memory, the success audit
@@ -2736,3 +2725,152 @@ impl ContextAssemblyReadPort for RuntimeDbPool {
 }
 
 use humaux_application::recall_read::*;
+
+fn app_to_domain_binding_purpose(
+    purpose: humaux_application::lifecycle_execution::BindingPurpose,
+) -> BindingPurpose {
+    match purpose {
+        humaux_application::lifecycle_execution::BindingPurpose::ReferenceOnly => {
+            BindingPurpose::ReferenceOnly
+        }
+        humaux_application::lifecycle_execution::BindingPurpose::AdoptTaskInstruction => {
+            BindingPurpose::AdoptTaskInstruction
+        }
+    }
+}
+
+#[cfg(test)]
+fn domain_to_app_binding_purpose(
+    purpose: BindingPurpose,
+) -> humaux_application::lifecycle_execution::BindingPurpose {
+    match purpose {
+        BindingPurpose::ReferenceOnly => {
+            humaux_application::lifecycle_execution::BindingPurpose::ReferenceOnly
+        }
+        BindingPurpose::AdoptTaskInstruction => {
+            humaux_application::lifecycle_execution::BindingPurpose::AdoptTaskInstruction
+        }
+    }
+}
+
+fn binding_request(
+    request: humaux_application::lifecycle_execution::BindingWriteRequest,
+) -> Result<BindingWriteRequest, ErrorCode> {
+    let a = request.finished_audit;
+    let mut metadata = humaux_domain::audit::AuditMetadata::new();
+    for (key, value) in a.metadata {
+        metadata.insert(key, value)?;
+    }
+    let finished_audit = AuditEvent {
+        event_id: AuditEventId(a.event_id),
+        ts: a.ts,
+        tenant_id: humaux_domain::ids::TenantId(a.tenant_id),
+        actor_type: a.actor_type,
+        actor_id: a.actor_id,
+        action: a.action,
+        resource_type: a.resource_type,
+        resource_id: a.resource_id,
+        result: a.result,
+        request_id: a.request_id,
+        trace_id: a.trace_id,
+        client_ip: a.client_ip,
+        user_agent_hash: a.user_agent_hash,
+        risk_tags: a.risk_tags,
+        before_fingerprint: a.before_fingerprint,
+        after_fingerprint: a.after_fingerprint,
+        metadata,
+    };
+    let c = request.claim;
+    let claim = ConfirmationClaim {
+        op: c.op,
+        target_id: c.target_id,
+        successor_id: c.successor_id,
+        nonce_sha256: c.nonce_sha256,
+        request_sha256: c.request_sha256,
+    };
+    Ok(BindingWriteRequest {
+        request_id: request.request_id,
+        request_fingerprint: request.request_fingerprint,
+        reservation_ttl: request.reservation_ttl,
+        memory: request.memory,
+        workspace: request.workspace,
+        task: request.task,
+        replaces_binding_id: request.replaces_binding_id,
+        purpose: request.purpose.map(app_to_domain_binding_purpose),
+        claim,
+        finished_audit,
+    })
+}
+
+/// PG implementation of the confirmed context binding boundary (`knowledge_lifecycle`; ADR-0130).
+pub struct PostgresBindingStore<'a> {
+    pool: &'a RuntimeDbPool,
+}
+
+impl<'a> PostgresBindingStore<'a> {
+    /// Assemble the existing PG binding store over `pool`.
+    #[must_use]
+    pub fn new(pool: &'a RuntimeDbPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait::async_trait]
+impl humaux_application::lifecycle_execution::BindingStore for PostgresBindingStore<'_> {
+    async fn pin_confirmed(
+        &self,
+        auth: &AuthorizationScope,
+        request: humaux_application::lifecycle_execution::BindingWriteRequest,
+    ) -> Result<BindingWriteOutcome, ErrorCode> {
+        pin_confirmed(self.pool, auth, binding_request(request)?).await
+    }
+
+    async fn unpin_confirmed(
+        &self,
+        auth: &AuthorizationScope,
+        request: humaux_application::lifecycle_execution::BindingWriteRequest,
+    ) -> Result<BindingWriteOutcome, ErrorCode> {
+        unpin_confirmed(self.pool, auth, binding_request(request)?).await
+    }
+
+    async fn bind_confirmed(
+        &self,
+        auth: &AuthorizationScope,
+        request: humaux_application::lifecycle_execution::BindingWriteRequest,
+    ) -> Result<BindingWriteOutcome, ErrorCode> {
+        bind_confirmed(self.pool, auth, binding_request(request)?).await
+    }
+
+    async fn unbind_confirmed(
+        &self,
+        auth: &AuthorizationScope,
+        request: humaux_application::lifecycle_execution::BindingWriteRequest,
+    ) -> Result<BindingWriteOutcome, ErrorCode> {
+        unbind_confirmed(self.pool, auth, binding_request(request)?).await
+    }
+}
+
+#[cfg(test)]
+mod binding_purpose_tests {
+    use super::{app_to_domain_binding_purpose, domain_to_app_binding_purpose};
+    use humaux_application::lifecycle_execution::BindingPurpose as AppBindingPurpose;
+    use humaux_domain::context::BindingPurpose as DomainBindingPurpose;
+
+    #[test]
+    fn binding_purpose_round_trips_every_variant() {
+        for domain in [
+            DomainBindingPurpose::ReferenceOnly,
+            DomainBindingPurpose::AdoptTaskInstruction,
+        ] {
+            let app = domain_to_app_binding_purpose(domain);
+            assert_eq!(app_to_domain_binding_purpose(app), domain);
+        }
+        for app in [
+            AppBindingPurpose::ReferenceOnly,
+            AppBindingPurpose::AdoptTaskInstruction,
+        ] {
+            let domain = app_to_domain_binding_purpose(app);
+            assert_eq!(domain_to_app_binding_purpose(domain), app);
+        }
+    }
+}

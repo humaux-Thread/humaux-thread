@@ -51,7 +51,7 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::attribution_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::login_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::postgres, adapters::remember, adapters::retrieve, application::auth, application::distill, application::forget, application::lifecycle_execution, application::login, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::metrics]
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::context_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::login_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::postgres, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::auth, application::distill, application::forget, application::lifecycle_execution, application::login, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::metrics]
 //! Called-by: [gateway::guard, gateway::main, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
 //! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7; ADR-0125
@@ -2303,6 +2303,34 @@ pub fn deletion_store(
     pool: &humaux_adapters::postgres::RuntimeDbPool,
 ) -> impl humaux_application::forget::DeletionStore + '_ {
     humaux_adapters::forget_repo::PostgresDeletionStore::new(pool)
+}
+
+/// Assemble the existing PG affect read/write port (§8.5.1; ADR-0130).
+pub fn affect_store(
+    pool: &humaux_adapters::postgres::RuntimeDbPool,
+) -> impl humaux_application::affect::AffectStore + '_ {
+    humaux_adapters::affect_repo::PostgresAffectStore::new(pool)
+}
+
+/// Assemble the existing PG subject registry port (§6.1.3; ADR-0130).
+pub fn subject_store(
+    pool: &humaux_adapters::postgres::RuntimeDbPool,
+) -> impl humaux_application::lifecycle_execution::SubjectStore + '_ {
+    humaux_adapters::subject_repo::PostgresSubjectStore::new(pool)
+}
+
+/// Assemble the existing atomic PG binding port (`knowledge_lifecycle`; ADR-0130).
+pub fn binding_store(
+    pool: &humaux_adapters::postgres::RuntimeDbPool,
+) -> impl humaux_application::lifecycle_execution::BindingStore + '_ {
+    humaux_adapters::context_repo::PostgresBindingStore::new(pool)
+}
+
+/// Assemble the existing PG literal grep port (§33; ADR-0130).
+pub fn grep_store(
+    pool: &humaux_adapters::postgres::RuntimeDbPool,
+) -> impl humaux_application::recall_read::GrepStore + '_ {
+    humaux_adapters::grep_repo::PostgresGrepStore::new(pool)
 }
 
 #[cfg(test)]

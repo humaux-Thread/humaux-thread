@@ -15078,6 +15078,7 @@ modules naming it:
 - `adapters::serving_repo`
 - `adapters::session_repo`
 - `adapters::stream_repo`
+- `adapters::subject_repo`
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::billing_doors`
@@ -15203,6 +15204,7 @@ modules naming it:
 why: dyn-compatible async trait objects (EmailProvider et al.)
 
 modules naming it:
+- `adapters::affect_repo`
 - `adapters::attribution_repo`
 - `adapters::byok`
 - `adapters::consolidation_reasoner`
@@ -15221,6 +15223,7 @@ modules naming it:
 - `adapters::email::smtp`
 - `adapters::email::test_double`
 - `adapters::forget_repo`
+- `adapters::grep_repo`
 - `adapters::health`
 - `adapters::jobs`
 - `adapters::login_repo`
@@ -15237,6 +15240,7 @@ modules naming it:
 - `adapters::retrieval_embedding_rpc`
 - `adapters::retrieve`
 - `adapters::role_hygiene`
+- `adapters::subject_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::contribution_execution_repo_0131`
 - `adapters::tests::contribution_reasoner`
@@ -16286,6 +16290,7 @@ why: JSON payload construction for continuity/contribution_execution/entitlement
 modules naming it:
 - `application::continuity`
 - `application::contribution_execution`
+- `application::distill`
 - `application::distill_execution`
 - `application::entitlement`
 - `application::lifecycle_execution`
@@ -16305,6 +16310,7 @@ modules naming it:
 why: object-safe async ports (PrivateReasoningPort et al.)
 
 modules naming it:
+- `application::affect`
 - `application::billing`
 - `application::consolidate`
 - `application::continuity`
@@ -16366,8 +16372,10 @@ modules naming it:
 why: OffsetDateTime grants and RFC3339 freshness readings
 
 modules naming it:
+- `application::affect`
 - `application::billing`
 - `application::coordination`
+- `application::distill`
 - `application::distill_execution`
 - `application::health`
 - `application::lifecycle_execution`
@@ -21553,9 +21561,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3741` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3746` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3751` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3769` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3774` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3779` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
