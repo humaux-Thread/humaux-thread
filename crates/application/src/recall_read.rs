@@ -1491,7 +1491,93 @@ pub trait LateMemoryRerankPort: Send + Sync {
     ) -> Result<u32, ErrorCode>;
 }
 
-/// Runtime-provided async primitives (join, timeout, supervised background task).
+/// Structured operator diagnostic emitted during [`search_recall`]; the gateway boundary
+/// renders each event to stderr verbatim without exposing query text or authorization.
+pub enum RecallDiagnostic<'a> {
+    QueryLogFailed {
+        request_id: Uuid,
+        reason: &'a str,
+    },
+    StageClockOutOfSequence {
+        laps: Option<usize>,
+    },
+    PlacementMissing {
+        request_id: Uuid,
+    },
+    PlacementLookupFailed {
+        request_id: Uuid,
+    },
+    LimitNotProfileTopK {
+        request_id: Uuid,
+        limit: u32,
+        profile_top_k: u32,
+    },
+    ProjectionSelectorFailed {
+        request_id: Uuid,
+    },
+    StreamUninitialized {
+        request_id: Uuid,
+    },
+    NoServingProjection {
+        request_id: Uuid,
+    },
+    QueryEmbeddingDimensionMismatch {
+        request_id: Uuid,
+        reported: u32,
+        vector_len: usize,
+        expected: u32,
+    },
+    QueryEmbeddingSkipped {
+        request_id: Uuid,
+    },
+    QueryScanRejected {
+        request_id: Uuid,
+    },
+    QueryEmbeddingUnavailable {
+        request_id: Uuid,
+        reason: &'a str,
+    },
+    TombstoneReadFailed {
+        request_id: Uuid,
+    },
+    DenseQueryBuildFailed {
+        request_id: Uuid,
+    },
+    CardProfilePolicyReadFailed {
+        request_id: Uuid,
+    },
+    QdrantQueryFailed {
+        request_id: Uuid,
+    },
+    SparseLegFailed {
+        request_id: Uuid,
+        class: &'a str,
+    },
+    ConsistencyTokenRefused {
+        request_id: Uuid,
+        reason: &'a str,
+    },
+    MaterializeFailed {
+        request_id: Uuid,
+        class: &'a str,
+    },
+    MoodRerankFailed {
+        request_id: Uuid,
+    },
+    VisibleIndexCountUnavailable {
+        request_id: Uuid,
+    },
+    RerankFailedNoDocuments {
+        call_id: Uuid,
+        visible_len: usize,
+    },
+    RerankFailedClass {
+        call_id: Uuid,
+        class: &'a str,
+    },
+}
+
+/// Runtime-provided async primitives (join, timeout, supervised background task, and diagnostic rendering).
 #[async_trait]
 pub trait RecallAsyncSupport: Send + Sync {
     async fn run_candidate_legs(
@@ -1518,6 +1604,8 @@ pub trait RecallAsyncSupport: Send + Sync {
         log_port: Arc<dyn RecallQueryLogPort>,
         job: RecallQueryLogJob,
     );
+
+    fn record_diagnostic(&self, diagnostic: RecallDiagnostic<'_>);
 }
 
 /// Inputs to [`search_recall`].
@@ -1546,11 +1634,6 @@ pub struct SearchRecallConfig<'a> {
     pub handler_timeout: Duration,
     pub rerank: Option<&'a RerankLane>,
     pub text_processing_allowed: bool,
-}
-
-/// Print the canonical query-log failure operator line (never carries query text or authorization).
-pub fn report_query_log_failure(request_id: Uuid, reason: &str) {
-    eprintln!("humaux-gateway: recall request_id={request_id} query_log_failed reason={reason}");
 }
 
 /// §23.1② live `visible` for PG-only read routes (`memory.*`, `context.assemble`) through the route and index ports.
@@ -1694,6 +1777,10 @@ impl StageClock {
             .map(|n| n + 1);
     }
 
+    fn out_of_sequence_laps(&self) -> Option<Option<usize>> {
+        (self.laps != Some(LAP_SEQUENCE.len())).then_some(self.laps)
+    }
+
     fn to_json(&self) -> Value {
         let round = |ms: f64| (ms * 10.0).round() / 10.0;
         let mut map = serde_json::Map::with_capacity(9);
@@ -1704,11 +1791,6 @@ impl StageClock {
             if let Some(ms) = self.sparse_ms {
                 map.insert(SPARSE_SUB_TIMING.to_owned(), json!(round(ms)));
             }
-        } else {
-            eprintln!(
-                "humaux-gateway: recall stage_clock_out_of_sequence laps={:?}",
-                self.laps
-            );
         }
         map.insert(
             "total".to_owned(),
@@ -1718,15 +1800,20 @@ impl StageClock {
     }
 }
 
+/// Outbound ports required to answer one [`search_recall`] call.
+pub struct SearchRecallPorts<'a, H> {
+    pub embedding: &'a dyn RetrievalEmbeddingPort,
+    pub route: &'a dyn RecallRoutePort,
+    pub index: &'a dyn RecallCandidateIndexPort,
+    pub hydration: &'a H,
+    pub query_log: Arc<dyn RecallQueryLogPort>,
+    pub late_rerank: &'a dyn LateMemoryRerankPort,
+    pub async_support: &'a dyn RecallAsyncSupport,
+}
+
 /// Answers one `recall.search` through the outbound ports and then hands off its query-hash log row off the answer path.
 pub async fn search_recall<H, T, F>(
-    embedding_port: &dyn RetrievalEmbeddingPort,
-    route_port: &dyn RecallRoutePort,
-    index_port: &dyn RecallCandidateIndexPort,
-    hydration_port: &H,
-    log_port: Arc<dyn RecallQueryLogPort>,
-    late_rerank: &dyn LateMemoryRerankPort,
-    async_support: &dyn RecallAsyncSupport,
+    ports: SearchRecallPorts<'_, H>,
     config: SearchRecallConfig<'_>,
     input: SearchRecallInput,
     render_output: F,
@@ -1737,28 +1824,30 @@ where
     F: FnOnce(Value) -> Result<T, ErrorCode>,
 {
     let request_id = config.request_id;
-    let digest = log_port.prepare_digest(config.authorization.tenant_id(), input.query.as_bytes());
+    let digest = ports
+        .query_log
+        .prepare_digest(config.authorization.tenant_id(), input.query.as_bytes());
     let (tenant_id, user_id) = (
         config.authorization.tenant_id(),
         config.authorization.user_id().map(|user| user.0),
     );
     let workspace_id = input.workspace_id;
     let (pending, counts) = answer_recall(
-        embedding_port,
-        route_port,
-        index_port,
-        hydration_port,
-        late_rerank,
-        async_support,
+        ports.embedding,
+        ports.route,
+        ports.index,
+        ports.hydration,
+        ports.late_rerank,
+        ports.async_support,
         config,
         input,
         render_output,
     )
     .await?;
     match digest {
-        Ok(digest) => async_support.spawn_query_log(
+        Ok(digest) => ports.async_support.spawn_query_log(
             request_id,
-            log_port,
+            ports.query_log,
             RecallQueryLogJob {
                 tenant_id,
                 workspace_id,
@@ -1767,7 +1856,12 @@ where
                 counts,
             },
         ),
-        Err(reason) => report_query_log_failure(request_id, &reason),
+        Err(reason) => ports
+            .async_support
+            .record_diagnostic(RecallDiagnostic::QueryLogFailed {
+                request_id,
+                reason: &reason,
+            }),
     }
     Ok(pending)
 }
@@ -1803,15 +1897,15 @@ where
     {
         Ok(Some(placement)) => placement,
         Ok(None) => {
-            eprintln!("humaux-gateway: recall request_id={request_id} placement_missing");
+            async_support.record_diagnostic(RecallDiagnostic::PlacementMissing { request_id });
             return Err(ErrorCode::DependencyUnavailable);
         }
         Err(PlacementLookupError::LookupFailed) => {
-            eprintln!("humaux-gateway: recall request_id={request_id} placement_lookup_failed");
+            async_support.record_diagnostic(RecallDiagnostic::PlacementLookupFailed { request_id });
             return Err(ErrorCode::DependencyUnavailable);
         }
         Err(PlacementLookupError::Missing) => {
-            eprintln!("humaux-gateway: recall request_id={request_id} placement_missing");
+            async_support.record_diagnostic(RecallDiagnostic::PlacementMissing { request_id });
             return Err(ErrorCode::DependencyUnavailable);
         }
     };
@@ -1822,11 +1916,11 @@ where
     if let Some(limit) = input.limit
         && (limit == 0 || limit > retrieval.top_k())
     {
-        eprintln!(
-            "humaux-gateway: recall request_id={request_id} limit_not_profile_top_k \
-             limit={limit} profile_top_k={}",
-            retrieval.top_k()
-        );
+        async_support.record_diagnostic(RecallDiagnostic::LimitNotProfileTopK {
+            request_id,
+            limit,
+            profile_top_k: retrieval.top_k(),
+        });
         return Err(ErrorCode::InvalidInput);
     }
     clock.lap(Stage::Planner);
@@ -1834,17 +1928,18 @@ where
         .family_read_state(&authorization, &config.key, UnservedLedger::Read)
         .await
         .map_err(|_| {
-            eprintln!("humaux-gateway: recall request_id={request_id} projection_selector_failed");
+            async_support
+                .record_diagnostic(RecallDiagnostic::ProjectionSelectorFailed { request_id });
             ErrorCode::DependencyUnavailable
         })?;
     if !state.initialized {
-        eprintln!("humaux-gateway: recall request_id={request_id} stream_uninitialized");
+        async_support.record_diagnostic(RecallDiagnostic::StreamUninitialized { request_id });
         return Err(ErrorCode::DependencyUnavailable);
     }
     let projection_version = match (state.serving, state.unserved) {
         (Some(version), _) => version,
         (None, Some((ledger, pipeline))) => {
-            eprintln!("humaux-gateway: recall request_id={request_id} no_serving_projection");
+            async_support.record_diagnostic(RecallDiagnostic::NoServingProjection { request_id });
             let (evidence, knowledge) = pipeline.blocks();
             return no_serving_projection_envelope(
                 &retrieval,
@@ -1870,7 +1965,7 @@ where
             });
         }
         (None, None) => {
-            eprintln!("humaux-gateway: recall request_id={request_id} no_serving_projection");
+            async_support.record_diagnostic(RecallDiagnostic::NoServingProjection { request_id });
             return Err(ErrorCode::DependencyUnavailable);
         }
     };
@@ -1912,27 +2007,27 @@ where
         RetrievalEmbeddingOutcome::Embedded {
             vector, dimension, ..
         } => {
-            eprintln!(
-                "humaux-gateway: recall request_id={request_id} query_embedding_dimension_mismatch \
-                 reported={dimension} vector_len={} expected={}",
-                vector.len(),
-                config.embedding_dimension
-            );
+            async_support.record_diagnostic(RecallDiagnostic::QueryEmbeddingDimensionMismatch {
+                request_id,
+                reported: dimension,
+                vector_len: vector.len(),
+                expected: config.embedding_dimension,
+            });
             return Err(ErrorCode::DependencyUnavailable);
         }
         RetrievalEmbeddingOutcome::Skipped => {
-            eprintln!("humaux-gateway: recall request_id={request_id} query_embedding_skipped");
+            async_support.record_diagnostic(RecallDiagnostic::QueryEmbeddingSkipped { request_id });
             return Err(ErrorCode::DependencyUnavailable);
         }
         RetrievalEmbeddingOutcome::Unavailable { reason } if reason == "SCAN_REJECTED" => {
-            eprintln!("humaux-gateway: recall request_id={request_id} query_scan_rejected");
+            async_support.record_diagnostic(RecallDiagnostic::QueryScanRejected { request_id });
             return Err(ErrorCode::Forbidden);
         }
         RetrievalEmbeddingOutcome::Unavailable { reason } => {
-            eprintln!(
-                "humaux-gateway: recall request_id={request_id} query_embedding_unavailable \
-                 reason={reason}"
-            );
+            async_support.record_diagnostic(RecallDiagnostic::QueryEmbeddingUnavailable {
+                request_id,
+                reason: &reason,
+            });
             return Err(ErrorCode::DependencyUnavailable);
         }
     };
@@ -1942,7 +2037,7 @@ where
         .tombstoned_source_seqs(&authorization, &serving_key)
         .await
         .map_err(|_| {
-            eprintln!("humaux-gateway: recall request_id={request_id} tombstone_read_failed");
+            async_support.record_diagnostic(RecallDiagnostic::TombstoneReadFailed { request_id });
             ErrorCode::DependencyUnavailable
         })?;
     let sparse_corpus = sparse_corpus_filter(
@@ -1973,11 +2068,12 @@ where
             tombstoned_seqs,
         })
         .map_err(|_| {
-            eprintln!("humaux-gateway: recall request_id={request_id} dense_query_build_failed");
+            async_support.record_diagnostic(RecallDiagnostic::DenseQueryBuildFailed { request_id });
             ErrorCode::DependencyUnavailable
         })?;
     let grouped = route_port.grouped_recall(&serving_key).await.map_err(|_| {
-        eprintln!("humaux-gateway: recall request_id={request_id} card_profile_policy_read_failed");
+        async_support
+            .record_diagnostic(RecallDiagnostic::CardProfilePolicyReadFailed { request_id });
         ErrorCode::DependencyUnavailable
     })?;
     let permit = index_port.authorize_index_access()?;
@@ -1997,7 +2093,7 @@ where
     let dense_candidates = dense_outcome.map_err(|error| match error {
         DenseLegFailure::WriteDenied => ErrorCode::Forbidden,
         DenseLegFailure::Unavailable => {
-            eprintln!("humaux-gateway: recall request_id={request_id} qdrant_query_failed");
+            async_support.record_diagnostic(RecallDiagnostic::QdrantQueryFailed { request_id });
             ErrorCode::DependencyUnavailable
         }
     })?;
@@ -2011,10 +2107,10 @@ where
                 sparse = SparseLeg::Answered;
             }
             Err(error) => {
-                eprintln!(
-                    "humaux-gateway: recall request_id={request_id} sparse_leg_failed class={}",
-                    sparse_failure_class(&error)
-                );
+                async_support.record_diagnostic(RecallDiagnostic::SparseLegFailed {
+                    request_id,
+                    class: sparse_failure_class(&error),
+                });
                 sparse = SparseLeg::Failed;
             }
         }
@@ -2048,23 +2144,24 @@ where
     .map_err(|error| match error.into() {
         HydrateRefusal::Forbidden => ErrorCode::Forbidden,
         HydrateRefusal::ConsistencyTokenRefused { reason } => {
-            eprintln!(
-                "humaux-gateway: recall request_id={request_id} consistency_token_refused \
-                 reason={reason}"
-            );
+            async_support.record_diagnostic(RecallDiagnostic::ConsistencyTokenRefused {
+                request_id,
+                reason,
+            });
             ErrorCode::InvalidInput
         }
         HydrateRefusal::TokenKeysUnset => {
-            eprintln!(
-                "humaux-gateway: recall request_id={request_id} materialize_failed \
-                 class=token_keys_unset"
-            );
+            async_support.record_diagnostic(RecallDiagnostic::MaterializeFailed {
+                request_id,
+                class: "token_keys_unset",
+            });
             ErrorCode::DependencyUnavailable
         }
         HydrateRefusal::DependencyUnavailable { class } => {
-            eprintln!(
-                "humaux-gateway: recall request_id={request_id} materialize_failed class={class}"
-            );
+            async_support.record_diagnostic(RecallDiagnostic::MaterializeFailed {
+                request_id,
+                class: &class,
+            });
             ErrorCode::DependencyUnavailable
         }
     })?;
@@ -2095,7 +2192,7 @@ where
         .rerank_memories(&authorization, &mut materialized.bodies.items)
         .await
         .map_err(|_| {
-            eprintln!("humaux-gateway: recall request_id={request_id} mood_rerank_failed");
+            async_support.record_diagnostic(RecallDiagnostic::MoodRerankFailed { request_id });
             ErrorCode::DependencyUnavailable
         })?;
     truncate_memory_items(
@@ -2123,9 +2220,11 @@ where
         )
         .await;
     if visible.is_none() {
-        eprintln!("humaux-gateway: recall request_id={request_id} visible_index_count_unavailable");
+        async_support
+            .record_diagnostic(RecallDiagnostic::VisibleIndexCountUnavailable { request_id });
     }
     accepted_output(
+        async_support,
         materialized,
         &retrieval,
         config.binary_build,
@@ -2319,25 +2418,24 @@ async fn rerank_stage(
         }
     }
     if documents.is_empty() {
-        eprintln!(
-            "humaux-gateway: recall request_id={} rerank_failed class=no_documents visible={}",
-            input.call_id,
-            visible.len()
-        );
+        async_support.record_diagnostic(RecallDiagnostic::RerankFailedNoDocuments {
+            call_id: input.call_id,
+            visible_len: visible.len(),
+        });
         return report(unavailable(&visible));
     }
     let Some(lane) = input.lane else {
-        eprintln!(
-            "humaux-gateway: recall request_id={} rerank_failed class=no_lane",
-            input.call_id
-        );
+        async_support.record_diagnostic(RecallDiagnostic::RerankFailedClass {
+            call_id: input.call_id,
+            class: "no_lane",
+        });
         return report(unavailable(&visible));
     };
     if input.wait.is_zero() {
-        eprintln!(
-            "humaux-gateway: recall request_id={} rerank_failed class=no_budget",
-            input.call_id
-        );
+        async_support.record_diagnostic(RecallDiagnostic::RerankFailedClass {
+            call_id: input.call_id,
+            class: "no_budget",
+        });
         return report(settle(&visible, &sent, lane.pin(), Executor::Unavailable));
     }
     let answered = async_support
@@ -2362,17 +2460,17 @@ async fn rerank_stage(
             },
         ),
         Some(RerankAnswer::Failed { class }) => {
-            eprintln!(
-                "humaux-gateway: recall request_id={} rerank_failed class={class}",
-                input.call_id
-            );
+            async_support.record_diagnostic(RecallDiagnostic::RerankFailedClass {
+                call_id: input.call_id,
+                class,
+            });
             settle(&visible, &sent, lane.pin(), Executor::Unavailable)
         }
         None => {
-            eprintln!(
-                "humaux-gateway: recall request_id={} rerank_failed class=timeout",
-                input.call_id
-            );
+            async_support.record_diagnostic(RecallDiagnostic::RerankFailedClass {
+                call_id: input.call_id,
+                class: "timeout",
+            });
             settle(&visible, &sent, lane.pin(), Executor::Unavailable)
         }
     };
@@ -2382,6 +2480,7 @@ async fn rerank_stage(
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn accepted_output<T, F>(
+    async_support: &dyn RecallAsyncSupport,
     materialized: MaterializedPrivateReadServing,
     request: &RetrievalRequest,
     binary_build: &str,
@@ -2506,6 +2605,9 @@ where
             })
             .map_err(|_| ErrorCode::Internal)?;
             clock.lap(Stage::Assemble);
+            if let Some(laps) = clock.out_of_sequence_laps() {
+                async_support.record_diagnostic(RecallDiagnostic::StageClockOutOfSequence { laps });
+            }
             let mut value = value;
             let provenance = value
                 .get_mut("provenance")
@@ -2729,6 +2831,8 @@ mod recall_tests {
             _job: RecallQueryLogJob,
         ) {
         }
+
+        fn record_diagnostic(&self, _diagnostic: RecallDiagnostic<'_>) {}
     }
 
     type Script = Box<dyn Fn(&[String]) -> RerankAnswer + Send + Sync>;

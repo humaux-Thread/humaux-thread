@@ -14,8 +14,8 @@ use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_application::affect::{affects_for_memories, observed, rerank_by_mood};
 use humaux_application::recall_read::{
     BoxFuture, DenseLegFailure, LateMemoryRerankPort, MaterializedItem, RecallAsyncSupport,
-    RecallQueryLogJob, RecallQueryLogPort, RerankAnswer, SearchRecallConfig, SearchRecallInput,
-    SparseLegFailure, report_query_log_failure, search_recall,
+    RecallDiagnostic, RecallQueryLogJob, RecallQueryLogPort, RerankAnswer, SearchRecallConfig,
+    SearchRecallInput, SearchRecallPorts, SparseLegFailure, search_recall,
 };
 use humaux_application::retrieval_embedding_port::RetrievalEmbeddingPort;
 use humaux_domain::{
@@ -280,6 +280,127 @@ impl RecallAsyncSupport for GatewayRecallSupport {
             }
         });
     }
+
+    fn record_diagnostic(&self, diagnostic: RecallDiagnostic<'_>) {
+        match diagnostic {
+            RecallDiagnostic::QueryLogFailed { request_id, reason } => {
+                report_query_log_failure(request_id, reason);
+            }
+            RecallDiagnostic::StageClockOutOfSequence { laps } => {
+                eprintln!("humaux-gateway: recall stage_clock_out_of_sequence laps={laps:?}");
+            }
+            RecallDiagnostic::PlacementMissing { request_id } => {
+                eprintln!("humaux-gateway: recall request_id={request_id} placement_missing");
+            }
+            RecallDiagnostic::PlacementLookupFailed { request_id } => {
+                eprintln!("humaux-gateway: recall request_id={request_id} placement_lookup_failed");
+            }
+            RecallDiagnostic::LimitNotProfileTopK {
+                request_id,
+                limit,
+                profile_top_k,
+            } => {
+                eprintln!(
+                    "humaux-gateway: recall request_id={request_id} limit_not_profile_top_k \
+                     limit={limit} profile_top_k={profile_top_k}"
+                );
+            }
+            RecallDiagnostic::ProjectionSelectorFailed { request_id } => {
+                eprintln!(
+                    "humaux-gateway: recall request_id={request_id} projection_selector_failed"
+                );
+            }
+            RecallDiagnostic::StreamUninitialized { request_id } => {
+                eprintln!("humaux-gateway: recall request_id={request_id} stream_uninitialized");
+            }
+            RecallDiagnostic::NoServingProjection { request_id } => {
+                eprintln!("humaux-gateway: recall request_id={request_id} no_serving_projection");
+            }
+            RecallDiagnostic::QueryEmbeddingDimensionMismatch {
+                request_id,
+                reported,
+                vector_len,
+                expected,
+            } => {
+                eprintln!(
+                    "humaux-gateway: recall request_id={request_id} query_embedding_dimension_mismatch \
+                     reported={reported} vector_len={vector_len} expected={expected}"
+                );
+            }
+            RecallDiagnostic::QueryEmbeddingSkipped { request_id } => {
+                eprintln!("humaux-gateway: recall request_id={request_id} query_embedding_skipped");
+            }
+            RecallDiagnostic::QueryScanRejected { request_id } => {
+                eprintln!("humaux-gateway: recall request_id={request_id} query_scan_rejected");
+            }
+            RecallDiagnostic::QueryEmbeddingUnavailable { request_id, reason } => {
+                eprintln!(
+                    "humaux-gateway: recall request_id={request_id} query_embedding_unavailable \
+                     reason={reason}"
+                );
+            }
+            other => record_execution_diagnostic(other),
+        }
+    }
+}
+
+fn record_execution_diagnostic(diagnostic: RecallDiagnostic<'_>) {
+    match diagnostic {
+        RecallDiagnostic::TombstoneReadFailed { request_id } => {
+            eprintln!("humaux-gateway: recall request_id={request_id} tombstone_read_failed");
+        }
+        RecallDiagnostic::DenseQueryBuildFailed { request_id } => {
+            eprintln!("humaux-gateway: recall request_id={request_id} dense_query_build_failed");
+        }
+        RecallDiagnostic::CardProfilePolicyReadFailed { request_id } => {
+            eprintln!(
+                "humaux-gateway: recall request_id={request_id} card_profile_policy_read_failed"
+            );
+        }
+        RecallDiagnostic::QdrantQueryFailed { request_id } => {
+            eprintln!("humaux-gateway: recall request_id={request_id} qdrant_query_failed");
+        }
+        RecallDiagnostic::SparseLegFailed { request_id, class } => {
+            eprintln!(
+                "humaux-gateway: recall request_id={request_id} sparse_leg_failed class={class}"
+            );
+        }
+        RecallDiagnostic::ConsistencyTokenRefused { request_id, reason } => {
+            eprintln!(
+                "humaux-gateway: recall request_id={request_id} consistency_token_refused \
+                 reason={reason}"
+            );
+        }
+        RecallDiagnostic::MaterializeFailed { request_id, class } => {
+            eprintln!(
+                "humaux-gateway: recall request_id={request_id} materialize_failed class={class}"
+            );
+        }
+        RecallDiagnostic::MoodRerankFailed { request_id } => {
+            eprintln!("humaux-gateway: recall request_id={request_id} mood_rerank_failed");
+        }
+        RecallDiagnostic::VisibleIndexCountUnavailable { request_id } => {
+            eprintln!(
+                "humaux-gateway: recall request_id={request_id} visible_index_count_unavailable"
+            );
+        }
+        RecallDiagnostic::RerankFailedNoDocuments {
+            call_id,
+            visible_len,
+        } => {
+            eprintln!(
+                "humaux-gateway: recall request_id={call_id} rerank_failed class=no_documents visible={visible_len}"
+            );
+        }
+        RecallDiagnostic::RerankFailedClass { call_id, class } => {
+            eprintln!("humaux-gateway: recall request_id={call_id} rerank_failed class={class}");
+        }
+        _ => {}
+    }
+}
+
+fn report_query_log_failure(request_id: Uuid, reason: &str) {
+    eprintln!("humaux-gateway: recall request_id={request_id} query_log_failed reason={reason}");
 }
 
 /// Answers one `recall.search` through [`search_recall`] and maps the validated payload into an MCP [`ToolOutput`].
@@ -340,13 +461,15 @@ pub async fn search(
         affect: input.affect,
     };
     search_recall(
-        runtime.port.as_ref(),
-        &route_store,
-        &index_store,
-        pool.as_ref(),
-        log_port,
-        &late_rerank,
-        &async_support,
+        SearchRecallPorts {
+            embedding: runtime.port.as_ref(),
+            route: &route_store,
+            index: &index_store,
+            hydration: pool.as_ref(),
+            query_log: log_port,
+            late_rerank: &late_rerank,
+            async_support: &async_support,
+        },
         config,
         use_case_input,
         |value| {
