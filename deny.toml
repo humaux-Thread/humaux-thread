@@ -13,6 +13,7 @@ yanked = "deny"
 # cargo-deny has no expiry field, so the expiry date and the removal card sit in the reason string.
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "ADR-0084 D-B: `paste` 1.0.15 (unmaintained, no patched version) is a normal dependency of `tokenizers` 0.23.2, which the retrieval-worker needs for the local rerank lane; the alternative is the pre-release `tokenizers` 1.0.0-rc.3 family. Expires 2027-04-30. Removal card: move to a tokenizers release without paste." },
+    { id = "RUSTSEC-2026-0543", reason = "§78.5: `chrono` 0.4.45 is unmaintained (all versions, no safe upgrade); it is not a direct dependency, only transitive via `rmcp` 3.9.0 (MCP SDK used by humaux-protocol). Expires 2027-05-17. Removal card M24-RUSTSEC-0543: move to an rmcp release that drops chrono (or swap to jiff/time if rmcp exposes it)." },
 ]
 
 [licenses]
