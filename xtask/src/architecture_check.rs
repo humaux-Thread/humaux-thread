@@ -14742,7 +14742,8 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         }
         let path = root.join(HEX_BASELINE);
         let original = fs::read_to_string(&path).unwrap();
-        for marker in ["bins/retrieval-worker/", "humaux_public_pool::"] {
+        // shortcut: sample comes from the current baseline; replace it after migration clears it.
+        for marker in ["bins/public-worker/src/main.rs", "humaux_public_pool::"] {
             let row = original.lines().find(|l| l.contains(marker)).unwrap();
             let shortened = original
                 .lines()
