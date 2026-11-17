@@ -5140,6 +5140,137 @@ fn native_mcp_memory_get_authorization_and_lifecycle_matrix() {
     );
 }
 
+// §72.2.1: use a fresh tenant with one unit of capacity and the real HTTP read path.
+fn with_single_read_quota(name: &str, test: impl FnOnce(&mut Handle, &str)) {
+    let _metrics = CONTEXT_METRIC_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    run_db_fixture::<Fixture, _>(name, |mut handle| {
+        let prefix = format!("quota{}", &Uuid::now_v7().simple().to_string()[..12]);
+        let wire = format!("{prefix}.{}", "e".repeat(32));
+        let credential = handle.seed_synthetic_service_credential_and_window(
+            SyntheticCredentialScopes::RememberWriteAndContextRead,
+            &prefix,
+            &wire,
+            &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
+            1,
+        );
+        test(&mut handle, &credential.bearer);
+    });
+}
+
+fn quota_memory_get(handle: &Handle, bearer: &str, memory_id: Uuid) -> (u16, Value) {
+    handle.rt.block_on(async {
+        let runtime = handle
+            .fresh_runtime()
+            .await
+            .expect("checked read quota runtime");
+        let (address, server) = start(application(handle, runtime)).await;
+        let response = raw_request(
+            address,
+            &tool_call_headers("memory", bearer),
+            &rpc(
+                1,
+                "tools/call",
+                call_params("memory", json!({"action":"get", "memory_id":memory_id})),
+            ),
+        )
+        .await;
+        stop_server(server).await.expect("stop read quota fixture");
+        response
+    })
+}
+
+fn read_window_counts(handle: &mut Handle) -> (i64, i64) {
+    let row = handle
+        .admin
+        .query_one(
+            "SELECT reserved, consumed FROM control.quota_windows WHERE tenant_id=$1",
+            &[&handle.tenant_id],
+        )
+        .expect("single fixture quota window");
+    (row.get(0), row.get(1))
+}
+
+#[test]
+fn read_quota_reservation_audit_failure_rolls_back() {
+    with_single_read_quota(
+        "read_quota_reservation_audit_failure_rolls_back",
+        |handle, bearer| {
+            let id = handle.seed_workspace_visible_context_record().memory_id;
+            let before = read_window_counts(handle);
+            let tenant = handle.tenant_id;
+            let constraint = format!("reserve_audit_{}", tenant.simple());
+            let mut cleanup = AuditConstraintCleanup {
+                owner: handle.owner_client().expect("isolated fixture owner"),
+                name: Some(constraint.clone()),
+            };
+            cleanup.owner.batch_execute(&format!("ALTER TABLE control.audit_events ADD CONSTRAINT {constraint} CHECK (tenant_id <> '{tenant}'::uuid OR action <> 'MCP_QUOTA_RESERVED') NOT VALID")).expect("fail only this tenant's reserve audit");
+            let (status, response) = quota_memory_get(handle, bearer, id);
+            cleanup.clear().expect("remove fixture fault");
+            assert_eq!(status, 200, "{response}");
+            assert_tool_error(&response, "INTERNAL");
+            let denied = handle.admin.query_one("SELECT request_id FROM control.audit_events WHERE tenant_id=$1 AND resource_id='memory.get' AND action='MCP_REQUEST_DENIED' AND result='INTERNAL'", &[&tenant]).expect("exactly one denial audit");
+            let request: String = denied.get(0);
+            let reservation_count: i64 = handle.admin.query_one("SELECT count(*) FROM control.usage_reservations WHERE tenant_id=$1 AND request_id=$2", &[&tenant, &Uuid::parse_str(&request).unwrap()]).unwrap().get(0);
+            assert_eq!(
+                reservation_count, 0,
+                "reserve audit failed but a reservation committed"
+            );
+            assert_eq!(
+                read_window_counts(handle),
+                before,
+                "window counters escaped rollback"
+            );
+            let actions = handle.admin.query("SELECT action FROM control.audit_events WHERE tenant_id=$1 AND request_id=$2 AND resource_id='memory.get'", &[&tenant, &request]).unwrap();
+            assert_eq!(
+                actions
+                    .iter()
+                    .map(|row| row.get::<_, String>(0))
+                    .collect::<Vec<_>>(),
+                ["MCP_REQUEST_DENIED"]
+            );
+        },
+    );
+}
+
+#[test]
+fn read_quota_last_unit_is_charged_once() {
+    with_single_read_quota("read_quota_last_unit_is_charged_once", |handle, bearer| {
+        let id = handle.seed_workspace_visible_context_record().memory_id;
+        let (status, response) = quota_memory_get(handle, bearer, id);
+        assert_eq!(status, 200, "{response}");
+        assert_memory_response(&response, id, 5);
+        assert_eq!(read_window_counts(handle), (0, 1));
+        let (status, response) = quota_memory_get(handle, bearer, id);
+        assert_eq!(status, 429, "{response}");
+        assert_eq!(response["error"]["data"]["code"], "QUOTA_EXHAUSTED");
+        assert_eq!(read_window_counts(handle), (0, 1));
+    });
+}
+
+#[test]
+fn read_quota_failed_read_releases_last_unit() {
+    with_single_read_quota(
+        "read_quota_failed_read_releases_last_unit",
+        |handle, bearer| {
+            let (status, response) = quota_memory_get(handle, bearer, Uuid::now_v7());
+            assert_eq!(status, 200, "{response}");
+            assert_memory_not_found(&response);
+            assert_eq!(read_window_counts(handle), (0, 0));
+            let status: String = handle
+                .admin
+                .query_one(
+                    "SELECT status FROM control.usage_reservations WHERE tenant_id=$1",
+                    &[&handle.tenant_id],
+                )
+                .unwrap()
+                .get(0);
+            assert_eq!(status, "RELEASED");
+        },
+    );
+}
+
 #[test]
 fn native_mcp_context_records_final_metric_only_after_quota_settlement() {
     assert_local_read_final_metric_after_settlement(
