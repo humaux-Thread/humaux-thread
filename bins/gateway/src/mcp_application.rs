@@ -722,7 +722,13 @@ impl GatewayMcpApplication {
                                 write.finished_audit,
                                 write.reservation_ttl,
                                 write.replay_ttl,
-                                Some(write.claim),
+                                Some(ConfirmationClaim {
+                                    op: write.claim.op,
+                                    target_id: write.claim.target_id,
+                                    successor_id: write.claim.successor_id,
+                                    nonce_sha256: write.claim.nonce_sha256,
+                                    request_sha256: write.claim.request_sha256,
+                                }),
                             )
                             .await
                     };
