@@ -14410,7 +14410,11 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         );
         println!("SLICE-10a read-gate bypass (gateway::recall): RED {recall_bypass:?}");
         fs::write(&recall, &original_recall).unwrap();
-        assert!(matches!(m08_2_can_read_one_home(&root), Verdict::Pass));
+        let recall_restored = m08_2_can_read_one_home(&root);
+        assert!(
+            matches!(recall_restored, Verdict::Pass),
+            "{recall_restored:?}"
+        );
         println!("SLICE-10a read-gate bypass (gateway::recall): restored GREEN");
 
         let retrieve = root.join("crates/adapters/src/retrieve.rs");
@@ -14427,7 +14431,11 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         );
         println!("SLICE-10a read-gate bypass (adapters::retrieve): RED {retrieve_bypass:?}");
         fs::write(&retrieve, &original_retrieve).unwrap();
-        assert!(matches!(m08_2_can_read_one_home(&root), Verdict::Pass));
+        let retrieve_restored = m08_2_can_read_one_home(&root);
+        assert!(
+            matches!(retrieve_restored, Verdict::Pass),
+            "{retrieve_restored:?}"
+        );
         println!("SLICE-10a read-gate bypass (adapters::retrieve): restored GREEN");
         fs::remove_dir_all(root).unwrap();
     }
