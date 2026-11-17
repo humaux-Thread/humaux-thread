@@ -77,14 +77,5 @@ bins/private-worker/src/main.rs:humaux_adapters::disclosure::DeletionCapability
 bins/private-worker/src/main.rs:humaux_adapters::jobs::DistillCallBudget
 bins/private-worker/src/main.rs:humaux_adapters::reasoning_route_admission::ProviderFor
 bins/private-worker/src/main.rs:humaux_adapters::reasoning_route_admission::ReasoningAdmissionLocator
-bins/retrieval-worker/src/main.rs:humaux_adapters::disclosure::DisclosureSource
-bins/retrieval-worker/src/main.rs:humaux_adapters::private_projection_registry::PrivateProjectionRegistryError
-bins/retrieval-worker/src/main.rs:humaux_adapters::projection_worker::CardEmbedder
-bins/retrieval-worker/src/main.rs:humaux_adapters::projection_worker::PassConfig
-bins/retrieval-worker/src/main.rs:humaux_adapters::projection_worker::PassOutcome
-bins/retrieval-worker/src/main.rs:humaux_adapters::projection_worker::SharedProjectionDeps
-bins/retrieval-worker/src/main.rs:humaux_adapters::qdrant::RetrievalFamily
-bins/retrieval-worker/src/main.rs:humaux_adapters::stream_repo::Backoff
-bins/retrieval-worker/src/main.rs:humaux_adapters::stream_repo::ClaimFamily
 bins/public-worker/src/main.rs:humaux_public_pool::public_projection::PublicProjectionAdapter
 bins/public-worker/src/main.rs:humaux_public_pool::public_projection::PublicProjectionAdapter::new

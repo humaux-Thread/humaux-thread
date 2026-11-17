@@ -2221,6 +2221,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::pin`
 
+#### `application::projection_execution`
+
 #### `application::query_embedding_execution`
 
 #### `application::read_quota`
@@ -3154,6 +3156,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::lifecycle_execution`
 
 #### `application::pin`
+
+#### `application::projection_execution`
 
 #### `application::projection_maintenance`
 
@@ -5098,6 +5102,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::lifecycle_execution`
 
 #### `application::pin`
+
+#### `application::projection_execution`
 
 #### `application::query_embedding_execution`
 
@@ -14368,6 +14374,7 @@ modules naming it:
 - `adapters::operation_receipt`
 - `adapters::private_inference_rpc`
 - `adapters::processing_status`
+- `adapters::projection_worker`
 - `adapters::provisioning`
 - `adapters::quota_repo`
 - `adapters::read_materialize`
@@ -15503,6 +15510,7 @@ modules naming it:
 - `application::oauth_exchange`
 - `application::pin`
 - `application::processing_status`
+- `application::projection_execution`
 - `application::public_dispatch`
 - `application::read_quota`
 - `application::recall_read`
@@ -15526,6 +15534,7 @@ modules naming it:
 why: trusted recall stream family and card slot identity
 
 modules naming it:
+- `application::projection_execution`
 - `application::projection_maintenance`
 - `application::recall_read`
 - `tests`
@@ -15642,6 +15651,7 @@ modules naming it:
 - `application::login`
 - `application::oauth_exchange`
 - `application::private_inference`
+- `application::projection_execution`
 - `application::projection_maintenance`
 - `application::public_dispatch`
 - `application::query_embedding_execution`
@@ -15712,6 +15722,7 @@ modules naming it:
 - `application::consolidate`
 - `application::contribute`
 - `application::private_inference`
+- `application::projection_execution`
 - `application::query_embedding_execution`
 - `application::recall_read`
 - `tests`
@@ -18329,7 +18340,9 @@ modules naming it:
 why: registered embedding use case and purpose ports
 
 modules naming it:
+- `retrieval-worker::main`
 - `retrieval-worker::rpc`
+- `tests`
 
 ### humaux-retrieval-worker → `humaux-adapters` (normal)
 why: typed PG pools, repositories and wire adapters this package drives
