@@ -8,7 +8,7 @@
 //!   HUMAUX_CONSOLIDATION_WORKER_MAX_INPUTS, HUMAUX_CONSOLIDATION_WORKER_POLL_INTERVAL_SECS,
 //!   HUMAUX_CONSOLIDATION_WORKER_RPC_SERVER_UID, HUMAUX_CONSOLIDATION_WORKER_RPC_SOCKET_PATH,
 //!   HUMAUX_CONSOLIDATION_WORKER_SERVE_METRICS_ADDR];
-//!   modules=[adapters::postgres, consolidation-worker::dsn, consolidation-worker::inference_client, domain::error, humaux-consolidation-worker, humaux-telemetry,
+//!   modules=[adapters::postgres, application::consolidation_execution, consolidation-worker::dsn, consolidation-worker::inference_client, domain::error, humaux-telemetry,
 //!   infra-cell::uds, telemetry::metrics]
 //! Called-by: [process(humaux-consolidation-worker)]
 //! Invariants: [missing/invalid env or an unreachable role_consolidation_worker DSN exits non-zero before any claim;
@@ -17,10 +17,8 @@
 //!   modes open no listener; --metrics-families reads no configuration]
 //! Spec: ADR-0036; ADR-0037; §11.6; ADR-0061 D-B; ADR-0061 E10; ADR-0066 D-D; ADR-0066 D-N; ADR-0066 D-O; §48.1; §78.1; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G; ADR-0100
 //!
-//! The actual orchestration ([`run_once`] and friends) lives
-//! in `src/lib.rs` — see that module's doc comment for why: a binary-only crate has no target
-//! `tests/*.rs` can link against, so splitting it out is what makes `tests/run_once_e2e.rs`
-//! and `tests/consolidation_hop_e2e.rs` possible at all.
+//! Bounded dispatch and each consolidation run live in the application use case. This process
+//! supplies its role-scoped pool and a §11.8 inference client bound to the recorded run.
 //!
 //! Modes:
 //! * no flag: usage on stderr, exit 2 (ADR-0066 D-N; before card 39 it ran the probe and exited 0).
@@ -47,12 +45,8 @@
 //! tenant context through the ordinary repos, and the route binding is resolved per tenant
 //! through the narrow 0147 resolver (`consolidate_repo::resolve_consolidate_binding`).
 //!
-//!
-//! `build_rollup` is [`humaux_consolidation_worker::build_rollup`]: the private worker's typed
-//! JSON reply parsed fail-closed against this run's own materialized `(memory_id, evidence_id)`
-//! pairs (`humaux_adapters::consolidation_reasoner::parse_rollup_output`, shared with the
-//! private worker). §11.6's guard holds by construction — the closure still has no DB
-//! capability and can only pick sources from ids the run itself recorded.
+//! The §11.8 reply decoder validates the private worker's JSON against this run's materialized
+//! `(memory_id, evidence_id)` source pairs. The run uses only those source IDs (§11.6).
 //!
 //! Card 34 / ADR-0061 D-B: `--serve` opens a loopback ops listener (`/metrics`, `/status`). No §41.2 family is
 //! counted in this process yet, so `/metrics` is empty and Prometheus' `up` is the resident liveness signal (E10).

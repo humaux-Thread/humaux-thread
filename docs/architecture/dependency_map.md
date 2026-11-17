@@ -459,6 +459,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::consolidate`
 
+#### `application::consolidation_execution`
+
 #### `application::continuity`
 
 #### `application::contribute`
@@ -1597,239 +1599,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 ### process(humaux-consolidation-worker)
 
-#### `adapters::affect_repo`
-- reads `private.memory_evidence`
-- reads `private.memory_records`
-- writes `private.evidence_affects`
-- writes `private.memory_affects`
-- service `PostgreSQL(any)`
-
-#### `adapters::byok`
-- env `CARGO_MANIFEST_DIR`
-
-#### `adapters::byok::ssrf`
-
-#### `adapters::confirm_token_repo`
-- writes `control.confirm_tokens`
-- executes `control.assert_write_scope`
-- executes `control.sweep_confirm_tokens`
-- service `PostgreSQL(any)`
-
-#### `adapters::consolidate_repo`
-- writes `control.private_reasoning_domains`
-- writes `control.tenants`
-- writes `ops.jobs`
-- writes `private.context_bindings`
-- writes `private.events`
-- writes `private.evidence_objects`
-- writes `private.memory_consolidation_inputs`
-- writes `private.memory_consolidation_runs`
-- writes `private.memory_evidence`
-- writes `private.memory_records`
-- writes `private.memory_rollup_sources`
-- writes `private.memory_rollups`
-- executes `control.current_reasoning_route_binding`
-- executes `private.lock_publish_source`
-- env `HUMAUX_TEST_PG_DSN`
-- service `PostgreSQL(any)`
-
-#### `adapters::consolidation_reasoner`
-- reads `control.memberships`
-- reads `control.private_reasoning_domains`
-- reads `control.tenants`
-- reads `control.users`
-- reads `private.evidence_objects`
-- reads `private.memory_consolidation_inputs`
-- reads `private.memory_consolidation_runs`
-- reads `private.memory_evidence`
-- reads `private.memory_records`
-- service `PostgreSQL(any)`
-
-#### `adapters::context_repo`
-- reads `coord.tasks`
-- reads `private.evidence_objects`
-- reads `private.memory_evidence`
-- reads `private.memory_records`
-- reads `private.memory_subjects`
-- reads `projection.stream_log`
-- writes `ops.selection_snapshots`
-- writes `private.context_bindings`
-- writes `private.task_binding_grants`
-- service `PostgreSQL(any)`
-
-#### `adapters::contribution_entry_repo`
-- reads `control.contribution_policies`
-- reads `control.memberships`
-- reads `control.private_reasoning_domains`
-- reads `control.tenants`
-- reads `control.users`
-- reads `ops.model_call_ledger`
-- reads `private.evidence_objects`
-- reads `private.memory_evidence`
-- reads `private.memory_records`
-- writes `control.anonymous_source_lineage`
-- writes `control.contribution_confirmations`
-- writes `ops.outbox`
-- writes `staging.contribution_candidate_phase9_assessments`
-- writes `staging.contribution_candidate_sources`
-- writes `staging.contribution_candidates`
-- writes `staging.contribution_release_sources`
-- writes `staging.contribution_releases`
-- writes `staging.sanitized_public_candidates`
-- executes `ops.lock_contribution_inputs`
-- executes `public.phase9_public_coverage_for_probe`
-- service `PostgreSQL(any)`
-
-#### `adapters::contribution_execution_repo`
-- reads `private.contribution_execution_sources`
-- reads `private.contribution_executions`
-- reads `private.reserve_contribution_a`
-- reads `private.reserve_contribution_b`
-- executes `private.commit_contribution_candidate`
-- executes `private.complete_contribution_a_exact`
-- executes `private.complete_contribution_b_exact`
-- executes `private.enqueue_contribution_execution`
-- executes `private.mark_contribution_reconciliation_required`
-- executes `private.reserve_contribution_a`
-- executes `private.reserve_contribution_b`
-- executes `private.settle_contribution_terminal_job`
-- service `PostgreSQL(any)`
-
-#### `adapters::contribution_reasoner`
-- reads `control.memberships`
-- reads `control.private_reasoning_domains`
-- reads `control.tenants`
-- reads `control.users`
-- reads `private.events`
-- reads `private.evidence_objects`
-- reads `private.memory_evidence`
-- reads `private.memory_records`
-- executes `ops.lock_contribution_inputs`
-- executes `public.phase9_public_coverage_for_probe`
-- service `PostgreSQL(any)`
-
-#### `adapters::contribution_scan`
-
-#### `adapters::coord_repo`
-- writes `coord.task_runs`
-- writes `coord.tasks`
-- service `PostgreSQL(any)`
-
-#### `adapters::coord_task_repo`
-- reads `private.project_task_relations`
-- writes `coord.tasks`
-- writes `coord.workspace_unfiled_projects`
-- executes `private.declared_project_visible`
-- executes `private.register_continuity_project`
-- service `PostgreSQL(role_gateway)`
-
-#### `adapters::disclosure`
-- writes `ops.data_disclosure_sources`
-- writes `ops.data_disclosures`
-- executes `ops.attach_retrieval_query_source`
-- service `PostgreSQL(any)`
-
-#### `adapters::distill_reasoner`
-- service `PostgreSQL(role_private_worker)`
-
-#### `adapters::distill_repo`
-- reads `control.memberships`
-- reads `ops.jobs`
-- reads `ops.outbox`
-- reads `private.events`
-- reads `private.evidence_affects`
-- reads `private.evidence_objects`
-- reads `private.identity_note_materializations`
-- reads `projection.stream_log`
-- writes `ops.outbox`
-- writes `private.distill_candidates`
-- writes `private.processing_runs`
-- executes `control.current_reasoning_route_binding`
-- executes `private.lock_publish_source`
-- env `CARGO_MANIFEST_DIR`
-- service `PostgreSQL(any)`
-
-#### `adapters::evidence_repo`
-- writes `private.evidence_objects`
-- env `CARGO_MANIFEST_DIR`
-- service `PostgreSQL(any)`
-
-#### `adapters::exact_census`
-- reads `ops.outbox`
-- reads `private.evidence_objects`
-- reads `private.memory_evidence`
-- reads `private.memory_records`
-- reads `private.memory_subjects`
-- reads `projection.stream_log`
-- reads `public.pool`
-- executes `private.memory_in_project`
-- service `PostgreSQL(any)`
-
-#### `adapters::jobs`
-- reads `ops.claim_derived_work`
-- writes `ops.jobs`
-- executes `ops.admit_distill_budget`
-- executes `ops.begin_call`
-- executes `ops.claim_derived_work`
-- executes `ops.claim_derived_work_v2`
-- executes `ops.distill_slots_all_bound`
-- executes `ops.finish_derived_work_v2`
-- executes `ops.renew_lease`
-- env `CARGO_MANIFEST_DIR`
-- service `PostgreSQL(any)`
-
-#### `adapters::memory_governance_repo`
-- reads `ops.memory_lifecycle_events`
-- reads `ops.outbox`
-- reads `private.evidence_objects`
-- reads `private.memory_evidence`
-- reads `projection.stream_checkpoints`
-- reads `projection.stream_log`
-- writes `private.memory_records`
-- executes `ops.append_memory_lifecycle`
-- service `PostgreSQL(any)`
-
-#### `adapters::memory_repo`
-- reads `private.memory_text_v`
-- writes `private.memory_evidence`
-- writes `private.memory_records`
-- service `PostgreSQL(any)`
-
-#### `adapters::model_call_ledger`
-- reads `control.provider_pricing_versions`
-- reads `ops.data_disclosures`
-- writes `ops.model_call_ledger`
-- writes `ops.tenant_cost_events`
-- service `PostgreSQL(any)`
-
-#### `adapters::note_repo`
-- reads `ops.outbox`
-- reads `private.evidence_objects`
-- reads `private.identity_note_materializations`
-- reads `private.memory_records`
-- reads `projection.stream_log`
-- writes `private.identity_note_materializations`
-- writes `private.memory_records`
-- writes `private.note_heads`
-- service `PostgreSQL(any)`
-
-#### `adapters::operation_receipt`
-- reads `control.memberships`
-- reads `control.tenants`
-- reads `control.users`
-- reads `private.evidence_objects`
-- reads `private.memory_evidence`
-- reads `private.memory_records`
-- reads `private.note_heads`
-- reads `projection.stream_log`
-- writes `control.operation_receipts`
-- service `PostgreSQL(any)`
-
-#### `adapters::placement_repo`
-- reads `projection.tenant_placements`
-- writes `projection.tenant_placements`
-- service `PostgreSQL(any)`
-
 #### `adapters::postgres`
 - reads `private.events`
 - reads `private.ingest_tickets`
@@ -1853,180 +1622,11 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `ops.private_inference_rpc_calls`
 - service `PostgreSQL(any)`
 
-#### `adapters::private_projection_registry`
-- reads `private.memory_records`
-- writes `projection.embedding_fingerprints`
-- writes `projection.memory_vectors`
-- writes `projection.private_memory_points`
-- executes `private.lock_publish_source`
-- service `PostgreSQL(any)`
-- service `PostgreSQL(role_gateway)`
-- service `PostgreSQL(role_retrieval_worker)`
-
-#### `adapters::qdrant`
-- service `Qdrant(*)`
-
-#### `adapters::quota_repo`
-- writes `control.quota_windows`
-- writes `control.usage_reservations`
-- executes `control.issue_quota_window`
-- executes `control.reap_quota_reservations`
-- executes `control.renew_quota_period`
-- service `PostgreSQL(any)`
-- service `PostgreSQL(role_gateway)`
-- service `PostgreSQL(role_maintenance)`
-
-#### `adapters::read_gate`
-- reads `private.evidence_objects`
-- reads `private.memory_evidence`
-- reads `private.memory_records`
-- service `PostgreSQL(any)`
-
-#### `adapters::read_materialize`
-- reads `ops.outbox`
-- reads `private.events`
-- reads `private.evidence_objects`
-- reads `private.evidence_subjects`
-- reads `private.identity_note_materializations`
-- reads `private.memory_evidence`
-- reads `private.memory_records`
-- reads `private.memory_subjects`
-- reads `private.memory_text_v`
-- reads `private.note_heads`
-- reads `projection.stream_log`
-- service `PostgreSQL(role_gateway)`
-
-#### `adapters::reasoning_route_admission`
-- executes `control.observe_reasoning_route_health`
-- executes `control.reasoning_credential_accounts`
-- executes `control.reasoning_profile_capabilities`
-- executes `control.reasoning_profile_request_extras`
-- executes `control.reasoning_route_health_state`
-- executes `control.resolve_user_reasoning_admission`
-- service `PostgreSQL(any)`
-
-#### `adapters::relation_repo`
-- reads `private.project_subject_relations`
-- reads `private.project_task_relations`
-- reads `private.subject_relations`
-- writes `private.project_subject_relations`
-- writes `private.project_task_relations`
-- writes `private.subject_relations`
-- service `PostgreSQL(role_gateway)`
-
-#### `adapters::remember`
-- reads `control.private_reasoning_domains`
-- reads `ops.outbox`
-- reads `private.evidence_sources`
-- reads `projection.stream_log`
-- writes `private.events`
-- writes `private.evidence_projects`
-- writes `private.evidence_sources`
-- writes `private.evidence_task_runs`
-- writes `private.ingest_tickets`
-- executes `private.declared_project_visible`
-- service `PostgreSQL(role_gateway)`
-
-#### `adapters::request_guard_repo`
-- reads `control.entitlement_snapshots`
-- executes `control.audit_event_insert`
-- service `PostgreSQL(role_gateway)`
-
-#### `adapters::retrieval_query_log`
-- writes `ops.retrieval_query_log`
-- service `PostgreSQL(role_gateway)`
-
-#### `adapters::retrieve`
-- reads `ops.outbox`
-- reads `private.evidence_objects`
-- reads `private.memory_evidence`
-- reads `private.memory_records`
-- reads `projection.card_profile_policies`
-- reads `projection.rebuild_tickets`
-- reads `projection.stream_checkpoints`
-- reads `projection.stream_log`
-- env `CARGO_MANIFEST_DIR`
-- service `PostgreSQL(role_gateway)`
-
-#### `adapters::selection_repo`
-- reads `private.memory_records`
-- writes `ops.selection_snapshot_items`
-- writes `ops.selection_snapshots`
-- service `PostgreSQL(role_retrieval_worker)`
-
-#### `adapters::serving_repo`
-- reads `projection.processing_gaps`
-- writes `projection.stream_checkpoints`
-- service `PostgreSQL(any)`
-- service `PostgreSQL(role_gateway)`
-- service `PostgreSQL(role_maintenance)`
-
-#### `adapters::stream_repo`
-- reads `ops.commit_seq_seq`
-- reads `ops.jobs`
-- reads `ops.outbox`
-- reads `private.ingest_tickets`
-- reads `projection.processing_gaps`
-- reads `projection.rebuild_tickets`
-- reads `projection.tenant_placements`
-- writes `ops.outbox`
-- writes `private.ingest_tickets`
-- writes `projection.stream_checkpoints`
-- writes `projection.stream_log`
-- executes `projection.claim_issued_tickets`
-- executes `projection.retire_failed_ticket`
-- executes `projection.stream_point_ledger`
-- executes `projection.unplaced_issued_tickets`
-- env `HUMAUX_TEST_PG_DSN`
-- service `PostgreSQL(any)`
-- service `PostgreSQL(role_maintenance)`
-- service `PostgreSQL(role_retrieval_worker)`
-
-#### `adapters::subject_repo`
-- reads `private.memory_subjects`
-- writes `private.evidence_subjects`
-- writes `private.subject_keys`
-- writes `private.subject_roles`
-- writes `private.subjects`
-- executes `private.link_memory_subjects`
-- executes `private.link_rollup_subjects`
-- service `PostgreSQL(role_gateway)`
-
-#### `application::affect`
-
-#### `application::archive`
-
-#### `application::confirm`
-
 #### `application::consolidate`
 
-#### `application::continuity`
-
-#### `application::contribute`
-
-#### `application::contribution_execution`
-
-#### `application::coordination`
-
-#### `application::correct`
-
-#### `application::distill`
-
-#### `application::distill_execution`
-
-#### `application::lifecycle_execution`
-
-#### `application::pin`
+#### `application::consolidation_execution`
 
 #### `application::private_inference`
-
-#### `application::recall_read`
-
-#### `application::remember`
-
-#### `application::signed_token`
-
-#### `application::supersede`
 
 #### `consolidation-worker::dsn`
 - env `CONSOLIDATION_WORKER_PG_DSN`
@@ -2054,145 +1654,28 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_consolidation_worker)`
 - service `UDS(private-worker)`
 
-#### `contracts::config_registry`
-- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
-
-#### `contracts::freshness`
-
-#### `contracts::retrieval_config`
-
-#### `domain::affect`
-
-#### `domain::attribution`
-
-#### `domain::audit`
-
 #### `domain::authority`
-
-#### `domain::boundary`
-
-#### `domain::confirm`
 
 #### `domain::consolidate`
 - reads `private.memory_consolidation_runs`
 - env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
 
-#### `domain::context`
-- reads `private.memory_records`
-- service `PostgreSQL(any)`
-
-#### `domain::continuity`
-
-#### `domain::coordination`
-
-#### `domain::dataclass`
-
-#### `domain::egress`
-
 #### `domain::error`
 
 #### `domain::evidence`
 
-#### `domain::grounding`
-
-#### `domain::identity`
-
 #### `domain::ids`
-
-#### `domain::ledger`
-
-#### `domain::lifecycle`
 
 #### `domain::memory`
 
-#### `domain::note`
-
-#### `domain::policy`
-
-#### `domain::public`
-
-#### `domain::relation`
-
-#### `domain::selection`
-
-#### `domain::source`
-
-#### `domain::subject`
-
-#### `domain::ticket_family`
-
-#### `humaux-adapters`
-
-#### `humaux-consolidation-worker`
-
-#### `humaux-infra-network`
-
-#### `humaux-local-secret-scan`
-- service `subprocess(gitleaks)`
-
 #### `humaux-telemetry`
 - service `HTTP(loopback)`
-
-#### `infra-cell::permit`
-
-#### `infra-cell::resource`
-
-#### `infra-cell::transport`
-- service `Qdrant(*)`
 
 #### `infra-cell::uds`
 - service `UDS(serve)`
 - service `UDS(retrieval-worker)`
 - service `UDS(private-worker)`
-
-#### `infra-egress::http`
-- env `HUMAUX_TEST_BILLING_FIXTURE_NOT_A_CREDENTIAL`
-- env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_FAILS_CLOSED_WHEN_UNSET`
-- env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
-- service `HTTP(loopback)`
-- service `HTTP(provider)`
-
-#### `infra-egress::raw`
-- service `HTTP(provider)`
-
-#### `infra-egress::resolver`
-- service `HTTP(loopback)`
-
-#### `infra-network::http`
-- service `HTTP(loopback)`
-
-#### `projection::card`
-
-#### `projection::dense`
-
-#### `projection::embedding_fingerprint`
-
-#### `projection::fingerprint`
-
-#### `projection::note_chunks`
-
-#### `projection::serving`
-
-#### `projection::stream`
-
-#### `retrieval::candidate`
-
-#### `retrieval::compiler`
-
-#### `retrieval::completeness`
-
-#### `retrieval::envelope`
-
-#### `retrieval::handoff`
-
-#### `retrieval::planner`
-
-#### `retrieval::predicate_registry`
-
-#### `retrieval::request`
-
-#### `retrieval::signals`
 
 #### `telemetry::degrade`
 
@@ -2699,6 +2182,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::confirm`
 
 #### `application::consolidate`
+
+#### `application::consolidation_execution`
 
 #### `application::continuity`
 
@@ -3637,6 +3122,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::confirm`
 
 #### `application::consolidate`
+
+#### `application::consolidation_execution`
 
 #### `application::continuity`
 
@@ -4758,6 +4245,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::consolidate`
 
+#### `application::consolidation_execution`
+
 #### `application::continuity`
 
 #### `application::contribute`
@@ -5566,6 +5055,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::consolidate`
 
+#### `application::consolidation_execution`
+
 #### `application::continuity`
 
 #### `application::contribute`
@@ -5868,7 +5359,6 @@ read by:
 written by:
 - (no process): `adapters::tests::phase9_exact_assessed_storage_binding`
 - process(cargo-xtask): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
 - process(humaux-private-worker): `adapters::contribution_entry_repo`
@@ -5965,7 +5455,6 @@ executed by:
 - (no process): `adapters::candidate_repo`
 - process(cargo-xtask): `adapters::confirm_token_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::confirm_token_repo`
 - process(humaux-gateway): `adapters::confirm_token_repo`
 - process(humaux-maintenance): `adapters::confirm_token_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -6022,7 +5511,6 @@ executed by:
 - process(cargo-xtask): `adapters::membership_repo`
 - process(cargo-xtask): `adapters::provisioning`
 - process(cargo-xtask): `adapters::request_guard_repo`
-- process(humaux-consolidation-worker): `adapters::request_guard_repo`
 - process(humaux-gateway): `adapters::request_guard_repo`
 - process(humaux-maintenance): `adapters::membership_repo`
 - process(humaux-maintenance): `adapters::provisioning`
@@ -6247,7 +5735,6 @@ written by:
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::confirm_token_repo`
-- process(humaux-consolidation-worker): `adapters::confirm_token_repo`
 - process(humaux-gateway): `adapters::confirm_token_repo`
 - process(humaux-maintenance): `adapters::confirm_token_repo`
 - process(humaux-private-worker): `adapters::confirm_token_repo`
@@ -6270,7 +5757,6 @@ read by:
 
 written by:
 - process(cargo-xtask): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
 - process(humaux-private-worker): `adapters::contribution_entry_repo`
@@ -6310,7 +5796,6 @@ read by:
 - (no process): `adapters::tests::project_continuity_0136`
 - (no process): `public-pool::tests::notice`
 - process(cargo-xtask): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
 - process(humaux-private-worker): `adapters::contribution_entry_repo`
@@ -6421,8 +5906,6 @@ executed by:
 - process(cargo-xtask): `adapters::consolidate_repo`
 - process(cargo-xtask): `adapters::distill_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::consolidate_repo`
-- process(humaux-consolidation-worker): `adapters::distill_repo`
 - process(humaux-gateway): `adapters::consolidate_repo`
 - process(humaux-gateway): `adapters::distill_repo`
 - process(humaux-maintenance): `adapters::consolidate_repo`
@@ -6587,7 +6070,6 @@ read by:
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `adapters::request_guard_repo`
 - process(cargo-xtask): `xtask::e2e_onboard`
-- process(humaux-consolidation-worker): `adapters::request_guard_repo`
 - process(humaux-gateway): `adapters::request_guard_repo`
 - process(humaux-maintenance): `adapters::entitlement_repo`
 - process(humaux-maintenance): `adapters::request_guard_repo`
@@ -6626,7 +6108,6 @@ executed by:
 - (no process): `adapters::tests::quota_and_rate`
 - process(cargo-xtask): `adapters::quota_repo`
 - process(cargo-xtask): `xtask::e2e_onboard`
-- process(humaux-consolidation-worker): `adapters::quota_repo`
 - process(humaux-gateway): `adapters::quota_repo`
 - process(humaux-maintenance): `adapters::quota_repo`
 - process(humaux-private-worker): `adapters::quota_repo`
@@ -6689,11 +6170,6 @@ read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-consolidation-worker): `adapters::consolidation_reasoner`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_reasoner`
-- process(humaux-consolidation-worker): `adapters::distill_repo`
-- process(humaux-consolidation-worker): `adapters::operation_receipt`
 - process(humaux-gateway): `adapters::consolidation_reasoner`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_reasoner`
@@ -6918,7 +6394,6 @@ executed by:
 - (no process): `adapters::tests::reasoning_route_runtime`
 - process(cargo-xtask): `adapters::reasoning_route_admission`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::reasoning_route_admission`
 - process(humaux-gateway): `adapters::reasoning_route_admission`
 - process(humaux-maintenance): `adapters::reasoning_route_admission`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -6971,7 +6446,6 @@ written by:
 - (no process): `maintenance::tests::partitions`
 - process(cargo-xtask): `adapters::operation_receipt`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-consolidation-worker): `adapters::operation_receipt`
 - process(humaux-gateway): `adapters::operation_receipt`
 - process(humaux-maintenance): `adapters::operation_receipt`
 - process(humaux-private-worker): `adapters::operation_receipt`
@@ -7135,10 +6609,6 @@ read by:
 - process(cargo-xtask): `adapters::contribution_reasoner`
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `xtask::e2e_onboard`
-- process(humaux-consolidation-worker): `adapters::consolidation_reasoner`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_reasoner`
-- process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-gateway): `adapters::consolidation_reasoner`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_reasoner`
@@ -7222,7 +6692,6 @@ written by:
 - process(cargo-xtask): `adapters::consolidate_repo`
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-consolidation-worker): `adapters::consolidate_repo`
 - process(humaux-gateway): `adapters::consolidate_repo`
 - process(humaux-maintenance): `adapters::consolidate_repo`
 - process(humaux-maintenance): `maintenance::switch_visible`
@@ -7318,7 +6787,6 @@ executed by:
 ### `control.provider_pricing_versions`
 read by:
 - process(cargo-xtask): `adapters::model_call_ledger`
-- process(humaux-consolidation-worker): `adapters::model_call_ledger`
 - process(humaux-gateway): `adapters::model_call_ledger`
 - process(humaux-maintenance): `adapters::model_call_ledger`
 - process(humaux-private-worker): `adapters::model_call_ledger`
@@ -7376,7 +6844,6 @@ written by:
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `maintenance::tests::partitions`
 - process(cargo-xtask): `adapters::quota_repo`
-- process(humaux-consolidation-worker): `adapters::quota_repo`
 - process(humaux-gateway): `adapters::quota_repo`
 - process(humaux-maintenance): `adapters::quota_repo`
 - process(humaux-private-worker): `adapters::quota_repo`
@@ -7392,7 +6859,6 @@ written by:
 executed by:
 - (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::quota_repo`
-- process(humaux-consolidation-worker): `adapters::quota_repo`
 - process(humaux-gateway): `adapters::quota_repo`
 - process(humaux-maintenance): `adapters::quota_repo`
 - process(humaux-private-worker): `adapters::quota_repo`
@@ -7407,7 +6873,6 @@ executed by:
 - (no process): `adapters::tests::reasoning_route_runtime`
 - process(cargo-xtask): `adapters::reasoning_route_admission`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::reasoning_route_admission`
 - process(humaux-gateway): `adapters::reasoning_route_admission`
 - process(humaux-maintenance): `adapters::reasoning_route_admission`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -7453,7 +6918,6 @@ executed by:
 - (no process): `adapters::tests::reasoning_route_runtime`
 - process(cargo-xtask): `adapters::reasoning_route_admission`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::reasoning_route_admission`
 - process(humaux-gateway): `adapters::reasoning_route_admission`
 - process(humaux-maintenance): `adapters::reasoning_route_admission`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -7468,7 +6932,6 @@ written by:
 executed by:
 - process(cargo-xtask): `adapters::reasoning_route_admission`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::reasoning_route_admission`
 - process(humaux-gateway): `adapters::reasoning_route_admission`
 - process(humaux-maintenance): `adapters::reasoning_route_admission`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -7558,7 +7021,6 @@ executed by:
 - (no process): `adapters::tests::reasoning_route_runtime`
 - process(cargo-xtask): `adapters::reasoning_route_admission`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::reasoning_route_admission`
 - process(humaux-gateway): `adapters::reasoning_route_admission`
 - process(humaux-maintenance): `adapters::reasoning_route_admission`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -7659,7 +7121,6 @@ executed by:
 - (no process): `adapters::tests::quota_and_rate`
 - process(cargo-xtask): `adapters::quota_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::quota_repo`
 - process(humaux-gateway): `adapters::quota_repo`
 - process(humaux-maintenance): `adapters::quota_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -7700,7 +7161,6 @@ executed by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-consolidation-worker): `adapters::reasoning_route_admission`
 - process(humaux-gateway): `adapters::reasoning_route_admission`
 - process(humaux-maintenance): `adapters::reasoning_route_admission`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -7893,7 +7353,6 @@ executed by:
 - (no process): `adapters::tests::maintenance_doors`
 - process(cargo-xtask): `adapters::confirm_token_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::confirm_token_repo`
 - process(humaux-gateway): `adapters::confirm_token_repo`
 - process(humaux-maintenance): `adapters::confirm_token_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -7922,10 +7381,6 @@ read by:
 - process(cargo-xtask): `adapters::operation_receipt`
 - process(cargo-xtask): `adapters::provisioning`
 - process(cargo-xtask): `xtask::e2e_onboard`
-- process(humaux-consolidation-worker): `adapters::consolidation_reasoner`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_reasoner`
-- process(humaux-consolidation-worker): `adapters::operation_receipt`
 - process(humaux-gateway): `adapters::consolidation_reasoner`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_reasoner`
@@ -8054,7 +7509,6 @@ written by:
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `testkit::fixture_purge`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-consolidation-worker): `adapters::consolidate_repo`
 - process(humaux-gateway): `adapters::consolidate_repo`
 - process(humaux-maintenance): `adapters::consolidate_repo`
 - process(humaux-maintenance): `maintenance::switch_visible`
@@ -8100,7 +7554,6 @@ written by:
 - (no process): `maintenance::tests::partitions`
 - process(cargo-xtask): `adapters::quota_repo`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-consolidation-worker): `adapters::quota_repo`
 - process(humaux-gateway): `adapters::quota_repo`
 - process(humaux-maintenance): `adapters::quota_repo`
 - process(humaux-private-worker): `adapters::quota_repo`
@@ -8141,10 +7594,6 @@ read by:
 - process(cargo-xtask): `adapters::membership_repo`
 - process(cargo-xtask): `adapters::operation_receipt`
 - process(cargo-xtask): `xtask::e2e_onboard`
-- process(humaux-consolidation-worker): `adapters::consolidation_reasoner`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_reasoner`
-- process(humaux-consolidation-worker): `adapters::operation_receipt`
 - process(humaux-gateway): `adapters::consolidation_reasoner`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_reasoner`
@@ -8346,7 +7795,6 @@ written by:
 - (no process): `gateway::tests::coordinate_task`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::coord_repo`
-- process(humaux-consolidation-worker): `adapters::coord_repo`
 - process(humaux-gateway): `adapters::coord_repo`
 - process(humaux-maintenance): `adapters::coord_repo`
 - process(humaux-private-worker): `adapters::coord_repo`
@@ -8367,7 +7815,6 @@ read by:
 - (no process): `adapters::tests::coord_task_project`
 - (no process): `gateway::tests::coordinate_task`
 - process(cargo-xtask): `adapters::context_repo`
-- process(humaux-consolidation-worker): `adapters::context_repo`
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-maintenance): `adapters::context_repo`
 - process(humaux-private-worker): `adapters::context_repo`
@@ -8383,8 +7830,6 @@ written by:
 - process(cargo-xtask): `adapters::coord_repo`
 - process(cargo-xtask): `adapters::coord_task_repo`
 - process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-consolidation-worker): `adapters::coord_repo`
-- process(humaux-consolidation-worker): `adapters::coord_task_repo`
 - process(humaux-gateway): `adapters::coord_repo`
 - process(humaux-gateway): `adapters::coord_task_repo`
 - process(humaux-maintenance): `adapters::coord_repo`
@@ -8405,7 +7850,6 @@ read by:
 written by:
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - process(cargo-xtask): `adapters::coord_task_repo`
-- process(humaux-consolidation-worker): `adapters::coord_task_repo`
 - process(humaux-gateway): `adapters::coord_task_repo`
 - process(humaux-maintenance): `adapters::coord_task_repo`
 - process(humaux-private-worker): `adapters::coord_task_repo`
@@ -8435,7 +7879,6 @@ executed by:
 - (no process): `adapters::tests::maintenance_doors`
 - process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::jobs`
 - process(humaux-gateway): `adapters::jobs`
 - process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -8460,7 +7903,6 @@ executed by:
 - (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::memory_subjects_link`
 - process(cargo-xtask): `adapters::memory_governance_repo`
-- process(humaux-consolidation-worker): `adapters::memory_governance_repo`
 - process(humaux-gateway): `adapters::memory_governance_repo`
 - process(humaux-maintenance): `adapters::memory_governance_repo`
 - process(humaux-private-worker): `adapters::memory_governance_repo`
@@ -8475,7 +7917,6 @@ executed by:
 - (no process): `adapters::tests::retrieval_query_sources`
 - process(cargo-xtask): `adapters::disclosure`
 - process(humaux-admin): `adapters::disclosure`
-- process(humaux-consolidation-worker): `adapters::disclosure`
 - process(humaux-gateway): `adapters::disclosure`
 - process(humaux-maintenance): `adapters::disclosure`
 - process(humaux-private-worker): `adapters::disclosure`
@@ -8538,7 +7979,6 @@ executed by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::jobs`
 - process(humaux-gateway): `adapters::jobs`
 - process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -8595,7 +8035,6 @@ read by:
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::jobs`
 - process(humaux-gateway): `adapters::jobs`
 - process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -8609,7 +8048,6 @@ executed by:
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::jobs`
 - process(humaux-gateway): `adapters::jobs`
 - process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -8630,7 +8068,6 @@ executed by:
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::jobs`
 - process(humaux-gateway): `adapters::jobs`
 - process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -8695,7 +8132,6 @@ read by:
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
-- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-private-worker): `adapters::stream_repo`
@@ -8759,7 +8195,6 @@ written by:
 - (no process): `adapters::tests::retrieval_query_sources`
 - process(cargo-xtask): `adapters::disclosure`
 - process(humaux-admin): `adapters::disclosure`
-- process(humaux-consolidation-worker): `adapters::disclosure`
 - process(humaux-gateway): `adapters::disclosure`
 - process(humaux-maintenance): `adapters::disclosure`
 - process(humaux-private-worker): `adapters::disclosure`
@@ -8778,7 +8213,6 @@ read by:
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::model_call_ledger`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::model_call_ledger`
 - process(humaux-gateway): `adapters::model_call_ledger`
 - process(humaux-maintenance): `adapters::model_call_ledger`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -8796,7 +8230,6 @@ written by:
 - (no process): `adapters::tests::support::contribution_fixture`
 - process(cargo-xtask): `adapters::disclosure`
 - process(humaux-admin): `adapters::disclosure`
-- process(humaux-consolidation-worker): `adapters::disclosure`
 - process(humaux-gateway): `adapters::disclosure`
 - process(humaux-maintenance): `adapters::disclosure`
 - process(humaux-private-worker): `adapters::disclosure`
@@ -8858,7 +8291,6 @@ written by:
 executed by:
 - process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::jobs`
 - process(humaux-gateway): `adapters::jobs`
 - process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -8987,7 +8419,6 @@ executed by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::jobs`
 - process(humaux-gateway): `adapters::jobs`
 - process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -9049,8 +8480,6 @@ read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_seed`
 - process(cargo-xtask): `xtask::soak`
-- process(humaux-consolidation-worker): `adapters::distill_repo`
-- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::distill_repo`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::distill_repo`
@@ -9113,8 +8542,6 @@ written by:
 - process(cargo-xtask): `adapters::consolidate_repo`
 - process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::consolidate_repo`
-- process(humaux-consolidation-worker): `adapters::jobs`
 - process(humaux-gateway): `adapters::consolidate_repo`
 - process(humaux-gateway): `adapters::jobs`
 - process(humaux-maintenance): `adapters::consolidate_repo`
@@ -9136,8 +8563,6 @@ executed by:
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - process(cargo-xtask): `adapters::contribution_entry_repo`
 - process(cargo-xtask): `adapters::contribution_reasoner`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_reasoner`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_reasoner`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
@@ -9213,7 +8638,6 @@ read by:
 - (no process): `gateway::tests::mcp_forget`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::memory_governance_repo`
 - process(humaux-gateway): `adapters::memory_governance_repo`
 - process(humaux-maintenance): `adapters::memory_governance_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -9264,7 +8688,6 @@ read by:
 - process(cargo-xtask): `adapters::contribution_entry_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
 - process(humaux-maintenance): `adapters::maintenance_repo`
@@ -9287,7 +8710,6 @@ written by:
 - (no process): `private-worker::tests::support::double_spend`
 - process(cargo-xtask): `adapters::model_call_ledger`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-consolidation-worker): `adapters::model_call_ledger`
 - process(humaux-gateway): `adapters::model_call_ledger`
 - process(humaux-maintenance): `adapters::model_call_ledger`
 - process(humaux-private-worker): `adapters::model_call_ledger`
@@ -9338,14 +8760,6 @@ read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::soak`
-- process(humaux-consolidation-worker): `adapters::distill_repo`
-- process(humaux-consolidation-worker): `adapters::exact_census`
-- process(humaux-consolidation-worker): `adapters::memory_governance_repo`
-- process(humaux-consolidation-worker): `adapters::note_repo`
-- process(humaux-consolidation-worker): `adapters::read_materialize`
-- process(humaux-consolidation-worker): `adapters::remember`
-- process(humaux-consolidation-worker): `adapters::retrieve`
-- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::distill_repo`
 - process(humaux-gateway): `adapters::exact_census`
@@ -9426,9 +8840,6 @@ written by:
 - process(cargo-xtask): `adapters::distill_repo`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::distill_repo`
-- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::distill_repo`
 - process(humaux-gateway): `adapters::projection_worker`
@@ -9633,7 +9044,6 @@ written by:
 executed by:
 - process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::jobs`
 - process(humaux-gateway): `adapters::jobs`
 - process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -9744,7 +9154,6 @@ written by:
 - (no process): `gateway::tests::semantic_recall_wiring`
 - (no process): `maintenance::tests::partitions`
 - process(cargo-xtask): `adapters::retrieval_query_log`
-- process(humaux-consolidation-worker): `adapters::retrieval_query_log`
 - process(humaux-gateway): `adapters::retrieval_query_log`
 - process(humaux-maintenance): `adapters::retrieval_query_log`
 - process(humaux-private-worker): `adapters::retrieval_query_log`
@@ -9800,7 +9209,6 @@ written by:
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - process(cargo-xtask): `adapters::selection_repo`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-consolidation-worker): `adapters::selection_repo`
 - process(humaux-gateway): `adapters::selection_repo`
 - process(humaux-maintenance): `adapters::selection_repo`
 - process(humaux-private-worker): `adapters::selection_repo`
@@ -9823,8 +9231,6 @@ written by:
 - process(cargo-xtask): `adapters::context_repo`
 - process(cargo-xtask): `adapters::selection_repo`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-consolidation-worker): `adapters::context_repo`
-- process(humaux-consolidation-worker): `adapters::selection_repo`
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::selection_repo`
 - process(humaux-maintenance): `adapters::context_repo`
@@ -9892,7 +9298,6 @@ written by:
 - (no process): `adapters::cost_repo`
 - (no process): `adapters::tests::model_call_ledger`
 - process(cargo-xtask): `adapters::model_call_ledger`
-- process(humaux-consolidation-worker): `adapters::model_call_ledger`
 - process(humaux-gateway): `adapters::model_call_ledger`
 - process(humaux-maintenance): `adapters::model_call_ledger`
 - process(humaux-private-worker): `adapters::model_call_ledger`
@@ -10061,7 +9466,6 @@ executed by:
 - (no process): `adapters::tests::contribution_execution_0131`
 - process(cargo-xtask): `adapters::contribution_execution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::contribution_execution_repo`
 - process(humaux-gateway): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -10078,7 +9482,6 @@ executed by:
 - (no process): `adapters::tests::contribution_execution_disclosure_sources_0131`
 - process(cargo-xtask): `adapters::contribution_execution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::contribution_execution_repo`
 - process(humaux-gateway): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -10094,7 +9497,6 @@ executed by:
 - (no process): `adapters::tests::contribution_execution_0131`
 - process(cargo-xtask): `adapters::contribution_execution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::contribution_execution_repo`
 - process(humaux-gateway): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -10126,8 +9528,6 @@ written by:
 - process(cargo-xtask): `adapters::consolidate_repo`
 - process(cargo-xtask): `adapters::context_repo`
 - process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-consolidation-worker): `adapters::consolidate_repo`
-- process(humaux-consolidation-worker): `adapters::context_repo`
 - process(humaux-gateway): `adapters::consolidate_repo`
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-maintenance): `adapters::consolidate_repo`
@@ -10277,7 +9677,6 @@ read by:
 - (no process): `adapters::tests::contribution_policy_lifecycle_0132`
 - process(cargo-xtask): `adapters::contribution_execution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::contribution_execution_repo`
 - process(humaux-gateway): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -10297,7 +9696,6 @@ read by:
 - (no process): `private-worker::tests::start_manual_contribution_command_0131`
 - process(cargo-xtask): `adapters::contribution_execution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::contribution_execution_repo`
 - process(humaux-gateway): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -10396,8 +9794,6 @@ executed by:
 - process(cargo-xtask): `adapters::coord_task_repo`
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::coord_task_repo`
-- process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-gateway): `adapters::coord_task_repo`
 - process(humaux-gateway): `adapters::remember`
 - process(humaux-maintenance): `adapters::coord_task_repo`
@@ -10419,7 +9815,6 @@ written by:
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::distill_repo`
-- process(humaux-consolidation-worker): `adapters::distill_repo`
 - process(humaux-gateway): `adapters::distill_repo`
 - process(humaux-maintenance): `adapters::distill_repo`
 - process(humaux-private-worker): `adapters::distill_repo`
@@ -10440,7 +9835,6 @@ executed by:
 - (no process): `adapters::tests::project_continuity_0136`
 - process(cargo-xtask): `adapters::contribution_execution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::contribution_execution_repo`
 - process(humaux-gateway): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -10487,10 +9881,7 @@ read by:
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-admin): `adapters::postgres`
-- process(humaux-consolidation-worker): `adapters::contribution_reasoner`
-- process(humaux-consolidation-worker): `adapters::distill_repo`
 - process(humaux-consolidation-worker): `adapters::postgres`
-- process(humaux-consolidation-worker): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::contribution_reasoner`
 - process(humaux-gateway): `adapters::distill_repo`
 - process(humaux-gateway): `adapters::postgres`
@@ -10559,8 +9950,6 @@ written by:
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-consolidation-worker): `adapters::consolidate_repo`
-- process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-gateway): `adapters::consolidate_repo`
 - process(humaux-gateway): `adapters::remember`
 - process(humaux-maintenance): `adapters::consolidate_repo`
@@ -10587,7 +9976,6 @@ read by:
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::distill_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::distill_repo`
 - process(humaux-gateway): `adapters::distill_repo`
 - process(humaux-maintenance): `adapters::distill_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -10599,7 +9987,6 @@ written by:
 - (no process): `adapters::tests::memory_affects`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::affect_repo`
-- process(humaux-consolidation-worker): `adapters::affect_repo`
 - process(humaux-gateway): `adapters::affect_repo`
 - process(humaux-maintenance): `adapters::affect_repo`
 - process(humaux-private-worker): `adapters::affect_repo`
@@ -10642,18 +10029,6 @@ read by:
 - process(cargo-xtask): `adapters::retrieve`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
-- process(humaux-consolidation-worker): `adapters::consolidation_reasoner`
-- process(humaux-consolidation-worker): `adapters::context_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_reasoner`
-- process(humaux-consolidation-worker): `adapters::distill_repo`
-- process(humaux-consolidation-worker): `adapters::exact_census`
-- process(humaux-consolidation-worker): `adapters::memory_governance_repo`
-- process(humaux-consolidation-worker): `adapters::note_repo`
-- process(humaux-consolidation-worker): `adapters::operation_receipt`
-- process(humaux-consolidation-worker): `adapters::read_gate`
-- process(humaux-consolidation-worker): `adapters::read_materialize`
-- process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-gateway): `adapters::attribution_repo`
 - process(humaux-gateway): `adapters::consolidation_reasoner`
 - process(humaux-gateway): `adapters::context_repo`
@@ -10792,8 +10167,6 @@ written by:
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-consolidation-worker): `adapters::consolidate_repo`
-- process(humaux-consolidation-worker): `adapters::evidence_repo`
 - process(humaux-gateway): `adapters::consolidate_repo`
 - process(humaux-gateway): `adapters::evidence_repo`
 - process(humaux-maintenance): `adapters::consolidate_repo`
@@ -10820,7 +10193,6 @@ written by:
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-gateway): `adapters::remember`
 - process(humaux-maintenance): `adapters::remember`
 - process(humaux-private-worker): `adapters::remember`
@@ -10835,7 +10207,6 @@ read by:
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-gateway): `adapters::remember`
 - process(humaux-maintenance): `adapters::remember`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -10846,7 +10217,6 @@ written by:
 - (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::evidence_sources`
 - process(cargo-xtask): `adapters::remember`
-- process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-gateway): `adapters::remember`
 - process(humaux-maintenance): `adapters::remember`
 - process(humaux-private-worker): `adapters::remember`
@@ -10859,7 +10229,6 @@ read by:
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::read_materialize`
@@ -10873,7 +10242,6 @@ written by:
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::subject_repo`
-- process(humaux-consolidation-worker): `adapters::subject_repo`
 - process(humaux-gateway): `adapters::subject_repo`
 - process(humaux-maintenance): `adapters::subject_repo`
 - process(humaux-private-worker): `adapters::subject_repo`
@@ -10895,7 +10263,6 @@ written by:
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-consolidation-worker): `adapters::remember`
 - process(humaux-gateway): `adapters::remember`
 - process(humaux-maintenance): `adapters::remember`
 - process(humaux-private-worker): `adapters::remember`
@@ -10921,9 +10288,6 @@ read by:
 - process(cargo-xtask): `adapters::note_repo`
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::distill_repo`
-- process(humaux-consolidation-worker): `adapters::note_repo`
-- process(humaux-consolidation-worker): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::distill_repo`
 - process(humaux-gateway): `adapters::note_repo`
 - process(humaux-gateway): `adapters::projection_worker`
@@ -10948,7 +10312,6 @@ written by:
 - (no process): `adapters::tests::rebuild`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::note_repo`
-- process(humaux-consolidation-worker): `adapters::note_repo`
 - process(humaux-gateway): `adapters::note_repo`
 - process(humaux-maintenance): `adapters::note_repo`
 - process(humaux-private-worker): `adapters::note_repo`
@@ -10964,7 +10327,6 @@ read by:
 - process(cargo-xtask): `adapters::stream_repo`
 - process(humaux-admin): `adapters::postgres`
 - process(humaux-consolidation-worker): `adapters::postgres`
-- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::postgres`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::postgres`
@@ -10984,8 +10346,6 @@ written by:
 - process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::remember`
-- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::remember`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::remember`
@@ -11008,7 +10368,6 @@ executed by:
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `consolidation-worker::tests::consolidation_hop_e2e`
 - process(cargo-xtask): `adapters::subject_repo`
-- process(humaux-consolidation-worker): `adapters::subject_repo`
 - process(humaux-gateway): `adapters::subject_repo`
 - process(humaux-maintenance): `adapters::subject_repo`
 - process(humaux-private-worker): `adapters::subject_repo`
@@ -11022,7 +10381,6 @@ written by:
 executed by:
 - (no process): `adapters::tests::memory_subjects_link`
 - process(cargo-xtask): `adapters::subject_repo`
-- process(humaux-consolidation-worker): `adapters::subject_repo`
 - process(humaux-gateway): `adapters::subject_repo`
 - process(humaux-maintenance): `adapters::subject_repo`
 - process(humaux-private-worker): `adapters::subject_repo`
@@ -11039,9 +10397,6 @@ executed by:
 - process(cargo-xtask): `adapters::distill_repo`
 - process(cargo-xtask): `adapters::private_projection_registry`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::consolidate_repo`
-- process(humaux-consolidation-worker): `adapters::distill_repo`
-- process(humaux-consolidation-worker): `adapters::private_projection_registry`
 - process(humaux-gateway): `adapters::consolidate_repo`
 - process(humaux-gateway): `adapters::distill_repo`
 - process(humaux-gateway): `adapters::private_projection_registry`
@@ -11074,7 +10429,6 @@ executed by:
 - (no process): `adapters::tests::contribution_execution_0131`
 - process(cargo-xtask): `adapters::contribution_execution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::contribution_execution_repo`
 - process(humaux-gateway): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -11094,7 +10448,6 @@ written by:
 - (no process): `adapters::tests::projection_worker`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::affect_repo`
-- process(humaux-consolidation-worker): `adapters::affect_repo`
 - process(humaux-gateway): `adapters::affect_repo`
 - process(humaux-maintenance): `adapters::affect_repo`
 - process(humaux-private-worker): `adapters::affect_repo`
@@ -11129,7 +10482,6 @@ read by:
 - process(cargo-xtask): `adapters::postgres`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-admin): `adapters::postgres`
-- process(humaux-consolidation-worker): `adapters::consolidation_reasoner`
 - process(humaux-consolidation-worker): `adapters::postgres`
 - process(humaux-gateway): `adapters::consolidation_reasoner`
 - process(humaux-gateway): `adapters::postgres`
@@ -11149,7 +10501,6 @@ written by:
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::consolidate_repo`
-- process(humaux-consolidation-worker): `adapters::consolidate_repo`
 - process(humaux-gateway): `adapters::consolidate_repo`
 - process(humaux-maintenance): `adapters::consolidate_repo`
 - process(humaux-private-worker): `adapters::consolidate_repo`
@@ -11162,7 +10513,6 @@ read by:
 - process(cargo-xtask): `adapters::consolidation_reasoner`
 - process(cargo-xtask): `domain::consolidate`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::consolidation_reasoner`
 - process(humaux-consolidation-worker): `domain::consolidate`
 - process(humaux-gateway): `adapters::consolidation_reasoner`
 - process(humaux-gateway): `domain::consolidate`
@@ -11183,7 +10533,6 @@ written by:
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::consolidate_repo`
-- process(humaux-consolidation-worker): `adapters::consolidate_repo`
 - process(humaux-gateway): `adapters::consolidate_repo`
 - process(humaux-maintenance): `adapters::consolidate_repo`
 - process(humaux-private-worker): `adapters::consolidate_repo`
@@ -11217,18 +10566,7 @@ read by:
 - process(cargo-xtask): `adapters::retrieve`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-admin): `adapters::postgres`
-- process(humaux-consolidation-worker): `adapters::affect_repo`
-- process(humaux-consolidation-worker): `adapters::consolidation_reasoner`
-- process(humaux-consolidation-worker): `adapters::context_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_reasoner`
-- process(humaux-consolidation-worker): `adapters::exact_census`
-- process(humaux-consolidation-worker): `adapters::memory_governance_repo`
-- process(humaux-consolidation-worker): `adapters::operation_receipt`
 - process(humaux-consolidation-worker): `adapters::postgres`
-- process(humaux-consolidation-worker): `adapters::read_gate`
-- process(humaux-consolidation-worker): `adapters::read_materialize`
-- process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-gateway): `adapters::affect_repo`
 - process(humaux-gateway): `adapters::consolidation_reasoner`
 - process(humaux-gateway): `adapters::context_repo`
@@ -11345,8 +10683,6 @@ written by:
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-consolidation-worker): `adapters::consolidate_repo`
-- process(humaux-consolidation-worker): `adapters::memory_repo`
 - process(humaux-gateway): `adapters::consolidate_repo`
 - process(humaux-gateway): `adapters::memory_repo`
 - process(humaux-maintenance): `adapters::consolidate_repo`
@@ -11369,7 +10705,6 @@ executed by:
 - (no process): `adapters::tests::memory_in_project`
 - process(cargo-xtask): `adapters::exact_census`
 - process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-consolidation-worker): `adapters::exact_census`
 - process(humaux-gateway): `adapters::exact_census`
 - process(humaux-maintenance): `adapters::exact_census`
 - process(humaux-private-worker): `adapters::exact_census`
@@ -11475,21 +10810,7 @@ read by:
 - process(cargo-xtask): `domain::context`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-admin): `adapters::postgres`
-- process(humaux-consolidation-worker): `adapters::affect_repo`
-- process(humaux-consolidation-worker): `adapters::consolidation_reasoner`
-- process(humaux-consolidation-worker): `adapters::context_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_reasoner`
-- process(humaux-consolidation-worker): `adapters::exact_census`
-- process(humaux-consolidation-worker): `adapters::note_repo`
-- process(humaux-consolidation-worker): `adapters::operation_receipt`
 - process(humaux-consolidation-worker): `adapters::postgres`
-- process(humaux-consolidation-worker): `adapters::private_projection_registry`
-- process(humaux-consolidation-worker): `adapters::read_gate`
-- process(humaux-consolidation-worker): `adapters::read_materialize`
-- process(humaux-consolidation-worker): `adapters::retrieve`
-- process(humaux-consolidation-worker): `adapters::selection_repo`
-- process(humaux-consolidation-worker): `domain::context`
 - process(humaux-gateway): `adapters::affect_repo`
 - process(humaux-gateway): `adapters::consolidation_reasoner`
 - process(humaux-gateway): `adapters::context_repo`
@@ -11630,10 +10951,6 @@ written by:
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-consolidation-worker): `adapters::consolidate_repo`
-- process(humaux-consolidation-worker): `adapters::memory_governance_repo`
-- process(humaux-consolidation-worker): `adapters::memory_repo`
-- process(humaux-consolidation-worker): `adapters::note_repo`
 - process(humaux-gateway): `adapters::consolidate_repo`
 - process(humaux-gateway): `adapters::memory_governance_repo`
 - process(humaux-gateway): `adapters::memory_repo`
@@ -11667,7 +10984,6 @@ written by:
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - process(cargo-xtask): `adapters::consolidate_repo`
-- process(humaux-consolidation-worker): `adapters::consolidate_repo`
 - process(humaux-gateway): `adapters::consolidate_repo`
 - process(humaux-maintenance): `adapters::consolidate_repo`
 - process(humaux-private-worker): `adapters::consolidate_repo`
@@ -11701,7 +11017,6 @@ written by:
 - (no process): `adapters::tests::subject_registry_rls`
 - (no process): `consolidation-worker::tests::run_once_e2e`
 - process(cargo-xtask): `adapters::consolidate_repo`
-- process(humaux-consolidation-worker): `adapters::consolidate_repo`
 - process(humaux-gateway): `adapters::consolidate_repo`
 - process(humaux-maintenance): `adapters::consolidate_repo`
 - process(humaux-private-worker): `adapters::consolidate_repo`
@@ -11755,10 +11070,6 @@ read by:
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `adapters::subject_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::context_repo`
-- process(humaux-consolidation-worker): `adapters::exact_census`
-- process(humaux-consolidation-worker): `adapters::read_materialize`
-- process(humaux-consolidation-worker): `adapters::subject_repo`
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::exact_census`
 - process(humaux-gateway): `adapters::projection_worker`
@@ -11793,8 +11104,6 @@ read by:
 - process(cargo-xtask): `adapters::memory_repo`
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::memory_repo`
-- process(humaux-consolidation-worker): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::memory_repo`
 - process(humaux-gateway): `adapters::read_materialize`
@@ -11835,8 +11144,6 @@ read by:
 - process(cargo-xtask): `adapters::operation_receipt`
 - process(cargo-xtask): `adapters::read_materialize`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::operation_receipt`
-- process(humaux-consolidation-worker): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::operation_receipt`
 - process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-maintenance): `adapters::operation_receipt`
@@ -11849,7 +11156,6 @@ read by:
 
 written by:
 - process(cargo-xtask): `adapters::note_repo`
-- process(humaux-consolidation-worker): `adapters::note_repo`
 - process(humaux-gateway): `adapters::note_repo`
 - process(humaux-maintenance): `adapters::note_repo`
 - process(humaux-private-worker): `adapters::note_repo`
@@ -11876,7 +11182,6 @@ written by:
 - (no process): `adapters::tests::reasoning_route_runtime`
 - process(cargo-xtask): `adapters::distill_repo`
 - process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-consolidation-worker): `adapters::distill_repo`
 - process(humaux-gateway): `adapters::distill_repo`
 - process(humaux-maintenance): `adapters::distill_repo`
 - process(humaux-private-worker): `adapters::distill_repo`
@@ -11919,7 +11224,6 @@ read by:
 - (no process): `adapters::tests::relation_kernel`
 - process(cargo-xtask): `adapters::relation_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::relation_repo`
 - process(humaux-gateway): `adapters::relation_repo`
 - process(humaux-maintenance): `adapters::relation_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -11929,7 +11233,6 @@ read by:
 written by:
 - (no process): `adapters::tests::project_rollup`
 - process(cargo-xtask): `adapters::relation_repo`
-- process(humaux-consolidation-worker): `adapters::relation_repo`
 - process(humaux-gateway): `adapters::relation_repo`
 - process(humaux-maintenance): `adapters::relation_repo`
 - process(humaux-private-worker): `adapters::relation_repo`
@@ -11955,8 +11258,6 @@ read by:
 - process(cargo-xtask): `adapters::coord_task_repo`
 - process(cargo-xtask): `adapters::relation_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::coord_task_repo`
-- process(humaux-consolidation-worker): `adapters::relation_repo`
 - process(humaux-gateway): `adapters::attribution_repo`
 - process(humaux-gateway): `adapters::coord_task_repo`
 - process(humaux-gateway): `adapters::relation_repo`
@@ -11974,7 +11275,6 @@ written by:
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `private-worker::tests::m29_attribution_e2e`
 - process(cargo-xtask): `adapters::relation_repo`
-- process(humaux-consolidation-worker): `adapters::relation_repo`
 - process(humaux-gateway): `adapters::relation_repo`
 - process(humaux-maintenance): `adapters::relation_repo`
 - process(humaux-private-worker): `adapters::relation_repo`
@@ -12060,7 +11360,6 @@ executed by:
 - (no process): `gateway::tests::cross_tenant_canary`
 - process(cargo-xtask): `adapters::coord_task_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::coord_task_repo`
 - process(humaux-gateway): `adapters::coord_task_repo`
 - process(humaux-gateway): `gateway::mcp_application`
 - process(humaux-maintenance): `adapters::coord_task_repo`
@@ -12124,7 +11423,6 @@ executed by:
 ### `private.reserve_contribution_a`
 read by:
 - process(cargo-xtask): `adapters::contribution_execution_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_execution_repo`
 - process(humaux-gateway): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `adapters::contribution_execution_repo`
 - process(humaux-private-worker): `adapters::contribution_execution_repo`
@@ -12137,7 +11435,6 @@ executed by:
 - (no process): `adapters::tests::contribution_self_principal_authority_0133`
 - process(cargo-xtask): `adapters::contribution_execution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::contribution_execution_repo`
 - process(humaux-gateway): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -12147,7 +11444,6 @@ executed by:
 ### `private.reserve_contribution_b`
 read by:
 - process(cargo-xtask): `adapters::contribution_execution_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_execution_repo`
 - process(humaux-gateway): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `adapters::contribution_execution_repo`
 - process(humaux-private-worker): `adapters::contribution_execution_repo`
@@ -12159,7 +11455,6 @@ executed by:
 - (no process): `adapters::tests::contribution_execution_0131`
 - process(cargo-xtask): `adapters::contribution_execution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::contribution_execution_repo`
 - process(humaux-gateway): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -12234,7 +11529,6 @@ executed by:
 - (no process): `adapters::tests::contribution_execution_0131`
 - process(cargo-xtask): `adapters::contribution_execution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::contribution_execution_repo`
 - process(humaux-gateway): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `adapters::contribution_execution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -12270,7 +11564,6 @@ written by:
 - (no process): `adapters::tests::subject_registry_rls`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::subject_repo`
-- process(humaux-consolidation-worker): `adapters::subject_repo`
 - process(humaux-gateway): `adapters::subject_repo`
 - process(humaux-maintenance): `adapters::subject_repo`
 - process(humaux-private-worker): `adapters::subject_repo`
@@ -12283,7 +11576,6 @@ read by:
 - (no process): `adapters::tests::relation_kernel`
 - process(cargo-xtask): `adapters::relation_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::relation_repo`
 - process(humaux-gateway): `adapters::relation_repo`
 - process(humaux-maintenance): `adapters::relation_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -12294,7 +11586,6 @@ written by:
 - (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::project_rollup`
 - process(cargo-xtask): `adapters::relation_repo`
-- process(humaux-consolidation-worker): `adapters::relation_repo`
 - process(humaux-gateway): `adapters::relation_repo`
 - process(humaux-maintenance): `adapters::relation_repo`
 - process(humaux-private-worker): `adapters::relation_repo`
@@ -12311,7 +11602,6 @@ written by:
 - (no process): `adapters::tests::contribution_eligibility`
 - (no process): `adapters::tests::subject_registry_rls`
 - process(cargo-xtask): `adapters::subject_repo`
-- process(humaux-consolidation-worker): `adapters::subject_repo`
 - process(humaux-gateway): `adapters::subject_repo`
 - process(humaux-maintenance): `adapters::subject_repo`
 - process(humaux-private-worker): `adapters::subject_repo`
@@ -12341,7 +11631,6 @@ written by:
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::subject_repo`
-- process(humaux-consolidation-worker): `adapters::subject_repo`
 - process(humaux-gateway): `adapters::subject_repo`
 - process(humaux-maintenance): `adapters::subject_repo`
 - process(humaux-private-worker): `adapters::subject_repo`
@@ -12359,7 +11648,6 @@ written by:
 - (no process): `adapters::tests::task_grant_contract`
 - process(cargo-xtask): `adapters::context_repo`
 - process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-consolidation-worker): `adapters::context_repo`
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-maintenance): `adapters::context_repo`
 - process(humaux-private-worker): `adapters::context_repo`
@@ -12395,7 +11683,6 @@ read by:
 - (no process): `adapters::tests::note_chunk_count_parity`
 - process(cargo-xtask): `adapters::retrieve`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-gateway): `adapters::projection_worker`
 - process(humaux-gateway): `adapters::retrieve`
 - process(humaux-maintenance): `adapters::projection_worker`
@@ -12423,7 +11710,6 @@ executed by:
 - (no process): `adapters::tests::projection_claim`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -12446,7 +11732,6 @@ written by:
 - (no process): `adapters::tests::rebuild`
 - (no process): `maintenance::tests::rebuild_cli`
 - process(cargo-xtask): `adapters::private_projection_registry`
-- process(humaux-consolidation-worker): `adapters::private_projection_registry`
 - process(humaux-gateway): `adapters::private_projection_registry`
 - process(humaux-maintenance): `adapters::private_projection_registry`
 - process(humaux-private-worker): `adapters::private_projection_registry`
@@ -12508,7 +11793,6 @@ written by:
 - (no process): `adapters::tests::rebuild`
 - (no process): `adapters::tests::support::a2_fixture`
 - process(cargo-xtask): `adapters::private_projection_registry`
-- process(humaux-consolidation-worker): `adapters::private_projection_registry`
 - process(humaux-gateway): `adapters::private_projection_registry`
 - process(humaux-maintenance): `adapters::private_projection_registry`
 - process(humaux-private-worker): `adapters::private_projection_registry`
@@ -12558,7 +11842,6 @@ written by:
 - (no process): `gateway::tests::semantic_recall_wiring`
 - process(cargo-xtask): `adapters::private_projection_registry`
 - process(cargo-xtask): `maintenance::switch_visible`
-- process(humaux-consolidation-worker): `adapters::private_projection_registry`
 - process(humaux-gateway): `adapters::private_projection_registry`
 - process(humaux-maintenance): `adapters::private_projection_registry`
 - process(humaux-maintenance): `maintenance::switch_visible`
@@ -12577,8 +11860,6 @@ read by:
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::soak`
-- process(humaux-consolidation-worker): `adapters::serving_repo`
-- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::serving_repo`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::serving_repo`
@@ -12633,8 +11914,6 @@ read by:
 - process(cargo-xtask): `adapters::retrieve`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::retrieve`
-- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::projection_worker`
 - process(humaux-gateway): `adapters::retrieve`
 - process(humaux-gateway): `adapters::stream_repo`
@@ -12677,7 +11956,6 @@ executed by:
 - (no process): `adapters::tests::projection_claim`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -12695,9 +11973,7 @@ read by:
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::soak`
 - process(humaux-admin): `adapters::postgres`
-- process(humaux-consolidation-worker): `adapters::memory_governance_repo`
 - process(humaux-consolidation-worker): `adapters::postgres`
-- process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-gateway): `adapters::memory_governance_repo`
 - process(humaux-gateway): `adapters::postgres`
 - process(humaux-gateway): `adapters::retrieve`
@@ -12762,8 +12038,6 @@ written by:
 - process(cargo-xtask): `adapters::serving_repo`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::switch_visible`
-- process(humaux-consolidation-worker): `adapters::serving_repo`
-- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::serving_repo`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::serving_repo`
@@ -12814,16 +12088,7 @@ read by:
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::soak`
 - process(humaux-admin): `adapters::postgres`
-- process(humaux-consolidation-worker): `adapters::context_repo`
-- process(humaux-consolidation-worker): `adapters::distill_repo`
-- process(humaux-consolidation-worker): `adapters::exact_census`
-- process(humaux-consolidation-worker): `adapters::memory_governance_repo`
-- process(humaux-consolidation-worker): `adapters::note_repo`
-- process(humaux-consolidation-worker): `adapters::operation_receipt`
 - process(humaux-consolidation-worker): `adapters::postgres`
-- process(humaux-consolidation-worker): `adapters::read_materialize`
-- process(humaux-consolidation-worker): `adapters::remember`
-- process(humaux-consolidation-worker): `adapters::retrieve`
 - process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::continuity_read`
 - process(humaux-gateway): `adapters::distill_repo`
@@ -12915,7 +12180,6 @@ written by:
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
-- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::forget_repo`
 - process(humaux-gateway): `adapters::projection_worker`
 - process(humaux-gateway): `adapters::stream_repo`
@@ -12970,7 +12234,6 @@ executed by:
 - (no process): `gateway::tests::memory_get_frontier`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -12986,8 +12249,6 @@ read by:
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `maintenance::switch_visible`
-- process(humaux-consolidation-worker): `adapters::placement_repo`
-- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::placement_repo`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::placement_repo`
@@ -13019,7 +12280,6 @@ written by:
 - process(cargo-xtask): `adapters::placement_repo`
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::e2e_onboard`
-- process(humaux-consolidation-worker): `adapters::placement_repo`
 - process(humaux-gateway): `adapters::placement_repo`
 - process(humaux-maintenance): `adapters::placement_repo`
 - process(humaux-maintenance): `maintenance::switch_visible`
@@ -13049,7 +12309,6 @@ executed by:
 - (no process): `adapters::tests::projection_claim`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-consolidation-worker): `adapters::stream_repo`
 - process(humaux-gateway): `adapters::stream_repo`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -13361,8 +12620,6 @@ executed by:
 - (no process): `public-pool::tests::support::public_anonymous_seam`
 - process(cargo-xtask): `adapters::contribution_entry_repo`
 - process(cargo-xtask): `adapters::contribution_reasoner`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_reasoner`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_reasoner`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
@@ -13388,7 +12645,6 @@ executed by:
 read by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - process(cargo-xtask): `adapters::exact_census`
-- process(humaux-consolidation-worker): `adapters::exact_census`
 - process(humaux-gateway): `adapters::exact_census`
 - process(humaux-maintenance): `adapters::exact_census`
 - process(humaux-private-worker): `adapters::exact_census`
@@ -13596,7 +12852,6 @@ read by:
 written by:
 - (no process): `adapters::tests::phase9_exact_assessed_storage_binding`
 - process(cargo-xtask): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
 - process(humaux-private-worker): `adapters::contribution_entry_repo`
@@ -13614,7 +12869,6 @@ written by:
 - (no process): `adapters::tests::contribution_pipeline`
 - (no process): `adapters::tests::contribution_policy_lifecycle_0132`
 - process(cargo-xtask): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
 - process(humaux-private-worker): `adapters::contribution_entry_repo`
@@ -13637,7 +12891,6 @@ written by:
 - (no process): `adapters::tests::phase9_exact_assessed_storage_binding`
 - (no process): `adapters::tests::reasoning_route_health_admission`
 - process(cargo-xtask): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
 - process(humaux-private-worker): `adapters::contribution_entry_repo`
@@ -13656,7 +12909,6 @@ written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `adapters::tests::retrieval_query_sources`
 - process(cargo-xtask): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
 - process(humaux-private-worker): `adapters::contribution_entry_repo`
@@ -13683,7 +12935,6 @@ written by:
 - (no process): `adapters::tests::phase9_exact_assessed_storage_binding`
 - (no process): `adapters::tests::retrieval_query_sources`
 - process(cargo-xtask): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
 - process(humaux-private-worker): `adapters::contribution_entry_repo`
@@ -13727,7 +12978,6 @@ read by:
 written by:
 - (no process): `adapters::tests::phase9_exact_assessed_storage_binding`
 - process(cargo-xtask): `adapters::contribution_entry_repo`
-- process(humaux-consolidation-worker): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
 - process(humaux-private-worker): `adapters::contribution_entry_repo`
@@ -15229,6 +14479,7 @@ modules naming it:
 - `adapters::attribution_repo`
 - `adapters::audited_read_quota`
 - `adapters::byok`
+- `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::context_repo`
 - `adapters::continuity_read`
@@ -16200,6 +15451,7 @@ modules naming it:
 - `application::billing`
 - `application::confirm`
 - `application::consolidate`
+- `application::consolidation_execution`
 - `application::continuity`
 - `application::contribute`
 - `application::contribution_execution`
@@ -16314,6 +15566,7 @@ modules naming it:
 why: JSON payload construction for continuity/contribution_execution/entitlement/notify
 
 modules naming it:
+- `application::consolidation_execution`
 - `application::continuity`
 - `application::contribution_execution`
 - `application::distill`
@@ -16341,6 +15594,7 @@ modules naming it:
 - `application::api_key`
 - `application::billing`
 - `application::consolidate`
+- `application::consolidation_execution`
 - `application::continuity`
 - `application::contribute`
 - `application::contribution_execution`
@@ -16372,6 +15626,7 @@ modules naming it:
 - `application::billing`
 - `application::confirm`
 - `application::consolidate`
+- `application::consolidation_execution`
 - `application::continuity`
 - `application::contribute`
 - `application::contribution_execution`
@@ -17709,7 +16964,6 @@ modules naming it:
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::run_once_e2e`
-- `humaux-consolidation-worker`
 - `tests`
 
 ### humaux-consolidation-worker → `humaux-application` (normal)
@@ -17731,7 +16985,6 @@ modules naming it:
 - `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::run_once_e2e`
-- `humaux-consolidation-worker`
 - `tests`
 
 ### humaux-consolidation-worker → `humaux-infra-cell` (normal)
@@ -17771,7 +17024,6 @@ modules naming it:
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::run_once_e2e`
-- `humaux-consolidation-worker`
 - `tests`
 
 ### humaux-consolidation-worker → `serde` (normal)
@@ -17787,7 +17039,6 @@ modules naming it:
 - `consolidation-worker::inference_client`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::run_once_e2e`
-- `humaux-consolidation-worker`
 - `tests`
 
 ### humaux-consolidation-worker → `sha2` (normal)
@@ -17810,7 +17061,6 @@ modules naming it:
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::run_once_e2e`
-- `humaux-consolidation-worker`
 - `tests`
 
 ### humaux-consolidation-worker → `postgres` (dev)
@@ -17831,7 +17081,6 @@ modules naming it:
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::run_once_e2e`
-- `humaux-consolidation-worker`
 - `tests`
 
 ### humaux-consolidation-worker → `humaux-testkit` (dev)

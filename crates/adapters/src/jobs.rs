@@ -1,7 +1,7 @@
 //! `adapters::jobs` — `ops.jobs` SKIP LOCKED claim, lease heartbeat, and terminal-state transitions (§31 Durable Jobs
 //!   / §61 SKIP LOCKED Claim SQL).
-//! Depends-on: crates=[async-trait, humaux-application, serde_json, sqlx]; services=[PostgreSQL(any) r=[ops.claim_derived_work] w=[ops.jobs] x=[ops.admit_distill_budget, ops.begin_call, ops.claim_derived_work, ops.claim_derived_work_v2, ops.distill_slots_all_bound, ops.finish_derived_work_v2, ops.renew_lease]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::distill_repo, adapters::postgres, application::consolidate, application::distill_execution]
-//! Called-by: [adapters::consolidate_repo, adapters::distill_repo, humaux-consolidation-worker, private-worker::bootstrap, private-worker::main, tests]
+//! Depends-on: crates=[async-trait, humaux-application, serde_json, sqlx]; services=[PostgreSQL(any) r=[ops.claim_derived_work] w=[ops.jobs] x=[ops.admit_distill_budget, ops.begin_call, ops.claim_derived_work, ops.claim_derived_work_v2, ops.distill_slots_all_bound, ops.finish_derived_work_v2, ops.renew_lease]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::distill_repo, adapters::postgres, application::consolidate, application::consolidation_execution, application::distill_execution]
+//! Called-by: [adapters::consolidate_repo, adapters::distill_repo, private-worker::bootstrap, private-worker::main, tests]
 //! Invariants: [one tenant per call: each table-level function opens a transaction and sets humaux.tenant_id before
 //!   touching FORCE-RLS ops.jobs; claims use SKIP LOCKED with a lease; a PG error returns to the caller with no job
 //!   state change; distill claims go only through the four ADR-0058 owner definers, which filter by tenant and job
@@ -31,6 +31,9 @@
 //! time; [`claim`] implements §61 verbatim rather than silently patching around a missing
 //! upstream default.
 
+use humaux_application::consolidation_execution::{
+    ConsolidationClaim, ConsolidationJobPort, DispatchConfig, JobOutcome,
+};
 use sqlx::Row;
 use sqlx::types::Uuid;
 use sqlx::types::time::OffsetDateTime;
@@ -683,6 +686,56 @@ impl<'a> DerivedLease<'a> {
             lease_owner,
             attempt: job.attempt,
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl ConsolidationJobPort for ConsolidationDbPool {
+    async fn claim<'a>(
+        &self,
+        config: &'a DispatchConfig,
+    ) -> Result<Vec<ConsolidationClaim<Self::Lease<'a>>>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let jobs = claim_derived_work_consolidation(
+            self,
+            &[DerivedJobType::Consolidate],
+            &config.lease_owner,
+            config.lease_seconds,
+            config.batch,
+        )
+        .await?;
+        Ok(jobs
+            .into_iter()
+            .map(|job| ConsolidationClaim {
+                lease: DerivedLease::of(&job, &config.lease_owner),
+                job_id: job.job_id,
+                tenant_id: job.tenant_id,
+                attempt: job.attempt,
+                payload: job.payload,
+            })
+            .collect())
+    }
+
+    async fn heartbeat(
+        &self,
+        lease: &Self::Lease<'_>,
+        seconds: f64,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(heartbeat_derived_consolidation(self, lease, seconds).await?)
+    }
+
+    async fn settle(
+        &self,
+        lease: &Self::Lease<'_>,
+        outcome: JobOutcome,
+        seconds: f64,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let outcome = match outcome {
+            JobOutcome::Done => DerivedWorkOutcome::Done,
+            JobOutcome::Retry => DerivedWorkOutcome::Retry,
+            JobOutcome::Dead => DerivedWorkOutcome::Dead,
+        };
+        Ok(settle_derived_consolidation(self, lease, outcome, seconds).await?)
     }
 }
 

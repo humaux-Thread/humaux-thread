@@ -14,6 +14,8 @@ pub mod auth;
 pub mod billing;
 pub mod confirm;
 pub mod consolidate;
+/// Fenced consolidation execution and dispatch (ADR-0130).
+pub mod consolidation_execution;
 pub mod continuity;
 pub mod contribute;
 pub mod contribution_execution;
