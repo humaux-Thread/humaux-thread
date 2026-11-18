@@ -15026,27 +15026,43 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         }
         let path = root.join(HEX_BASELINE);
         let original = fs::read_to_string(&path).unwrap();
-        // shortcut: sample comes from the current baseline; replace it after migration clears it.
-        for marker in ["bins/public-worker/src/main.rs", "humaux_public_pool::"] {
-            let row = original.lines().find(|l| l.contains(marker)).unwrap();
-            let shortened = original
-                .lines()
-                .filter(|l| *l != row)
-                .collect::<Vec<_>>()
-                .join("\n");
-            fs::write(&path, shortened).unwrap();
-            let verdict = hex_layer_gate(&root);
-            assert!(
-                matches!(&verdict, Verdict::Fail(lines) if
-                    lines.iter().any(|l| l.contains("expected exactly ceiling")) &&
-                    lines.iter().any(|l| l.contains("new violation") && l.contains(row))),
-                "{verdict:?}"
-            );
-            println!("removed worker baseline {row}: RED {verdict:?}");
-            fs::write(&path, &original).unwrap();
-            check();
-            println!("removed worker baseline {row}: restored GREEN");
-        }
+        // Use a one-row fixture so this case survives even after production debt reaches zero.
+        let file = "bins/public-worker/src/main.rs";
+        let symbol = "humaux_public_pool::public_repo::PublicRepoEvaluator";
+        let worker = root.join(file);
+        let source = fs::read_to_string(&worker).unwrap();
+        let row = format!("{file}:{symbol}");
+        fs::write(&worker, format!("use {symbol};\n")).unwrap();
+        fs::write(&path, format!("{row}\n")).unwrap();
+        let fixture_errors = || {
+            assert!(hex_layer_source(file));
+            let actual = hex_layer_symbols(&fs::read_to_string(&worker).unwrap())
+                .unwrap()
+                .into_iter()
+                .map(|symbol| format!("{file}:{symbol}"))
+                .collect();
+            hex_exact(&actual, &fs::read_to_string(&path).unwrap(), 1, "HEX-LAYER")
+        };
+        assert!(fixture_errors().is_empty());
+        println!("registered worker baseline {row}: GREEN");
+        fs::write(&path, "").unwrap();
+        let errors = fixture_errors();
+        assert!(
+            errors
+                .iter()
+                .any(|l| l.contains("expected exactly ceiling"))
+                && errors
+                    .iter()
+                    .any(|l| l.contains("new violation") && l.contains(&row)),
+            "{errors:?}"
+        );
+        println!("removed worker baseline {row}: RED {errors:?}");
+        fs::write(&path, format!("{row}\n")).unwrap();
+        assert!(fixture_errors().is_empty());
+        println!("removed worker baseline {row}: restored GREEN");
+        fs::write(&worker, source).unwrap();
+        fs::write(&path, &original).unwrap();
+        check();
         fs::write(&path, format!(
             "{original}bins/public-worker/src/main.rs:humaux_adapters::remember::RememberCommand\n"
         )).unwrap();
