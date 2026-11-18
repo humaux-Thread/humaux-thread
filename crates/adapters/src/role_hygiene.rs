@@ -14,14 +14,17 @@
 //! generator, the parsed migration 0011) and how they are printed; this module only turns them
 //! into verifiers, statements and check results.
 
-use std::collections::BTreeSet;
-
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 use sqlx::Connection as _;
 use sqlx::postgres::{PgConnectOptions, PgConnection};
+
+use humaux_application::role_rotation::DeployCheckPort;
+pub use humaux_application::role_rotation::{
+    CheckResult, CheckStatus, Placeholders, RolePassword, derive_candidates,
+};
 
 use crate::postgres::{MaintenanceDbPool, MigratorDbPool};
 use crate::provisioning::ProvisioningError;
@@ -30,28 +33,6 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// PostgreSQL's own `scram_iterations` default, the count `psql \password` uses (RFC 7677 §4).
 const SCRAM_ITERATIONS: u32 = 4096;
-
-/// A role password held in memory only. `Debug` prints `<redacted>` so a stray `{:?}` cannot leak it.
-#[derive(Clone, PartialEq, Eq)]
-pub struct RolePassword(String);
-
-impl RolePassword {
-    /// Wraps a value read from the environment, the generator, or the parsed migration 0011.
-    pub fn new(value: String) -> Self {
-        Self(value)
-    }
-
-    /// The plaintext, for the one place that must use it (a login probe, the print-once line).
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for RolePassword {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("RolePassword(<redacted>)")
-    }
-}
 
 fn hmac(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
     let mut mac =
@@ -217,118 +198,6 @@ pub fn classify_probe(result: Result<(), Option<&str>>) -> ProbeOutcome {
         Err(Some("28P01")) => ProbeOutcome::Refused,
         Err(Some("28000")) => ProbeOutcome::Unverified,
         Err(_) => ProbeOutcome::Infra,
-    }
-}
-
-/// Tri-state result of one deploy-check (§57.1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CheckStatus {
-    /// The invariant holds.
-    Pass,
-    /// The invariant is broken; the detail names the roles or variables.
-    Fail,
-    /// The check could not run; the detail names the missing object.
-    NotApplicable,
-}
-
-impl CheckStatus {
-    /// The wire spelling in the deploy-check receipt.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Pass => "pass",
-            Self::Fail => "fail",
-            Self::NotApplicable => "not_applicable",
-        }
-    }
-}
-
-/// One named deploy-check result. `detail` holds role or variable names only, never a value.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CheckResult {
-    /// Stable check name (`placeholder_login`, `probe_valid`, ...).
-    pub name: &'static str,
-    /// Tri-state outcome.
-    pub status: CheckStatus,
-    /// Names only.
-    pub detail: String,
-}
-
-impl CheckResult {
-    /// §57.1: a check that cannot run names the missing object.
-    pub fn not_applicable(name: &'static str, missing_object: &str) -> Self {
-        Self {
-            name,
-            status: CheckStatus::NotApplicable,
-            detail: format!("missing object: {missing_object}"),
-        }
-    }
-
-    fn from_problems(name: &'static str, problems: Vec<String>, ok: String) -> Self {
-        if problems.is_empty() {
-            Self {
-                name,
-                status: CheckStatus::Pass,
-                detail: ok,
-            }
-        } else {
-            Self {
-                name,
-                status: CheckStatus::Fail,
-                detail: problems.join("; "),
-            }
-        }
-    }
-}
-
-/// The repository placeholder set (ADR-0059 D-F): the passwords migration 0011 publishes, all of the
-/// form `P_<role>` for one common prefix `P`.
-pub struct Placeholders {
-    values: Vec<RolePassword>,
-    prefix: String,
-}
-
-/// ADR-0059 D-F: checks every `(role, value)` pair has the form `P_<role>` for one common `P` and keeps
-/// that `P`. `None` = convention drift (the caller reports `roles-sql parse drift`).
-pub fn derive_candidates(pairs: &[(String, RolePassword)]) -> Option<Placeholders> {
-    let (first_role, first) = pairs.first()?;
-    let prefix = first.expose().strip_suffix(&format!("_{first_role}"))?;
-    if prefix.is_empty()
-        || pairs
-            .iter()
-            .any(|(role, v)| v.expose() != format!("{prefix}_{role}"))
-    {
-        return None;
-    }
-    Some(Placeholders {
-        values: pairs.iter().map(|(_, v)| v.clone()).collect(),
-        prefix: prefix.to_owned(),
-    })
-}
-
-impl Placeholders {
-    /// Candidates tried against `role`: the published values, plus `P_<role>` (the same convention
-    /// for a role 0011 does not create, e.g. role_admin) and `P` itself (the dev superuser value).
-    pub fn for_role(&self, role: &str) -> Vec<RolePassword> {
-        let mut seen = BTreeSet::new();
-        self.values
-            .iter()
-            .cloned()
-            .chain([
-                RolePassword::new(format!("{}_{role}", self.prefix)),
-                RolePassword::new(self.prefix.clone()),
-            ])
-            .filter(|c| seen.insert(c.expose().to_owned()))
-            .collect()
-    }
-
-    /// ADR-0059 D-E: `true` when `value` contains the prefix `P`, which every published value and
-    /// every candidate of [`Self::for_role`] does, so equality with any candidate is covered too.
-    pub fn taints(&self, value: &str) -> bool {
-        value.contains(&self.prefix)
-    }
-
-    fn contains(&self, value: &str) -> bool {
-        value == self.prefix || self.values.iter().any(|v| v.expose() == value)
     }
 }
 
@@ -624,6 +493,42 @@ impl humaux_application::role_rotation::RoleRotationPort for MigratorDbPool {
             },
         )
         .await
+    }
+}
+
+struct DeployChecks {
+    pool: MaintenanceDbPool,
+    probe: PgConnectOptions,
+}
+
+/// Wire the read-only catalog/DSN probes using the operator connection.
+pub fn deploy_checks(
+    pool: MaintenanceDbPool,
+    probe: PgConnectOptions,
+) -> impl DeployCheckPort<Error = ProvisioningError> {
+    DeployChecks { pool, probe }
+}
+
+#[async_trait::async_trait(?Send)]
+impl DeployCheckPort for DeployChecks {
+    type Error = ProvisioningError;
+
+    async fn catalog_checks(
+        &self,
+        probed: &[String],
+        password_roles: &[String],
+        owner: &str,
+        placeholders: &Placeholders,
+    ) -> Result<[CheckResult; 4], Self::Error> {
+        let login = check_placeholder_login(&self.probe, probed, placeholders).await?;
+        let valid = check_probe_valid(&self.probe, probed).await?;
+        let owner = check_owner_nologin(&self.pool, owner).await?;
+        let writes = check_schema_migrations_write(&self.pool, password_roles).await?;
+        Ok([login, valid, owner, writes])
+    }
+
+    fn env_check(env: &[(String, String)], placeholders: &Placeholders) -> CheckResult {
+        check_env_dsn_placeholders(env, placeholders)
     }
 }
 

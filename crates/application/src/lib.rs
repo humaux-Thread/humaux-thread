@@ -63,6 +63,8 @@ pub mod health;
 
 /// Pure §73 credential/network vocabulary.
 pub mod api_key;
+pub mod membership_admin;
+pub mod partition_retention;
 /// Projection worker boot checks and claimed-pass orchestration (ADR-0130).
 pub mod projection_execution;
 /// Projection maintenance use cases (ADR-0130).

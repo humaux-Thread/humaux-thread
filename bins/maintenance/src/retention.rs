@@ -2,8 +2,8 @@
 //!   execute` (ADR-0063 D-H, D-I): flag parsing, the superuser connect and the JSON receipt. Every drop predicate
 //!   (policy, cutoff, newest leaf, registry = catalog by name and bounds, proposal, holds, row count) lives in
 //!   `control.partition_drop_check`; the SQL calls live in `adapters::maintenance_repo`.
-//! Depends-on: crates=[humaux-adapters, serde_json, time]; services=[PostgreSQL(owner)];
-//!   env=[HUMAUX_MIGRATOR_PG_DSN]; modules=[adapters::maintenance_repo, adapters::postgres, maintenance::main]
+//! Depends-on: crates=[humaux-adapters, humaux-application, serde_json, time]; services=[PostgreSQL(owner)];
+//!   env=[HUMAUX_MIGRATOR_PG_DSN]; modules=[application::partition_retention, application::scheduler, adapters::postgres, maintenance::main]
 //! Called-by: [maintenance::main]
 //! Invariants: [never resident: each arm opens the superuser migrator principal for one transaction from the
 //!   operator's shell and exits (both resident modes refuse to boot with that key, ADR-0063 D-H); a non-superuser or
@@ -16,8 +16,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use humaux_adapters::maintenance_repo::{self as repo, DropOutcome, DropRequest, PartitionTable};
 use humaux_adapters::postgres::{PoolInitError, RetentionExecutor};
+use humaux_application::partition_retention::{
+    self as retention, DropOutcome, DropRequest, RetentionAdmin,
+};
+use humaux_application::scheduler::PartitionTable;
 use serde_json::json;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -38,6 +41,16 @@ async fn executor() -> Result<RetentionExecutor> {
         }
         PoolInitError::Connect(_) => Failure::Infra(format!("connect {MIGRATOR_DSN}: {e}")),
     })
+}
+
+fn audit(admin: &Admin) -> RetentionAdmin<'_> {
+    RetentionAdmin {
+        actor: &admin.actor,
+        reason: &admin.reason,
+        ticket: &admin.ticket,
+        trace_id: &admin.trace_id,
+        step_up_auth_context: &admin.step_up,
+    }
 }
 
 /// `--lock-timeout-ms`: how long any lock of the run may queue before the run refuses (55P03, exit 1).
@@ -71,8 +84,7 @@ pub(crate) async fn approve(args: &Args) -> Result<Output> {
     let timeout = lock_timeout(args)?;
     let exec = executor().await?;
     let receipt =
-        repo::retention_approve(&exec, table, months, effective_at, timeout, &admin.action())
-            .await?;
+        retention::approve(&exec, table, months, effective_at, timeout, audit(&admin)).await?;
     let mut out = to_json(&receipt)?;
     out["command"] = json!("retention approve");
     out["outcome"] = json!("created");
@@ -101,7 +113,7 @@ pub(crate) async fn create_partitions(args: &Args) -> Result<Output> {
     }
     let timeout = lock_timeout(args)?;
     let exec = executor().await?;
-    let receipt = repo::create_partitions(&exec, months_ahead, timeout, &admin.action()).await?;
+    let receipt = retention::create_partitions(&exec, months_ahead, timeout, audit(&admin)).await?;
     let mut out = to_json(&receipt)?;
     out["command"] = json!("retention create-partitions");
     out["outcome"] = json!(if receipt.created.is_empty() {
@@ -140,7 +152,7 @@ pub(crate) async fn execute(args: &Args) -> Result<Output> {
         dry_run,
     };
     let exec = executor().await?;
-    let mut out = match repo::retention_execute(&exec, &request, &admin.action()).await? {
+    let mut out = match retention::execute(&exec, &request, audit(&admin)).await? {
         DropOutcome::Listed(due) => json!({ "outcome": "listed", "due": to_json(&due)? }),
         DropOutcome::DryRun {
             leaf,

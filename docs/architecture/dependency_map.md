@@ -479,6 +479,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::lifecycle_execution`
 
+#### `application::membership_admin`
+
 #### `application::pin`
 
 #### `application::private_inference`
@@ -3163,6 +3165,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::lifecycle_execution`
 
+#### `application::membership_admin`
+
+#### `application::partition_retention`
+
 #### `application::pin`
 
 #### `application::private_inference`
@@ -3180,6 +3186,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::retrieve`
 
 #### `application::role_rotation`
+- env `HUMAUX_MIGRATOR_PG_DSN`
 
 #### `application::scheduler`
 
@@ -14383,6 +14390,7 @@ modules naming it:
 - `adapters::jobs`
 - `adapters::login_repo`
 - `adapters::maintenance_repo`
+- `adapters::membership_repo`
 - `adapters::memory_governance_repo`
 - `adapters::memory_repo`
 - `adapters::model_call_ledger`
@@ -14561,6 +14569,7 @@ modules naming it:
 - `adapters::login_repo`
 - `adapters::maintenance_repo`
 - `adapters::mechanism_observation`
+- `adapters::membership_repo`
 - `adapters::memory_governance_repo`
 - `adapters::memory_repo`
 - `adapters::oauth_repo`
@@ -14737,7 +14746,6 @@ modules naming it:
 why: serializable onboarding receipts
 
 modules naming it:
-- `adapters::maintenance_repo`
 - `adapters::plan_repo`
 - `adapters::processing_status`
 - `adapters::project_rollup`
@@ -15524,6 +15532,7 @@ modules naming it:
 - `application::independent_audit`
 - `application::lifecycle_execution`
 - `application::login`
+- `application::membership_admin`
 - `application::notify`
 - `application::oauth`
 - `application::oauth_exchange`
@@ -15573,6 +15582,7 @@ modules naming it:
 - `application::auth`
 - `application::oauth_exchange`
 - `application::referral`
+- `application::role_rotation`
 - `application::session`
 - `application::signed_token`
 - `application::supersede`
@@ -15624,6 +15634,7 @@ why: wire/DTO (de)serialization for continuity handoff and notify payloads
 modules naming it:
 - `application::continuity`
 - `application::notify`
+- `application::partition_retention`
 - `application::recall_read`
 
 ### humaux-application → `serde_json` (normal)
@@ -15670,7 +15681,9 @@ modules naming it:
 - `application::independent_audit`
 - `application::lifecycle_execution`
 - `application::login`
+- `application::membership_admin`
 - `application::oauth_exchange`
+- `application::partition_retention`
 - `application::private_inference`
 - `application::projection_execution`
 - `application::projection_maintenance`
@@ -15701,8 +15714,10 @@ modules naming it:
 - `application::distill_execution`
 - `application::forget`
 - `application::lifecycle_execution`
+- `application::membership_admin`
 - `application::oauth`
 - `application::oauth_exchange`
+- `application::partition_retention`
 - `application::pin`
 - `application::private_inference`
 - `application::projection_maintenance`
@@ -15733,6 +15748,7 @@ modules naming it:
 - `application::lifecycle_execution`
 - `application::oauth`
 - `application::oauth_exchange`
+- `application::partition_retention`
 - `application::read_quota`
 - `application::recall_read`
 - `application::remember`
@@ -17718,11 +17734,14 @@ why: operational health sampling use case
 
 modules naming it:
 - `maintenance::health_serve`
+- `maintenance::member`
 - `maintenance::projection_serve`
 - `maintenance::rebuild_cli`
+- `maintenance::retention`
 - `maintenance::roles`
 - `maintenance::serve`
 - `maintenance::switch_visible`
+- `tests`
 
 ### humaux-maintenance → `humaux-adapters` (normal)
 why: the onboarding library (provisioning), typed maintenance pool, quota window and membership admin path

@@ -1,6 +1,6 @@
 //! `maintenance::member` — §6.3 membership lifecycle admin path (invite/activate/suspend/remove/set-role).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, tokio, uuid]; services=[PostgreSQL(role_maintenance)];
-//!   env=[HUMAUX_MAINTENANCE_PG_DSN]; modules=[adapters::membership_repo, adapters::postgres, domain::identity,
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, tokio, uuid]; services=[PostgreSQL(role_maintenance)];
+//!   env=[HUMAUX_MAINTENANCE_PG_DSN]; modules=[application::membership_admin, adapters::postgres, domain::identity,
 //!   domain::ids]
 //! Called-by: [maintenance::main, xtask::member]
 //! Invariants: [domain refuses illegal role edges and the last-OWNER rule; every action (including a refusal) appends its §77 audit row in the same transaction]
@@ -16,8 +16,8 @@
 //! reason, §78.1); `--trace-id` is optional and minted per invocation when absent, and is
 //! printed either way. Prints one `member: pass (...)` / `member: fail (...)` line.
 
-use humaux_adapters::membership_repo::{self, AdminAction, MembershipRepoError, MembershipRequest};
 use humaux_adapters::postgres::MaintenanceDbPool;
+use humaux_application::membership_admin::{self, AdminAction, MembershipRequest};
 use humaux_domain::identity::{MembershipMutation, MembershipRole};
 use humaux_domain::ids::{TenantId, UserId};
 use uuid::Uuid;
@@ -113,15 +113,7 @@ fn run_inner(args: &[String]) -> Result<String, String> {
         let pool = MaintenanceDbPool::connect(&dsn)
             .await
             .map_err(|e| format!("cannot connect to ${MAINTENANCE_DSN_ENV}: {e}"))?;
-        let outcome = membership_repo::apply(&pool, tenant_id, user_id, request, admin)
-            .await
-            .map_err(|e| match e {
-                // Display already carries the §52 code for CONFLICT / NOT_FOUND / INVALID_INPUT.
-                MembershipRepoError::Db(_) => {
-                    format!("{} — {e} trace_id={trace_id}", e.error_code().as_str())
-                }
-                other => format!("{other} trace_id={trace_id}"),
-            })?;
+        let outcome = membership_admin::apply(&pool, tenant_id, user_id, request, admin).await?;
         Ok(format!(
             "membership_id={} state={} role={} user_security_epoch={} audit_event_id={} trace_id={trace_id}",
             outcome.membership_id,

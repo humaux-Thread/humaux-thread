@@ -17,8 +17,15 @@ use humaux_adapters::postgres::{
     ROLE_GATEWAY, ROLE_MAINTENANCE, ROLE_MIGRATION_OWNER, ROLE_PRIVATE_WORKER, ROLE_PUBLIC_WORKER,
     ROLE_RETRIEVAL_WORKER,
 };
-use humaux_adapters::role_hygiene::{self, CheckResult, CheckStatus, Placeholders, RolePassword};
-use humaux_application::role_rotation::{self, RoleCredential, RotateRoles};
+use humaux_adapters::role_hygiene;
+use humaux_application::role_rotation::{
+    self, CheckResult, CheckStatus, Placeholders, RoleCredential, RolePassword, RotateRoles,
+    Source, derive_candidates, env_name, parse_roles_sql,
+};
+#[cfg(test)]
+use humaux_application::role_rotation::{
+    MIN_PASSWORD_LEN, maintenance_not_applicable, password_for,
+};
 use serde_json::{Value, json};
 
 use crate::{Admin, Args, Failure, Output, Result, env};
@@ -44,103 +51,6 @@ fn password_roles() -> Vec<String> {
         .collect()
 }
 
-/// Minimum length of an operator-supplied role password (ADR-0059 D-E).
-const MIN_PASSWORD_LEN: usize = 32;
-
-/// `HUMAUX_ROLE_PASSWORD_<SUFFIX>`, SUFFIX = the role name without `role_`, upper-cased.
-fn env_name(role: &str) -> String {
-    format!(
-        "HUMAUX_ROLE_PASSWORD_{}",
-        role.strip_prefix("role_")
-            .unwrap_or(role)
-            .to_ascii_uppercase()
-    )
-}
-
-/// Where one rotated password came from (receipt field `source`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Source {
-    Env,
-    Generated,
-}
-
-impl Source {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Env => "env",
-            Self::Generated => "generated",
-        }
-    }
-}
-
-/// The new password of `role`: `HUMAUX_ROLE_PASSWORD_<SUFFIX>` when set (at least
-/// [`MIN_PASSWORD_LEN`] URL-unreserved characters, so a DSN needs no encoding, and not built on the
-/// repository placeholder prefix), else 32 random bytes hex-encoded. A refusal names the variable,
-/// never the value.
-fn password_for(
-    role: &str,
-    placeholders: &Placeholders,
-    lookup: impl Fn(&str) -> Option<String>,
-) -> std::result::Result<(RolePassword, Source), String> {
-    let name = env_name(role);
-    match lookup(&name) {
-        Some(value) => {
-            let unreserved = value
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '~' | '-'));
-            if value.chars().count() < MIN_PASSWORD_LEN || !unreserved {
-                return Err(format!(
-                    "{name}: must be at least {MIN_PASSWORD_LEN} characters from [A-Za-z0-9._~-]"
-                ));
-            }
-            // ADR-0059 D-E: a rotation must never report success while a published value stays live.
-            if placeholders.taints(&value) {
-                return Err(format!(
-                    "{name}: is built on the repository placeholder prefix of migration 0011; \
-                     unset it to generate a value"
-                ));
-            }
-            Ok((RolePassword::new(value), Source::Env))
-        }
-        None => {
-            let bytes: [u8; 32] = rand::random();
-            let hex = bytes.iter().map(|b| format!("{b:02x}")).collect();
-            Ok((RolePassword::new(hex), Source::Generated))
-        }
-    }
-}
-
-/// ADR-0059 D-F: the eight `(role, placeholder)` pairs of migration 0011, parsed at run time so the
-/// repository holds no second copy. Exactly eight distinct roles, or `Err` (parse drift).
-fn parse_roles_sql(text: &str) -> std::result::Result<Vec<(String, RolePassword)>, String> {
-    const CREATE: &str = "CREATE ROLE ";
-    const PASSWORD: &str = " LOGIN PASSWORD '";
-    let mut pairs: Vec<(String, RolePassword)> = Vec::new();
-    for line in text.lines() {
-        let Some(rest) = line.trim_start().strip_prefix(CREATE) else {
-            continue;
-        };
-        let Some((role, tail)) = rest.split_once(PASSWORD) else {
-            continue;
-        };
-        let value = tail
-            .split_once('\'')
-            .map(|(v, _)| v)
-            .ok_or_else(|| format!("role {role}: unterminated password literal"))?;
-        if pairs.iter().any(|(r, _)| r == role) {
-            return Err(format!("role {role} appears twice"));
-        }
-        pairs.push((role.to_owned(), RolePassword::new(value.to_owned())));
-    }
-    if pairs.len() != 8 {
-        return Err(format!(
-            "{} placeholder roles, expected 8 (ADR-0059 D-F)",
-            pairs.len()
-        ));
-    }
-    Ok(pairs)
-}
-
 /// ADR-0059 D-F: the placeholder set of the `--roles-sql <0011>` file, parsed at run time.
 fn placeholders_from(args: &Args) -> Result<Placeholders> {
     let path = args.required("--roles-sql")?;
@@ -148,7 +58,7 @@ fn placeholders_from(args: &Args) -> Result<Placeholders> {
         .map_err(|e| Failure::Usage(format!("--roles-sql {path}: {e}")))?;
     let pairs = parse_roles_sql(&text)
         .map_err(|why| Failure::Infra(format!("roles-sql parse drift: {why}")))?;
-    role_hygiene::derive_candidates(&pairs).ok_or_else(|| {
+    derive_candidates(&pairs).ok_or_else(|| {
         Failure::Infra("roles-sql parse drift: a placeholder is not <P>_<role>".to_owned())
     })
 }
@@ -185,32 +95,19 @@ fn rotate_receipt(rotated: &[(String, RolePassword, Source)], admin: &Admin) -> 
 pub(crate) async fn rotate(args: &Args) -> Result<Output> {
     let admin = Admin::from(args)?;
     let create_missing = args.0.iter().any(|a| a == "--create-missing");
-    let allowed: Vec<String> = if create_missing {
-        LOGIN_ROLES_0011.iter().map(|r| (*r).to_owned()).collect()
-    } else {
-        password_roles()
-    };
     let named: Vec<String> = args
         .0
         .windows(2)
         .filter(|w| w[0] == "--role")
         .map(|w| w[1].clone())
         .collect();
-    if let Some(other) = named.iter().find(|r| !allowed.contains(r)) {
-        return Err(Failure::Usage(format!(
-            "--role {other}: not one of {allowed:?} (role_admin is created by migration 0110, \
-             rotate it after migrate)"
-        )));
-    }
-    let targets = if named.is_empty() { allowed } else { named };
+    let targets =
+        role_rotation::rotation_targets(named, create_missing, &LOGIN_ROLES_0011, ROLE_ADMIN)
+            .map_err(Failure::Usage)?;
     let placeholders = placeholders_from(args)?;
-    let mut rotated = Vec::with_capacity(targets.len());
-    for role in targets {
-        let (password, source) =
-            password_for(&role, &placeholders, |name| std::env::var(name).ok())
-                .map_err(Failure::Usage)?;
-        rotated.push((role, password, source));
-    }
+    let rotated =
+        role_rotation::prepare_passwords(targets, &placeholders, |name| std::env::var(name).ok())
+            .map_err(Failure::Usage)?;
     let dsn = env("HUMAUX_MIGRATOR_PG_DSN")?;
     // dep: PostgreSQL(owner) — the migrate principal, the only one that may ALTER ROLE
     let pool = MigratorDbPool::connect(&dsn)
@@ -237,31 +134,8 @@ pub(crate) async fn rotate(args: &Args) -> Result<Output> {
     Ok(output)
 }
 
-/// The four catalog/probe checks when no maintenance connection can be formed (§57.1).
-fn maintenance_not_applicable(missing: &str) -> Vec<CheckResult> {
-    [
-        "placeholder_login",
-        "probe_valid",
-        "owner_nologin",
-        "schema_migrations_write",
-    ]
-    .into_iter()
-    .map(|name| CheckResult::not_applicable(name, missing))
-    .collect()
-}
-
 fn check_json(check: &CheckResult) -> Value {
     json!({ "name": check.name, "status": check.status.as_str(), "detail": check.detail })
-}
-
-/// A probe check that ran without the superuser target is at best `not_applicable` (§57.1).
-fn without_superuser(check: CheckResult, superuser: Option<&String>) -> CheckResult {
-    match (check.status, superuser) {
-        (CheckStatus::Pass, None) => {
-            CheckResult::not_applicable(check.name, "HUMAUX_MIGRATOR_PG_DSN")
-        }
-        _ => check,
-    }
 }
 
 const MAINTENANCE_DSN: &str = "HUMAUX_MAINTENANCE_PG_DSN";
@@ -314,9 +188,8 @@ pub(crate) async fn deploy_check(args: &Args) -> Result<Output> {
 
     let maintenance = maintenance_dsn(|name| std::env::var(name).ok());
     let source = maintenance.as_ref().ok().map(|(_, source)| *source);
-    let mut checks = Vec::with_capacity(5);
-    match maintenance {
-        Err(missing) => checks.extend(maintenance_not_applicable(&missing)),
+    let catalog = match maintenance {
+        Err(missing) => Err(missing),
         Ok((dsn, _)) => {
             let probe = role_hygiene::probe_options(&dsn).ok_or_else(|| {
                 Failure::Usage(format!("{MAINTENANCE_DSN}: not a PostgreSQL URL"))
@@ -325,21 +198,21 @@ pub(crate) async fn deploy_check(args: &Args) -> Result<Output> {
             let pool = MaintenanceDbPool::connect(&dsn)
                 .await
                 .map_err(|e| Failure::Infra(format!("connect {MAINTENANCE_DSN}: {e}")))?;
-            let login =
-                role_hygiene::check_placeholder_login(&probe, &probed, &placeholders).await?;
-            checks.push(without_superuser(login, superuser.as_ref()));
-            let valid = role_hygiene::check_probe_valid(&probe, &probed).await?;
-            checks.push(without_superuser(valid, superuser.as_ref()));
-            checks.push(role_hygiene::check_owner_nologin(&pool, ROLE_MIGRATION_OWNER).await?);
-            checks
-                .push(role_hygiene::check_schema_migrations_write(&pool, &password_roles()).await?);
+            Ok(role_hygiene::deploy_checks(pool, probe))
         }
-    }
-    let env: Vec<(String, String)> = std::env::vars().collect();
-    checks.push(role_hygiene::check_env_dsn_placeholders(
-        &env,
-        &placeholders,
-    ));
+    };
+    let checks = role_rotation::deploy_check(
+        catalog,
+        role_rotation::DeployCheck {
+            probed: &probed,
+            password_roles: &password_roles(),
+            owner: ROLE_MIGRATION_OWNER,
+            superuser: superuser.as_deref(),
+            placeholders: &placeholders,
+        },
+        || std::env::vars().collect(),
+    )
+    .await?;
     let refused = checks.iter().any(|c| c.status != CheckStatus::Pass);
     let mut output = Output::ok(json!({
         "command": "deploy-check",
@@ -403,7 +276,7 @@ mod tests {
         .expect("0011 body");
         let pairs = parse_roles_sql(&text).expect("eight roles");
         assert!(pairs.iter().all(|(r, _)| r.starts_with("role_")));
-        assert!(role_hygiene::derive_candidates(&pairs).is_some());
+        assert!(derive_candidates(&pairs).is_some());
     }
 
     /// Operator values are validated and refused by variable name; absent ones are generated.
@@ -431,7 +304,7 @@ mod tests {
 
     fn synthetic_placeholders() -> Placeholders {
         let pairs = parse_roles_sql(&synthetic_0011(&EIGHT, &random_token(20))).expect("eight");
-        role_hygiene::derive_candidates(&pairs).expect("convention")
+        derive_candidates(&pairs).expect("convention")
     }
 
     /// ADR-0059 D-E (review P1): an env value equal to a published placeholder, or built on its prefix
@@ -440,7 +313,7 @@ mod tests {
     fn env_value_built_on_a_placeholder_is_refused() {
         let prefix = random_token(28);
         let pairs = parse_roles_sql(&synthetic_0011(&EIGHT, &prefix)).expect("eight");
-        let placeholders = role_hygiene::derive_candidates(&pairs).expect("convention");
+        let placeholders = derive_candidates(&pairs).expect("convention");
         let published = format!("{prefix}_role_a");
         for value in [
             published.clone(),

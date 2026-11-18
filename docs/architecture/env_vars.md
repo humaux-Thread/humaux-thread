@@ -3999,6 +3999,7 @@ processes:
 - process(humaux-maintenance)
 
 modules:
+- `application::role_rotation`
 - `maintenance::deploy_check`
 - `maintenance::drill`
 - `maintenance::migrate`

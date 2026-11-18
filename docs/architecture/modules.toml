@@ -198,6 +198,7 @@ files = [
   "crates/application/tests/api_key.rs",
   "crates/application/src/auth.rs",
   "crates/application/src/login.rs",
+  "crates/application/src/membership_admin.rs",
   "crates/application/src/oauth.rs",
   "crates/application/src/oauth_exchange.rs",
   "crates/application/src/session.rs",
@@ -814,6 +815,7 @@ files = [
   "crates/adapters/src/jobs.rs",
   "crates/adapters/src/maintenance_repo.rs",
   "crates/adapters/src/scheduler.rs",
+  "crates/application/src/partition_retention.rs",
   "crates/application/src/scheduler.rs",
 ]
 kind = "support"
