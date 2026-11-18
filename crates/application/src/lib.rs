@@ -1,6 +1,6 @@
 //! `humaux-application` — Humaux Thread workspace crate（布局见 §58）。
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [crate(humaux-adapters), crate(humaux-billing-worker), crate(humaux-consolidation-worker), crate(humaux-gateway), crate(humaux-maintenance), crate(humaux-private-worker), crate(humaux-protocol), crate(humaux-public-pool), crate(humaux-public-worker), crate(humaux-retrieval-worker)]
+//! Called-by: [crate(humaux-adapters), crate(humaux-admin), crate(humaux-billing-worker), crate(humaux-consolidation-worker), crate(humaux-gateway), crate(humaux-maintenance), crate(humaux-private-worker), crate(humaux-protocol), crate(humaux-public-pool), crate(humaux-public-worker), crate(humaux-retrieval-worker)]
 //! Invariants: []
 //! Spec: §58; §3; §78.3
 //!
@@ -65,6 +65,7 @@ pub mod health;
 
 /// Pure §73 credential/network vocabulary.
 pub mod api_key;
+pub mod mechanism_observation;
 pub mod membership_admin;
 pub mod partition_retention;
 /// Projection worker boot checks and claimed-pass orchestration (ADR-0130).

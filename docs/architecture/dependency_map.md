@@ -479,6 +479,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::lifecycle_execution`
 
+#### `application::mechanism_observation`
+
 #### `application::membership_admin`
 
 #### `application::pin`
@@ -1470,28 +1472,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 ### process(humaux-admin)
 
-#### `adapters::disclosure`
-- writes `ops.data_disclosure_sources`
-- writes `ops.data_disclosures`
-- executes `ops.attach_retrieval_query_source`
-- service `PostgreSQL(any)`
-
-#### `adapters::health`
-- executes `ops.admin_probe_snapshot`
-- executes `ops.health_snapshot`
-- service `PostgreSQL(role_admin)`
-- service `PostgreSQL(role_maintenance)`
-
-#### `adapters::mechanism_observation`
-- reads `public.claim_trust_evaluations`
-- reads `public.claims`
-- reads `public.consensus_ready`
-- reads `public.corroborated`
-- reads `public.eligible_objects`
-- writes `ops.mechanism_e2e_runs`
-- writes `ops.mechanism_observations`
-- service `PostgreSQL(any)`
-
 #### `adapters::postgres`
 - reads `private.events`
 - reads `private.ingest_tickets`
@@ -1557,29 +1537,15 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::health`
 
+#### `application::mechanism_observation`
+
 #### `contracts::mechanism_registry`
 - reads `public.consensus_ready`
 - service `PostgreSQL(any)`
 
-#### `domain::authority`
-
 #### `domain::boundary`
 
-#### `domain::dataclass`
-
-#### `domain::egress`
-
 #### `domain::error`
-
-#### `domain::evidence`
-
-#### `domain::identity`
-
-#### `domain::ids`
-
-#### `domain::memory`
-
-#### `domain::public`
 
 #### `domain::ticket_family`
 
@@ -4553,6 +4519,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `adapters::qdrant`
 - service `Qdrant(*)`
 
+#### `application::mechanism_observation`
+
 #### `application::public_dispatch`
 
 #### `contracts::config_registry`
@@ -4648,6 +4616,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_private_worker)`
 - service `PostgreSQL(role_public_worker)`
 - service `PostgreSQL(role_retrieval_worker)`
+
+#### `public-worker::bootstrap`
 
 #### `public-worker::main`
 - env `HUMAUX_PUBLIC_WORKER_CALLER`
@@ -7925,9 +7895,9 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::health`
 - (no process): `adapters::tests::health_snapshot`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-admin): `adapters::health`
 - process(humaux-admin): `admin::probe`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -7978,7 +7948,6 @@ written by:
 executed by:
 - (no process): `adapters::tests::retrieval_query_sources`
 - process(cargo-xtask): `adapters::disclosure`
-- process(humaux-admin): `adapters::disclosure`
 - process(humaux-gateway): `adapters::disclosure`
 - process(humaux-maintenance): `adapters::disclosure`
 - process(humaux-private-worker): `adapters::disclosure`
@@ -8256,7 +8225,6 @@ written by:
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::retrieval_query_sources`
 - process(cargo-xtask): `adapters::disclosure`
-- process(humaux-admin): `adapters::disclosure`
 - process(humaux-gateway): `adapters::disclosure`
 - process(humaux-maintenance): `adapters::disclosure`
 - process(humaux-private-worker): `adapters::disclosure`
@@ -8291,7 +8259,6 @@ written by:
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::support::contribution_fixture`
 - process(cargo-xtask): `adapters::disclosure`
-- process(humaux-admin): `adapters::disclosure`
 - process(humaux-gateway): `adapters::disclosure`
 - process(humaux-maintenance): `adapters::disclosure`
 - process(humaux-private-worker): `adapters::disclosure`
@@ -8509,10 +8476,10 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::health`
 - (no process): `adapters::tests::health_snapshot`
 - (no process): `maintenance::tests::health_serve`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-admin): `adapters::health`
 - process(humaux-maintenance): `maintenance::health_serve`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -8674,7 +8641,6 @@ read by:
 written by:
 - (no process): `public-pool::tests::mechanism_observation`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-admin): `adapters::mechanism_observation`
 - process(humaux-public-worker): `adapters::mechanism_observation`
 
 executed by:
@@ -8688,7 +8654,6 @@ read by:
 written by:
 - (no process): `public-pool::tests::mechanism_observation`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-admin): `adapters::mechanism_observation`
 - process(humaux-public-worker): `adapters::mechanism_observation`
 
 executed by:
@@ -12487,7 +12452,6 @@ read by:
 - (no process): `public-pool::tests::public_runtime`
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-admin): `adapters::mechanism_observation`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-public-worker): `adapters::mechanism_observation`
 
@@ -12507,7 +12471,6 @@ read by:
 - (no process): `public-pool::tests::public_runtime_qdrant`
 - (no process): `public-pool::tests::support::public_anonymous_seam`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-admin): `adapters::mechanism_observation`
 - process(humaux-public-worker): `adapters::mechanism_observation`
 
 written by:
@@ -12562,7 +12525,6 @@ executed by:
 read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(cargo-xtask): `contracts::mechanism_registry`
-- process(humaux-admin): `adapters::mechanism_observation`
 - process(humaux-admin): `contracts::mechanism_registry`
 - process(humaux-public-worker): `adapters::mechanism_observation`
 - process(humaux-public-worker): `contracts::mechanism_registry`
@@ -12574,7 +12536,6 @@ executed by:
 ### `public.corroborated`
 read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-admin): `adapters::mechanism_observation`
 - process(humaux-public-worker): `adapters::mechanism_observation`
 
 written by:
@@ -12609,7 +12570,6 @@ read by:
 - (no process): `public-pool::tests::public_trust`
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-admin): `adapters::mechanism_observation`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-public-worker): `adapters::mechanism_observation`
 - process(humaux-public-worker): `public-pool::public_repo`
@@ -14390,6 +14350,7 @@ modules naming it:
 - `adapters::jobs`
 - `adapters::login_repo`
 - `adapters::maintenance_repo`
+- `adapters::mechanism_observation`
 - `adapters::membership_repo`
 - `adapters::memory_governance_repo`
 - `adapters::memory_repo`
@@ -14630,7 +14591,6 @@ modules naming it:
 - `adapters::jobs`
 - `adapters::login_repo`
 - `adapters::maintenance_repo`
-- `adapters::mechanism_observation`
 - `adapters::membership_repo`
 - `adapters::memory_governance_repo`
 - `adapters::memory_repo`
@@ -15534,6 +15494,7 @@ modules naming it:
 - `application::independent_audit`
 - `application::lifecycle_execution`
 - `application::login`
+- `application::mechanism_observation`
 - `application::membership_admin`
 - `application::notify`
 - `application::oauth`
@@ -15552,6 +15513,12 @@ modules naming it:
 - `application::session`
 - `application::supersede`
 - `tests`
+
+### humaux-application → `humaux-contracts` (normal)
+why: canonical mechanism registry inputs and status policy
+
+modules naming it:
+- `application::mechanism_observation`
 
 ### humaux-application → `humaux-retrieval` (normal)
 why: assemble_handoff's return type crosses into retrieval::handoff
@@ -15650,6 +15617,7 @@ modules naming it:
 - `application::distill_execution`
 - `application::entitlement`
 - `application::lifecycle_execution`
+- `application::mechanism_observation`
 - `application::notify`
 - `application::oauth_exchange`
 - `application::projection_maintenance`
@@ -15684,6 +15652,7 @@ modules naming it:
 - `application::independent_audit`
 - `application::lifecycle_execution`
 - `application::login`
+- `application::mechanism_observation`
 - `application::membership_admin`
 - `application::oauth_exchange`
 - `application::partition_retention`
@@ -16795,6 +16764,12 @@ why: typed PG pools, repositories and wire adapters this package drives
 
 modules naming it:
 - `admin::mechanism`
+
+### humaux-admin → `humaux-application` (normal)
+why: admin probe and mechanism observation read ports
+
+modules naming it:
+- `admin::mechanism`
 - `admin::probe`
 - `tests`
 
@@ -17737,6 +17712,7 @@ modules naming it:
 why: operational health sampling use case
 
 modules naming it:
+- `maintenance::deploy_check`
 - `maintenance::health_serve`
 - `maintenance::member`
 - `maintenance::projection_serve`
@@ -17752,7 +17728,6 @@ why: the onboarding library (provisioning), typed maintenance pool, quota window
 
 modules naming it:
 - `maintenance::backup`
-- `maintenance::deploy_check`
 - `maintenance::drill`
 - `maintenance::health_serve`
 - `maintenance::main`
@@ -18364,13 +18339,14 @@ modules naming it:
 why: same-Cell transport and CellAccessPermit for Qdrant/UDS calls
 
 modules naming it:
+- `public-worker::bootstrap`
 - `public-worker::main`
 
 ### humaux-public-worker → `humaux-public-pool` (normal)
 why: public admission, revocation and projection runners this binary drives
 
 modules naming it:
-- `public-worker::main`
+- `public-worker::bootstrap`
 
 ### humaux-public-worker → `tokio` (normal)
 why: async runtime
@@ -20950,7 +20926,7 @@ default run:
 - `crates/adapters/tests/contribution_execution_repo.rs:39` [table-undeclared] (line) — static source-text guard; no DB connection
 - `crates/adapters/tests/contribution_execution_repo.rs:41` [table-write] (line) — static source-text guard; no DB connection
 - `crates/adapters/tests/contribution_execution_repo.rs:42` [table-undeclared] (line) — static source-text guard; no DB connection
-- `crates/application/Cargo.toml:41` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
+- `crates/application/Cargo.toml:43` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
 - `crates/protocol/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/public-pool/src/completeness.rs:379` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module

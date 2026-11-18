@@ -1,7 +1,7 @@
 //! `admin::probe` — `humaux-admin q <name>`: the §4.4 instant probe catalog (8 Readings, 3 typed refusals).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, serde_json, sha2, time, tokio]; services=[PostgreSQL(role_admin)
+//! Depends-on: crates=[humaux-application, humaux-domain, serde_json, sha2, time, tokio]; services=[PostgreSQL(role_admin)
 //!   x=[ops.admin_probe_snapshot]]; env=[CARGO_PKG_NAME, CARGO_PKG_VERSION, HUMAUX_ADMIN_PG_DSN,
-//!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME]; modules=[adapters::health, admin::mechanism, admin::cell_resources,
+//!   HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME]; modules=[application::health, admin::mechanism, admin::cell_resources,
 //!   admin::ops_status, admin::tls_expiry]
 //! Called-by: [admin::cell_resources, admin::main, admin::ops_status, admin::tls_expiry]
 //! Invariants: [the probe is read-only: every DB probe is one call of the read-only aggregate definer
@@ -9,7 +9,7 @@
 //!   probe's scope_hash covers the deployed definition of that function, read with the sample]
 //! Spec: Baseline §4.4; §1.14; ADR-0037; ADR-0061 D-J; §48.1; §78.1; ADR-0065 D-A/D-B; ADR-0061 D-D; ADR-0066 D-B/D-G; ADR-0100
 //! dep-map: allow table-undeclared — the table names here are probe names, refusal text and scan-scope labels; the
-//!   one SQL read is ops.admin_probe_snapshot() through adapters::health
+//!   one SQL read is ops.admin_probe_snapshot() through application::health
 //!
 //! Unified output contract (§4.4): `{value, scanned_n, scope_hash, checked_at, probe_version}`.
 //!
@@ -29,7 +29,7 @@
 //! * Typed refusals (§4.4 line 883 freeze, ADR-0061 E2): `public.corroborated`, `public.consensus_ready` and
 //!   `parse.poison` name the column or state that does not exist in the schema ([`missing_object`]).
 
-use humaux_adapters::health::{self, AdminProbeSample};
+use humaux_application::health::{AdminProbeSample, AdminProbeSnapshotPort};
 use serde_json::json;
 
 /// §4.4 冻结的探针名闭集（新增走 PR）。`mechanism.registry --render` 不在此列
@@ -236,8 +236,8 @@ fn admin_sample() -> Result<AdminProbeSample, String> {
         let pool = crate::mechanism::connect_pool(&dsn)
             .await
             .map_err(|e| format!("PostgreSQL as role_admin (HUMAUX_ADMIN_PG_DSN): {e}"))?;
-        // dep: PostgreSQL(role_admin) — ops.admin_probe_snapshot(), the 0210 aggregate definer, via adapters::health
-        health::read_admin_probe_snapshot(&pool)
+        // dep: PostgreSQL(role_admin) — ops.admin_probe_snapshot(), the 0210 aggregate definer, via application::health
+        pool.admin_probe_snapshot()
             .await
             .map_err(|e| format!("ops.admin_probe_snapshot() as role_admin: {e}"))
     })
@@ -386,7 +386,7 @@ mod tests {
     }
 
     fn sample() -> AdminProbeSample {
-        use humaux_adapters::health::StreamFamilyLag;
+        use humaux_application::health::StreamFamilyLag;
         use humaux_domain::ticket_family::TicketFamily;
         AdminProbeSample {
             as_of: time::OffsetDateTime::UNIX_EPOCH,

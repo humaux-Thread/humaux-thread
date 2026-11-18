@@ -4,7 +4,7 @@
 //!   expected-uid and host-network-DSN cross-checks when both are given, `--release` (four identity comparisons
 //!   against the build's release manifest plus the checkout-tree comparison, review fix 9), `--running`
 //!   (`docker inspect` of the running project against the compose values) and `--secrets-readable` (names only).
-//! Depends-on: crates=[humaux-adapters, serde_json]; services=[subprocess(docker), fs(env_file of the compose document)]; env=[]; modules=[adapters::retrieve]
+//! Depends-on: crates=[humaux-application, serde_json]; services=[subprocess(docker), fs(env_file of the compose document)]; env=[]; modules=[application::signed_token]
 //! Called-by: [maintenance::main, xtask::dep_map]
 //! Invariants: [every check reports ALL its failing reasons, never just the first; a reason carries names (service,
 //!   key, file, target) and never a value; a compose document with a resolved secret value is refused
@@ -205,7 +205,8 @@ fn auth_key_too_short(value: &str) -> bool {
                 .and_then(|pair| u8::from_str_radix(pair, 16).ok())
         })
         .collect();
-    bytes.is_some_and(|bytes| humaux_adapters::retrieve::TokenKeys::new(bytes, None).is_err())
+    bytes
+        .is_some_and(|bytes| humaux_application::signed_token::TokenKeys::new(bytes, None).is_err())
 }
 
 /// Whether any of `sources` sets [`AUTH_SURFACE_ENABLED`] to `true` for process `p`.

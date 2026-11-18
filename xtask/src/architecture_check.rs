@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 31, "HEX-LAYER")
+    hex_exact(actual, baseline, 26, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -1431,6 +1431,7 @@ const HEX_LAYER_EXCLUDED: &[&str] = &[
     "bins/billing-worker/src/main.rs",            // Startup probe; no processing loop (§71.2).
     "bins/worker/src/main.rs",                    // Unwired process scaffold (§4.2).
     "bins/consolidation-worker/src/dsn.rs",       // DSN resolution only (§4.2).
+    "bins/public-worker/src/bootstrap.rs",        // ADR-0130 D2 / SLICE-14a projection composition.
     "bins/private-worker/src/bootstrap.rs",       // ADR-0130 D2 / M20-SHARED-JOB-CLAIM composition.
     "bins/private-worker/src/dsn.rs",             // DSN resolution only (§4.2).
     "bins/private-worker/src/route_providers.rs", // Provider/credential assembly (§39).
@@ -14249,6 +14250,59 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// ADR-0130 D2: the migrated entry points reject their former adapter types.
+    #[test]
+    fn hex_boundary_slice14a_entry_red_green() {
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("slice14a-boundary-{}", std::process::id()));
+        hex_copy_boundary_fixture(&workspace_root(), &root);
+        let green = || {
+            let verdict = hex_layer_gate(&root);
+            assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
+        };
+        green();
+        for (file, import) in [
+            (
+                "public-worker/src/main.rs",
+                "humaux_public_pool::public_projection::PublicProjectionAdapter",
+            ),
+            (
+                "admin/src/probe.rs",
+                "humaux_adapters::health::AdminProbeSample",
+            ),
+            (
+                "admin/src/mechanism.rs",
+                "humaux_adapters::mechanism_observation::RuntimeObservations",
+            ),
+            (
+                "maintenance/src/deploy_check.rs",
+                "humaux_adapters::retrieve::TokenKeys",
+            ),
+        ] {
+            let path = root.join("bins").join(file);
+            let original = fs::read_to_string(&path).unwrap();
+            fs::write(&path, format!("{original}\nuse {import} as Regression;\n")).unwrap();
+            let red = hex_layer_gate(&root);
+            fs::write(&path, original).unwrap();
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.contains(file) && line.contains(import))),
+                "{red:?}"
+            );
+            println!("SLICE-14a {file}: RED {red:?}");
+            green();
+            println!("SLICE-14a {file}: restored GREEN");
+        }
+        for writer in [false, true] {
+            let verdict = hex_boundary_gate(&root, writer);
+            assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
+        }
+        let coverage = hex_coverage_gate(&root);
+        assert!(matches!(coverage, Verdict::Pass), "{coverage:?}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     /// §80.1: each migrated lifecycle entry must reject its former adapter import.
     #[test]
     fn hex_boundary_slice9a_entry_red_green() {
@@ -14918,10 +14972,7 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             .unwrap_or_else(std::env::temp_dir)
             .join(format!("hex-worker-fixture-{}", std::process::id()));
         hex_copy_boundary_fixture(&real_root(), &root);
-        let check = || {
-            let verdict = hex_layer_gate(&root);
-            assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
-        };
+        let check = || assert_eq!(hex_layer_gate(&root), Verdict::Pass);
         check();
         // SLICE-5d: restoring any removed MANUAL ingress dependency must fail at the real entry.
         for symbol in [
@@ -14972,27 +15023,6 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         }
         let path = root.join(HEX_BASELINE);
         let original = fs::read_to_string(&path).unwrap();
-        // shortcut: sample comes from the current baseline; replace it after migration clears it.
-        for marker in ["bins/public-worker/src/main.rs", "humaux_public_pool::"] {
-            let row = original.lines().find(|l| l.contains(marker)).unwrap();
-            let shortened = original
-                .lines()
-                .filter(|l| *l != row)
-                .collect::<Vec<_>>()
-                .join("\n");
-            fs::write(&path, shortened).unwrap();
-            let verdict = hex_layer_gate(&root);
-            assert!(
-                matches!(&verdict, Verdict::Fail(lines) if
-                    lines.iter().any(|l| l.contains("expected exactly ceiling")) &&
-                    lines.iter().any(|l| l.contains("new violation") && l.contains(row))),
-                "{verdict:?}"
-            );
-            println!("removed worker baseline {row}: RED {verdict:?}");
-            fs::write(&path, &original).unwrap();
-            check();
-            println!("removed worker baseline {row}: restored GREEN");
-        }
         fs::write(&path, format!(
             "{original}bins/public-worker/src/main.rs:humaux_adapters::remember::RememberCommand\n"
         )).unwrap();
@@ -15006,6 +15036,37 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         fs::write(&path, &original).unwrap();
         check();
         println!("baseline exceeds ceiling: restored GREEN");
+        // Use a one-row fixture so this case survives even after production debt reaches zero.
+        let file = "bins/public-worker/src/main.rs";
+        let symbol = "humaux_public_pool::public_repo::PublicRepoEvaluator";
+        let worker = root.join(file);
+        let row = format!("{file}:{symbol}");
+        fs::write(&worker, format!("use {symbol};\n")).unwrap();
+        fs::write(&path, format!("{row}\n")).unwrap();
+        let fixture_errors = || {
+            assert!(hex_layer_source(file));
+            let actual = hex_layer_symbols(&fs::read_to_string(&worker).unwrap())
+                .unwrap()
+                .into_iter()
+                .map(|symbol| format!("{file}:{symbol}"))
+                .collect();
+            hex_exact(&actual, &fs::read_to_string(&path).unwrap(), 1, "HEX-LAYER")
+        };
+        assert!(fixture_errors().is_empty());
+        println!("registered worker baseline {row}: GREEN");
+        fs::write(&path, "").unwrap();
+        let errors = fixture_errors();
+        assert_eq!(
+            errors,
+            [
+                "HEX-LAYER: baseline row count 0, expected exactly ceiling 1".to_owned(),
+                format!("HEX-LAYER: new violation {row}"),
+            ]
+        );
+        println!("removed worker baseline {row}: RED {errors:?}");
+        fs::write(&path, format!("{row}\n")).unwrap();
+        assert!(fixture_errors().is_empty());
+        println!("removed worker baseline {row}: restored GREEN");
         fs::remove_dir_all(root).unwrap();
     }
 

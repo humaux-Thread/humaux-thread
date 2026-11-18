@@ -1,6 +1,6 @@
 //! `contracts::mechanism_registry` — Canonical §1.14 registry parsing and pure runtime status derivation.
 //! Depends-on: crates=[serde]; services=[PostgreSQL(any) r=[public.consensus_ready]]; env=[]; modules=[]
-//! Called-by: [adapters::mechanism_observation, admin::mechanism, admin::render, tests, xtask::mechanism_registry]
+//! Called-by: [adapters::mechanism_observation, admin::mechanism, admin::render, application::mechanism_observation, tests, xtask::mechanism_registry]
 //! Invariants: [bootstrap columns are rendered only and never feed derive_status; a cached database status is not
 //!   evidence of an executed mechanism]
 //! Spec: Baseline §1.14; §1.14.1; §50.1

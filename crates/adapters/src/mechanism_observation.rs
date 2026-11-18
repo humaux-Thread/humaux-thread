@@ -1,10 +1,10 @@
 //! `adapters::mechanism_observation` — Actual §1.14 runtime observations and immutable E2E execution receipts.
-//! Depends-on: crates=[async-trait, humaux-contracts, humaux-domain, humaux-infra-cell, serde_json, sha2, sqlx];
+//! Depends-on: crates=[async-trait, humaux-application, humaux-contracts, humaux-domain, humaux-infra-cell, sha2, sqlx];
 //!   services=[PostgreSQL(any) r=[public.claim_trust_evaluations, public.claims, public.consensus_ready,
 //!   public.corroborated, public.eligible_objects] w=[ops.mechanism_e2e_runs, ops.mechanism_observations]]; env=[];
-//!   modules=[adapters::postgres, contracts::mechanism_registry, domain::error, domain::identity, domain::public,
+//!   modules=[adapters::postgres, application::mechanism_observation, contracts::mechanism_registry, domain::error, domain::identity, domain::public,
 //!   infra-cell::resource]
-//! Called-by: [admin::mechanism, public-pool::public_repo, tests, xtask::mechanism_registry]
+//! Called-by: [public-pool::public_repo, tests, xtask::mechanism_registry]
 //! Invariants: [reads use the dedicated read-only identity; recording runs on role_maintenance through an existing
 //!   authorized operation; no SQL or shell executor is exposed; bad input is InvalidInput]
 //! Spec: none
@@ -13,12 +13,13 @@
 //! calls an existing authorized business operation; it exposes no SQL/shell executor.
 
 use crate::postgres::{AdminDbPool, MaintenanceDbPool, PublicWorkerDbPool};
+use humaux_application::mechanism_observation::MechanismObservationPort;
+pub use humaux_application::mechanism_observation::RuntimeObservations;
 use humaux_contracts::mechanism_registry::{
-    DerivedMechanismStatus, MechanismE2eEvidence, MechanismObservation, MechanismSpec,
-    MechanismStatus, ObservationTarget, derive_status, parse_registry,
+    MechanismE2eEvidence, MechanismObservation, MechanismStatus, ObservationTarget, derive_status,
+    parse_registry,
 };
 use humaux_domain::{error::ErrorCode, identity::AuthorizationScope, public::ModerationState};
-use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{
     Row,
@@ -104,60 +105,6 @@ fn observation(row: &PgRow) -> Result<MechanismObservation, ErrorCode> {
         binary_build: row.try_get("binary_build").map_err(db_error)?,
         scope_hash: row.try_get("scope_hash").map_err(db_error)?,
     })
-}
-
-/// A consistent read of the requested deployment/cell, never of a fallback target.
-#[derive(Clone, Debug)]
-pub struct RuntimeObservations {
-    /// Scope supplied by the caller and included in both database queries.
-    pub target: ObservationTarget,
-    /// Database clock at the end of the read, in Unix microseconds.
-    pub checked_at_micros: i64,
-    /// Latest row per canonical mechanism ID, including stale rows.
-    pub latest: BTreeMap<String, MechanismObservation>,
-    /// Completed runs whose `after` is the selected latest observation.
-    pub evidence: BTreeMap<String, MechanismE2eEvidence>,
-}
-
-impl RuntimeObservations {
-    /// Recompute, rather than trust the stored `derived_status` cache.
-    pub fn status(&self, spec: &MechanismSpec) -> DerivedMechanismStatus {
-        let id = spec.id();
-        derive_status(
-            spec,
-            &self.target,
-            self.latest.get(&id),
-            self.evidence.get(&id),
-            self.checked_at_micros,
-        )
-    }
-
-    /// Operational output keeps absence and stale evidence visible and reports the
-    /// exact target. This is a registry view, not a §4.4 scalar probe envelope.
-    pub fn render_json(&self, specs: &[MechanismSpec]) -> Value {
-        json!({"deployment_id": self.target.deployment_id, "cell_id": self.target.cell_id,
-            "checked_at_micros": self.checked_at_micros,
-            "mechanisms": specs.iter().map(|spec| {
-                let derived = self.status(spec);
-                json!({"mechanism_id": spec.id(), "status": derived.status.map(MechanismStatus::as_str),
-                    "reason": derived.reason, "observation": self.latest.get(&spec.id()),
-                    "e2e_run_id": self.evidence.get(&spec.id()).map(|e| &e.run_id)})
-            }).collect::<Vec<_>>()})
-    }
-
-    /// A stale mechanism cannot establish runtime readiness. A fresh stored cache
-    /// contradicting the recomputed result also fails G5 rather than being ignored.
-    pub fn cannot_establish(&self, specs: &[MechanismSpec]) -> bool {
-        specs.iter().any(|spec| {
-            let derived = self.status(spec);
-            derived.status == Some(MechanismStatus::Stale)
-                || self.latest.get(&spec.id()).is_some_and(|obs| {
-                    derived
-                        .status
-                        .is_some_and(|status| status != obs.recorded_status)
-                })
-        })
-    }
 }
 
 /// Read actual PostgreSQL state in one read-only repeatable-read snapshot.
@@ -450,4 +397,14 @@ async fn observe_public_review(
     }
     txn.commit().await.map_err(db_error)?;
     Ok(result)
+}
+
+#[async_trait::async_trait]
+impl MechanismObservationPort for AdminDbPool {
+    async fn runtime_observations(
+        &self,
+        target: &ObservationTarget,
+    ) -> Result<RuntimeObservations, ErrorCode> {
+        read_target(self, target).await
+    }
 }

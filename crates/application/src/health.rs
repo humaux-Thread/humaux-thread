@@ -1,6 +1,6 @@
 //! `application::health` — read-only operations health sampling boundary (ADR-0130 D2/D5).
 //! Depends-on: crates=[async-trait, humaux-domain, time]; services=[]; env=[]; modules=[domain::ticket_family]
-//! Called-by: [adapters::health, maintenance::health_serve]
+//! Called-by: [adapters::health, admin::probe, maintenance::health_serve, tests]
 //! Invariants: [one aggregate read; database watermark preserved; no job claim, lease or restore writes]
 //! Spec: §41.2; §78.2; ADR-0061 D-D; ADR-0130 D2/D5
 
@@ -67,4 +67,51 @@ pub async fn sample(
     since: OffsetDateTime,
 ) -> Result<ObservedHealth, String> {
     port.read_health(since).await
+}
+
+/// One stream family's rows of `ops.admin_probe_snapshot()`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamFamilyLag {
+    /// The family the `(domain, projection_kind)` pair names.
+    pub family: TicketFamily,
+    /// `projection.stream_checkpoints` rows of the family.
+    pub streams: u64,
+    /// Rows with `projection_highwater < issued_highwater`.
+    pub lagging: u64,
+    /// Σ `issued_highwater - projection_highwater`.
+    pub lag_total: u64,
+    /// max `issued_highwater - projection_highwater`.
+    pub lag_max: u64,
+}
+
+/// One `ops.admin_probe_snapshot()` row: the §4.4 `stream.watermark` / `outbox.backlog` / `jobs.stuck` inputs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdminProbeSample {
+    /// The database `now()` of the read.
+    pub as_of: OffsetDateTime,
+    /// Per stream family (families with no checkpoint row are absent).
+    pub streams: Vec<StreamFamilyLag>,
+    /// `ops.outbox` rows.
+    pub outbox_total: u64,
+    /// `ops.outbox` rows in PENDING or PROCESSING.
+    pub outbox_undelivered: u64,
+    /// Seconds since the oldest undelivered row was created; `None` when nothing is undelivered.
+    pub outbox_oldest_undelivered_age_seconds: Option<f64>,
+    /// `ops.jobs` rows.
+    pub jobs_total: u64,
+    /// PROCESSING rows whose lease has expired.
+    pub jobs_stuck: u64,
+    /// PROCESSING rows still inside their lease.
+    pub jobs_in_lease: u64,
+    /// `pg_get_functiondef` of `ops.admin_probe_snapshot()` as deployed when the row was read: the statement the
+    /// three DB probes actually ran, so §4.4's `scope_hash` changes with any forward migration that redefines it
+    /// (ADR-0061 review-fix 3, F3).
+    pub definition: String,
+}
+
+/// Cross-tenant aggregates read through the dedicated §4.4 admin snapshot.
+#[async_trait::async_trait]
+pub trait AdminProbeSnapshotPort: Send + Sync {
+    /// Fetch one snapshot with the statement definition used for scope hashing.
+    async fn admin_probe_snapshot(&self) -> Result<AdminProbeSample, String>;
 }

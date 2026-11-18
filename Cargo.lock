@@ -1118,6 +1118,7 @@ name = "humaux-admin"
 version = "0.1.0"
 dependencies = [
  "humaux-adapters",
+ "humaux-application",
  "humaux-contracts",
  "humaux-domain",
  "humaux-infra-cell",
@@ -1141,6 +1142,7 @@ dependencies = [
  "base64 0.22.1",
  "hex",
  "hmac 0.13.0",
+ "humaux-contracts",
  "humaux-domain",
  "humaux-projection",
  "humaux-retrieval",

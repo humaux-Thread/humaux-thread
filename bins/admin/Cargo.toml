@@ -23,6 +23,8 @@ workspace = true
 humaux-infra-cell = { path = "../../crates/infra-cell" }
 # why: typed PG pools, repositories and wire adapters this package drives; used-by: [admin::mechanism]
 humaux-adapters = { path = "../../crates/adapters" }
+# why: admin probe and mechanism observation read ports; used-by: [admin::mechanism, admin::probe]
+humaux-application = { path = "../../crates/application" }
 # why: config/feature/mechanism registries and contract types; used-by: [admin::mechanism, admin::render]
 humaux-contracts = { path = "../../crates/contracts" }
 # §4.4 `degrade.counters`: the closed `DegradeCode::ALL` set a process `/status` must carry in full (ADR-0061 D-J).
