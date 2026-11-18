@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 66, "HEX-LAYER")
+    hex_exact(actual, baseline, 53, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -14824,7 +14824,8 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         }
         let path = root.join(HEX_BASELINE);
         let original = fs::read_to_string(&path).unwrap();
-        for marker in ["bins/private-worker/", "humaux_public_pool::"] {
+        // shortcut: sample comes from the current baseline; replace it after migration clears it.
+        for marker in ["bins/public-worker/src/main.rs", "humaux_public_pool::"] {
             let row = original.lines().find(|l| l.contains(marker)).unwrap();
             let shortened = original
                 .lines()

@@ -1,7 +1,6 @@
 //! `application::consolidate` — Phase 4 T4.6+T4.7: Consolidation worker orchestration (§11.6-11.9, G11-1/G80-29).
-//! Depends-on: crates=[async-trait, hex, humaux-domain, sha2, tokio, uuid]; services=[]; env=[];
-//!   modules=[domain::authority]
-//! Called-by: [adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::distill_repo, adapters::jobs, adapters::model_call_ledger, adapters::private_inference_rpc, adapters::reasoning_route_admission, adapters::reasoning_route_onboarding, application::consolidation_execution, application::contribute, application::contribution_execution, application::distill_execution, consolidation-worker::inference_client, private-worker::inference_rpc, tests]
+//! Depends-on: crates=[async-trait, hex, humaux-domain, sha2, tokio, uuid]; services=[]; env=[]; modules=[application::private_inference, domain::authority]
+//! Called-by: [adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::distill_repo, adapters::jobs, adapters::model_call_ledger, adapters::private_inference_rpc, adapters::reasoning_route_admission, adapters::reasoning_route_onboarding, application::consolidation_execution, application::contribute, application::contribution_execution, application::distill_execution, consolidation-worker::inference_client, private-worker::bootstrap, private-worker::inference_rpc, tests]
 //! Invariants: []
 //! Spec: §11.6; §3; §78.3; §11.2.1
 //!
@@ -337,6 +336,94 @@ pub trait PrivateReasoningPort: Send + Sync {
         &self,
         req: SealedPrivateReasoningRequest,
     ) -> Result<PrivateReasoningResult, PrivateReasoningError>;
+}
+
+/// Concrete provider work and health observation for the claimed inference path (§11.8).
+pub trait ClaimedReasoningPort: Sync {
+    /// Execute the consolidation run and return the admitted route and health observation.
+    fn consolidate(
+        &self,
+        tenant_id: uuid::Uuid,
+        run_id: uuid::Uuid,
+        request: SealedPrivateReasoningRequest,
+    ) -> impl std::future::Future<Output = Result<ConsolidationInference, &'static str>> + Send;
+
+    /// Execute one request on the existing contribution reasoner.
+    fn contribution(
+        &self,
+        request: SealedPrivateReasoningRequest,
+    ) -> impl std::future::Future<
+        Output = Result<Result<PrivateReasoningResult, PrivateReasoningError>, &'static str>,
+    > + Send;
+
+    /// Record worker-observed route health (ADR-0060 E3).
+    fn observe_health(
+        &self,
+        tenant_id: uuid::Uuid,
+        model_call_id: uuid::Uuid,
+        credential_rejected: bool,
+    ) -> impl std::future::Future<Output = ()> + Send;
+}
+
+/// Consolidation execution evidence from the admitted reasoner.
+pub struct ConsolidationInference {
+    pub result: Result<PrivateReasoningResult, PrivateReasoningError>,
+    pub route: Option<String>,
+    pub observed_call: Option<(uuid::Uuid, bool)>,
+}
+
+/// §11.8: choose the reasoner using only the claimed registration.
+pub async fn infer_claimed(
+    reasoning: &impl ClaimedReasoningPort,
+    registration: &crate::private_inference::ClaimedRegistration,
+) -> Result<
+    (
+        Result<PrivateReasoningResult, PrivateReasoningError>,
+        Option<String>,
+    ),
+    &'static str,
+> {
+    let purpose = match registration.purpose.as_str() {
+        "Distill" => PrivateReasoningPurpose::Distill,
+        "Consolidate" => PrivateReasoningPurpose::Consolidate,
+        "Vision" => PrivateReasoningPurpose::Vision,
+        "ContributionDeidentify" => PrivateReasoningPurpose::ContributionDeidentify,
+        _ => return Err("INVALID_REGISTRATION"),
+    };
+    let input_manifest_hash = registration
+        .input_manifest_hash
+        .as_slice()
+        .try_into()
+        .map_err(|_| "INVALID_REGISTRATION")?;
+    let sealed = SealedPrivateReasoningRequest {
+        reasoning_domain_id: PrivateReasoningDomainId(registration.reasoning_domain_id),
+        binding_id: ReasoningRouteBindingId(registration.binding_id),
+        binding_version: ReasoningRouteBindingVersion(registration.binding_version),
+        input_manifest_hash: ContentSha256(input_manifest_hash),
+        purpose,
+        contribution_attempt: None,
+    };
+    match purpose {
+        PrivateReasoningPurpose::Consolidate => {
+            let run_id = registration
+                .consolidation_run_id
+                .ok_or("INVALID_REGISTRATION")?;
+            let execution = reasoning
+                .consolidate(registration.tenant_id, run_id, sealed)
+                .await?;
+            if let Some((model_call_id, credential_rejected)) = execution.observed_call {
+                reasoning
+                    .observe_health(registration.tenant_id, model_call_id, credential_rejected)
+                    .await;
+            }
+            Ok((execution.result, execution.route))
+        }
+        PrivateReasoningPurpose::Distill
+        | PrivateReasoningPurpose::Vision
+        | PrivateReasoningPurpose::ContributionDeidentify => {
+            Ok((reasoning.contribution(sealed).await?, None))
+        }
+    }
 }
 
 /// §11.7 Run State: what a caller who just finished [`adapters::consolidate_repo::

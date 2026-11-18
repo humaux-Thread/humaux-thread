@@ -20,7 +20,7 @@
 //!   HUMAUX_PRIVATE_WORKER_HEALTH_RENEW_SECS, HUMAUX_PRIVATE_WORKER_HTTP_TIMEOUT_SECS,
 //!   HUMAUX_PRIVATE_WORKER_PERMIT_TTL_SECS, HUMAUX_PRIVATE_WORKER_REGIONS, HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH,
 //!   HUMAUX_PRIVATE_WORKER_SERVE_RPC_METRICS_ADDR, HUMAUX_TEST_PG_DSN, MINIMAX_API_KEY, PRIVATE_WORKER_PG_DSN,
-//!   refused:HUMAUX_PRIVATE_WORKER_EGRESS_PROCESSOR_ID]; modules=[adapters::byok, adapters::byok::ssrf, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_reasoner, adapters::jobs, adapters::maintenance_repo, adapters::membership_repo, adapters::postgres, adapters::provisioning, adapters::reasoning_route_admission, adapters::tests::support::throwaway_db, domain::evidence, humaux-testkit, private-worker::distill, private-worker::inference_rpc, private-worker::route_providers, private-worker::tests::support::dispatch_fence, private-worker::tests::support::distill_lane, private-worker::tests::support::double_spend, private-worker::tests::support::live_minimax, private-worker::tests::support::live_provider, testkit::fixture_purge, testkit::reaped]
+//!   refused:HUMAUX_PRIVATE_WORKER_EGRESS_PROCESSOR_ID]; modules=[adapters::byok, adapters::byok::ssrf, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_reasoner, adapters::jobs, adapters::maintenance_repo, adapters::membership_repo, adapters::postgres, adapters::provisioning, adapters::reasoning_route_admission, adapters::tests::support::throwaway_db, domain::evidence, humaux-testkit, private-worker::bootstrap, private-worker::distill, private-worker::inference_rpc, private-worker::route_providers, private-worker::tests::support::dispatch_fence, private-worker::tests::support::distill_lane, private-worker::tests::support::double_spend, private-worker::tests::support::live_minimax, private-worker::tests::support::live_provider, testkit::fixture_purge, testkit::reaped]
 //! Called-by: [cargo-test]
 //! Invariants: [only this file's tenants are ever claimed (foreign scheduler rows are fenced FOR UPDATE); every
 //!   scenario's faults are named in its doc (ADR-0058 records the red→green runs); a fixture deletes its jobs, slots
@@ -1836,30 +1836,32 @@ fn zero_profile_boot_parks_with_a_class() {
         let routes = production_routes(&[]);
         let state = humaux_private_worker::inference_rpc::RpcState {
             expected_consolidation_uid: 0,
-            calls: handle
-                .rt
-                // dep: PostgreSQL(role_private_worker) — the RPC state's own pool
-                .block_on(PrivateWorkerDbPool::connect(&dsn_as_role(
-                    &handle.dsn,
-                    "role_private_worker",
-                )))
-                .expect("pool"),
-            config: reasoner_config(),
-            providers: {
-                let routes = Arc::clone(&routes);
-                Box::new(move |l: &ReasoningAdmissionLocator| routes.provider_for(l))
-            },
-            health_renew_seconds: HEALTH_RENEW_SECS,
+            inference: humaux_private_worker::bootstrap::InferenceRuntime::new(
+                handle
+                    .rt
+                    // dep: PostgreSQL(role_private_worker) — the RPC state's own pool
+                    .block_on(PrivateWorkerDbPool::connect(&dsn_as_role(
+                        &handle.dsn,
+                        "role_private_worker",
+                    )))
+                    .expect("pool"),
+                reasoner_config(),
+                {
+                    let routes = Arc::clone(&routes);
+                    Box::new(move |l: &ReasoningAdmissionLocator| routes.provider_for(l))
+                },
+                HEALTH_RENEW_SECS,
+            ),
         };
         let evidence = accept_evidence(&mut handle, 0);
         let job = handle.job_of(evidence);
         let mut config = dispatch_config("c33b-t35", 60.0);
         config.not_ready_park_seconds = 1.0;
-        let first = handle.pass_routes(state.providers.as_ref(), &config);
+        let first = handle.pass_routes(state.inference.providers.as_ref(), &config);
         assert_eq!((first.not_ready, first.attempts), (1, 0), "{first:?}");
         std::thread::sleep(Duration::from_millis(1200));
         handle.ready_now(job);
-        let second = handle.pass_routes(state.providers.as_ref(), &config);
+        let second = handle.pass_routes(state.inference.providers.as_ref(), &config);
         assert_eq!(second.parked, 1, "{second:?}");
         let (status, _, class, ..) = handle.job(job);
         assert_eq!(

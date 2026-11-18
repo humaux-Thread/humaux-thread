@@ -1,7 +1,7 @@
 //! `adapters::jobs` — `ops.jobs` SKIP LOCKED claim, lease heartbeat, and terminal-state transitions (§31 Durable Jobs
 //!   / §61 SKIP LOCKED Claim SQL).
 //! Depends-on: crates=[async-trait, humaux-application, serde_json, sqlx]; services=[PostgreSQL(any) r=[ops.claim_derived_work] w=[ops.jobs] x=[ops.admit_distill_budget, ops.begin_call, ops.claim_derived_work, ops.claim_derived_work_v2, ops.distill_slots_all_bound, ops.finish_derived_work_v2, ops.renew_lease]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::distill_repo, adapters::postgres, application::consolidate, application::consolidation_execution, application::distill_execution]
-//! Called-by: [adapters::consolidate_repo, adapters::distill_repo, private-worker::bootstrap, private-worker::main, tests]
+//! Called-by: [adapters::consolidate_repo, adapters::distill_repo, private-worker::bootstrap, tests]
 //! Invariants: [one tenant per call: each table-level function opens a transaction and sets humaux.tenant_id before
 //!   touching FORCE-RLS ops.jobs; claims use SKIP LOCKED with a lease; a PG error returns to the caller with no job
 //!   state change; distill claims go only through the four ADR-0058 owner definers, which filter by tenant and job

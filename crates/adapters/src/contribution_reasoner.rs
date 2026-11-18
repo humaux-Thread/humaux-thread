@@ -1,7 +1,7 @@
 //! `adapters::contribution_reasoner` — §12.1.1 production bridge from a sealed contribution request to
 //!   USER_REASONING.
 //! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.private_reasoning_domains, control.tenants, control.users, private.events, private.evidence_objects, private.memory_evidence, private.memory_records] x=[ops.lock_contribution_inputs, public.phase9_public_coverage_for_probe]]; env=[]; modules=[adapters::byok, adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::contribution_scan, adapters::disclosure, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, application::contribute, application::contribution_execution, domain::dataclass, domain::egress, domain::error, domain::evidence, domain::ids, domain::ledger, domain::public]
-//! Called-by: [adapters::consolidation_reasoner, adapters::contribution_execution_ingress, adapters::distill_reasoner, private-worker::bootstrap, private-worker::inference_rpc, private-worker::main, private-worker::route_providers, tests]
+//! Called-by: [adapters::consolidation_reasoner, adapters::contribution_execution_ingress, adapters::distill_reasoner, private-worker::bootstrap, private-worker::route_providers, tests]
 //! Invariants: [private-worker only: source identifiers are reloaded and validated under the authenticated scope
 //!   before any outbound body is built; callers cannot inject private text; an existing reservation or failed
 //!   admission returns an error without a provider call; the provider instance comes only from the admitted route

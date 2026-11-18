@@ -5,7 +5,7 @@
 //!   private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_projects_live,
 //!   private.project_task_relations] w=[private.memory_projects]]; env=[]; modules=[adapters::memory_repo,
 //!   domain::attribution, domain::authority, domain::continuity, domain::relation]
-//! Called-by: [gateway::bootstrap, private-worker::route_providers, tests]
+//! Called-by: [gateway::bootstrap, private-worker::bootstrap, private-worker::route_providers, tests]
 //! Invariants: [runs only through the door's single port call, in the caller's transaction, under the caller's role
 //!   and RLS; every row is deterministic (N09 R1) and carries its rule and decision Evidence (N09 R6); no rung holding
 //!   writes nothing, never a default or a most-recent guess (N09 R3); imports no provider, inference, embedding or
