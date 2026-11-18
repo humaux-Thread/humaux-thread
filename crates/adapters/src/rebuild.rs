@@ -408,6 +408,31 @@ pub async fn close_run(
 /// or an in-process scoped pass (the drill and the tests).
 pub type Pump<'a> = dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Sync + 'a;
 
+/// D-N(g): wait for a generation using only its closed, run-scoped projector.
+pub async fn wait_drill_generation(
+    deps: &RebuildDeps<'_>,
+    stream: &Stream,
+    run: &Run,
+    shared: &SharedProjectionDeps,
+    cfg: &projection_worker::PassConfig,
+    wait: Duration,
+    pause: Duration,
+) -> Result<bool> {
+    let only = crate::stream_repo::OnlyRun {
+        tenant_id: stream.key.tenant_id.0,
+        run_id: run.run_id,
+    };
+    let pump = move || -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            if let Err(e) = projection_worker::run_claimed_pass_for_run(shared, cfg, only).await {
+                eprintln!("humaux-maintenance restore drill: pass: {e:?}");
+            }
+            (shared.sleep)(pause).await;
+        })
+    };
+    wait_generation(deps, stream, run, wait, &pump).await
+}
+
 /// D-E step 5: pumps until no generation ticket of `run` is in flight (`true`) or `wait` has passed (`false`).
 pub async fn wait_generation(
     deps: &RebuildDeps<'_>,
@@ -1887,29 +1912,4 @@ mod tests {
         assert_eq!(failed.get("LOST"), Some(&1));
         assert_eq!(in_flight, 1);
     }
-}
-
-/// D-N(g): wait for a generation using only its closed, run-scoped projector.
-pub async fn wait_drill_generation(
-    deps: &RebuildDeps<'_>,
-    stream: &Stream,
-    run: &Run,
-    shared: &SharedProjectionDeps,
-    cfg: &projection_worker::PassConfig,
-    wait: Duration,
-    pause: Duration,
-) -> Result<bool> {
-    let only = crate::stream_repo::OnlyRun {
-        tenant_id: stream.key.tenant_id.0,
-        run_id: run.run_id,
-    };
-    let pump = move || -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        Box::pin(async move {
-            if let Err(e) = projection_worker::run_claimed_pass_for_run(shared, cfg, only).await {
-                eprintln!("humaux-maintenance restore drill: pass: {e:?}");
-            }
-            (shared.sleep)(pause).await;
-        })
-    };
-    wait_generation(deps, stream, run, wait, &pump).await
 }
