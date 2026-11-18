@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 31, "HEX-LAYER")
+    hex_exact(actual, baseline, 28, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -14247,6 +14247,59 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
             println!("SLICE-13a {file} {import}: restored GREEN");
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// ADR-0130 D2: the migrated entry points reject their former adapter types.
+    #[test]
+    fn hex_boundary_slice14a_entry_red_green() {
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("slice14a-boundary-{}", std::process::id()));
+        hex_copy_boundary_fixture(&workspace_root(), &root);
+        let green = || {
+            let verdict = hex_layer_gate(&root);
+            assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
+        };
+        green();
+        for (file, import) in [
+            (
+                "public-worker/src/main.rs",
+                "humaux_public_pool::public_projection::PublicProjectionAdapter",
+            ),
+            (
+                "admin/src/probe.rs",
+                "humaux_adapters::health::AdminProbeSample",
+            ),
+            (
+                "admin/src/mechanism.rs",
+                "humaux_adapters::mechanism_observation::RuntimeObservations",
+            ),
+            (
+                "maintenance/src/deploy_check.rs",
+                "humaux_adapters::retrieve::TokenKeys",
+            ),
+        ] {
+            let path = root.join("bins").join(file);
+            let original = fs::read_to_string(&path).unwrap();
+            fs::write(&path, format!("{original}\nuse {import} as Regression;\n")).unwrap();
+            let red = hex_layer_gate(&root);
+            fs::write(&path, original).unwrap();
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.contains(file) && line.contains(import))),
+                "{red:?}"
+            );
+            println!("SLICE-14a {file}: RED {red:?}");
+            green();
+            println!("SLICE-14a {file}: restored GREEN");
+        }
+        for writer in [false, true] {
+            let verdict = hex_boundary_gate(&root, writer);
+            assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
+        }
+        let coverage = hex_coverage_gate(&root);
+        assert!(matches!(coverage, Verdict::Pass), "{coverage:?}");
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -1,7 +1,7 @@
 //! `admin::mechanism` — Read-only operational mechanism status.
-//! Depends-on: crates=[humaux-adapters, humaux-contracts,
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-contracts,
 //!   tokio]; services=[PostgreSQL(role_admin)]; env=[CARGO_MANIFEST_DIR,
-//!   HUMAUX_ADMIN_PG_DSN, HUMAUX_ADMIN_PG_POOL_MAX_CONNECTIONS]; modules=[adapters::mechanism_observation, adapters::postgres,
+//!   HUMAUX_ADMIN_PG_DSN, HUMAUX_ADMIN_PG_POOL_MAX_CONNECTIONS]; modules=[application::mechanism_observation, adapters::postgres,
 //!   contracts::mechanism_registry]
 //! Called-by: [admin::main, admin::probe, admin::render]
 //! Invariants: [a query against a mechanism the registry does not recognise returns the typed NotFound, never a default row]
@@ -9,10 +9,8 @@
 //!
 //! No default target and no bootstrap fallback.
 
-use humaux_adapters::{
-    mechanism_observation::{RuntimeObservations, read_target},
-    postgres::AdminDbPool,
-};
+use humaux_adapters::postgres::AdminDbPool;
+use humaux_application::mechanism_observation::{MechanismObservationPort, RuntimeObservations};
 use humaux_contracts::mechanism_registry::{MechanismSpec, parse_registry, parse_target_args};
 
 /// §48.1 / ADR-0065 D-A/D-B: admin observations use the configured process ceiling.
@@ -52,7 +50,7 @@ pub fn read(args: &[String]) -> Result<(Vec<MechanismSpec>, RuntimeObservations)
         let pool = connect_pool(&dsn)
             .await
             .map_err(|_| "cannot connect as read-only role_admin")?;
-        read_target(&pool, &target)
+        pool.runtime_observations(&target)
             .await
             .map_err(|_| "cannot read runtime observation evidence")
     })?;

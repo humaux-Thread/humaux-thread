@@ -3,7 +3,7 @@
 //! Depends-on: crates=[async-trait, humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(role_admin) x=[ops.admin_probe_snapshot],
 //!   PostgreSQL(role_maintenance) x=[ops.health_snapshot]]; env=[]; modules=[application::health, adapters::disclosure,
 //!   adapters::postgres, domain::ticket_family]
-//! Called-by: [admin::probe, tests]
+//! Called-by: [tests]
 //! Invariants: [the only SQL of the health gauges and the aggregate probes; each read is one definer call that
 //!   returns cross-tenant aggregates and no tenant id; an unknown (domain, projection_kind) pair or outcome literal
 //!   fails the read naming it, never a synthesized label (§78.2)]
@@ -17,6 +17,8 @@
 
 use std::fmt;
 
+use humaux_application::health::AdminProbeSnapshotPort;
+pub use humaux_application::health::{AdminProbeSample, StreamFamilyLag};
 use humaux_domain::ticket_family::TicketFamily;
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -77,46 +79,6 @@ pub struct HealthSample {
     pub tenants_active_1d: u64,
     /// The same over the last 168 hours (7 days).
     pub tenants_active_7d: u64,
-}
-
-/// One stream family's rows of `ops.admin_probe_snapshot()`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamFamilyLag {
-    /// The family the `(domain, projection_kind)` pair names.
-    pub family: TicketFamily,
-    /// `projection.stream_checkpoints` rows of the family.
-    pub streams: u64,
-    /// Rows with `projection_highwater < issued_highwater`.
-    pub lagging: u64,
-    /// Σ `issued_highwater - projection_highwater`.
-    pub lag_total: u64,
-    /// max `issued_highwater - projection_highwater`.
-    pub lag_max: u64,
-}
-
-/// One `ops.admin_probe_snapshot()` row: the §4.4 `stream.watermark` / `outbox.backlog` / `jobs.stuck` inputs.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AdminProbeSample {
-    /// The database `now()` of the read.
-    pub as_of: OffsetDateTime,
-    /// Per stream family (families with no checkpoint row are absent).
-    pub streams: Vec<StreamFamilyLag>,
-    /// `ops.outbox` rows.
-    pub outbox_total: u64,
-    /// `ops.outbox` rows in PENDING or PROCESSING.
-    pub outbox_undelivered: u64,
-    /// Seconds since the oldest undelivered row was created; `None` when nothing is undelivered.
-    pub outbox_oldest_undelivered_age_seconds: Option<f64>,
-    /// `ops.jobs` rows.
-    pub jobs_total: u64,
-    /// PROCESSING rows whose lease has expired.
-    pub jobs_stuck: u64,
-    /// PROCESSING rows still inside their lease.
-    pub jobs_in_lease: u64,
-    /// `pg_get_functiondef` of `ops.admin_probe_snapshot()` as deployed when the row was read: the statement the
-    /// three DB probes actually ran, so §4.4's `scope_hash` changes with any forward migration that redefines it
-    /// (ADR-0061 review-fix 3, F3).
-    pub definition: String,
 }
 
 fn count(row: &PgRow, column: &str) -> Result<u64, HealthReadError> {
@@ -306,5 +268,14 @@ mod tests {
         assert_eq!(outcome("DENIED").unwrap(), DisclosureOutcome::Denied);
         let e = outcome("LOST").unwrap_err().to_string();
         assert!(e.contains("\"LOST\""), "{e}");
+    }
+}
+
+#[async_trait::async_trait]
+impl AdminProbeSnapshotPort for AdminDbPool {
+    async fn admin_probe_snapshot(&self) -> Result<AdminProbeSample, String> {
+        read_admin_probe_snapshot(self)
+            .await
+            .map_err(|error| error.to_string())
     }
 }

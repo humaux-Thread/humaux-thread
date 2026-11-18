@@ -15,6 +15,8 @@ workspace = true
 # Phase 2 identity/entitlement modules (§74/§75/§76). Versions: latest stable.
 # why: domain types every use case reads/returns; used-by: [application::affect, application::archive, application::auth, application::confirm, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::correct, application::entitlement, application::notify, application::oauth, application::pin, application::referral, application::retrieval_embedding_port, application::supersede]
 humaux-domain = { path = "../domain" }
+# why: canonical mechanism registry inputs and status policy; used-by: [application::mechanism_observation]
+humaux-contracts = { path = "../contracts" }
 # §25.3 continuity：assemble_handoff 产出 retrieval::handoff::Handoff（G80-31 字节域）。
 # retrieval 只依赖 domain+telemetry，无环。
 # why: assemble_handoff's return type crosses into retrieval::handoff; used-by: [application::continuity, application::retrieve]

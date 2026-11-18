@@ -6067,9 +6067,9 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::health`
 - (no process): `adapters::tests::health_snapshot`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-admin): `adapters::health`
 - process(humaux-admin): `admin::probe`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -6173,7 +6173,6 @@ written by:
 executed by:
 - (no process): `adapters::tests::retrieval_query_sources`
 - process(cargo-xtask): `adapters::disclosure`
-- process(humaux-admin): `adapters::disclosure`
 - process(humaux-gateway): `adapters::disclosure`
 - process(humaux-maintenance): `adapters::disclosure`
 - process(humaux-private-worker): `adapters::disclosure`
@@ -6800,7 +6799,6 @@ written by:
 - (no process): `adapters::tests::disclosure_ledger`
 - (no process): `adapters::tests::retrieval_query_sources`
 - process(cargo-xtask): `adapters::disclosure`
-- process(humaux-admin): `adapters::disclosure`
 - process(humaux-gateway): `adapters::disclosure`
 - process(humaux-maintenance): `adapters::disclosure`
 - process(humaux-private-worker): `adapters::disclosure`
@@ -6902,7 +6900,6 @@ written by:
 - (no process): `adapters::tests::retrieval_query_sources`
 - (no process): `adapters::tests::support::contribution_fixture`
 - process(cargo-xtask): `adapters::disclosure`
-- process(humaux-admin): `adapters::disclosure`
 - process(humaux-gateway): `adapters::disclosure`
 - process(humaux-maintenance): `adapters::disclosure`
 - process(humaux-private-worker): `adapters::disclosure`
@@ -7531,10 +7528,10 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::health`
 - (no process): `adapters::tests::health_snapshot`
 - (no process): `maintenance::tests::health_serve`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-admin): `adapters::health`
 - process(humaux-maintenance): `maintenance::health_serve`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -7805,7 +7802,6 @@ read by:
 written by:
 - (no process): `public-pool::tests::mechanism_observation`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-admin): `adapters::mechanism_observation`
 - process(humaux-public-worker): `adapters::mechanism_observation`
 
 executed by:
@@ -7845,7 +7841,6 @@ read by:
 written by:
 - (no process): `public-pool::tests::mechanism_observation`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-admin): `adapters::mechanism_observation`
 - process(humaux-public-worker): `adapters::mechanism_observation`
 
 executed by:
@@ -15457,7 +15452,6 @@ read by:
 - (no process): `public-pool::tests::public_runtime`
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-admin): `adapters::mechanism_observation`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-public-worker): `adapters::mechanism_observation`
 
@@ -15505,7 +15499,6 @@ read by:
 - (no process): `public-pool::tests::public_runtime_qdrant`
 - (no process): `public-pool::tests::support::public_anonymous_seam`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-admin): `adapters::mechanism_observation`
 - process(humaux-public-worker): `adapters::mechanism_observation`
 
 written by:
@@ -15720,7 +15713,6 @@ read by:
 - (no process): `public-pool::tests::public_trust`
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-admin): `adapters::mechanism_observation`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-public-worker): `adapters::mechanism_observation`
 - process(humaux-public-worker): `public-pool::public_repo`
