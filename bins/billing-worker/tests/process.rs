@@ -417,6 +417,58 @@ fn insert_payload(h: &mut Handle, payload: &Value) {
 fn payments(h: &mut Handle) -> Value {
     h.admin.query_one("SELECT coalesce(jsonb_agg(jsonb_build_array(provider_txn_ref,kind,amount_cents,currency) ORDER BY kind,provider_txn_ref),'[]'::jsonb) FROM control.billing_payments", &[]).unwrap().get(0)
 }
+/// §71.3: a settlement error rolls back payment, subscription and C2 effects.
+#[test]
+fn settlement_failure_rolls_back_billing_effects() {
+    run_db_fixture::<Fixture, _>("settlement_failure_rolls_back_billing_effects", |mut h| {
+        let event = "settlement_fault";
+        let payload = money_payload(&h, event, "checkout.completed", "checkout_fault");
+        insert_payload(&mut h, &payload);
+        let tenant = h.tenant;
+        let fault_fn = format!("control.{name}", name = "billing_test_reject_settlement");
+        // dep: PostgreSQL(owner) — a one-event settlement fault in the throwaway database only.
+        h.admin.batch_execute(&format!(
+            "CREATE FUNCTION {fault_fn}() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN RAISE EXCEPTION 'billing test settlement fault' USING ERRCODE = '57014'; END $$; \
+             CREATE TRIGGER billing_test_reject_settlement BEFORE UPDATE OF status ON control.billing_inbox \
+             FOR EACH ROW WHEN (NEW.status = 'PROCESSED' AND NEW.event_id = '{event}' \
+             AND NEW.payload #>> '{{object,metadata,tenant_id}}' = '{tenant}') \
+             EXECUTE FUNCTION {fault_fn}()"
+        )).unwrap();
+
+        assert_eq!(
+            process_with(&h, "active", "prod_fixture", false),
+            Err(ErrorCode::DependencyUnavailable)
+        );
+        let inbox: Value = h.admin.query_one(
+            "SELECT jsonb_build_array(status,error_class,processed_at) FROM control.billing_inbox WHERE event_id=$1",
+            &[&event],
+        ).unwrap().get(0);
+        assert_eq!(inbox, json!(["RECEIVED", null, null]));
+        assert_eq!(
+            payments(&mut h),
+            json!([]),
+            "no committed payment, amount or currency"
+        );
+        assert_eq!(
+            effects(&mut h),
+            json!({"subscriptions":null,"events":null,"grants":null,"snapshots":null}),
+            "no committed subscription, subscription event, plan grant or entitlement snapshot"
+        );
+
+        // dep: PostgreSQL(owner) — removing the fixture fault lets the same verified event retry.
+        h.admin
+            .batch_execute("DROP TRIGGER billing_test_reject_settlement ON control.billing_inbox")
+            .unwrap();
+        assert!(process(&h, "active"));
+        assert_eq!(
+            payments(&mut h),
+            json!([["txn_charge", "CHARGE", 1210, "USD"]])
+        );
+        assert_eq!(snapshot(&mut h), paid());
+    });
+}
+
 /// G-M04-18: gross tax-inclusive webhook amount_paid is stored (§71.3, lead ruling 2026-10-29).
 #[test]
 fn money_source_and_charge_replay() {

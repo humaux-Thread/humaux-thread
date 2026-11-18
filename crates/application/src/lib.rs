@@ -12,6 +12,8 @@ pub mod archive;
 pub mod auth;
 /// C3 (M04 D7): the `BillingProvider` port of §71.2; no provider type, no implementation.
 pub mod billing;
+/// §71.3: durable billing event processing and its persistence ports.
+pub mod billing_process;
 pub mod confirm;
 pub mod consolidate;
 /// Fenced consolidation execution and dispatch (ADR-0130).

@@ -14543,6 +14543,7 @@ modules naming it:
 - `adapters::affect_repo`
 - `adapters::attribution_repo`
 - `adapters::audited_read_quota`
+- `adapters::billing_processor_repo`
 - `adapters::byok`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
@@ -15516,6 +15517,7 @@ modules naming it:
 - `application::archive`
 - `application::auth`
 - `application::billing`
+- `application::billing_process`
 - `application::confirm`
 - `application::consolidate`
 - `application::consolidation_execution`
@@ -15668,6 +15670,7 @@ modules naming it:
 - `application::affect`
 - `application::api_key`
 - `application::billing`
+- `application::billing_process`
 - `application::consolidate`
 - `application::consolidation_execution`
 - `application::continuity`
@@ -15703,6 +15706,7 @@ why: entity ids threaded through every use case
 modules naming it:
 - `application::affect`
 - `application::billing`
+- `application::billing_process`
 - `application::confirm`
 - `application::consolidate`
 - `application::consolidation_execution`
@@ -15741,6 +15745,7 @@ why: OffsetDateTime grants and RFC3339 freshness readings
 modules naming it:
 - `application::affect`
 - `application::billing`
+- `application::billing_process`
 - `application::coordination`
 - `application::distill`
 - `application::distill_execution`
@@ -16902,7 +16907,6 @@ modules naming it:
 - `billing-worker::creem`
 - `billing-worker::fake_creem`
 - `billing-worker::normalize`
-- `billing-worker::process`
 - `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::normalization`
@@ -16941,6 +16945,7 @@ why: provider-neutral billing port (§71.2)
 
 modules naming it:
 - `billing-worker::creem`
+- `billing-worker::normalize`
 - `billing-worker::process`
 - `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
@@ -16976,7 +16981,6 @@ why: subscription RFC3339 periods (§71.2)
 
 modules naming it:
 - `billing-worker::creem`
-- `billing-worker::process`
 
 ### humaux-billing-worker → `humaux-adapters` (normal)
 why: maintenance-only owner doors and C2 projection (§71.3)
@@ -16987,10 +16991,10 @@ modules naming it:
 - `tests`
 
 ### humaux-billing-worker → `uuid` (normal)
-why: configured plan version and opaque tenant IDs (§78.2)
+why: parse tenant identity from a verified envelope (§71.3)
 
 modules naming it:
-- `billing-worker::process`
+- `billing-worker::normalize`
 - `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::process`
@@ -17015,7 +17019,7 @@ modules naming it:
 why: runtime-only random HMAC test keys (§79.4)
 
 modules naming it:
-- `billing-worker::process`
+- `billing-worker::normalize`
 - `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::process`

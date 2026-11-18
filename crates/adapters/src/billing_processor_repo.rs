@@ -1,23 +1,152 @@
 //! `adapters::billing_processor_repo` — maintenance-only 0300 doors (§71.3).
-//! Depends-on: crates=[humaux-application, humaux-domain, serde_json, sqlx, time, uuid]; services=[PostgreSQL(role_maintenance) r=[control.tenants] x=[control.billing_inbox_claim, control.billing_inbox_settle, control.billing_apply_subscription, control.billing_append_payment, control.billing_slot_observe, control.billing_handover_subscription]]; env=[];
-//!   modules=[adapters::postgres, application::billing, domain::billing, domain::error, domain::ids, domain::plan]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time, uuid]; services=[PostgreSQL(role_maintenance) r=[control.tenants] x=[control.billing_inbox_claim, control.billing_inbox_settle, control.billing_apply_subscription, control.billing_append_payment, control.billing_slot_observe, control.billing_handover_subscription]]; env=[];
+//!   modules=[adapters::entitlement_repo, adapters::postgres, application::billing, application::billing_process, domain::billing, domain::error, domain::ids]
 //! Called-by: [billing-worker::process, tests]
 //! Invariants: [no gateway caller; 0300/0301/0305/0307 owner doors; C2 alone writes snapshots]
 //! Spec: Baseline §71.3; §76
-use crate::postgres::MaintenanceDbPool;
+use crate::{entitlement_repo, postgres::MaintenanceDbPool};
 use humaux_application::billing::{
     ExternalSubscriptionRef, ProviderSubscription, VerifiedBillingEvent,
 };
+use humaux_application::billing_process::{
+    BillingClaim, BillingEffects, BillingEventPayload, BillingInbox,
+};
 use humaux_domain::{
-    billing::{BillingProviderId, InboxStatus, PaymentKind, SubscriptionState},
+    billing::{BillingProviderId, InboxStatus, SubscriptionState},
     error::ErrorCode,
     ids::TenantId,
-    plan::Currency,
 };
 use serde_json::Value;
 use sqlx::{Acquire, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+/// Attach the maintenance pool and provider envelope decoder to the billing inbox port.
+pub fn processor_inbox<P: BillingEventPayload + 'static>(
+    pool: &MaintenanceDbPool,
+    payload: fn(Value) -> P,
+) -> impl BillingInbox<Payload = P> + '_ {
+    PgBillingInbox { pool, payload }
+}
+
+struct PgBillingInbox<'a, P> {
+    pool: &'a MaintenanceDbPool,
+    payload: fn(Value) -> P,
+}
+
+struct PgBillingClaim<'a>(Txn<'a>);
+struct PgBillingEffects<'a>(Txn<'a>);
+
+#[async_trait::async_trait]
+impl<P: BillingEventPayload + 'static> BillingInbox for PgBillingInbox<'_, P> {
+    type Claim<'a>
+        = PgBillingClaim<'a>
+    where
+        Self: 'a;
+    type Payload = P;
+
+    async fn claim(&self) -> Result<Option<(Self::Claim<'_>, VerifiedBillingEvent, P)>, ErrorCode> {
+        let mut txn = begin_processor(self.pool).await?;
+        let rows = inbox_claim(&mut txn, 1).await?;
+        Ok(rows
+            .into_iter()
+            .next()
+            .map(|(event, payload)| (PgBillingClaim(txn), event, (self.payload)(payload))))
+    }
+}
+
+#[async_trait::async_trait]
+impl BillingClaim for PgBillingClaim<'_> {
+    type Effects<'a>
+        = PgBillingEffects<'a>
+    where
+        Self: 'a;
+
+    async fn begin_effects(&mut self) -> Result<Self::Effects<'_>, ErrorCode> {
+        savepoint(&mut self.0).await.map(PgBillingEffects)
+    }
+
+    async fn settle(
+        mut self,
+        event: &VerifiedBillingEvent,
+        status: InboxStatus,
+        error: Option<ErrorCode>,
+    ) -> Result<(), ErrorCode> {
+        inbox_settle(&mut self.0, event, status, error).await?;
+        self.0
+            .commit()
+            .await
+            .map_err(|_| ErrorCode::DependencyUnavailable)
+    }
+}
+
+#[async_trait::async_trait]
+impl BillingEffects for PgBillingEffects<'_> {
+    async fn scope_tenant(&mut self, tenant: TenantId) -> Result<(), ErrorCode> {
+        scope_tenant(&mut self.0, tenant).await
+    }
+
+    async fn lock_subscription(
+        &mut self,
+        provider: BillingProviderId,
+        reference: &str,
+    ) -> Result<(), ErrorCode> {
+        lock_subscription(&mut self.0, provider, reference).await
+    }
+
+    async fn append_payment(
+        &mut self,
+        tenant: TenantId,
+        event: &VerifiedBillingEvent,
+        fetched: &ProviderSubscription,
+        plan: Uuid,
+        free_plan: Uuid,
+        payment: &PaymentFacts<'_>,
+    ) -> Result<bool, ErrorCode> {
+        append_payment_in_txn(
+            &mut self.0,
+            tenant,
+            event,
+            fetched,
+            plan,
+            free_plan,
+            payment,
+        )
+        .await
+    }
+
+    async fn apply_subscription(
+        &mut self,
+        tenant: TenantId,
+        event: &VerifiedBillingEvent,
+        fetched: &ProviderSubscription,
+        plan: Uuid,
+        free_plan: Uuid,
+        state: SubscriptionState,
+    ) -> Result<bool, ErrorCode> {
+        apply_subscription_in_txn(&mut self.0, tenant, event, fetched, plan, free_plan, state).await
+    }
+
+    async fn recompute_entitlements(&mut self, tenant: TenantId) -> Result<(), ErrorCode> {
+        entitlement_repo::recompute_in_txn(&mut self.0, tenant).await?;
+        Ok(())
+    }
+
+    async fn release(self) -> Result<(), ErrorCode> {
+        self.0
+            .commit()
+            .await
+            .map_err(|_| ErrorCode::DependencyUnavailable)
+    }
+
+    async fn rollback(self) -> Result<(), ErrorCode> {
+        self.0
+            .rollback()
+            .await
+            .map_err(|_| ErrorCode::DependencyUnavailable)
+    }
+}
+
 /// §71.3: caller-owned processor transaction; database access remains in this adapter.
 pub type Txn<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
 fn db_error(error: sqlx::Error) -> ErrorCode {
@@ -254,21 +383,9 @@ pub async fn apply_subscription_in_txn(
     .map_err(db_error)
 }
 
-/// §71.3: verified provider facts only; amounts are unsigned cents and refs identify each movement kind.
-pub struct PaymentFacts<'a> {
-    /// D13b: movement direction, independent of subscription state.
-    pub kind: PaymentKind,
-    /// §71.3: transaction, refund or dispute id (never the original charge id for reversals).
-    pub reference: &'a str,
-    /// D13a/b: charged, refunded or disputed cents respectively.
-    pub amount: i64,
-    /// §78.2: the closed USD-only currency set.
-    pub currency: Currency,
-    /// §71.3: provider period boundaries.
-    pub period: [OffsetDateTime; 2],
-    /// D13b: event creation time, not processing time.
-    pub occurred_at: OffsetDateTime,
-}
+/// §71.3: verified provider facts consumed by the payment door.
+pub use humaux_application::billing_process::PaymentFacts;
+
 /// §71.3: caller must hold `lock_subscription` for this reference before the authoritative fetch.
 /// §71.3 / §76: false means replay, without effects; caller scopes the tenant and recomputes before commit.
 pub async fn append_payment_in_txn(
