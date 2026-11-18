@@ -3,7 +3,7 @@
 //!   x=[control.observe_reasoning_route_health, control.reasoning_credential_accounts,
 //!   control.reasoning_profile_capabilities, control.reasoning_profile_request_extras,
 //!   control.reasoning_route_health_state, control.resolve_user_reasoning_admission]];
-//!   env=[]; modules=[adapters::byok, adapters::postgres, application::consolidate, domain::egress]
+//!   env=[]; modules=[adapters::byok, adapters::postgres, application::consolidate, application::reasoning_route_admin, domain::egress]
 //! Called-by: [adapters::consolidation_reasoner, adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::model_call_ledger, adapters::reasoning_route_onboarding, private-worker::bootstrap, private-worker::route_providers, tests]
 //! Invariants: [the private worker never reads route/health/credential tables directly; it calls the frozen SECURITY
 //!   DEFINER resolver with one binding and gets one typed locator or none; a malformed locator is InvalidLocator;
@@ -110,14 +110,7 @@ impl std::fmt::Display for ReasoningAdmissionError {
 
 impl std::error::Error for ReasoningAdmissionError {}
 
-pub(crate) fn purpose_db_value(purpose: PrivateReasoningPurpose) -> &'static str {
-    match purpose {
-        PrivateReasoningPurpose::Distill => "PRIVATE_DISTILL_TEXT",
-        PrivateReasoningPurpose::Consolidate => "PRIVATE_CONSOLIDATE",
-        PrivateReasoningPurpose::Vision => "PRIVATE_DISTILL_VISION",
-        PrivateReasoningPurpose::ContributionDeidentify => "CONTRIBUTION_DEIDENTIFY",
-    }
-}
+pub(crate) use humaux_application::reasoning_route_admin::purpose_db_value;
 
 /// Resolves the exact Binding authority under the tenant already installed in session GUCs.
 ///

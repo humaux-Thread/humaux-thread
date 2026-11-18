@@ -503,6 +503,11 @@ fn register_refuses_capabilities_wider_than_catalog() {
     let wider = f.register(f.owner, "m1", "TEXT,STRUCTURED_OUTPUT,TOOL_CALLS", "{}");
     assert_eq!(wider.status.code(), Some(3), "{}", stderr(&wider));
     assert_eq!(receipt(&wider)["reason"], "capabilities_exceed_catalog");
+    assert_eq!(
+        wider.stdout,
+        b"{\"outcome\":\"refused\",\"reason\":\"capabilities_exceed_catalog\"}\n"
+    );
+    assert!(wider.stderr.is_empty());
     let extras = f.register(
         f.owner,
         "m1",

@@ -1,13 +1,16 @@
 //! `adapters::provisioning` — the single home of production onboarding writes (ADR-0053) and of the operator
 //!   re-drive of DEAD distill jobs (ADR-0058 R4).
-//! Depends-on: crates=[hex, humaux-application, humaux-domain, humaux-infra-cell, humaux-projection, serde, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(role_maintenance) r=[control.api_keys, control.memberships,
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-infra-cell, humaux-projection, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(role_maintenance) r=[control.api_keys, control.memberships,
 //!   control.retrieval_provider_admission_limits, control.tenants, control.workspaces, projection.family_activations,
 //!   projection.stream_checkpoints, projection.tenant_placements] x=[control.audit_event_insert,
 //!   control.ensure_admission_tier, control.ensure_user, control.issue_api_key, control.onboard_tenant,
 //!   control.onboard_workspace, control.revoke_api_key, control.set_workspace_membership, ops.requeue_dead_distill,
 //!   projection.activate_empty_family, projection.ensure_tenant_placement], Qdrant(*)]; env=[];
-//!   modules=[adapters::entitlement_repo, adapters::membership_repo, adapters::postgres, adapters::qdrant, adapters::retrieve, application::auth, domain::audit, domain::identity, domain::ids, domain::ticket_family, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::serving]
-//! Called-by: [adapters::cost_repo, adapters::maintenance_repo, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::role_hygiene, maintenance::drill, maintenance::main, tests, xtask::e2e_seed]
+//!   modules=[adapters::entitlement_repo, adapters::membership_repo, adapters::postgres, adapters::qdrant, adapters::retrieve,
+//!   application::auth, application::operator_provisioning, domain::audit, domain::identity, domain::ids,
+//!   domain::ticket_family, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::serving]
+//! Called-by: [adapters::cost_repo, adapters::maintenance_repo, adapters::reasoning_route_onboarding, adapters::rebuild,
+//!   adapters::role_hygiene, maintenance::bootstrap, maintenance::drill, tests, xtask::e2e_seed]
 //! Invariants: [every write goes through a 0186 / 0197 owner definer as role_maintenance, no table INSERT here; one transaction
 //!   per tenant (onboard_tenant installs the tenant GUC for the caller's transaction); the Qdrant probe runs outside any
 //!   transaction and the activation commits only if evaluate_switch accepts the DB-returned facts and the collection
@@ -53,7 +56,6 @@ use humaux_projection::serving::{
     ActivationEvidence, ContinuationVerdict, GenerationId, SwitchCriteria, VerifiedEmpty,
     evaluate_switch,
 };
-use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -62,6 +64,16 @@ use uuid::Uuid;
 
 use crate::entitlement_repo::{self, RecomputeOutcome};
 use crate::membership_repo::{self, AdminAction, MembershipRepoError, MembershipRequest};
+use humaux_application::operator_provisioning::{
+    self as operator, CollectionProvisioningPort, ProvisioningPort, WorkspaceActivationPort,
+};
+pub use humaux_application::operator_provisioning::{
+    ActivationReceipt, ApiKeyReceipt, CollectionReceipt, DeployInitReceipt, NewApiKey,
+    PlacementReceipt, RequeueReceipt, RequeueSkipReason, RequeueTarget, RequeuedJob, RevokeReceipt,
+    SkippedJob, TenantReceipt, TenantRequest, TierReceipt, UserReceipt, WorkspaceActivation,
+    WorkspaceReceipt, api_key_prefix,
+};
+
 use crate::postgres::MaintenanceDbPool;
 use crate::qdrant::{
     BM25_MODIFIER, BM25_VECTOR_NAME, CollectionSpec, bm25_vector_body,
@@ -135,171 +147,6 @@ impl From<sqlx::Error> for ProvisioningError {
 }
 
 type Result<T> = std::result::Result<T, ProvisioningError>;
-
-// ============================================================================
-// Receipts (one JSON object per `humaux-maintenance` subcommand)
-// ============================================================================
-
-/// One active 0117 admission-limit row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TierReceipt {
-    /// `GLOBAL` | `REGION` | `TENANT` | `PURPOSE`.
-    pub tier: &'static str,
-    pub provider_id: String,
-    pub region: Option<String>,
-    pub purpose: Option<String>,
-    pub tpm_limit: i64,
-    pub rpm_limit: i64,
-    /// Set only by the call that attempted the insert (`deploy-init`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created: Option<bool>,
-}
-
-/// `deploy-init`.
-#[derive(Debug, Clone, Serialize)]
-pub struct DeployInitReceipt {
-    pub outcome: &'static str,
-    pub tiers: Vec<TierReceipt>,
-    pub audit_event_id: Option<Uuid>,
-}
-
-/// An API key as the receipt may show it: never the wire key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ApiKeyReceipt {
-    pub api_key_id: Uuid,
-    pub prefix: String,
-    /// `edge::api_key_log_fingerprint` — prefix plus the first four hash bytes.
-    pub fingerprint: String,
-    pub created: bool,
-}
-
-/// The §17.3 placement row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PlacementReceipt {
-    pub projection_family: String,
-    pub collection_name: String,
-    pub created: bool,
-}
-
-/// The Qdrant collection a tenant's family points live in.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CollectionReceipt {
-    pub name: String,
-    pub created: bool,
-    pub dimension: u32,
-    pub payload_indexes: Vec<String>,
-    pub generation: String,
-}
-
-/// `onboard tenant`'s transactional part (T1).
-#[derive(Debug, Clone, Serialize)]
-pub struct TenantReceipt {
-    pub outcome: &'static str,
-    pub tenant_id: Uuid,
-    pub tenant_name: String,
-    pub owner_user_id: Uuid,
-    pub owner_user_created: bool,
-    pub workspace_id: Uuid,
-    pub workspace_name: String,
-    pub reasoning_domain_id: Uuid,
-    pub api_key: Option<ApiKeyReceipt>,
-    pub admission_tiers: Vec<TierReceipt>,
-    pub placements: Vec<PlacementReceipt>,
-    pub audit_event_id: Option<Uuid>,
-}
-
-/// `onboard workspace`'s transactional part.
-#[derive(Debug, Clone, Serialize)]
-pub struct WorkspaceReceipt {
-    pub outcome: &'static str,
-    pub tenant_id: Uuid,
-    pub workspace_id: Uuid,
-    pub workspace_name: String,
-    pub audit_event_id: Option<Uuid>,
-}
-
-/// One family's activation (ADR-0053 D-D).
-#[derive(Debug, Clone, Serialize)]
-pub struct ActivationReceipt {
-    pub domain: &'static str,
-    pub projection_kind: &'static str,
-    pub projection_version: &'static str,
-    /// `activated` | `existing` | `refused`.
-    pub outcome: &'static str,
-    pub reason: Option<String>,
-    pub evidence: &'static str,
-    pub collection: Option<String>,
-    pub generation: Option<String>,
-    pub probe_id: Option<Uuid>,
-    pub probe_visible: Option<u64>,
-    /// `GET /collections/{c}` + the exact count, milliseconds.
-    pub probe_latency_ms: Option<u64>,
-    /// The short activation transaction including the generation re-read, milliseconds.
-    pub activation_txn_ms: Option<u64>,
-    pub audit_event_id: Option<Uuid>,
-}
-
-/// `activate` over one workspace.
-#[derive(Debug, Clone, Serialize)]
-pub struct WorkspaceActivation {
-    pub tenant_id: Uuid,
-    pub workspace_id: Uuid,
-    pub activations: Vec<ActivationReceipt>,
-    pub lifecycle: String,
-}
-
-impl WorkspaceActivation {
-    /// The first refusal's reason, if any family was refused.
-    pub fn refusal(&self) -> Option<&str> {
-        self.activations
-            .iter()
-            .find(|a| a.outcome == "refused")
-            .map(|a| a.reason.as_deref().unwrap_or("refused"))
-    }
-}
-
-/// `apikey revoke`.
-#[derive(Debug, Clone, Serialize)]
-pub struct RevokeReceipt {
-    pub outcome: &'static str,
-    pub api_key_id: Uuid,
-    pub prefix: String,
-    pub changed: bool,
-    pub audit_event_id: Option<Uuid>,
-}
-
-/// `onboard user`.
-#[derive(Debug, Clone, Serialize)]
-pub struct UserReceipt {
-    pub outcome: &'static str,
-    pub tenant_id: Uuid,
-    pub user_id: Uuid,
-    pub user_created: bool,
-    pub membership_state: String,
-    pub membership_role: String,
-    pub workspace_id: Option<Uuid>,
-}
-
-/// A caller-minted API key: `prefix`, the §73.5 keyed hash of `"<prefix>.<secret>"`, and the log
-/// fingerprint. The wire key itself never enters this module.
-#[derive(Debug, Clone)]
-pub struct NewApiKey {
-    pub prefix: String,
-    pub key_hash: Vec<u8>,
-    pub fingerprint: String,
-}
-
-/// `"hx"` + the first 12 hex digits of `sha256(tenant_id ‖ 0x00 ‖ key_name)`: deterministic per
-/// (tenant, key name), so re-running `apikey issue` / `onboard tenant` finds the same prefix and
-/// answers `existing` instead of minting a second key.
-pub fn api_key_prefix(tenant_id: Uuid, key_name: &str) -> String {
-    let mut digest = Sha256::new();
-    digest.update(tenant_id.as_bytes());
-    digest.update([0u8]);
-    digest.update(key_name.as_bytes());
-    let hex = hex::encode(digest.finalize());
-    format!("hx{}", &hex[..12])
-}
 
 /// The flat `(domain, projection_kind, projection_version)` triples 0186 takes, from the one
 /// closed set that owns them (§78.2 — SQL never spells a family).
@@ -545,28 +392,6 @@ pub async fn deploy_init(
         tiers,
         audit_event_id,
     })
-}
-
-/// Everything `onboard tenant` writes in PostgreSQL besides the quota window and the activation.
-#[derive(Debug, Clone)]
-pub struct TenantRequest<'a> {
-    pub name: &'a str,
-    pub owner_email: &'a str,
-    pub workspace_name: &'a str,
-    pub reasoning_domain_name: &'a str,
-    /// The plan the tenant is granted (`control.plans.plan_key`); the version must be offered (§71.1).
-    pub plan_key: &'a str,
-    /// The pinned version of [`Self::plan_key`].
-    pub plan_version: i32,
-    pub period_start: OffsetDateTime,
-    pub period_end: OffsetDateTime,
-    pub provider_id: &'a str,
-    pub region: &'a str,
-    pub tenant_tpm: i64,
-    pub tenant_rpm: i64,
-    pub scopes: &'a [String],
-    /// The Qdrant collection the tenant's placement names.
-    pub collection: &'a str,
 }
 
 /// `onboard tenant`, transaction T1 (module doc). `mint` is called at most once, with the new
@@ -1017,70 +842,13 @@ const REDRIVE_ACTION: &str = "DISTILL_REQUEUE_DEAD";
 /// The §77 resource type of a re-drive row (operator or daemon).
 pub(crate) const REDRIVE_RESOURCE: &str = "distill_job";
 
-/// Which DEAD `DERIVED_DISTILL` jobs of one tenant `jobs requeue-dead` re-arms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RequeueTarget<'a> {
-    /// Exactly this job; anything but a DEAD job of the tenant is refused.
-    Job(Uuid),
-    /// Every DEAD job of the tenant whose `last_error_class` equals this one exactly (the class a
-    /// worker stored; ADR-0058 R4: chosen after the cause was fixed).
-    ErrorClass(&'a str),
-}
-
-/// One job `jobs requeue-dead` re-armed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RequeuedJob {
-    pub job_id: Uuid,
-    pub evidence_id: Uuid,
-    /// Kept on the re-armed row (plan v2 OPS-3).
-    pub last_error_class: Option<String>,
-    /// The counted provider requests the job had spent when it died (reset to 0).
-    pub attempt_spent: i32,
-}
-
-/// Why class-mode `jobs requeue-dead` left a matching DEAD job DEAD (ADR-0058 ruling 2026-10-02
-/// 20:30: the skip is reported, never silent).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RequeueSkipReason {
-    /// The Evidence has no outbox row: a re-armed job could only die again.
-    EvidenceGone,
-    /// The Evidence's outbox row is already DONE.
-    OutboxSettled,
-}
-
-impl RequeueSkipReason {
-    /// The definer's `skipped` value (0200).
-    fn from_db(value: &str) -> Option<Self> {
-        match value {
-            "evidence_gone" => Some(Self::EvidenceGone),
-            "outbox_settled" => Some(Self::OutboxSettled),
-            _ => None,
-        }
+/// The definer's `skipped` value (0200).
+fn requeue_skip_reason(value: &str) -> Option<RequeueSkipReason> {
+    match value {
+        "evidence_gone" => Some(RequeueSkipReason::EvidenceGone),
+        "outbox_settled" => Some(RequeueSkipReason::OutboxSettled),
+        _ => None,
     }
-}
-
-/// One matching DEAD job class-mode `jobs requeue-dead` left DEAD.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SkippedJob {
-    pub job_id: Uuid,
-    /// `None` when the job's payload names no Evidence.
-    pub evidence_id: Option<Uuid>,
-    pub last_error_class: Option<String>,
-    pub attempt_spent: i32,
-    pub reason: RequeueSkipReason,
-}
-
-/// `jobs requeue-dead`.
-#[derive(Debug, Clone, Serialize)]
-pub struct RequeueReceipt {
-    /// `requeued`, or `nothing_requeued` when every matching DEAD job was skipped.
-    pub outcome: &'static str,
-    pub tenant_id: Uuid,
-    pub requeued: Vec<RequeuedJob>,
-    /// Class mode only (job mode refuses instead): the matching DEAD jobs left DEAD, with why.
-    pub skipped: Vec<SkippedJob>,
-    pub audit_event_id: Uuid,
 }
 
 /// `jobs requeue-dead` (ADR-0058 R4): one transaction re-arms the selected DEAD jobs and their
@@ -1146,7 +914,7 @@ pub async fn requeue_dead_distill(
                 evidence_id: row.try_get("evidence_id")?,
                 last_error_class,
                 attempt_spent,
-                reason: RequeueSkipReason::from_db(&reason).ok_or_else(|| {
+                reason: requeue_skip_reason(&reason).ok_or_else(|| {
                     sqlx::Error::Decode(format!("unknown requeue skip reason {reason}").into())
                 })?,
             }),
@@ -1932,6 +1700,173 @@ async fn activate_family(
     receipt.audit_event_id = Some(audit_event_id);
     receipt.activation_txn_ms = Some(millis(txn_started.elapsed()));
     Ok(receipt)
+}
+
+impl From<ProvisioningError> for operator::ProvisioningError {
+    fn from(error: ProvisioningError) -> Self {
+        match error {
+            ProvisioningError::Refused(reason) => Self::Refused(reason),
+            ProvisioningError::InvalidInput(reason) => Self::InvalidInput(reason),
+            ProvisioningError::Db(error) => Self::Infrastructure(format!("db: {error}")),
+            ProvisioningError::Qdrant(reason) => Self::Infrastructure(format!("qdrant: {reason}")),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ProvisioningPort for MaintenanceDbPool {
+    async fn deploy_init(
+        &self,
+        provider_id: &str,
+        region: &str,
+        tpm: i64,
+        rpm: i64,
+        admin: &AdminAction<'_>,
+    ) -> std::result::Result<DeployInitReceipt, operator::ProvisioningError> {
+        deploy_init(self, provider_id, region, tpm, rpm, admin)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn onboard_tenant(
+        &self,
+        request: &TenantRequest<'_>,
+        mint: &mut (dyn FnMut(Uuid) -> NewApiKey + Send),
+        admin: &AdminAction<'_>,
+    ) -> std::result::Result<TenantReceipt, operator::ProvisioningError> {
+        onboard_tenant(self, request, mint, admin)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn onboard_workspace(
+        &self,
+        tenant_id: Uuid,
+        name: &str,
+        owner_user_id: Uuid,
+        admin: &AdminAction<'_>,
+    ) -> std::result::Result<WorkspaceReceipt, operator::ProvisioningError> {
+        onboard_workspace(self, tenant_id, name, owner_user_id, admin)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn issue_api_key(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        workspace_id: Uuid,
+        key: &NewApiKey,
+        scopes: &[String],
+        admin: &AdminAction<'_>,
+    ) -> std::result::Result<ApiKeyReceipt, operator::ProvisioningError> {
+        issue_api_key(self, tenant_id, user_id, workspace_id, key, scopes, admin)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn revoke_api_key(
+        &self,
+        tenant_id: Uuid,
+        prefix: &str,
+        admin: &AdminAction<'_>,
+    ) -> std::result::Result<RevokeReceipt, operator::ProvisioningError> {
+        revoke_api_key(self, tenant_id, prefix, admin)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn ensure_placement(
+        &self,
+        tenant_id: Uuid,
+        collection: &str,
+        admin: &AdminAction<'_>,
+    ) -> std::result::Result<Vec<PlacementReceipt>, operator::ProvisioningError> {
+        ensure_placement(self, tenant_id, collection, admin)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn onboard_user(
+        &self,
+        tenant_id: Uuid,
+        email: &str,
+        role: MembershipRole,
+        workspace_id: Option<Uuid>,
+        admin: &AdminAction<'_>,
+    ) -> std::result::Result<UserReceipt, operator::ProvisioningError> {
+        onboard_user(self, tenant_id, email, role, workspace_id, admin)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn requeue_dead_distill(
+        &self,
+        tenant_id: Uuid,
+        target: RequeueTarget<'_>,
+        admin: &AdminAction<'_>,
+    ) -> std::result::Result<RequeueReceipt, operator::ProvisioningError> {
+        requeue_dead_distill(self, tenant_id, target, admin)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn status(
+        &self,
+        tenant_id: Uuid,
+    ) -> std::result::Result<Value, operator::ProvisioningError> {
+        status(self, tenant_id).await.map_err(Into::into)
+    }
+}
+
+#[async_trait::async_trait]
+impl CollectionProvisioningPort for QdrantFace {
+    async fn ensure_collection(
+        &self,
+        collection: &str,
+        dimension: u32,
+    ) -> std::result::Result<CollectionReceipt, operator::ProvisioningError> {
+        ensure_collection(self, collection, dimension)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+/// Existing workspace activation operation with its PG and Qdrant dependencies.
+pub struct WorkspaceActivationAdapter<'a> {
+    pool: &'a MaintenanceDbPool,
+    face: &'a QdrantFace,
+}
+
+impl<'a> WorkspaceActivationAdapter<'a> {
+    /// Binds the dependencies without accessing either service.
+    pub fn new(pool: &'a MaintenanceDbPool, face: &'a QdrantFace) -> Self {
+        Self { pool, face }
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkspaceActivationPort for WorkspaceActivationAdapter<'_> {
+    async fn activate_workspace(
+        &self,
+        tenant_id: Uuid,
+        workspace_id: Uuid,
+        dimension: u32,
+        only: Option<TicketFamily>,
+        admin: &AdminAction<'_>,
+    ) -> std::result::Result<WorkspaceActivation, operator::ProvisioningError> {
+        activate_workspace(
+            self.pool,
+            self.face,
+            tenant_id,
+            workspace_id,
+            dimension,
+            only,
+            admin,
+        )
+        .await
+        .map_err(Into::into)
+    }
 }
 
 #[cfg(test)]

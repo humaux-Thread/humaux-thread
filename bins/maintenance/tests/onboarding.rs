@@ -473,6 +473,11 @@ fn onboard_tenant_refuses_without_global_and_region_tiers() {
     let out = f.onboard("t1");
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     assert_eq!(receipt(&out)["reason"], "deployment_admission_missing");
+    assert_eq!(
+        out.stdout,
+        b"{\"outcome\":\"refused\",\"reason\":\"deployment_admission_missing\"}\n"
+    );
+    assert!(out.stderr.is_empty());
     assert_eq!(wire(&out), None);
     assert_eq!(
         f.count("SELECT count(*) FROM control.tenants WHERE onboarding_name IS NOT NULL"),

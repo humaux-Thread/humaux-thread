@@ -95,8 +95,7 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "s
 serde_json = "1"
 # why: timestamptz column binding; used-by: [adapters::affect_repo, adapters::distill_repo]
 time = { version = "0.3", features = ["formatting", "parsing"] }
-# ADR-0053: the onboarding receipts `humaux-maintenance` prints as one JSON object.
-# why: serializable onboarding receipts; used-by: [adapters::provisioning]
+# why: serializable adapter responses; used-by: [adapters::plan_repo, adapters::processing_status, adapters::project_rollup]
 serde = { version = "1", features = ["derive"] }
 # T4.6/T4.7 `consolidate_repo.rs` (§11.7): per-row change-detection fingerprint for
 # `memory_consolidation_inputs.source_hash` (staleness check at publish time). Plain digest,

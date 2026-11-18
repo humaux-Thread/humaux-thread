@@ -326,6 +326,7 @@ files = [
   "crates/application/src/consolidation_execution.rs",
   "crates/application/src/distill.rs",
   "crates/application/src/distill_execution.rs",
+  "crates/application/src/reasoning_route_admin.rs",
   "crates/domain/src/consolidate.rs",
 ]
 kind = "core"
@@ -669,6 +670,7 @@ files = [
   "crates/adapters/src/openbao.rs",
   "crates/adapters/src/private_inference_rpc.rs",
   "crates/application/src/private_inference.rs",
+  "crates/application/src/operator_provisioning.rs",
   "crates/adapters/src/provider_budget.rs",
   "crates/adapters/src/provisioning.rs",
   "crates/adapters/src/retrieval_embedding_rpc.rs",
@@ -1160,6 +1162,10 @@ contexts = ["data_rights", "job_execution", "knowledge_backup"]
 
 [[shared_file]]
 path = "bins/maintenance/src/backup.rs"
+contexts = ["data_rights", "job_execution", "knowledge_backup"]
+
+[[shared_file]]
+path = "bins/maintenance/src/bootstrap.rs"
 contexts = ["data_rights", "job_execution", "knowledge_backup"]
 
 [[shared_file]]

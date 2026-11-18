@@ -1,6 +1,7 @@
 //! `application::membership_admin` — one operator membership request and its audited outcome.
 //! Depends-on: crates=[async-trait, humaux-domain, uuid]; services=[]; env=[]; modules=[domain::identity, domain::ids]
-//! Called-by: [adapters::membership_repo, maintenance::member]
+//! Called-by: [adapters::membership_repo, application::operator_provisioning, application::reasoning_route_admin, maintenance::main,
+//!   maintenance::member]
 //! Invariants: [membership changes, epoch bumps and audit are delegated as one operation]
 //! Spec: §6.3; §77; ADR-0033
 
