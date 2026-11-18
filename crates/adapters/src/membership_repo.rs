@@ -1,7 +1,7 @@
 //! `adapters::membership_repo` — the §6.3 membership lifecycle admin path (ADR-0033, card 12).
-//! Depends-on: crates=[humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(any) r=[control.users] w=[control.memberships] x=[control.audit_event_insert, control.bump_user_security_epoch]]; env=[]; modules=[adapters::postgres, domain::error, domain::identity, domain::ids]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(any) r=[control.users] w=[control.memberships] x=[control.audit_event_insert, control.bump_user_security_epoch]]; env=[]; modules=[application::membership_admin, adapters::postgres, domain::error, domain::identity, domain::ids]
 //! Called-by: [adapters::maintenance_repo, adapters::provisioning, adapters::reasoning_route_onboarding, maintenance::main,
-//!   maintenance::serve, tests, xtask::e2e_seed, maintenance::member]
+//!   maintenance::serve, tests, xtask::e2e_seed]
 //! Invariants: [sole writer of control.memberships, on role_maintenance from xtask member only; one transaction locks
 //!   the target and the tenant's other ACTIVE OWNERs so the last OWNER cannot be removed; a domain refusal writes
 //!   nothing]
@@ -55,69 +55,24 @@ use crate::postgres::MaintenanceDbPool;
 
 type Txn<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
 
-/// What the admin path may ask for: create a new `INVITED` row, or move an existing one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MembershipRequest {
-    /// `INSERT ... state='INVITED'` with this role. The user row must already exist (users
-    /// are minted by the §74 identity path, never here).
-    Invite(MembershipRole),
-    /// A §6.3 transition on the existing row.
-    Mutate(MembershipMutation),
-}
+use humaux_application::membership_admin::MembershipAdminPort;
+pub use humaux_application::membership_admin::{AdminAction, MembershipOutcome, MembershipRequest};
 
-/// §77 "Sensitive Admin Action 必须包含" — the operator-supplied half of the audit row: who
-/// acts, why, under which request/ticket, correlated to which trace, and what step-up
-/// authentication gated the action. The admin path has no principal of its own, so none of
-/// these can be derived; each must be non-empty (an empty reason is a missing reason, §78.1
-/// forbids inventing a default). The other half (subject tenant/user, before/after) the repo
-/// takes from the row it locks.
-///
-/// Not `domain::audit::SensitiveAdminAction`: that type carries the *finished* record
-/// (subject + before/after `AuditMetadata`, whose closed key allowlist is `plan` /
-/// `previous_role` / `role` and lives outside this card's files), not the operator input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AdminAction<'a> {
-    pub actor: &'a str,
-    pub reason: &'a str,
-    /// Request/ticket reference — written as the row's `request_id`.
-    pub ticket: &'a str,
-    /// Correlation id for the operator's run; `xtask member` accepts one or mints one per
-    /// invocation and prints it, so a refused attempt and its retry can be tied together.
-    pub trace_id: &'a str,
-    /// Opaque evidence of the step-up authentication that gated this action (§77 / §73).
-    pub step_up_auth_context: &'a str,
-}
-
-impl AdminAction<'_> {
-    fn validate(self) -> Result<(), MembershipRepoError> {
-        let all_present = [
-            self.actor,
-            self.reason,
-            self.ticket,
-            self.trace_id,
-            self.step_up_auth_context,
-        ]
-        .iter()
-        .all(|field| !field.trim().is_empty());
-        if all_present {
-            Ok(())
-        } else {
-            Err(MembershipRepoError::InvalidInput)
-        }
+fn validate_admin(admin: AdminAction<'_>) -> Result<(), MembershipRepoError> {
+    let all_present = [
+        admin.actor,
+        admin.reason,
+        admin.ticket,
+        admin.trace_id,
+        admin.step_up_auth_context,
+    ]
+    .iter()
+    .all(|field| !field.trim().is_empty());
+    if all_present {
+        Ok(())
+    } else {
+        Err(MembershipRepoError::InvalidInput)
     }
-}
-
-/// The committed result of one request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MembershipOutcome {
-    pub membership_id: Uuid,
-    pub state: MembershipState,
-    pub role: MembershipRole,
-    /// The user's `security_epoch` after this request — `Some` only when the request bumped
-    /// it (§6.3: suspend / remove / role change).
-    pub user_security_epoch: Option<i64>,
-    /// The §77 audit row appended in the same transaction.
-    pub audit_event_id: Uuid,
 }
 
 /// Why a request did not commit a membership change. `Conflict` and `NotFound` are decided
@@ -299,7 +254,7 @@ pub async fn apply(
     request: MembershipRequest,
     admin: AdminAction<'_>,
 ) -> Result<MembershipOutcome, MembershipRepoError> {
-    admin.validate()?;
+    validate_admin(admin)?;
     // dep: PostgreSQL(any) — opens a PostgreSQL transaction
     let mut txn = pool.pool().begin().await?;
     set_tenant_local(&mut txn, tenant_id).await?;
@@ -610,4 +565,26 @@ async fn audit_row(
     .fetch_one(&mut **txn)
     .await?;
     Ok(event_id)
+}
+#[async_trait::async_trait(?Send)]
+impl MembershipAdminPort for MaintenanceDbPool {
+    type Error = String;
+
+    async fn apply_member(
+        &self,
+        tenant: TenantId,
+        user: UserId,
+        request: MembershipRequest,
+        admin: AdminAction<'_>,
+    ) -> Result<MembershipOutcome, Self::Error> {
+        let trace_id = admin.trace_id;
+        apply(self, tenant, user, request, admin)
+            .await
+            .map_err(|e| match e {
+                MembershipRepoError::Db(_) => {
+                    format!("{} — {e} trace_id={trace_id}", e.error_code().as_str())
+                }
+                other => format!("{other} trace_id={trace_id}"),
+            })
+    }
 }

@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 53, "HEX-LAYER")
+    hex_exact(actual, baseline, 43, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -14208,6 +14208,43 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             fs::write(&path, &original).unwrap();
             assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
             println!("SLICE-7c {case} restored: GREEN");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hex_boundary_slice13a_entry_red_green() {
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("slice13a-boundary-{}", std::process::id()));
+        hex_copy_boundary_fixture(&workspace_root(), &root);
+        assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
+        for (file, adapter, symbol) in [
+            ("roles", "role_hygiene", "CheckResult"),
+            ("roles", "role_hygiene", "CheckStatus"),
+            ("roles", "role_hygiene", "Placeholders"),
+            ("roles", "role_hygiene", "RolePassword"),
+            ("retention", "maintenance_repo", "PartitionTable"),
+            ("retention", "maintenance_repo", "DropRequest"),
+            ("retention", "maintenance_repo", "DropOutcome"),
+            ("member", "membership_repo", "AdminAction"),
+            ("member", "membership_repo", "MembershipRepoError"),
+            ("member", "membership_repo", "MembershipRequest"),
+        ] {
+            let path = root.join(format!("bins/maintenance/src/{file}.rs"));
+            let original = fs::read_to_string(&path).unwrap();
+            let import = format!("humaux_adapters::{adapter}::{symbol}");
+            fs::write(&path, format!("{original}\nuse {import} as Regression;\n")).unwrap();
+            let red = hex_layer_gate(&root);
+            fs::write(&path, original).unwrap();
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.contains(&import))),
+                "{red:?}"
+            );
+            println!("SLICE-13a {file} {import}: RED {red:?}");
+            assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
+            println!("SLICE-13a {file} {import}: restored GREEN");
         }
         fs::remove_dir_all(root).unwrap();
     }

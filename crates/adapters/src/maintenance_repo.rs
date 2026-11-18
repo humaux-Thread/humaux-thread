@@ -6,7 +6,7 @@
 //!   (ADR-0072), `provider_budget::reap_expired_provider_budgets`). It also owns the closed D-C task enum and the two D-S counters
 //!   (`maintenance_task_runs_total{task,outcome}`, `maintenance_task_rows_total{task}`, one emit each in
 //!   [`count_task_call`]), which `humaux-maintenance --serve` renders (ADR-0061 D-C). For §48.1 (ADR-0063) it owns
-//!   the closed table_key enum, the daemon's PARTITIONS proposer with the `partition_horizon_months{table}` gauge
+//!   the daemon's PARTITIONS proposer with the `partition_horizon_months{table}` gauge
 //!   (D-K), and the one-shot superuser executor's calls of the owner functions with the COPY export (D-I, D-J); no
 //!   drop predicate lives here. For card 37 (ADR-0064 D-J, D-V, 10.11 C/E) it owns the backup arms' append-only
 //!   receipts (`ops.backup_receipts`), the label identity (`ops.backup_sets`) and `backup status`'s read-only facts;
@@ -16,7 +16,7 @@
 //!   succeeded drill and the WAL latch, and the D-V estimate ratio both the backup arm and the daemon use. For the
 //!   report-only I4 authority scan (ADR-0123 D3, §59.1 I4, §65) it owns the AUTHORITY_I4 task's single statement, which
 //!   appends the owner definer's count and id sample to `ops.repair_findings`, and the `authority_i4_violations` gauge.
-//! Depends-on: crates=[hex, humaux-domain, serde, serde_json, sha2, sqlx, time]; services=[PostgreSQL(role_maintenance)
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, serde_json, sha2, sqlx, time]; services=[PostgreSQL(role_maintenance)
 //!   r=[control.partition_registry, control.retention_policies, ops.backup_receipts, ops.backup_sets,
 //!   ops.jobs, ops.model_call_ledger, ops.restore_witnesses, ops.wal_archive_failures,
 //!   private.evidence_objects, private.memory_records, projection.embedding_fingerprints,
@@ -29,8 +29,8 @@
 //!   control.partition_drop, control.partition_drop_check, control.partition_drop_statements,
 //!   control.retention_policy_approve], PostgreSQL(role_gateway) r=[private.evidence_objects, private.memory_records,
 //!   projection.private_memory_points], PostgreSQL(role_retrieval_worker) r=[projection.memory_vectors]]; env=[];
-//!   modules=[adapters::membership_repo, adapters::postgres, adapters::provisioning, domain::audit, humaux-adapters]
-//! Called-by: [adapters::rebuild, maintenance::backup, maintenance::drill, maintenance::retention, maintenance::serve,
+//!   modules=[application::partition_retention, adapters::membership_repo, adapters::postgres, adapters::provisioning, domain::audit, humaux-adapters]
+//! Called-by: [adapters::rebuild, maintenance::backup, maintenance::drill, maintenance::serve,
 //!   tests]
 //! Invariants: [the page returns tenant ids only, strictly after the cursor in tenant_id order, at most `limit`;
 //!   the definer refuses limit <= 0 (22023), so no call can read every tenant at once; every door call is one
@@ -52,8 +52,12 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
 
+pub use humaux_application::partition_retention::{
+    ApproveReceipt, CheckedLeaf, CreatePartitionsReceipt, CreatedLeaf, DropOutcome, DropReceipt,
+    DropRequest, DueLeaf, PartitionTable,
+};
+use humaux_application::partition_retention::{PartitionRetentionPort, RetentionAdmin};
 use humaux_domain::audit::SYSTEM_TENANT_ID;
-use serde::Serialize;
 use serde_json::json;
 use sqlx::Row;
 use sqlx::postgres::{PgArguments, Postgres};
@@ -451,71 +455,6 @@ pub fn authority_i4_violations() -> Option<i64> {
 // `control.partition_drop_check`; this side calls the owner functions and reports what they return.
 // ============================================================================
 
-/// ADR-0063 D-C: the closed `table_key` set of `control.partition_registry`, in render order. `retention_policies`
-/// accepts five of them (EVENTS and AUDIT_EVENTS wait for card 37 / a separate approval line, D-G); the contract test
-/// `bins/maintenance/tests/retention.rs` reconciles both CHECKs with this enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PartitionTable {
-    /// `ops.model_call_ledger` (`called_at`).
-    ModelCallLedger,
-    /// `ops.stage_runs` (`started_at`).
-    StageRuns,
-    /// `private.messages` (`created_at`).
-    Messages,
-    /// `ops.maintenance_receipts` (`ran_at`).
-    MaintenanceReceipts,
-    /// `private.events` (`recorded_at`).
-    Events,
-    /// `control.audit_events` (`occurred_at`).
-    AuditEvents,
-    /// `ops.retrieval_query_log` (`called_at`).
-    RetrievalQueryLog,
-}
-
-impl PartitionTable {
-    /// Every key, in the gauge's sample order.
-    pub const ALL: [Self; 7] = [
-        Self::ModelCallLedger,
-        Self::StageRuns,
-        Self::Messages,
-        Self::MaintenanceReceipts,
-        Self::Events,
-        Self::AuditEvents,
-        Self::RetrievalQueryLog,
-    ];
-
-    /// The `table_key` value (the DB CHECKs' spelling, SCREAMING_SNAKE).
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::ModelCallLedger => "MODEL_CALL_LEDGER",
-            Self::StageRuns => "STAGE_RUNS",
-            Self::Messages => "MESSAGES",
-            Self::MaintenanceReceipts => "MAINTENANCE_RECEIPTS",
-            Self::Events => "EVENTS",
-            Self::AuditEvents => "AUDIT_EVENTS",
-            Self::RetrievalQueryLog => "RETRIEVAL_QUERY_LOG",
-        }
-    }
-
-    /// The §41.2 `table` label of `partition_horizon_months` (lowercase key).
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::ModelCallLedger => "model_call_ledger",
-            Self::StageRuns => "stage_runs",
-            Self::Messages => "messages",
-            Self::MaintenanceReceipts => "maintenance_receipts",
-            Self::Events => "events",
-            Self::AuditEvents => "audit_events",
-            Self::RetrievalQueryLog => "retrieval_query_log",
-        }
-    }
-
-    /// The variant whose [`Self::key`] is `key`.
-    pub fn parse(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|t| t.key() == key)
-    }
-}
-
 /// `partition_horizon_months{table}` (ADR-0063 D-F, D-K): `None` = the family renders no sample (never ran, or the
 /// last PARTITIONS run failed); a failed run never leaves the last value standing (card 34 D-A: never stale).
 struct HorizonGauge(std::sync::Mutex<Option<[i64; PartitionTable::ALL.len()]>>);
@@ -702,17 +641,6 @@ async fn audit_effect(
     .await
 }
 
-/// `retention approve`'s receipt.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ApproveReceipt {
-    /// The new policy row.
-    pub policy_id: Uuid,
-    /// Its revision: the table_key's next one.
-    pub policy_revision: i32,
-    /// The `RETENTION_POLICY_APPROVED` §77 row.
-    pub audit_event_id: Uuid,
-}
-
 /// ADR-0063 D-I `retention approve`: the next revision of `table`'s policy (`months: None` = keep forever, which is
 /// how a policy is withdrawn) through `control.retention_policy_approve`, with its §77 row in the same transaction.
 pub async fn retention_approve(
@@ -758,24 +686,6 @@ pub async fn retention_approve(
         policy_revision,
         audit_event_id,
     })
-}
-
-/// One leaf `retention create-partitions` created.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CreatedLeaf {
-    /// Its table_key.
-    pub table_key: &'static str,
-    /// Its UTC month start (RFC 3339).
-    pub month_start: String,
-}
-
-/// `retention create-partitions`' receipt.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CreatePartitionsReceipt {
-    /// The leaves this run created (empty: the horizon was already closed, nothing written, no audit row).
-    pub created: Vec<CreatedLeaf>,
-    /// The `PARTITIONS_CREATED` §77 row when something was created.
-    pub audit_event_id: Option<Uuid>,
 }
 
 /// ADR-0063 D-F / D-I `retention create-partitions --months-ahead n`: for every table_key,
@@ -855,87 +765,6 @@ pub async fn create_partitions(
         created,
         audit_event_id,
     })
-}
-
-/// One `retention execute` request (ADR-0063 D-I): ids are the only selectors; no table or leaf name is accepted.
-#[derive(Debug, Clone)]
-pub struct DropRequest<'a> {
-    /// The approved policy (must be its table_key's latest, effective, not keep-forever revision).
-    pub policy_id: Uuid,
-    /// The one leaf to drop; `None` only with `dry_run` (the due-leaf listing).
-    pub registry_id: Option<Uuid>,
-    /// Where the pre-drop COPY export is written (required, no default).
-    pub export_dir: &'a Path,
-    /// `lock_timeout` of the whole transaction.
-    pub lock_timeout: Duration,
-    /// Print what would happen, then roll back.
-    pub dry_run: bool,
-}
-
-/// A leaf as `control.partition_drop_check` saw it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CheckedLeaf {
-    /// Its registry row.
-    pub registry_id: Uuid,
-    /// Its schema-qualified name.
-    pub leaf: String,
-    /// RFC 3339 UTC; `None` = MINVALUE.
-    pub lower_bound: Option<String>,
-    /// RFC 3339 UTC.
-    pub upper_bound: String,
-    /// Its row count.
-    pub row_count: i64,
-}
-
-/// One due leaf of a `--dry-run` listing with its `partition_drop_check` verdict (`ok` or the refusal code).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DueLeaf {
-    /// The leaf.
-    #[serde(flatten)]
-    pub leaf: CheckedLeaf,
-    /// `ok` or the refusal code.
-    pub verdict: String,
-}
-
-/// A drop receipt: the registry row's receipt columns plus what the run executed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DropReceipt {
-    /// The leaf that was dropped.
-    #[serde(flatten)]
-    pub leaf: CheckedLeaf,
-    /// The policy it was dropped under.
-    pub policy_id: Uuid,
-    /// That policy's revision.
-    pub policy_revision: i32,
-    /// The export file.
-    pub export_path: String,
-    /// Its sha256 (lowercase hex).
-    pub export_sha256: String,
-    /// The statements `control.partition_drop` executed (empty when read back from the registry).
-    pub statements: Vec<String>,
-    /// The `PARTITION_DROPPED` §77 row (`None` when read back from the registry).
-    pub audit_event_id: Option<Uuid>,
-}
-
-/// What one `retention execute` did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DropOutcome {
-    /// `--dry-run` without `--registry-id`: the due leaves (every attached leaf of the policy's table whose verdict
-    /// is not `not_due`), each checked under its own savepoint; nothing written.
-    Listed(Vec<DueLeaf>),
-    /// `--dry-run --registry-id`: the check passed; the exact statements and the export path a run would use.
-    DryRun {
-        /// The checked leaf.
-        leaf: CheckedLeaf,
-        /// `control.partition_drop_statements`, the builder `partition_drop` executes.
-        statements: Vec<String>,
-        /// The export file a run would write.
-        export_path: String,
-    },
-    /// Exported, detached, dropped, receipted and audited in one transaction.
-    Dropped(DropReceipt),
-    /// The named row was already DROPPED: its stored receipt (D-I; never the next month).
-    AlreadyDropped(DropReceipt),
 }
 
 /// `SELECT … FROM control.partition_drop_check($1, $2)` with UTC bounds.
@@ -1207,6 +1036,57 @@ async fn list_due(txn: &mut Txn<'_>, policy_id: Uuid) -> Result<Vec<DueLeaf>, Pr
         });
     }
     Ok(due)
+}
+
+fn retention_audit(admin: RetentionAdmin<'_>) -> AdminAction<'_> {
+    AdminAction {
+        actor: admin.actor,
+        reason: admin.reason,
+        ticket: admin.ticket,
+        trace_id: admin.trace_id,
+        step_up_auth_context: admin.step_up_auth_context,
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl PartitionRetentionPort for RetentionExecutor {
+    type Error = ProvisioningError;
+
+    async fn approve_policy(
+        &self,
+        table: PartitionTable,
+        months: Option<i32>,
+        effective_at: OffsetDateTime,
+        timeout: Duration,
+        admin: RetentionAdmin<'_>,
+    ) -> Result<ApproveReceipt, Self::Error> {
+        retention_approve(
+            self,
+            table,
+            months,
+            effective_at,
+            timeout,
+            &retention_audit(admin),
+        )
+        .await
+    }
+
+    async fn extend_horizon(
+        &self,
+        months_ahead: i32,
+        timeout: Duration,
+        admin: RetentionAdmin<'_>,
+    ) -> Result<CreatePartitionsReceipt, Self::Error> {
+        create_partitions(self, months_ahead, timeout, &retention_audit(admin)).await
+    }
+
+    async fn execute_retention(
+        &self,
+        request: &DropRequest<'_>,
+        admin: RetentionAdmin<'_>,
+    ) -> Result<DropOutcome, Self::Error> {
+        retention_execute(self, request, &retention_audit(admin)).await
+    }
 }
 
 // ---- ADR-0064 D-J / D-V / 10.11 A, C, E (card 37 S4): the backup arms' receipts, local_only ----

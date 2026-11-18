@@ -778,6 +778,33 @@ fn fingerprint(c: &mut Client, relation: &str) -> (i64, String) {
     (row.get(0), row.get(1))
 }
 
+fn assert_drop_rolls_back_on_audit_failure(db: &mut Db, policy: &str, registry: &str, dir: &Path) {
+    // Fail the audit insert after the drop. A split transaction would leave the leaf dropped.
+    db.client()
+        .batch_execute(
+            "ALTER TABLE control.audit_events ADD CONSTRAINT t_j1_reject_drop_audit
+         CHECK (action <> 'PARTITION_DROPPED') NOT VALID",
+        )
+        .expect("install test-only audit fault");
+    let (code, receipt, stderr) = outcome(&execute(db, policy, Some(registry), dir, false));
+    assert_eq!(code, Some(1), "{receipt} {stderr}");
+    assert!(
+        stderr.contains("t_j1_reject_drop_audit"),
+        "{receipt} {stderr}"
+    );
+    assert_untouched(
+        db.client(),
+        registry,
+        "audit failure must roll back the drop",
+    );
+    db.client()
+        .batch_execute("ALTER TABLE control.audit_events DROP CONSTRAINT t_j1_reject_drop_audit")
+        .expect("remove test-only audit fault");
+    for path in exports(dir) {
+        std::fs::remove_file(path).expect("remove export left by the failed test invocation");
+    }
+}
+
 /// T-J1 (ADR-0063 D-J, card acceptance; review finding 5): an expired STAGE_RUNS month without holds, proposed by the
 /// real daemon proposer, is exported, detached and dropped RESTRICT by `retention execute` (exit 0): exactly that leaf
 /// is gone, the registry row is a complete receipt (the database's own row count, the export's sha256, the policy),
@@ -802,6 +829,7 @@ fn an_expired_month_without_holds_is_exported_detached_and_dropped_with_a_receip
         )
         .expect("leaves")
         .get(0);
+    assert_drop_rolls_back_on_audit_failure(&mut db, &policy, &registry, &dir);
     let (code, receipt, stderr) = outcome(&execute(&db, &policy, Some(&registry), &dir, false));
     println!("execute => {receipt}");
     assert_eq!(code, Some(0), "{receipt} {stderr}");
