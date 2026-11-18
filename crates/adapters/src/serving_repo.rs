@@ -1,6 +1,6 @@
 //! `adapters::serving_repo` — §16.2 换代期读路由 SQL + §16.3 无裁量切换事务(T5.2/T5.3).
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sqlx]; services=[PostgreSQL(any) r=[projection.processing_gaps] w=[projection.stream_checkpoints], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::stream_repo, application::recall_read, domain::error, domain::identity, projection::serving, projection::stream, retrieval::completeness]
-//! Called-by: [adapters::retrieve, gateway::context, maintenance::projection_serve, tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sqlx]; services=[PostgreSQL(any) r=[projection.processing_gaps] w=[projection.stream_checkpoints], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::stream_repo, application::projection_maintenance, application::recall_read, domain::error, domain::identity, projection::serving, projection::stream, retrieval::completeness]
+//! Called-by: [adapters::retrieve, gateway::context, tests]
 //! Invariants: [only fetches the numbers and performs the atomic serving switch UPDATE; the switch decision is
 //!   humaux_projection::serving's pure arithmetic; cross-tenant or unauthenticated calls are typed errors;
 //!   family_read_state reads initialised/serving (and, with `UnservedLedger::Read` on an unserved key, the real
@@ -87,30 +87,7 @@ impl std::fmt::Display for ServingRepoError {
 
 impl std::error::Error for ServingRepoError {}
 
-/// [`switch_projection_version`]'s result: either §16.3's three criteria all held and the
-/// atomic `UPDATE` committed, or at least one failed and the DB was never touched (§16.3 "任一
-/// 为假直接拒绝，不存在『人工判断可以上』的分支" — there is no partial-write state between
-/// these two, `Rejected` carries the complete failing-criteria set from `evaluate_switch`, not
-/// a per-criterion retry).
-#[must_use = "Rejected/TargetVersionMissing mean the switch did NOT happen — silently \
-              discarding this hides a real switch failure behind an apparent success"]
-#[derive(Debug, PartialEq, Eq)]
-pub enum SwitchOutcome {
-    /// The atomic switch committed; `new_version` is now the family's sole `serving` row, the
-    /// previously-serving row is retired (`serving = false`, row still present as a rollback
-    /// target, §16.3).
-    Switched,
-    /// At least one of §16.3's three criteria failed — carries every failing reason
-    /// (`humaux_projection::serving::SwitchRejection`), not just the first.
-    Rejected(Vec<humaux_projection::serving::SwitchRejection>),
-    /// §16.3's three criteria all held, but `new_version` names no row in
-    /// `projection.stream_checkpoints` for this family (typo'd version, a shadow row that was
-    /// never created, or one deleted concurrently) — the clear-`UPDATE` of the previously
-    /// `serving` row is never committed in this case, so the family keeps its prior `serving`
-    /// row untouched rather than ending up with zero `serving` rows. Distinct from `Rejected`:
-    /// the criteria genuinely held, the target row just does not exist.
-    TargetVersionMissing,
-}
+pub use humaux_application::projection_maintenance::SwitchOutcome;
 
 /// Maintenance writes remain tenant-scoped but have no end-user request context.
 async fn set_tenant_local(txn: &mut Txn<'_>, tenant_id: Uuid) -> Result<(), sqlx::Error> {
@@ -459,4 +436,34 @@ pub async fn switch_projection_version(
 
     txn.commit().await?;
     Ok(SwitchOutcome::Switched)
+}
+
+#[async_trait::async_trait]
+impl humaux_application::projection_maintenance::ProjectionServePort for MaintenanceDbPool {
+    type Error = ServingRepoError;
+
+    async fn retire_failed(&self, key: &StreamKey, error_class: &str) -> Result<Vec<i64>, String> {
+        stream_repo::retire_failed(self, key, error_class)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn switch_projection_version(
+        &self,
+        family: &StreamFamily,
+        new_version: &str,
+        visible_shadow: Option<(String, u64)>,
+        visible_serving: Option<(String, u64)>,
+        continuation: ContinuationVerdict,
+    ) -> Result<SwitchOutcome, Self::Error> {
+        switch_projection_version(
+            self,
+            family,
+            new_version,
+            visible_shadow,
+            visible_serving,
+            continuation,
+        )
+        .await
+    }
 }
