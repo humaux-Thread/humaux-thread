@@ -2,7 +2,9 @@
 //!   are usage (exit 2), `--version` follows the burned-in sha, `readyz serve|health-serve` map the ops listener's
 //!   200 / 503 to 0 / 2, and `--serve` prints the start line first.
 //! Depends-on: crates=[humaux-telemetry]; services=[HTTP(loopback), subprocess(humaux-maintenance)];
-//!   env=[CARGO_BIN_EXE_humaux-maintenance, CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR, HUMAUX_MAINTENANCE_SERVE_METRICS_ADDR]; modules=[humaux-telemetry]
+//!   env=[CARGO_BIN_EXE_humaux-maintenance, CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME,
+//!   HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR, HUMAUX_MAINTENANCE_QDRANT_CIDR, HUMAUX_MAINTENANCE_QDRANT_HOST,
+//!   HUMAUX_MAINTENANCE_QDRANT_PORT, HUMAUX_MAINTENANCE_SERVE_METRICS_ADDR]; modules=[humaux-telemetry]
 //! Called-by: [cargo-test]
 //! Invariants: [every humaux-maintenance spawn runs with a cleared environment and closed stdin and exits on its own (no mode reached here can connect or serve); nothing is written outside the process; the probed listeners are the test's own loopback threads]
 //! Spec: ADR-0037; ADR-0066 D-D; ADR-0066 D-N
@@ -162,4 +164,47 @@ fn readyz_probe_exit_code() {
         let out = run(&["readyz", mode], &[(key, &closed_addr())]);
         assert_eq!(out.status.code(), Some(2), "{mode}: nothing listening");
     }
+}
+
+/// Operator validation failures keep the original streams and process code (SLICE-15c).
+#[test]
+fn operator_failure_bytes_match_legacy() {
+    let collection = run(
+        &["collection", "ensure"],
+        &[
+            ("HUMAUX_MAINTENANCE_QDRANT_HOST", "localhost"),
+            ("HUMAUX_MAINTENANCE_QDRANT_PORT", "6333"),
+            ("HUMAUX_MAINTENANCE_QDRANT_CIDR", "not-a-cidr"),
+        ],
+    );
+    assert_eq!(collection.status.code(), Some(2));
+    assert_eq!(collection.stdout, b"");
+    assert_eq!(
+        collection.stderr,
+        b"humaux-maintenance: invalid input: qdrant cidr not-a-cidr\n"
+    );
+
+    let register = run(
+        &[
+            "reasoning",
+            "register",
+            "--actor",
+            "test",
+            "--reason",
+            "test",
+            "--ticket",
+            "test",
+            "--step-up-auth",
+            "test",
+            "--capabilities",
+            "TEXT, INVALID",
+        ],
+        &[],
+    );
+    assert_eq!(register.status.code(), Some(2));
+    assert_eq!(register.stdout, b"");
+    assert_eq!(
+        register.stderr,
+        b"humaux-maintenance: --capabilities: \" INVALID\" is outside the \xc2\xa711.2 closed set\n"
+    );
 }

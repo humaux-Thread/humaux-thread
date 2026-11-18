@@ -18,12 +18,3 @@ bins/maintenance/src/drill.rs:humaux_adapters::rebuild::Verdict
 bins/maintenance/src/drill.rs:humaux_adapters::stream_repo::Backoff
 bins/maintenance/src/drill.rs:humaux_adapters::stream_repo::ClaimFamily
 bins/maintenance/src/drill.rs:humaux_adapters::stream_repo::OnlyRun
-bins/maintenance/src/main.rs:humaux_adapters::byok::ReasoningCapability
-bins/maintenance/src/main.rs:humaux_adapters::membership_repo::AdminAction
-bins/maintenance/src/main.rs:humaux_adapters::provisioning::NewApiKey
-bins/maintenance/src/main.rs:humaux_adapters::provisioning::ProvisioningError
-bins/maintenance/src/main.rs:humaux_adapters::provisioning::QdrantFace
-bins/maintenance/src/main.rs:humaux_adapters::provisioning::RequeueTarget
-bins/maintenance/src/main.rs:humaux_adapters::provisioning::TenantRequest
-bins/maintenance/src/main.rs:humaux_adapters::provisioning::WorkspaceActivation
-bins/maintenance/src/main.rs:humaux_adapters::reasoning_route_onboarding::RegisterProfile

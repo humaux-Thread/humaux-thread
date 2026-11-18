@@ -3269,6 +3269,7 @@ processes:
 - process(humaux-maintenance)
 
 modules:
+- `maintenance::bootstrap`
 - `maintenance::main`
 - `maintenance::tests::onboarding`
 - `xtask::e2e_onboard`
@@ -3389,6 +3390,7 @@ processes:
 - process(humaux-maintenance)
 
 modules:
+- `maintenance::bootstrap`
 - `maintenance::main`
 - `maintenance::tests::onboarding`
 - `xtask::e2e_onboard`
@@ -3406,9 +3408,11 @@ processes:
 - process(humaux-maintenance)
 
 modules:
+- `maintenance::bootstrap`
 - `maintenance::main`
 - `maintenance::rebuild_cli`
 - `maintenance::tests::drill`
+- `maintenance::tests::exit_codes`
 - `maintenance::tests::onboarding`
 - `maintenance::tests::rebuild_cli`
 - `xtask::e2e_onboard`
@@ -3426,10 +3430,12 @@ processes:
 - process(humaux-maintenance)
 
 modules:
+- `maintenance::bootstrap`
 - `maintenance::drill`
 - `maintenance::main`
 - `maintenance::rebuild_cli`
 - `maintenance::tests::drill`
+- `maintenance::tests::exit_codes`
 - `maintenance::tests::onboarding`
 - `maintenance::tests::rebuild_cli`
 - `xtask::e2e_onboard`
@@ -3447,10 +3453,12 @@ processes:
 - process(humaux-maintenance)
 
 modules:
+- `maintenance::bootstrap`
 - `maintenance::drill`
 - `maintenance::main`
 - `maintenance::rebuild_cli`
 - `maintenance::tests::drill`
+- `maintenance::tests::exit_codes`
 - `maintenance::tests::onboarding`
 - `maintenance::tests::rebuild_cli`
 - `xtask::e2e_onboard`

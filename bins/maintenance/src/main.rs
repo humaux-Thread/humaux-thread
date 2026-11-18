@@ -9,19 +9,17 @@
 //!   `backup check | run | verify | status` (ADR-0064 D-J), and `restore drill [--destroy-stale] | restore pitr`
 //!   (ADR-0064 D-L, D-U), plus the library subcommands moved out of xtask — `migrate`, `rls-check`, `projection serve`,
 //!   `member` — and the `deploy-check` release-gate modes (ADR-0066 D-Q, D-R).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-protocol, humaux-telemetry, rand, serde, serde_json, time,
-//!   tokio, uuid]; services=[HTTP(loopback), PostgreSQL(role_maintenance)]; env=[CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA,
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry, rand, serde, serde_json, time, tokio, uuid]; services=[HTTP(loopback), PostgreSQL(role_maintenance)]; env=[CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA,
 //!   HUMAUX_BUILD_TIME, HUMAUX_MAINTENANCE_CREDENTIAL_PEPPER_HEX, HUMAUX_MAINTENANCE_HEALTH_SERVE_METRICS_ADDR,
 //!   HUMAUX_MAINTENANCE_SERVE_METRICS_ADDR,
 //!   HUMAUX_MAINTENANCE_EMBEDDING_DIMENSION, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MAINTENANCE_PRIVATE_MEMORY_COLLECTION,
 //!   HUMAUX_MAINTENANCE_QDRANT_CIDR, HUMAUX_MAINTENANCE_QDRANT_HOST, HUMAUX_MAINTENANCE_QDRANT_PORT];
-//!   modules=[adapters::byok, adapters::membership_repo, adapters::postgres, adapters::provisioning,
-//!   adapters::quota_repo, adapters::reasoning_route_onboarding, adapters::role_hygiene,
-//!   domain::identity, domain::ids, domain::ticket_family, humaux-telemetry, maintenance::backup, maintenance::deploy_check,
-//!   maintenance::drill,
-//!   maintenance::health_serve,
-//!   maintenance::member, maintenance::migrate, maintenance::projection_serve, maintenance::rebuild_cli,
-//!   maintenance::retention, maintenance::rls_check, maintenance::roles, maintenance::serve, protocol::edge]
+//!   modules=[adapters::postgres, adapters::quota_repo, adapters::role_hygiene, application::membership_admin,
+//!   application::operator_provisioning, application::reasoning_route_admin, domain::identity, domain::ids,
+//!   domain::ticket_family, humaux-telemetry, maintenance::backup, maintenance::bootstrap, maintenance::deploy_check,
+//!   maintenance::drill, maintenance::health_serve, maintenance::member, maintenance::migrate,
+//!   maintenance::projection_serve, maintenance::rebuild_cli, maintenance::retention, maintenance::rls_check,
+//!   maintenance::roles, maintenance::serve, protocol::edge]
 //! Called-by: [process(humaux-maintenance)]
 //! Invariants: [every subcommand but `health serve` and `--serve` is one-shot; one JSON receipt on stdout per run
 //!   (the library subcommands keep the line output they had in xtask, ADR-0066 D-Q); exit 0 created/existing, 3 refused, 2 usage, 1
@@ -61,6 +59,7 @@
 //! (`default`, the name the seed always used).
 
 mod backup;
+mod bootstrap;
 mod drill;
 mod health_serve;
 mod rebuild_cli;
@@ -71,16 +70,17 @@ mod serve;
 
 use std::process::ExitCode;
 
-use humaux_adapters::byok::ReasoningCapability;
-use humaux_adapters::membership_repo::AdminAction;
 use humaux_adapters::postgres::MaintenanceDbPool;
-use humaux_adapters::provisioning::{
-    self, NewApiKey, ProvisioningError, QdrantFace, RequeueTarget, TenantRequest,
-    WorkspaceActivation,
-};
 use humaux_adapters::quota_repo;
-use humaux_adapters::reasoning_route_onboarding::{self as routes, RegisterProfile};
 use humaux_adapters::role_hygiene;
+use humaux_application::membership_admin::AdminAction;
+use humaux_application::operator_provisioning::{
+    self as provisioning, NewApiKey, ProvisioningError, ProvisioningPort, ReasoningCapability,
+    RequeueTarget, TenantRequest, WorkspaceActivation, api_key_prefix,
+};
+use humaux_application::reasoning_route_admin::{
+    self as routes, ReasoningRoutePort, RegisterProfile, parse_purpose,
+};
 use humaux_domain::identity::MembershipRole;
 use humaux_domain::ids::TenantId;
 use humaux_domain::ticket_family::TicketFamily;
@@ -142,9 +142,9 @@ enum Failure {
     Provisioning(ProvisioningError),
 }
 
-impl From<ProvisioningError> for Failure {
-    fn from(error: ProvisioningError) -> Self {
-        Self::Provisioning(error)
+impl<E: Into<ProvisioningError>> From<E> for Failure {
+    fn from(error: E) -> Self {
+        Self::Provisioning(error.into())
     }
 }
 
@@ -235,7 +235,7 @@ fn pepper() -> Result<Vec<u8>> {
 }
 
 /// Mints `<prefix>.<secret>` for (tenant, key name): the prefix is deterministic
-/// (`provisioning::api_key_prefix`), the 32-char secret random. Returns the key material for the
+/// (`api_key_prefix`), the 32-char secret random. Returns the key material for the
 /// library and the wire key for the single stdout line.
 fn mint(pepper: &[u8], tenant_id: Uuid, key_name: &str) -> (NewApiKey, String) {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -243,7 +243,7 @@ fn mint(pepper: &[u8], tenant_id: Uuid, key_name: &str) -> (NewApiKey, String) {
     let secret: String = (0..32)
         .map(|_| ALPHABET[rng.random_range(0..ALPHABET.len())] as char)
         .collect();
-    let prefix = provisioning::api_key_prefix(tenant_id, key_name);
+    let prefix = api_key_prefix(tenant_id, key_name);
     let wire = format!("{prefix}.{secret}");
     let key_hash = compute_api_key_hash(pepper, &wire);
     let fingerprint = api_key_log_fingerprint(&prefix, &key_hash);
@@ -287,26 +287,6 @@ async fn pool() -> Result<MaintenanceDbPool> {
     MaintenanceDbPool::connect(&dsn)
         .await
         .map_err(|e| Failure::Infra(format!("connect HUMAUX_MAINTENANCE_PG_DSN: {e}")))
-}
-
-/// The Qdrant face and the collection/dimension every onboarding step uses.
-struct Qdrant {
-    face: QdrantFace,
-    collection: String,
-    dimension: u32,
-}
-
-fn qdrant() -> Result<Qdrant> {
-    let face = QdrantFace::new(
-        &env("HUMAUX_MAINTENANCE_QDRANT_HOST")?,
-        env_parsed("HUMAUX_MAINTENANCE_QDRANT_PORT")?,
-        &env("HUMAUX_MAINTENANCE_QDRANT_CIDR")?,
-    )?;
-    Ok(Qdrant {
-        face,
-        collection: env("HUMAUX_MAINTENANCE_PRIVATE_MEMORY_COLLECTION")?,
-        dimension: env_parsed("HUMAUX_MAINTENANCE_EMBEDDING_DIMENSION")?,
-    })
 }
 
 fn to_json<T: serde::Serialize>(value: &T) -> Result<Value> {
@@ -360,8 +340,9 @@ async fn deploy_init(args: &Args) -> Result<Output> {
     let tpm: i64 = args.parsed("--tpm")?;
     let rpm: i64 = args.parsed("--rpm")?;
     let pool = pool().await?;
-    let receipt =
-        provisioning::deploy_init(&pool, &provider, &region, tpm, rpm, &admin.action()).await?;
+    let receipt = pool
+        .deploy_init(&provider, &region, tpm, rpm, &admin.action())
+        .await?;
     Ok(Output::ok(to_json(&receipt)?))
 }
 
@@ -386,7 +367,7 @@ async fn onboard_tenant(args: &Args) -> Result<Output> {
     let tenant_tpm: i64 = args.parsed("--tenant-tpm")?;
     let tenant_rpm: i64 = args.parsed("--tenant-rpm")?;
     let pepper = pepper()?;
-    let qdrant = qdrant()?;
+    let qdrant = bootstrap::qdrant()?;
     let pool = pool().await?;
 
     let started = std::time::Instant::now();
@@ -417,11 +398,14 @@ async fn onboard_tenant(args: &Args) -> Result<Output> {
     quota_repo::issue_window(&pool, TenantId(tenant.tenant_id))
         .await
         .map_err(|e| Failure::Infra(format!("issue_window: {e:?}")))?;
-    let collection =
-        provisioning::ensure_collection(&qdrant.face, &qdrant.collection, qdrant.dimension).await?;
+    let collection = provisioning::ensure_collection(
+        qdrant.collection_port(),
+        &qdrant.collection,
+        qdrant.dimension,
+    )
+    .await?;
     let activation = provisioning::activate_workspace(
-        &pool,
-        &qdrant.face,
+        &qdrant.activation_port(&pool),
         tenant.tenant_id,
         tenant.workspace_id,
         qdrant.dimension,
@@ -446,15 +430,19 @@ async fn onboard_workspace(args: &Args) -> Result<Output> {
     let tenant_id = uuid_flag(args, "--tenant")?;
     let name = args.required("--name")?;
     let owner = uuid_flag(args, "--owner")?;
-    let qdrant = qdrant()?;
+    let qdrant = bootstrap::qdrant()?;
     let pool = pool().await?;
-    let workspace =
-        provisioning::onboard_workspace(&pool, tenant_id, &name, owner, &admin.action()).await?;
-    let collection =
-        provisioning::ensure_collection(&qdrant.face, &qdrant.collection, qdrant.dimension).await?;
+    let workspace = pool
+        .onboard_workspace(tenant_id, &name, owner, &admin.action())
+        .await?;
+    let collection = provisioning::ensure_collection(
+        qdrant.collection_port(),
+        &qdrant.collection,
+        qdrant.dimension,
+    )
+    .await?;
     let activation = provisioning::activate_workspace(
-        &pool,
-        &qdrant.face,
+        &qdrant.activation_port(&pool),
         tenant_id,
         workspace.workspace_id,
         qdrant.dimension,
@@ -480,9 +468,9 @@ async fn onboard_user(args: &Args) -> Result<Output> {
         None => None,
     };
     let pool = pool().await?;
-    let receipt =
-        provisioning::onboard_user(&pool, tenant_id, &email, role, workspace, &admin.action())
-            .await?;
+    let receipt = pool
+        .onboard_user(tenant_id, &email, role, workspace, &admin.action())
+        .await?;
     Ok(Output::ok(to_json(&receipt)?))
 }
 
@@ -521,8 +509,10 @@ async fn apikey_revoke(args: &Args) -> Result<Output> {
     let tenant_id = uuid_flag(args, "--tenant")?;
     let key_name = args.required("--key-name")?;
     let pool = pool().await?;
-    let prefix = provisioning::api_key_prefix(tenant_id, &key_name);
-    let receipt = provisioning::revoke_api_key(&pool, tenant_id, &prefix, &admin.action()).await?;
+    let prefix = api_key_prefix(tenant_id, &key_name);
+    let receipt = pool
+        .revoke_api_key(tenant_id, &prefix, &admin.action())
+        .await?;
     Ok(Output::ok(to_json(&receipt)?))
 }
 
@@ -531,8 +521,9 @@ async fn placement_ensure(args: &Args) -> Result<Output> {
     let tenant_id = uuid_flag(args, "--tenant")?;
     let collection = env("HUMAUX_MAINTENANCE_PRIVATE_MEMORY_COLLECTION")?;
     let pool = pool().await?;
-    let placements =
-        provisioning::ensure_placement(&pool, tenant_id, &collection, &admin.action()).await?;
+    let placements = pool
+        .ensure_placement(tenant_id, &collection, &admin.action())
+        .await?;
     let created = placements.iter().any(|p| p.created);
     Ok(Output::ok(json!({
         "outcome": if created { "created" } else { "existing" },
@@ -542,9 +533,13 @@ async fn placement_ensure(args: &Args) -> Result<Output> {
 }
 
 async fn collection_ensure() -> Result<Output> {
-    let qdrant = qdrant()?;
-    let collection =
-        provisioning::ensure_collection(&qdrant.face, &qdrant.collection, qdrant.dimension).await?;
+    let qdrant = bootstrap::qdrant()?;
+    let collection = provisioning::ensure_collection(
+        qdrant.collection_port(),
+        &qdrant.collection,
+        qdrant.dimension,
+    )
+    .await?;
     let mut receipt = to_json(&collection)?;
     receipt["outcome"] = json!(if collection.created {
         "created"
@@ -575,11 +570,10 @@ async fn activate(args: &Args) -> Result<Output> {
             ));
         }
     };
-    let qdrant = qdrant()?;
+    let qdrant = bootstrap::qdrant()?;
     let pool = pool().await?;
     let activation = provisioning::activate_workspace(
-        &pool,
-        &qdrant.face,
+        &qdrant.activation_port(&pool),
         tenant_id,
         workspace_id,
         qdrant.dimension,
@@ -590,11 +584,7 @@ async fn activate(args: &Args) -> Result<Output> {
     let mut receipt = to_json(&activation)?;
     receipt["outcome"] = json!(match activation.refusal() {
         Some(_) => "refused",
-        None if activation
-            .activations
-            .iter()
-            .any(|a| a.outcome == "activated") =>
-            "created",
+        None if activation.created() => "created",
         None => "existing",
     });
     if let Some(reason) = activation.refusal() {
@@ -650,7 +640,7 @@ async fn apikey_pepper_epoch(args: &Args, open: bool) -> Result<Output> {
 async fn status(args: &Args) -> Result<Output> {
     let tenant_id = uuid_flag(args, "--tenant")?;
     let pool = pool().await?;
-    Ok(Output::ok(provisioning::status(&pool, tenant_id).await?))
+    Ok(Output::ok(pool.status(tenant_id).await?))
 }
 
 /// `--profile ID --profile-version N`: one Profile@version (ADR-0060 D-H).
@@ -717,21 +707,21 @@ async fn reasoning_register(args: &Args) -> Result<Output> {
 async fn reasoning_bind(args: &Args) -> Result<Output> {
     let admin = Admin::from(args)?;
     let purpose_text = args.required("--purpose")?;
-    let purpose = routes::parse_purpose(&purpose_text).ok_or_else(|| {
+    let purpose = parse_purpose(&purpose_text).ok_or_else(|| {
         Failure::Usage(format!(
             "--purpose: {purpose_text:?} is not a §11.2.3 purpose"
         ))
     })?;
     let pool = pool().await?;
-    let receipt = routes::bind_domain(
-        &pool,
-        uuid_flag(args, "--tenant")?,
-        uuid_flag(args, "--domain")?,
-        purpose,
-        profile_flags(args)?,
-        &admin.action(),
-    )
-    .await?;
+    let receipt = pool
+        .bind_domain(
+            uuid_flag(args, "--tenant")?,
+            uuid_flag(args, "--domain")?,
+            purpose,
+            profile_flags(args)?,
+            &admin.action(),
+        )
+        .await?;
     Ok(Output::ok(to_json(&receipt)?))
 }
 
@@ -739,14 +729,14 @@ async fn reasoning_bind(args: &Args) -> Result<Output> {
 async fn reasoning_attest_health(args: &Args) -> Result<Output> {
     let admin = Admin::from(args)?;
     let pool = pool().await?;
-    let receipt = routes::attest_health(
-        &pool,
-        uuid_flag(args, "--tenant")?,
-        profile_flags(args)?,
-        args.parsed("--valid-for-secs")?,
-        &admin.action(),
-    )
-    .await?;
+    let receipt = pool
+        .attest_health(
+            uuid_flag(args, "--tenant")?,
+            profile_flags(args)?,
+            args.parsed("--valid-for-secs")?,
+            &admin.action(),
+        )
+        .await?;
     Ok(Output::ok(to_json(&receipt)?))
 }
 
@@ -754,14 +744,14 @@ async fn reasoning_attest_health(args: &Args) -> Result<Output> {
 async fn reasoning_profile_state(args: &Args) -> Result<Output> {
     let admin = Admin::from(args)?;
     let pool = pool().await?;
-    let receipt = routes::set_profile_enabled(
-        &pool,
-        uuid_flag(args, "--tenant")?,
-        profile_flags(args)?,
-        args.parsed("--enabled")?,
-        &admin.action(),
-    )
-    .await?;
+    let receipt = pool
+        .set_profile_enabled(
+            uuid_flag(args, "--tenant")?,
+            profile_flags(args)?,
+            args.parsed("--enabled")?,
+            &admin.action(),
+        )
+        .await?;
     Ok(Output::ok(to_json(&receipt)?))
 }
 
@@ -769,7 +759,7 @@ async fn reasoning_profile_state(args: &Args) -> Result<Output> {
 async fn reasoning_status(args: &Args) -> Result<Output> {
     let tenant_id = uuid_flag(args, "--tenant")?;
     let pool = pool().await?;
-    Ok(Output::ok(routes::route_status(&pool, tenant_id).await?))
+    Ok(Output::ok(pool.route_status(tenant_id).await?))
 }
 
 async fn run(args: Args) -> Result<Output> {

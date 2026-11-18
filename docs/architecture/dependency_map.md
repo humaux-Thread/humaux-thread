@@ -483,11 +483,15 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::membership_admin`
 
+#### `application::operator_provisioning`
+
 #### `application::pin`
 
 #### `application::private_inference`
 
 #### `application::projection_maintenance`
+
+#### `application::reasoning_route_admin`
 
 #### `application::recall_read`
 
@@ -2187,9 +2191,13 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::login`
 
+#### `application::membership_admin`
+
 #### `application::oauth`
 
 #### `application::oauth_exchange`
+
+#### `application::operator_provisioning`
 
 #### `application::pin`
 
@@ -2202,6 +2210,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::query_embedding_execution`
 
 #### `application::read_quota`
+
+#### `application::reasoning_route_admin`
 
 #### `application::recall_read`
 
@@ -2977,14 +2987,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.resolve_user_reasoning_admission`
 - service `PostgreSQL(any)`
 
-#### `adapters::reasoning_route_onboarding`
-- executes `control.attest_reasoning_route_health`
-- executes `control.bind_reasoning_domain`
-- executes `control.reasoning_route_status`
-- executes `control.register_reasoning_profile`
-- executes `control.set_reasoning_profile_enabled`
-- service `PostgreSQL(role_maintenance)`
-
 #### `adapters::rebuild`
 - reads `ops.outbox`
 - reads `private.evidence_objects`
@@ -3135,6 +3137,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::membership_admin`
 
+#### `application::operator_provisioning`
+
 #### `application::partition_retention`
 
 #### `application::pin`
@@ -3144,6 +3148,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::projection_execution`
 
 #### `application::projection_maintenance`
+
+#### `application::reasoning_route_admin`
 
 #### `application::recall_read`
 
@@ -3273,6 +3279,13 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_MAINTENANCE_PG_DSN`
 - service `PostgreSQL(role_maintenance)`
 - service `subprocess(docker)`
+
+#### `maintenance::bootstrap`
+- env `HUMAUX_MAINTENANCE_EMBEDDING_DIMENSION`
+- env `HUMAUX_MAINTENANCE_PRIVATE_MEMORY_COLLECTION`
+- env `HUMAUX_MAINTENANCE_QDRANT_CIDR`
+- env `HUMAUX_MAINTENANCE_QDRANT_HOST`
+- env `HUMAUX_MAINTENANCE_QDRANT_PORT`
 
 #### `maintenance::deploy_check`
 - service `subprocess(docker)`
@@ -4270,11 +4283,17 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::lifecycle_execution`
 
+#### `application::membership_admin`
+
+#### `application::operator_provisioning`
+
 #### `application::pin`
 
 #### `application::private_inference`
 
 #### `application::projection_maintenance`
+
+#### `application::reasoning_route_admin`
 
 #### `application::recall_read`
 
@@ -5093,6 +5112,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::lifecycle_execution`
 
+#### `application::membership_admin`
+
+#### `application::operator_provisioning`
+
 #### `application::pin`
 
 #### `application::private_inference`
@@ -5102,6 +5125,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::projection_maintenance`
 
 #### `application::query_embedding_execution`
+
+#### `application::reasoning_route_admin`
 
 #### `application::recall_read`
 
@@ -5501,8 +5526,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::reasoning_route_onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `adapters::reasoning_route_onboarding`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.audit_event_identity`
@@ -5709,8 +5734,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::reasoning_route_onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `adapters::reasoning_route_onboarding`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.bootstrap_contribution_deidentify_shadow`
@@ -7105,8 +7130,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::reasoning_route_onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `adapters::reasoning_route_onboarding`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.record_notice_shown`
@@ -7133,8 +7158,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::reasoning_route_onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `adapters::reasoning_route_onboarding`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.reject_partition_key_update`
@@ -7330,8 +7355,8 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::reasoning_route_onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `adapters::reasoning_route_onboarding`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.set_workspace_membership`
@@ -14329,6 +14354,7 @@ modules naming it:
 - `adapters::affect_repo`
 - `adapters::audited_read_quota`
 - `adapters::billing_processor_repo`
+- `adapters::byok`
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::context_repo`
@@ -14540,7 +14566,9 @@ modules naming it:
 - `adapters::operation_receipt`
 - `adapters::private_inference_rpc`
 - `adapters::projection_worker`
+- `adapters::provisioning`
 - `adapters::read_materialize`
+- `adapters::reasoning_route_onboarding`
 - `adapters::rebuild`
 - `adapters::remember`
 - `adapters::retrieval_embedding_rpc`
@@ -14706,14 +14734,12 @@ modules naming it:
 - `tests`
 
 ### humaux-adapters → `serde` (normal)
-why: serializable onboarding receipts
+why: serializable adapter responses
 
 modules naming it:
 - `adapters::plan_repo`
 - `adapters::processing_status`
 - `adapters::project_rollup`
-- `adapters::provisioning`
-- `adapters::reasoning_route_onboarding`
 
 ### humaux-adapters → `sha2` (normal)
 why: content fingerprint hashing
@@ -15501,6 +15527,7 @@ modules naming it:
 - `application::notify`
 - `application::oauth`
 - `application::oauth_exchange`
+- `application::operator_provisioning`
 - `application::pin`
 - `application::processing_status`
 - `application::projection_execution`
@@ -15580,6 +15607,7 @@ modules naming it:
 - `application::forget`
 - `application::oauth`
 - `application::oauth_exchange`
+- `application::operator_provisioning`
 - `application::referral`
 - `application::session`
 - `application::signed_token`
@@ -15594,6 +15622,7 @@ modules naming it:
 - `application::continuity`
 - `application::contribute`
 - `application::oauth_exchange`
+- `application::operator_provisioning`
 - `application::referral`
 - `application::session`
 - `application::signed_token`
@@ -15605,7 +15634,9 @@ why: wire/DTO (de)serialization for continuity handoff and notify payloads
 modules naming it:
 - `application::continuity`
 - `application::notify`
+- `application::operator_provisioning`
 - `application::partition_retention`
+- `application::reasoning_route_admin`
 - `application::recall_read`
 
 ### humaux-application → `serde_json` (normal)
@@ -15622,8 +15653,10 @@ modules naming it:
 - `application::mechanism_observation`
 - `application::notify`
 - `application::oauth_exchange`
+- `application::operator_provisioning`
 - `application::projection_maintenance`
 - `application::read_quota`
+- `application::reasoning_route_admin`
 - `application::recall_read`
 - `application::remember`
 - `tests`
@@ -15658,6 +15691,7 @@ modules naming it:
 - `application::mechanism_observation`
 - `application::membership_admin`
 - `application::oauth_exchange`
+- `application::operator_provisioning`
 - `application::partition_retention`
 - `application::private_inference`
 - `application::projection_execution`
@@ -15665,6 +15699,7 @@ modules naming it:
 - `application::public_dispatch`
 - `application::query_embedding_execution`
 - `application::read_quota`
+- `application::reasoning_route_admin`
 - `application::recall_read`
 - `application::remember`
 - `application::retrieval_embedding_port`
@@ -15694,11 +15729,13 @@ modules naming it:
 - `application::membership_admin`
 - `application::oauth`
 - `application::oauth_exchange`
+- `application::operator_provisioning`
 - `application::partition_retention`
 - `application::pin`
 - `application::private_inference`
 - `application::projection_maintenance`
 - `application::query_embedding_execution`
+- `application::reasoning_route_admin`
 - `application::recall_read`
 - `application::remember`
 - `application::retrieval_embedding_port`
@@ -15727,6 +15764,7 @@ modules naming it:
 - `application::lifecycle_execution`
 - `application::oauth`
 - `application::oauth_exchange`
+- `application::operator_provisioning`
 - `application::partition_retention`
 - `application::read_quota`
 - `application::recall_read`
@@ -17718,8 +17756,10 @@ why: operational health sampling use case
 
 modules naming it:
 - `maintenance::backup`
+- `maintenance::bootstrap`
 - `maintenance::deploy_check`
 - `maintenance::health_serve`
+- `maintenance::main`
 - `maintenance::member`
 - `maintenance::projection_serve`
 - `maintenance::rebuild_cli`
@@ -17734,6 +17774,7 @@ why: the onboarding library (provisioning), typed maintenance pool, quota window
 
 modules naming it:
 - `maintenance::backup`
+- `maintenance::bootstrap`
 - `maintenance::drill`
 - `maintenance::health_serve`
 - `maintenance::main`

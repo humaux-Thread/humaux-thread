@@ -1,8 +1,10 @@
 //! `adapters::byok` — T4.4/T4.5: `UserReasoningProvider` contract, `PrivateInferenceContext`,
 //!   `UserReasoningProfile`/`PrivateReasoningDomain` DB-facing types, the §11.3 Provider Error state machine, and the
 //!   §11.4 custom-endpoint SSRF guard chain.
-//! Depends-on: crates=[async-trait, humaux-domain, humaux-infra-egress, serde_json, tokio, uuid]; services=[]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::byok::ssrf, domain::egress, domain::error, domain::evidence, domain::ids, infra-egress::raw, infra-egress::resolver]
-//! Called-by: [adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::reasoning_route_admission, adapters::reasoning_route_onboarding, gateway::mcp_application, maintenance::main, private-worker::route_providers, tests, xtask::e2e_onboard, xtask::e2e_seed]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-infra-egress, serde_json, tokio, uuid]; services=[]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::byok::ssrf, domain::egress, domain::error, domain::evidence, domain::ids, infra-egress::raw, infra-egress::resolver]
+//! Called-by: [adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::distill_reasoner,
+//!   adapters::reasoning_route_admission, gateway::mcp_application, private-worker::route_providers, tests,
+//!   xtask::e2e_onboard, xtask::e2e_seed]
 //! Invariants: [the plaintext BYOK key never becomes a struct field and never prints (only CredentialFingerprint
 //!   does); permit tenant/purpose/payload mismatches are refused before any provider call; provider failures surface
 //!   as typed ReasoningProviderError; no vendor-specific request field is written by code — a Profile's
@@ -63,63 +65,9 @@ use humaux_domain::error::ErrorCode;
 use humaux_domain::evidence::payload_sha256;
 use humaux_domain::ids::{TenantId, UserId};
 
+pub use humaux_application::operator_provisioning::ReasoningCapability;
+
 pub mod ssrf;
-
-// =============================================================================
-// §11.2 capability closed set
-// =============================================================================
-
-/// §11.2 "能力至少" closed set. `==` the capability CHECKs of `control.user_reasoning_profiles`,
-/// `control.processor_models` and `control.reasoning_profiles` (last widened by
-/// `migrations/0206_reasoning_route_runtime.sql`) — [`ReasoningCapability::as_str`] /
-/// [`ReasoningCapability::parse`] are the §78.2 contract-test surface for those columns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ReasoningCapability {
-    Text,
-    Vision,
-    StructuredOutput,
-    TokenUsage,
-    /// ADR-0058 D-M: the endpoint answers through one declared `tools` function (`tool_calls`).
-    ToolCalls,
-    /// ADR-0058 D-M: the endpoint accepts `"reasoning_split": true` and keeps its reasoning out of
-    /// the answer. Superseded by the Profile's `request_extras` (ADR-0060 research amendment 1):
-    /// it selects no request field any more and stays in the closed set for the rows that already
-    /// declare it.
-    ReasoningSplit,
-    /// ADR-0060 research amendment 2: the endpoint answers `response_format: {"type":"json_object"}`.
-    JsonObject,
-}
-
-impl ReasoningCapability {
-    /// Every variant, in the order of the 0206 CHECK arrays.
-    pub const ALL: [ReasoningCapability; 7] = [
-        ReasoningCapability::Text,
-        ReasoningCapability::Vision,
-        ReasoningCapability::StructuredOutput,
-        ReasoningCapability::TokenUsage,
-        ReasoningCapability::ToolCalls,
-        ReasoningCapability::ReasoningSplit,
-        ReasoningCapability::JsonObject,
-    ];
-
-    /// The wire / DB value.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            ReasoningCapability::Text => "TEXT",
-            ReasoningCapability::Vision => "VISION",
-            ReasoningCapability::StructuredOutput => "STRUCTURED_OUTPUT",
-            ReasoningCapability::TokenUsage => "TOKEN_USAGE",
-            ReasoningCapability::ToolCalls => "TOOL_CALLS",
-            ReasoningCapability::ReasoningSplit => "REASONING_SPLIT",
-            ReasoningCapability::JsonObject => "JSON_OBJECT",
-        }
-    }
-
-    /// Inverse of [`Self::as_str`]; `None` for any value outside the closed set.
-    pub fn parse(s: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|c| c.as_str() == s)
-    }
-}
 
 /// ADR-0060 research amendment 1: the request-body keys the adapter owns. A Profile's
 /// `request_extras` may never carry one (`reasoning_profiles_request_extras_check`, 0206, holds
@@ -138,12 +86,6 @@ pub const ADAPTER_OWNED_REQUEST_KEYS: [&str; 11] = [
     "max_tokens",
     "max_completion_tokens",
 ];
-
-impl fmt::Display for ReasoningCapability {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
 
 /// §11.1 `ReasoningProviderDescriptor` — capability/identity metadata a
 /// [`UserReasoningProvider`] exposes about itself, consulted *before* any external call so an

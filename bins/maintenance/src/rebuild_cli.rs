@@ -54,7 +54,7 @@ fn scope(args: &Args) -> Result<Scope> {
     }
 }
 
-async fn wiring() -> Result<impl ProjectionMaintenancePort<Error = crate::ProvisioningError>> {
+async fn wiring() -> Result<impl ProjectionMaintenancePort<Error: Into<crate::ProvisioningError>>> {
     let maintenance = pool().await?;
     // dep: PostgreSQL(role_retrieval_worker) — the projector-view reads of the verifier
     let reader = RetrievalWorkerDbPool::connect(&env(WORKER_DSN)?)

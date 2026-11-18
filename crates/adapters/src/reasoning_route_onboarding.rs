@@ -1,12 +1,12 @@
 //! `adapters::reasoning_route_onboarding` — the operator writes that put a reasoning route in place
 //!   (ADR-0060 D-H): register a Profile@version, bind a domain (R2 projection for PRIVATE_DISTILL_TEXT /
 //!   PRIVATE_CONSOLIDATE), attest route health, enable/disable a profile, and read a tenant's route status.
-//! Depends-on: crates=[humaux-application, serde, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(role_maintenance)
+//! Depends-on: crates=[async-trait, humaux-application, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(role_maintenance)
 //!   x=[control.attest_reasoning_route_health, control.bind_reasoning_domain, control.reasoning_route_status,
 //!   control.register_reasoning_profile, control.set_reasoning_profile_enabled]];
-//!   env=[]; modules=[adapters::byok, adapters::membership_repo, adapters::postgres, adapters::provisioning,
-//!   adapters::reasoning_route_admission, application::consolidate]
-//! Called-by: [maintenance::main]
+//!   env=[]; modules=[adapters::membership_repo, adapters::postgres, adapters::provisioning, adapters::reasoning_route_admission,
+//!   application::consolidate, application::reasoning_route_admin]
+//! Called-by: []
 //! Invariants: [every write goes through one 0208 owner door as role_maintenance (no table INSERT here); one
 //!   transaction per command: door + §77 SUCCESS audit row; a door refusal (55000) rolls back and writes only its
 //!   DENIED audit row; the account reference text never reaches the database (its sha256 does); no receipt
@@ -17,14 +17,21 @@
 //! CLI maps these commands exactly as it maps onboarding (ADR-0053 D-F); no new error enum.
 
 use humaux_application::consolidate::PrivateReasoningPurpose;
-use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use sqlx::types::time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::byok::ReasoningCapability;
+use humaux_application::reasoning_route_admin::{
+    self as application, ReasoningRouteError, ReasoningRoutePort,
+};
+pub use humaux_application::reasoning_route_admin::{
+    AttestReceipt, BindReceipt, ProfileStateReceipt, RegisterReceipt, parse_purpose,
+};
+
+/// A reasoning registration with JSON extras (the legacy adapter API).
+pub type RegisterProfile<'a> = application::RegisterProfile<'a, Value>;
 use crate::membership_repo::AdminAction;
 use crate::postgres::MaintenanceDbPool;
 use crate::provisioning::{
@@ -42,102 +49,6 @@ const ACTION_REGISTER: &str = "REASONING_PROFILE_REGISTER";
 const ACTION_BIND: &str = "REASONING_DOMAIN_BIND";
 const ACTION_ATTEST: &str = "REASONING_ROUTE_ATTEST_HEALTH";
 const ACTION_PROFILE_STATE: &str = "REASONING_PROFILE_SET_ENABLED";
-
-/// Parses a §11.2.3 purpose wire value over the closed [`PrivateReasoningPurpose`] set (the 0208
-/// bind door, not this parser, decides which purposes are bindable: ADR-0060 D-H 2).
-pub fn parse_purpose(wire: &str) -> Option<PrivateReasoningPurpose> {
-    [
-        PrivateReasoningPurpose::Distill,
-        PrivateReasoningPurpose::Consolidate,
-        PrivateReasoningPurpose::Vision,
-        PrivateReasoningPurpose::ContributionDeidentify,
-    ]
-    .into_iter()
-    .find(|p| purpose_db_value(*p) == wire)
-}
-
-/// One `reasoning register` request (ADR-0060 D-H 1).
-#[derive(Debug, Clone)]
-pub struct RegisterProfile<'a> {
-    pub tenant_id: Uuid,
-    pub owner_user_id: Uuid,
-    pub processor_id: &'a str,
-    pub provider_model_id: &'a str,
-    /// Catalog label (ruling E5), never sent on the wire; `None` = the unlabelled catalog row.
-    pub model_revision: Option<&'a str>,
-    pub capabilities: &'a [ReasoningCapability],
-    /// Research amendment 1: vendor request fields, refused by the 0206 CHECK if adapter-owned.
-    pub request_extras: &'a Value,
-    /// The vendor account reference; only its sha256 is stored (ADR-0060 D-J).
-    pub account_ref: &'a str,
-    pub endpoint_ref: &'a str,
-    pub region: &'a str,
-    pub service_tier: &'a str,
-    /// ADR-0060 D-L: the recipient uuid of this vendor/region, listed with its hosts in the worker env.
-    pub egress_processor_id: Uuid,
-    /// `None` mints a credential reference (its secret is the worker's env map entry, D-J).
-    pub credential_ref: Option<Uuid>,
-    /// `Some(profile_id)` registers the next version of that profile (a model switch, D-H).
-    pub successor_of: Option<Uuid>,
-}
-
-/// `reasoning register` receipt.
-#[derive(Debug, Clone, Serialize)]
-pub struct RegisterReceipt {
-    /// `created` or `existing`.
-    pub outcome: String,
-    pub tenant_id: Uuid,
-    pub profile_id: Uuid,
-    pub profile_version: i64,
-    pub credential_ref: Uuid,
-    pub provider_account_id: Uuid,
-    pub endpoint_id: Uuid,
-    pub processor_model_id: Uuid,
-    /// The line to add to `HUMAUX_PRIVATE_WORKER_CREDENTIALS`; the operator names the variable.
-    pub credential_map_entry: String,
-    pub audit_event_id: Uuid,
-}
-
-/// `reasoning bind` receipt.
-#[derive(Debug, Clone, Serialize)]
-pub struct BindReceipt {
-    /// `created`, `rebound` or `existing`.
-    pub outcome: String,
-    pub tenant_id: Uuid,
-    pub reasoning_domain_id: Uuid,
-    pub purpose: &'static str,
-    pub binding_id: Uuid,
-    pub binding_version: i64,
-    pub route_policy_id: Uuid,
-    /// The Binding@version a rebind closed.
-    pub closed_binding_version: Option<i64>,
-    pub audit_event_id: Uuid,
-}
-
-/// `reasoning attest-health` receipt.
-#[derive(Debug, Clone, Serialize)]
-pub struct AttestReceipt {
-    pub outcome: &'static str,
-    pub tenant_id: Uuid,
-    pub profile_id: Uuid,
-    pub profile_version: i64,
-    pub provider_observation_id: i64,
-    pub account_observation_id: i64,
-    pub valid_until: String,
-    pub audit_event_id: Uuid,
-}
-
-/// `reasoning profile-state` receipt.
-#[derive(Debug, Clone, Serialize)]
-pub struct ProfileStateReceipt {
-    /// `updated` or `existing`.
-    pub outcome: String,
-    pub tenant_id: Uuid,
-    pub profile_id: Uuid,
-    pub profile_version: i64,
-    pub enabled: bool,
-    pub audit_event_id: Uuid,
-}
 
 /// Runs one door in its own transaction (READ COMMITTED, the 0128 triggers' requirement) under the
 /// tenant GUC and appends the §77 SUCCESS row; a 55000 refusal rolls back and is audited DENIED.
@@ -466,5 +377,82 @@ mod tests {
             Some(PrivateReasoningPurpose::ContributionDeidentify)
         );
         assert_eq!(parse_purpose("private_consolidate"), None);
+    }
+}
+
+impl From<ProvisioningError> for ReasoningRouteError {
+    fn from(error: ProvisioningError) -> Self {
+        match error {
+            ProvisioningError::Refused(reason) => Self::Refused(reason),
+            ProvisioningError::InvalidInput(reason) => Self::InvalidInput(reason),
+            ProvisioningError::Db(error) => Self::Infrastructure(format!("db: {error}")),
+            ProvisioningError::Qdrant(reason) => Self::Infrastructure(format!("qdrant: {reason}")),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ReasoningRoutePort for MaintenanceDbPool {
+    type Extras = Value;
+
+    async fn register_profile(
+        &self,
+        request: &RegisterProfile<'_>,
+        admin: &AdminAction<'_>,
+    ) -> std::result::Result<RegisterReceipt, ReasoningRouteError> {
+        register_profile(self, request, admin)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn bind_domain(
+        &self,
+        tenant_id: Uuid,
+        reasoning_domain_id: Uuid,
+        purpose: PrivateReasoningPurpose,
+        profile: (Uuid, i64),
+        admin: &AdminAction<'_>,
+    ) -> std::result::Result<BindReceipt, ReasoningRouteError> {
+        bind_domain(
+            self,
+            tenant_id,
+            reasoning_domain_id,
+            purpose,
+            profile,
+            admin,
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    async fn attest_health(
+        &self,
+        tenant_id: Uuid,
+        profile: (Uuid, i64),
+        valid_for_secs: i64,
+        admin: &AdminAction<'_>,
+    ) -> std::result::Result<AttestReceipt, ReasoningRouteError> {
+        attest_health(self, tenant_id, profile, valid_for_secs, admin)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn set_profile_enabled(
+        &self,
+        tenant_id: Uuid,
+        profile: (Uuid, i64),
+        enabled: bool,
+        admin: &AdminAction<'_>,
+    ) -> std::result::Result<ProfileStateReceipt, ReasoningRouteError> {
+        set_profile_enabled(self, tenant_id, profile, enabled, admin)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn route_status(
+        &self,
+        tenant_id: Uuid,
+    ) -> std::result::Result<Value, ReasoningRouteError> {
+        route_status(self, tenant_id).await.map_err(Into::into)
     }
 }

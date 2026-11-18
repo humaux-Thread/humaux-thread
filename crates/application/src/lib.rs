@@ -81,3 +81,8 @@ pub mod distill_execution;
 
 /// Whole-transaction memory governance (§36).
 pub mod lifecycle_execution;
+
+/// Operator provisioning commands and ports (ADR-0130 D2).
+pub mod operator_provisioning;
+/// Operator reasoning route commands and port (ADR-0130 D2).
+pub mod reasoning_route_admin;
