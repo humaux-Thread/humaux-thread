@@ -1439,6 +1439,7 @@ const HEX_LAYER_EXCLUDED: &[&str] = &[
     "bins/retrieval-worker/src/rerank.rs",        // Outbound local model engine (ADR-0084).
     "bins/billing-worker/src/creem.rs",           // Outbound provider adapter (§71.2).
     "bins/billing-worker/src/fake_creem.rs",      // Test-only provider double (§79.4).
+    "bins/maintenance/src/bootstrap.rs",          // ADR-0130 D2 / SLICE-15c composition.
     "bins/maintenance/src/throwaway.rs",          // Disposable DB test support (§79).
     "bins/gateway/src/main.rs",                   // Process entry and listener assembly (§4.2).
     "bins/gateway/src/bootstrap.rs", // Process-wide config and adapter assembly (§34.0.1).
