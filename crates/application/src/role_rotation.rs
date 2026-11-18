@@ -345,39 +345,27 @@ pub fn prepare_passwords(
         .collect()
 }
 
-/// Deploy-check's operator error categories.
-pub enum DeployCheckError<C, P> {
-    /// The chosen DSN could not supply probe options.
-    InvalidDsn,
-    /// The maintenance connection failed.
-    Connect(C),
-    /// A catalog or login probe failed.
-    Probe(P),
-}
-
 /// Catalog and environment probes for the deployment invariants.
 #[async_trait::async_trait(?Send)]
 pub trait DeployCheckPort {
-    type ConnectError;
-    type ProbeError;
+    /// Original database probe failure.
+    type Error;
 
     /// Read the four checks requiring a maintenance connection.
     async fn catalog_checks(
         &self,
-        dsn: &str,
         probed: &[String],
         password_roles: &[String],
         owner: &str,
         placeholders: &Placeholders,
-    ) -> Result<[CheckResult; 4], DeployCheckError<Self::ConnectError, Self::ProbeError>>;
+    ) -> Result<[CheckResult; 4], Self::Error>;
 
     /// Inspect environment DSNs without opening connections.
-    fn env_check(&self, env: &[(String, String)], placeholders: &Placeholders) -> CheckResult;
+    fn env_check(env: &[(String, String)], placeholders: &Placeholders) -> CheckResult;
 }
 
 /// Inputs to the deployment check, in the original probe order.
 pub struct DeployCheck<'a> {
-    pub maintenance: Result<&'a str, &'a str>,
     pub probed: &'a [String],
     pub password_roles: &'a [String],
     pub owner: &'a str,
@@ -388,18 +376,17 @@ pub struct DeployCheck<'a> {
 /// Check the catalog and, after those probes, inspect the operator environment.
 ///
 /// # Errors
-/// Returns the original probe or connection error.
+/// Returns the original probe error.
 pub async fn deploy_check<P: DeployCheckPort>(
-    port: &P,
+    catalog: Result<P, String>,
     request: DeployCheck<'_>,
     environment: impl FnOnce() -> Vec<(String, String)>,
-) -> Result<Vec<CheckResult>, DeployCheckError<P::ConnectError, P::ProbeError>> {
-    let mut checks = match request.maintenance {
-        Err(missing) => maintenance_not_applicable(missing),
-        Ok(dsn) => {
+) -> Result<Vec<CheckResult>, P::Error> {
+    let mut checks = match catalog {
+        Err(missing) => maintenance_not_applicable(&missing),
+        Ok(port) => {
             let [login, valid, owner, writes] = port
                 .catalog_checks(
-                    dsn,
                     request.probed,
                     request.password_roles,
                     request.owner,
@@ -414,6 +401,6 @@ pub async fn deploy_check<P: DeployCheckPort>(
             ]
         }
     };
-    checks.push(port.env_check(&environment(), request.placeholders));
+    checks.push(P::env_check(&environment(), request.placeholders));
     Ok(checks)
 }

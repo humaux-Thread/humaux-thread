@@ -21,10 +21,10 @@ use sha2::{Digest, Sha256};
 use sqlx::Connection as _;
 use sqlx::postgres::{PgConnectOptions, PgConnection};
 
+use humaux_application::role_rotation::DeployCheckPort;
 pub use humaux_application::role_rotation::{
     CheckResult, CheckStatus, Placeholders, RolePassword, derive_candidates,
 };
-use humaux_application::role_rotation::{DeployCheckError, DeployCheckPort};
 
 use crate::postgres::{MaintenanceDbPool, MigratorDbPool};
 use crate::provisioning::ProvisioningError;
@@ -496,49 +496,38 @@ impl humaux_application::role_rotation::RoleRotationPort for MigratorDbPool {
     }
 }
 
-struct DeployChecks;
+struct DeployChecks {
+    pool: MaintenanceDbPool,
+    probe: PgConnectOptions,
+}
 
-/// Wire the read-only catalog/DSN probes for the deploy check.
-pub fn deploy_checks()
--> impl DeployCheckPort<ConnectError = crate::postgres::PoolInitError, ProbeError = ProvisioningError>
-{
-    DeployChecks
+/// Wire the read-only catalog/DSN probes using the operator connection.
+pub fn deploy_checks(
+    pool: MaintenanceDbPool,
+    probe: PgConnectOptions,
+) -> impl DeployCheckPort<Error = ProvisioningError> {
+    DeployChecks { pool, probe }
 }
 
 #[async_trait::async_trait(?Send)]
 impl DeployCheckPort for DeployChecks {
-    type ConnectError = crate::postgres::PoolInitError;
-    type ProbeError = ProvisioningError;
+    type Error = ProvisioningError;
 
     async fn catalog_checks(
         &self,
-        dsn: &str,
         probed: &[String],
         password_roles: &[String],
         owner: &str,
         placeholders: &Placeholders,
-    ) -> Result<[CheckResult; 4], DeployCheckError<Self::ConnectError, Self::ProbeError>> {
-        let probe = probe_options(dsn).ok_or(DeployCheckError::InvalidDsn)?;
-        // dep: PostgreSQL(role_maintenance) — catalog reads of the two grant checks
-        let pool = MaintenanceDbPool::connect(dsn)
-            .await
-            .map_err(DeployCheckError::Connect)?;
-        let login = check_placeholder_login(&probe, probed, placeholders)
-            .await
-            .map_err(DeployCheckError::Probe)?;
-        let valid = check_probe_valid(&probe, probed)
-            .await
-            .map_err(DeployCheckError::Probe)?;
-        let owner = check_owner_nologin(&pool, owner)
-            .await
-            .map_err(DeployCheckError::Probe)?;
-        let writes = check_schema_migrations_write(&pool, password_roles)
-            .await
-            .map_err(DeployCheckError::Probe)?;
+    ) -> Result<[CheckResult; 4], Self::Error> {
+        let login = check_placeholder_login(&self.probe, probed, placeholders).await?;
+        let valid = check_probe_valid(&self.probe, probed).await?;
+        let owner = check_owner_nologin(&self.pool, owner).await?;
+        let writes = check_schema_migrations_write(&self.pool, password_roles).await?;
         Ok([login, valid, owner, writes])
     }
 
-    fn env_check(&self, env: &[(String, String)], placeholders: &Placeholders) -> CheckResult {
+    fn env_check(env: &[(String, String)], placeholders: &Placeholders) -> CheckResult {
         check_env_dsn_placeholders(env, placeholders)
     }
 }

@@ -3742,6 +3742,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_ROLE_PASSWORD_PUBLIC_WORKER`
 - env `HUMAUX_ROLE_PASSWORD_RETRIEVAL_WORKER`
 - service `PostgreSQL(owner)`
+- service `PostgreSQL(role_maintenance)`
 - service `PostgreSQL(any)`
 
 #### `maintenance::serve`
@@ -13585,6 +13586,7 @@ executed by:
 - `maintenance::member`
 - `maintenance::projection_serve`
 - `maintenance::rebuild_cli`
+- `maintenance::roles`
 - `maintenance::serve`
 - `maintenance::switch_visible`
 - `maintenance::tests::billing_legacy_migration`

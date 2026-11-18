@@ -1,6 +1,6 @@
 //! `maintenance::roles` — `roles rotate` and `deploy-check` (ADR-0059 D-E, D-F): where role passwords come from, how
 //!   generated ones are printed, and which roles and variables each check covers.
-//! Depends-on: crates=[humaux-application, humaux-adapters, rand, serde_json]; services=[PostgreSQL(owner),
+//! Depends-on: crates=[humaux-application, humaux-adapters, rand, serde_json]; services=[PostgreSQL(owner), PostgreSQL(role_maintenance),
 //!   PostgreSQL(any)]; env=[CARGO_MANIFEST_DIR, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MIGRATOR_PG_DSN, HUMAUX_ROLE_PASSWORD_ADMIN,
 //!   HUMAUX_ROLE_PASSWORD_BATCH_ISSUER, HUMAUX_ROLE_PASSWORD_CONSOLIDATION_WORKER, HUMAUX_ROLE_PASSWORD_GATEWAY,
 //!   HUMAUX_ROLE_PASSWORD_MAINTENANCE, HUMAUX_ROLE_PASSWORD_PRIVATE_WORKER, HUMAUX_ROLE_PASSWORD_PUBLIC_WORKER,
@@ -13,8 +13,8 @@
 //! Spec: Baseline §6.2.0; §57.1; §77; ADR-0059
 
 use humaux_adapters::postgres::{
-    MigratorDbPool, ROLE_ADMIN, ROLE_BATCH_ISSUER, ROLE_CONSOLIDATION_WORKER, ROLE_GATEWAY,
-    ROLE_MAINTENANCE, ROLE_MIGRATION_OWNER, ROLE_PRIVATE_WORKER, ROLE_PUBLIC_WORKER,
+    MaintenanceDbPool, MigratorDbPool, ROLE_ADMIN, ROLE_BATCH_ISSUER, ROLE_CONSOLIDATION_WORKER,
+    ROLE_GATEWAY, ROLE_MAINTENANCE, ROLE_MIGRATION_OWNER, ROLE_PRIVATE_WORKER, ROLE_PUBLIC_WORKER,
     ROLE_RETRIEVAL_WORKER,
 };
 use humaux_adapters::role_hygiene;
@@ -188,13 +188,22 @@ pub(crate) async fn deploy_check(args: &Args) -> Result<Output> {
 
     let maintenance = maintenance_dsn(|name| std::env::var(name).ok());
     let source = maintenance.as_ref().ok().map(|(_, source)| *source);
+    let catalog = match maintenance {
+        Err(missing) => Err(missing),
+        Ok((dsn, _)) => {
+            let probe = role_hygiene::probe_options(&dsn).ok_or_else(|| {
+                Failure::Usage(format!("{MAINTENANCE_DSN}: not a PostgreSQL URL"))
+            })?;
+            // dep: PostgreSQL(role_maintenance) — catalog reads of the two grant checks
+            let pool = MaintenanceDbPool::connect(&dsn)
+                .await
+                .map_err(|e| Failure::Infra(format!("connect {MAINTENANCE_DSN}: {e}")))?;
+            Ok(role_hygiene::deploy_checks(pool, probe))
+        }
+    };
     let checks = role_rotation::deploy_check(
-        &role_hygiene::deploy_checks(),
+        catalog,
         role_rotation::DeployCheck {
-            maintenance: maintenance
-                .as_ref()
-                .map(|(dsn, _)| dsn.as_str())
-                .map_err(String::as_str),
             probed: &probed,
             password_roles: &password_roles(),
             owner: ROLE_MIGRATION_OWNER,
@@ -203,16 +212,7 @@ pub(crate) async fn deploy_check(args: &Args) -> Result<Output> {
         },
         || std::env::vars().collect(),
     )
-    .await
-    .map_err(|e| match e {
-        role_rotation::DeployCheckError::InvalidDsn => {
-            Failure::Usage(format!("{MAINTENANCE_DSN}: not a PostgreSQL URL"))
-        }
-        role_rotation::DeployCheckError::Connect(e) => {
-            Failure::Infra(format!("connect {MAINTENANCE_DSN}: {e}"))
-        }
-        role_rotation::DeployCheckError::Probe(e) => e.into(),
-    })?;
+    .await?;
     let refused = checks.iter().any(|c| c.status != CheckStatus::Pass);
     let mut output = Output::ok(json!({
         "command": "deploy-check",
