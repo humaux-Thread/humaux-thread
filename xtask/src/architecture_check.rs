@@ -10352,10 +10352,11 @@ fn w2_continuity_contract_from(
     manifest: &str,
     application: &str,
     adapter: &str,
-    gateway: &str,
+    gateway_and_bootstrap: (&str, &str),
     guard: &str,
     dispatch: &str,
 ) -> Verdict {
+    let (gateway, bootstrap) = gateway_and_bootstrap;
     let mut failures = Vec::new();
     let manifest: toml::Value = match toml::from_str(manifest) {
         Ok(value) => value,
@@ -10483,11 +10484,11 @@ fn w2_continuity_contract_from(
     if adapter.contains("fetch_frozen(") || adapter.contains("assemble_materialized(") {
         failures.push("W2 reader opens a forbidden second materialization path".to_string());
     }
-    for needle in ["read_project_continuity", "PostgresContinuityReadPort"] {
-        if !gateway.contains(needle) {
-            failures.push(format!("Gateway continuity route missing `{needle}`"));
-        }
+    let needle = "read_project_continuity";
+    if !gateway.contains(needle) {
+        failures.push(format!("Gateway continuity route missing `{needle}`"));
     }
+    failures.extend(w2_continuity_wiring_failures(gateway, bootstrap, dispatch));
     let needle = "WorkspaceAdmission::PreserveContinuityFilter => None";
     if !guard.contains(needle) {
         failures.push(format!("Gateway continuity guard missing `{needle}`"));
@@ -10534,6 +10535,68 @@ fn w2_continuity_contract_from(
     } else {
         Verdict::Fail(failures)
     }
+}
+
+/// The W2 reader is assembled in bootstrap and injected once in each guarded MCP branch.
+fn w2_continuity_wiring_failures(gateway: &str, bootstrap: &str, dispatch: &str) -> Vec<String> {
+    let mut failures = Vec::new();
+    let compact = |source| {
+        mask_comments_and_literals(source)
+            .split_whitespace()
+            .collect::<String>()
+    };
+    let bootstrap = compact(bootstrap);
+    let constructor = "humaux_adapters::continuity_read::PostgresContinuityReadPort::new(pool)";
+    if !r3_function_body(&bootstrap, "fncontinuity_read_port(")
+        .is_some_and(|body| body.matches(constructor).count() == 1)
+    {
+        failures.push(
+            "W2 bootstrap must construct PostgresContinuityReadPort in continuity_read_port".into(),
+        );
+    }
+    let dispatch = compact(dispatch);
+    let injection = "continuity::get(&crate::bootstrap::continuity_read_port(pool),";
+    let read = r3_function_body(&dispatch, "asyncfncontinuity_get(").unwrap_or_default();
+    let guarded_reads = read
+        .split_once(".run_continuity_read_with_trusted_scope(")
+        .and_then(|(_, branches)| branches.split_once(".run_continuity_read("));
+    if !guarded_reads.is_some_and(|(trusted, standard)| {
+        trusted.matches(injection).count() == 1 && standard.matches(injection).count() == 1
+    }) {
+        failures.push(
+            "W2 dispatch must inject the bootstrap reader in both guarded Continuity paths".into(),
+        );
+    }
+
+    // The PG pool type serves publish only. Neither branch may build or call a second read door here.
+    let Ok(gateway_file) = syn::parse_file(gateway) else {
+        failures.push("W2 gateway continuity route must parse as Rust".into());
+        return failures;
+    };
+    let mut refs = HexRefs {
+        scope: vec!["humaux_gateway".into(), "continuity".into()],
+        paths: Vec::new(),
+        exports: Vec::new(),
+        aliases: BTreeMap::new(),
+    };
+    refs.items(&gateway_file.items);
+    let gateway_code = compact(gateway);
+    let get = r3_function_body(&gateway_code, "pubasyncfnget<T>(").unwrap_or_default();
+    if refs.paths.iter().any(|path| {
+        path.first().is_some_and(|root| root == "sqlx")
+            || (path.first().is_some_and(|root| root == "humaux_adapters")
+                && path != &["humaux_adapters", "postgres", "RuntimeDbPool"])
+    }) || gateway_code.contains("continuity_read_port(")
+        || gateway_code.contains("read_snapshot(")
+        || gateway_code.matches("read_project_continuity(").count() != 1
+        || !get.contains("read_project_continuity(reader,")
+    {
+        failures.push(
+            "W2 gateway continuity route must read only through the injected application port"
+                .into(),
+        );
+    }
+    failures
 }
 
 // ============================================================================
@@ -11202,6 +11265,7 @@ fn w2_continuity_gate(root: &Path) -> Verdict {
         "bins/gateway/src/continuity.rs",
         "bins/gateway/src/guard.rs",
         "bins/gateway/src/mcp_application.rs",
+        "bins/gateway/src/bootstrap.rs",
     ];
     let mut sources = Vec::new();
     for path in paths {
@@ -11215,7 +11279,7 @@ fn w2_continuity_gate(root: &Path) -> Verdict {
         &sources[1],
         &sources[2],
         &sources[3],
-        &sources[4],
+        (&sources[4], &sources[7]),
         &sources[5],
         &sources[6],
     )
@@ -15782,23 +15846,24 @@ runs:
             "bins/gateway/src/continuity.rs",
             "bins/gateway/src/guard.rs",
             "bins/gateway/src/mcp_application.rs",
+            "bins/gateway/src/bootstrap.rs",
         ];
         let sources: Vec<_> = paths
             .iter()
             .map(|path| fs::read_to_string(root.join(path)).unwrap())
             .collect();
-        assert_eq!(
+        let gate = |files: &[String]| {
             w2_continuity_contract_from(
-                &sources[0],
-                &sources[1],
-                &sources[2],
-                &sources[3],
-                &sources[4],
-                &sources[5],
-                &sources[6]
-            ),
-            Verdict::Pass
-        );
+                &files[0],
+                &files[1],
+                &files[2],
+                &files[3],
+                (&files[4], &files[7]),
+                &files[5],
+                &files[6],
+            )
+        };
+        assert_eq!(gate(&sources), Verdict::Pass);
         for (index, needle) in [
             (0, "LANGUAGE plpgsql STABLE SECURITY DEFINER"),
             (
@@ -15862,6 +15927,7 @@ runs:
             (3, "install_workspace_context(&mut tx, workspace).await?;"),
             (3, "count(stream.commit_seq) AS association_count"),
             (3, "let body_sha256 = digest(raw.stored_body_sha256)?;"),
+            (4, "let result = read_project_continuity("),
             (5, "WorkspaceAdmission::PreserveContinuityFilter => None"),
             (5, "operation.operation_key() != \"continuity.get\""),
             (6, "catalog.validate_output(ToolName::Continuity, &value)"),
@@ -15872,14 +15938,62 @@ runs:
             let mut broken = sources.clone();
             broken[index] = broken[index].replacen(needle, "", 1);
             assert!(
-                matches!(
-                    w2_continuity_contract_from(
-                        &broken[0], &broken[1], &broken[2], &broken[3], &broken[4], &broken[5],
-                        &broken[6]
-                    ),
-                    Verdict::Fail(_)
-                ),
+                matches!(gate(&broken), Verdict::Fail(_)),
                 "mutation removing `{needle}` must fail the actual W2 gate"
+            );
+        }
+        let mut without_constructor = sources.clone();
+        without_constructor[7] =
+            sources[7].replacen("PostgresContinuityReadPort::new(pool)", "", 1);
+        let mut with_direct_reader = sources.clone();
+        with_direct_reader[4].push_str(
+            r#"
+async fn bypass(
+    pool: Arc<RuntimeDbPool>,
+    authorization: &AuthorizationScope,
+    project_id: ProjectId,
+    budget: ContextBudget,
+) {
+    let _ = humaux_adapters::continuity_read::PostgresContinuityReadPort::new(pool)
+        .read_snapshot(authorization, project_id, None, budget)
+        .await;
+}
+"#,
+        );
+        for (label, broken, expected) in [
+            (
+                "missing bootstrap constructor",
+                without_constructor,
+                "W2 bootstrap must construct",
+            ),
+            (
+                "direct adapter reader in continuity.rs",
+                with_direct_reader,
+                "W2 gateway continuity route must read only",
+            ),
+        ] {
+            let red = gate(&broken);
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.starts_with(expected)))
+            );
+            println!("W2 {label}: RED {red:?}");
+            assert_eq!(gate(&sources), Verdict::Pass);
+            println!("W2 {label}: restored GREEN");
+        }
+        let injection = "&crate::bootstrap::continuity_read_port(pool),";
+        assert_eq!(sources[6].matches(injection).count(), 2);
+        for (index, (offset, _)) in sources[6].match_indices(injection).enumerate() {
+            let mut broken = sources.clone();
+            broken[6].replace_range(offset..offset + injection.len(), "");
+            let red = gate(&broken);
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.starts_with("W2 dispatch must inject")))
+            );
+            println!("W2 missing dispatch injection #{}: RED {red:?}", index + 1);
+            assert_eq!(gate(&sources), Verdict::Pass);
+            println!(
+                "W2 missing dispatch injection #{}: restored GREEN",
+                index + 1
             );
         }
     }
