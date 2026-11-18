@@ -8,7 +8,7 @@
 //!   AUTHORITY_I4 task (ADR-0123 D3, §65) is the report-only §59.1 I4 scan: one statement appends the owner definer's count to
 //!   `ops.repair_findings`, then `authority_i4_violations` is set once. INGEST_TICKETS calls the M09 owner door
 //!   to expire due ISSUED tickets without shrinking expected (§15.6, ADR-0123 D4).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-telemetry, libc, serde_json, tokio, uuid];
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-telemetry, libc, serde_json, tokio, uuid];
 //!   services=[PostgreSQL(role_maintenance), fs(statvfs of the DR paths)]; env=[CARGO_PKG_VERSION,
 //!   HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS, HUMAUX_MAINTENANCE_DR_PGDATA_FS_PATH, HUMAUX_MAINTENANCE_DR_REPO_FS_PATH,
 //!   HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MAINTENANCE_PG_POOL_MAX_CONNECTIONS, HUMAUX_MAINTENANCE_SERVE_AUTHORITY_I4_EVERY_SECONDS,
@@ -30,8 +30,8 @@
 //!   HUMAUX_MAINTENANCE_SERVE_REISSUE_LIMIT, HUMAUX_MAINTENANCE_SERVE_SNAPSHOTS_EVERY_SECONDS,
 //!   HUMAUX_MAINTENANCE_SERVE_SNAPSHOTS_LIMIT,
 //!   HUMAUX_MAINTENANCE_SERVE_TENANTS_PER_RUN, HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS];
-//!   modules=[adapters::confirm_token_repo, adapters::maintenance_repo, adapters::membership_repo, adapters::postgres,
-//!   adapters::provider_budget, adapters::quota_repo, adapters::stream_repo, domain::error, domain::ids, telemetry::dr,
+//!   modules=[adapters::confirm_token_repo, adapters::maintenance_repo, adapters::postgres,
+//!   adapters::provider_budget, adapters::quota_repo, adapters::stream_repo, application::scheduler, domain::error, domain::ids, telemetry::dr,
 //!   telemetry::metrics, maintenance::main, maintenance::resident]
 //! Called-by: [maintenance::main]
 //! Invariants: [HUMAUX_MIGRATOR_PG_DSN in the environment refuses boot before anything else (ADR-0063 D-H); every
@@ -63,13 +63,13 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
-use humaux_adapters::maintenance_repo::{
-    self, DrEvidence, JobRetention, MaintenanceTask as Task, MeasuredBudget, PartitionTable,
-    TaskOutcome, count_task_call,
-};
-use humaux_adapters::membership_repo::AdminAction;
+use humaux_adapters::maintenance_repo::{self, count_task_call};
 use humaux_adapters::postgres::MaintenanceDbPool;
 use humaux_adapters::{confirm_token_repo, provider_budget, quota_repo, stream_repo};
+use humaux_application::scheduler::{
+    self, DrEvidence, JobRetention, MaintenanceTask as Task, MeasuredBudget, PartitionTable,
+    RedriveAudit, TaskOutcome,
+};
 use humaux_domain::{error::ErrorCode, ids::TenantId};
 use humaux_telemetry::dr::{self, DrReading, Limit, Volume};
 use humaux_telemetry::metrics::{
@@ -332,7 +332,7 @@ async fn call(
     tenant: Uuid,
     limit: i32,
     cfg: &Config,
-    audit: &AdminAction<'_>,
+    audit: &RedriveAudit<'_>,
 ) -> std::result::Result<u64, (ErrorCode, String)> {
     // §72.2.1 / 0245: the system tenant (nil id) can hold no reservation: both producers refuse
     // it (quota_repo::validate_auth, provider_budget::validate_request), and so do both reapers and the renewal door
@@ -385,39 +385,17 @@ async fn call(
                 .map_err(task_error)
         }
         // dep: PostgreSQL(role_maintenance) — ops.purge_expired_selection_snapshots (0218 owner purge door)
-        Task::Snapshots => maintenance_repo::purge_expired_selection_snapshots(pool, tenant, limit)
-            .await
-            .map(i64::unsigned_abs)
-            .map_err(dependency_error),
-        Task::Jobs => maintenance_repo::purge_terminal_jobs(pool, tenant, cfg.jobs, limit)
-            .await
-            .map(i64::unsigned_abs)
-            .map_err(dependency_error),
+        Task::Snapshots => scheduler::purge_expired_selection_snapshots(pool, tenant, limit).await,
+        Task::Jobs => scheduler::purge_terminal_jobs(pool, tenant, cfg.jobs, limit).await,
         // dep: PostgreSQL(role_maintenance) — projection.reissue_unsettled_tickets (0220 owner definer)
         Task::Reissue => {
-            maintenance_repo::reissue_unsettled_tickets(pool, tenant, cfg.reissue_cooldown, limit)
-                .await
-                .map(i64::unsigned_abs)
-                .map_err(dependency_error)
+            scheduler::reissue_unsettled_tickets(pool, tenant, cfg.reissue_cooldown, limit).await
         }
         // dep: PostgreSQL(role_maintenance) — ops.auto_redrive_schema_failed (0221 owner definer) + §77 row
-        Task::Redrive => maintenance_repo::auto_redrive_schema_failed(
-            pool,
-            tenant,
-            cfg.redrive_cooldown,
-            limit,
-            audit,
-        )
-        .await
-        .map(i64::unsigned_abs)
-        .map_err(|e| {
-            let code = match e.exit_code() {
-                2 => ErrorCode::InvalidInput,
-                3 => ErrorCode::Forbidden,
-                _ => ErrorCode::DependencyUnavailable,
-            };
-            (code, e.to_string())
-        }),
+        Task::Redrive => {
+            scheduler::auto_redrive_schema_failed(pool, tenant, cfg.redrive_cooldown, limit, audit)
+                .await
+        }
         // Cluster-level: [`cluster`] runs these once per run, never per tenant.
         Task::Partitions | Task::DrEvidence | Task::AuthorityI4 => Err((
             ErrorCode::Internal,
@@ -430,14 +408,13 @@ async fn call(
 /// table_key; a failure first removes the whole family (D-F: `PartitionHorizonAbsent` fires, never a stale value).
 async fn partitions(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
     // dep: PostgreSQL(role_maintenance) — control.partition_registry proposal UPDATE + horizon read (adapters::maintenance_repo)
-    let done =
-        match tokio::time::timeout(cfg.cycle, maintenance_repo::propose_partitions(pool)).await {
-            Ok(Ok(done)) => Ok(done),
-            Ok(Err(e)) => Err(dependency_error(format!("partitions: {e}"))),
-            Err(_) => Err(dependency_error(format!(
-                "partitions: no answer within {CYCLE_SECONDS}"
-            ))),
-        };
+    let done = match tokio::time::timeout(cfg.cycle, scheduler::propose_partitions(pool)).await {
+        Ok(Ok(done)) => Ok(done),
+        Ok(Err(e)) => Err(dependency_error(format!("partitions: {e}"))),
+        Err(_) => Err(dependency_error(format!(
+            "partitions: no answer within {CYCLE_SECONDS}"
+        ))),
+    };
     match done {
         Ok(done) => {
             maintenance_repo::set_partition_horizon_months(done.horizon_months);
@@ -457,14 +434,13 @@ async fn partitions(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
 /// (§41.2) while the scan is broken. One finding row is the run's `affected` count.
 async fn authority_i4(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
     // dep: PostgreSQL(role_maintenance) — the one-statement scan (adapters::maintenance_repo::scan_authority_i4)
-    let done =
-        match tokio::time::timeout(cfg.cycle, maintenance_repo::scan_authority_i4(pool)).await {
-            Ok(Ok(scan)) => Ok(scan),
-            Ok(Err(e)) => Err(dependency_error(format!("authority_i4: {e}"))),
-            Err(_) => Err(dependency_error(format!(
-                "authority_i4: no answer within {CYCLE_SECONDS}"
-            ))),
-        };
+    let done = match tokio::time::timeout(cfg.cycle, scheduler::scan_authority_i4(pool)).await {
+        Ok(Ok(scan)) => Ok(scan),
+        Ok(Err(e)) => Err(dependency_error(format!("authority_i4: {e}"))),
+        Err(_) => Err(dependency_error(format!(
+            "authority_i4: no answer within {CYCLE_SECONDS}"
+        ))),
+    };
     match done {
         Ok(scan) => {
             maintenance_repo::set_authority_i4_violations(scan.violations);
@@ -581,18 +557,15 @@ async fn dr_evidence(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
     let done = async {
         // dep: PostgreSQL(role_maintenance) — the DR_EVIDENCE statement (adapters::maintenance_repo::dr_evidence);
         // production binds no archiver override
-        let evidence =
-            match tokio::time::timeout(cfg.cycle, maintenance_repo::dr_evidence(pool, None, None))
-                .await
-            {
-                Ok(Ok(e)) => e,
-                Ok(Err(e)) => return Err(dependency_error(format!("dr_evidence: {e}"))),
-                Err(_) => {
-                    return Err(dependency_error(format!(
-                        "dr_evidence: no answer within {CYCLE_SECONDS}"
-                    )));
-                }
-            };
+        let evidence = match tokio::time::timeout(cfg.cycle, scheduler::dr_evidence(pool)).await {
+            Ok(Ok(e)) => e,
+            Ok(Err(e)) => return Err(dependency_error(format!("dr_evidence: {e}"))),
+            Err(_) => {
+                return Err(dependency_error(format!(
+                    "dr_evidence: no answer within {CYCLE_SECONDS}"
+                )));
+            }
+        };
         let mut free = [0; Volume::ALL.len()];
         for (slot, path) in free.iter_mut().zip(&cfg.dr_paths) {
             *slot = df_free_bytes(path, cfg.cycle)
@@ -653,7 +626,7 @@ async fn cycle(
     cursors: &mut [Cursor; Task::ALL.len()],
     first: usize,
     latch: &Latch,
-    audit: &AdminAction<'_>,
+    audit: &RedriveAudit<'_>,
 ) -> Vec<(Task, Run)> {
     let started = Instant::now();
     let spent = || latch.is_set() || started.elapsed() >= cfg.cycle;
@@ -679,7 +652,7 @@ async fn cycle(
         // with work" definer per task if rotation latency matters (ADR-0062 L1).
         let page = tokio::time::timeout(
             cfg.cycle,
-            maintenance_repo::tenant_page(pool, cursor.after, cfg.tenants_per_run),
+            scheduler::tenant_page(pool, cursor.after, cfg.tenants_per_run),
         )
         .await;
         let page = match page {
@@ -897,7 +870,7 @@ pub(crate) async fn serve() -> Result<Output> {
         cfg.cycle.as_secs()
     );
     let trace_id = Uuid::now_v7().to_string();
-    let audit = AdminAction {
+    let audit = RedriveAudit {
         actor: SYSTEM_ACTOR,
         reason: SYSTEM_REASON,
         ticket: SYSTEM_REASON,
@@ -972,7 +945,14 @@ pub(crate) async fn sweep_once(args: &Args) -> Result<Output> {
     // dep: PostgreSQL(role_maintenance) — the one-shot pool; every statement bounded by CYCLE_SECONDS
     let pool = connect_pool(&dsn, cfg.cycle).await?;
     let mut cursors = [Cursor::default(); Task::ALL.len()];
-    let runs = cycle(&pool, &cfg, &mut cursors, 0, &latch, &admin.action()).await;
+    let audit = RedriveAudit {
+        actor: &admin.actor,
+        reason: &admin.reason,
+        ticket: &admin.ticket,
+        trace_id: &admin.trace_id,
+        step_up_auth_context: &admin.step_up,
+    };
+    let runs = cycle(&pool, &cfg, &mut cursors, 0, &latch, &audit).await;
     let failed = runs.iter().any(|(_, run)| run.failed > 0);
     let mut output = Output::ok(json!({
         "command": "sweep once",

@@ -1,5 +1,5 @@
 //! `application::partition_retention` — operator use cases for partition lifecycle and retention.
-//! Depends-on: crates=[async-trait, serde, time, uuid]; services=[]; env=[]; modules=[]
+//! Depends-on: crates=[async-trait, serde, time, uuid]; services=[]; env=[]; modules=[application::scheduler]
 //! Called-by: [adapters::maintenance_repo, maintenance::retention]
 //! Invariants: [the authorized adapter owns cutoff, lock, export, drop and audit transaction semantics]
 //! Spec: §48.1; §77; ADR-0063 D-F/D-I
@@ -11,70 +11,7 @@ use serde::Serialize;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-/// ADR-0063 D-C: the closed `table_key` set of `control.partition_registry`, in render order. `retention_policies`
-/// accepts five of them (EVENTS and AUDIT_EVENTS wait for card 37 / a separate approval line, D-G); the contract test
-/// `bins/maintenance/tests/retention.rs` reconciles both CHECKs with this enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PartitionTable {
-    /// `ops.model_call_ledger` (`called_at`).
-    ModelCallLedger,
-    /// `ops.stage_runs` (`started_at`).
-    StageRuns,
-    /// `private.messages` (`created_at`).
-    Messages,
-    /// `ops.maintenance_receipts` (`ran_at`).
-    MaintenanceReceipts,
-    /// `private.events` (`recorded_at`).
-    Events,
-    /// `control.audit_events` (`occurred_at`).
-    AuditEvents,
-    /// `ops.retrieval_query_log` (`called_at`).
-    RetrievalQueryLog,
-}
-
-impl PartitionTable {
-    /// Every key, in the gauge's sample order.
-    pub const ALL: [Self; 7] = [
-        Self::ModelCallLedger,
-        Self::StageRuns,
-        Self::Messages,
-        Self::MaintenanceReceipts,
-        Self::Events,
-        Self::AuditEvents,
-        Self::RetrievalQueryLog,
-    ];
-
-    /// The `table_key` value (the DB CHECKs' spelling, SCREAMING_SNAKE).
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::ModelCallLedger => "MODEL_CALL_LEDGER",
-            Self::StageRuns => "STAGE_RUNS",
-            Self::Messages => "MESSAGES",
-            Self::MaintenanceReceipts => "MAINTENANCE_RECEIPTS",
-            Self::Events => "EVENTS",
-            Self::AuditEvents => "AUDIT_EVENTS",
-            Self::RetrievalQueryLog => "RETRIEVAL_QUERY_LOG",
-        }
-    }
-
-    /// The §41.2 `table` label of `partition_horizon_months` (lowercase key).
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::ModelCallLedger => "model_call_ledger",
-            Self::StageRuns => "stage_runs",
-            Self::Messages => "messages",
-            Self::MaintenanceReceipts => "maintenance_receipts",
-            Self::Events => "events",
-            Self::AuditEvents => "audit_events",
-            Self::RetrievalQueryLog => "retrieval_query_log",
-        }
-    }
-
-    /// The variant whose [`Self::key`] is `key`.
-    pub fn parse(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|t| t.key() == key)
-    }
-}
+use crate::scheduler::PartitionTable;
 
 /// `retention approve`'s receipt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

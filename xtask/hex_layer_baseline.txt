@@ -34,15 +34,5 @@ bins/maintenance/src/main.rs:humaux_adapters::provisioning::RequeueTarget
 bins/maintenance/src/main.rs:humaux_adapters::provisioning::TenantRequest
 bins/maintenance/src/main.rs:humaux_adapters::provisioning::WorkspaceActivation
 bins/maintenance/src/main.rs:humaux_adapters::reasoning_route_onboarding::RegisterProfile
-bins/maintenance/src/projection_serve.rs:humaux_adapters::serving_repo::SwitchOutcome
-bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::DrEvidence
-bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::JobRetention
-bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::MaintenanceTask
-bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::MeasuredBudget
-bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::PartitionTable
-bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::TaskOutcome
-bins/maintenance/src/serve.rs:humaux_adapters::membership_repo::AdminAction
-bins/maintenance/src/switch_visible.rs:humaux_adapters::qdrant::RetrievalFamily
-bins/maintenance/src/switch_visible.rs:humaux_adapters::retrieve::IndexFace
 bins/public-worker/src/main.rs:humaux_public_pool::public_projection::PublicProjectionAdapter
 bins/public-worker/src/main.rs:humaux_public_pool::public_projection::PublicProjectionAdapter::new

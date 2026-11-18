@@ -29,7 +29,7 @@
 //!   control.partition_drop, control.partition_drop_check, control.partition_drop_statements,
 //!   control.retention_policy_approve], PostgreSQL(role_gateway) r=[private.evidence_objects, private.memory_records,
 //!   projection.private_memory_points], PostgreSQL(role_retrieval_worker) r=[projection.memory_vectors]]; env=[];
-//!   modules=[application::partition_retention, adapters::membership_repo, adapters::postgres, adapters::provisioning, domain::audit, humaux-adapters]
+//!   modules=[application::partition_retention, adapters::membership_repo, adapters::postgres, adapters::provisioning, domain::audit, domain::error, humaux-adapters]
 //! Called-by: [adapters::rebuild, maintenance::backup, maintenance::drill, maintenance::serve,
 //!   tests]
 //! Invariants: [the page returns tenant ids only, strictly after the cursor in tenant_id order, at most `limit`;
@@ -54,7 +54,7 @@ use std::time::Duration;
 
 pub use humaux_application::partition_retention::{
     ApproveReceipt, CheckedLeaf, CreatePartitionsReceipt, CreatedLeaf, DropOutcome, DropReceipt,
-    DropRequest, DueLeaf, PartitionTable,
+    DropRequest, DueLeaf,
 };
 use humaux_application::partition_retention::{PartitionRetentionPort, RetentionAdmin};
 use humaux_domain::audit::SYSTEM_TENANT_ID;
@@ -70,6 +70,11 @@ use crate::postgres::{MaintenanceDbPool, RetentionExecutor, RetrievalWorkerDbPoo
 use crate::provisioning::{
     self, AUDIT_RESULT_SUCCESS, ProvisioningError, REDRIVE_RESOURCE, REDRIVE_RISK_TAG,
 };
+pub use humaux_application::scheduler::{
+    AuthorityI4Scan, DrEvidence, JobRetention, MaintenanceServePort, MaintenanceTask,
+    MeasuredBudget, PartitionTable, PartitionsRun, RedriveAudit, TaskOutcome,
+};
+use humaux_domain::error::ErrorCode;
 
 /// §77 action of the daemon's automatic re-drive rows (ADR-0062 D-P); the operator's is `DISTILL_REQUEUE_DEAD`.
 const AUTO_REDRIVE_ACTION: &str = "DISTILL_AUTO_REDRIVE";
@@ -117,17 +122,6 @@ pub async fn purge_expired_selection_snapshots(
     // dep: PostgreSQL(role_maintenance) — ops.purge_expired_selection_snapshots (0218 owner purge door)
     let door = sqlx::query_scalar("SELECT ops.purge_expired_selection_snapshots($1)").bind(limit);
     in_tenant(pool, tenant, door).await
-}
-
-/// The three ages the terminal-jobs door compares with the DB clock (ADR-0062 D-J).
-#[derive(Debug, Clone, Copy)]
-pub struct JobRetention {
-    /// A DONE job is kept until its last activity is older than this.
-    pub done: Duration,
-    /// A DEAD or FAILED job is kept until its last activity is older than this.
-    pub dead: Duration,
-    /// The private worker's distill budget window: a job with a provider call inside it is always kept.
-    pub budget_window: Duration,
 }
 
 /// ADR-0062 D-J: deletes at most `limit` terminal jobs of `tenant` past `retention`, keeping budget-window,
@@ -228,102 +222,6 @@ pub async fn auto_redrive_schema_failed(
     Ok(rearmed)
 }
 
-/// ADR-0062 D-C: the daemon's closed task list, in cycle order; also the `task` label of the D-S counters. Adding one
-/// is one variant, its door and its two keys (`T_EVERY_SECONDS`, `T_LIMIT`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MaintenanceTask {
-    /// `stream_repo::sweep_lost` (D-L).
-    Lost,
-    /// `stream_repo::expire_ingest_tickets` (§15.6, ADR-0123 D4); preserves the denominator.
-    IngestTickets,
-    /// `quota_repo::reap_expired`.
-    QuotaReservations,
-    /// `quota_repo::renew_period` (ADR-0072 D-C).
-    QuotaRenewal,
-    /// `provider_budget::reap_expired_provider_budgets`.
-    ProviderBudgets,
-    /// `confirm_token_repo::sweep_expired` (D-G).
-    ConfirmTokens,
-    /// [`purge_expired_selection_snapshots`] (D-H).
-    Snapshots,
-    /// [`purge_terminal_jobs`] (D-J).
-    Jobs,
-    /// [`reissue_unsettled_tickets`] (D-N).
-    Reissue,
-    /// [`auto_redrive_schema_failed`] (D-P).
-    Redrive,
-    /// [`propose_partitions`] (ADR-0063 D-K): cluster-level, no tenant page and no LIMIT key; one run = one count.
-    Partitions,
-    /// [`dr_evidence`] (ADR-0064 D-K / 10.11 D): cluster-level like PARTITIONS; one run = one count.
-    DrEvidence,
-    /// [`scan_authority_i4`] (ADR-0123 D3, §65): cluster-level like PARTITIONS and report-only; one run = one count.
-    AuthorityI4,
-}
-
-impl MaintenanceTask {
-    /// Every task, in D-C cycle order (the counters' slot order).
-    pub const ALL: [Self; 13] = [
-        Self::Lost,
-        Self::IngestTickets,
-        Self::QuotaReservations,
-        Self::QuotaRenewal,
-        Self::ProviderBudgets,
-        Self::ConfirmTokens,
-        Self::Snapshots,
-        Self::Jobs,
-        Self::Reissue,
-        Self::Redrive,
-        Self::Partitions,
-        Self::DrEvidence,
-        Self::AuthorityI4,
-    ];
-
-    /// The `/status`, receipt and §41.2 `task` label value (lowercase D-C name; the frozen value set of §41.2).
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Lost => "lost",
-            Self::IngestTickets => "ingest_tickets",
-            Self::QuotaReservations => "quota_reservations",
-            Self::QuotaRenewal => "quota_renewal",
-            Self::ProviderBudgets => "provider_budgets",
-            Self::ConfirmTokens => "confirm_tokens",
-            Self::Snapshots => "snapshots",
-            Self::Jobs => "jobs",
-            Self::Reissue => "reissue",
-            Self::Redrive => "redrive",
-            Self::Partitions => "partitions",
-            Self::DrEvidence => "dr_evidence",
-            Self::AuthorityI4 => "authority_i4",
-        }
-    }
-
-    const fn slot(self) -> usize {
-        self as usize
-    }
-}
-
-/// The §41.2 `outcome` label of `maintenance_task_runs_total` (closed set `ok | failed`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskOutcome {
-    /// The door call committed (whatever it affected).
-    Ok,
-    /// The call returned an error or timed out (the cycle's 503 reason).
-    Failed,
-}
-
-impl TaskOutcome {
-    /// Both outcomes, in render order.
-    pub const ALL: [Self; 2] = [Self::Ok, Self::Failed];
-
-    /// The label value.
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Ok => "ok",
-            Self::Failed => "failed",
-        }
-    }
-}
-
 /// One process-local counter per closed label tuple (ADR-0061 D-A: seeded at 0, no metrics crate).
 struct TaskCounters<const N: usize>([crate::Counter; N]);
 
@@ -380,15 +278,6 @@ pub fn maintenance_task_rows_total(task: MaintenanceTask) -> u64 {
 
 /// The exact §65 job name: the key of `docs/architecture/schedule_register.toml` and the `job` of every finding row.
 pub const AUTHORITY_I4_JOB: &str = "authority superseded_by consistency scan";
-
-/// One I4 scan (§59.1 I4): how many rows violate the biconditional, and at most 100 of their ids in `memory_id` order.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuthorityI4Scan {
-    /// Rows of `private.memory_records` with `(status = 'superseded')` different from `(superseded_by IS NOT NULL)`.
-    pub violations: i64,
-    /// The first (up to 100) violating `memory_id`s; empty when `violations` is 0.
-    pub sample_ids: Vec<Uuid>,
-}
 
 /// ADR-0123 D3 / U3, as role_maintenance in one statement: the owner definer's count and id sample are appended to the
 /// append-only `ops.repair_findings` (cluster row, `tenant_id` NULL) and returned, so no answer exists unrecorded.
@@ -494,16 +383,6 @@ pub fn reset_partition_horizon_months() {
 /// This process's `partition_horizon_months`, `None` while the family has no sample.
 pub fn partition_horizon_months() -> Option<[i64; PartitionTable::ALL.len()]> {
     *PARTITION_HORIZON_MONTHS.slot()
-}
-
-/// One successful PARTITIONS run (ADR-0063 D-K).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PartitionsRun {
-    /// Registry rows whose proposal columns this run (re)wrote.
-    pub proposed: u64,
-    /// Whole months from the current UTC month start to the last attached upper bound, minus 1, per
-    /// [`PartitionTable::ALL`] slot; `-1` for a key without an attached leaf.
-    pub horizon_months: [i64; PartitionTable::ALL.len()],
 }
 
 /// ADR-0063 D-K, as role_maintenance in one transaction: (1) marks candidacy only — expired, non-newest attached
@@ -1298,33 +1177,6 @@ pub const fn estimate_from_set_bytes(set_repo_bytes: i64) -> i64 {
     set_repo_bytes * ESTIMATE_RATIO.0 / ESTIMATE_RATIO.1
 }
 
-/// The newest receipt that measured the repository (a budget refusal qualifies, 10.11 D / F4), with the limits the
-/// arm used then; the daemon reads no budget key (10.11 C / F10).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MeasuredBudget {
-    /// `du -sk` of the repository at that run.
-    pub repo_bytes: i64,
-    /// `HUMAUX_MAINTENANCE_BACKUP_REPO_MAX_BYTES` as that run used it.
-    pub repo_max_bytes: Option<i64>,
-    /// `HUMAUX_MAINTENANCE_BACKUP_MIN_FREE_BYTES` as that run used it.
-    pub min_free_bytes: Option<i64>,
-    /// The next set's estimate: newest VERIFIED `set_repo_bytes` × 1.25, else that receipt's `estimate_bytes`.
-    pub estimate_bytes: Option<i64>,
-}
-
-/// One DR_EVIDENCE reading from the database (ADR-0064 10.11 D). Timestamps are unix seconds.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DrEvidence {
-    /// `max(backup_stopped_at)` over the labels whose latest receipt is VERIFIED; `None` before the first.
-    pub backup_last_success: Option<f64>,
-    /// `finished_at` of the newest drill the table derived as succeeded.
-    pub restore_drill_last_success: Option<f64>,
-    /// `None` before the first measuring receipt.
-    pub budget: Option<MeasuredBudget>,
-    /// The latch (a row observed after the newest VERIFIED start) or archiving failing now.
-    pub wal_archive_failing: bool,
-}
-
 /// ADR-0064 10.11 D: the DR_EVIDENCE statement. `last_failed` / `last_archived` override `pg_stat_archiver`'s two
 /// columns and exist only for T-K3' (a dev cluster with archiving off cannot fail an archive); production binds
 /// `None, None`. A latch row is written when a failure is newer than the newest VERIFIED start `v` and no row since
@@ -1749,6 +1601,91 @@ pub async fn insert_drill_receipt(
     .bind(r.repo_intact)
     .fetch_one(pool.pool())
     .await
+}
+
+#[async_trait::async_trait]
+impl MaintenanceServePort for MaintenanceDbPool {
+    async fn tenant_page(&self, after: Option<Uuid>, limit: i32) -> Result<Vec<Uuid>, String> {
+        tenant_page(self, after, limit)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn purge_expired_selection_snapshots(
+        &self,
+        tenant: Uuid,
+        limit: i32,
+    ) -> Result<u64, (ErrorCode, String)> {
+        purge_expired_selection_snapshots(self, tenant, limit)
+            .await
+            .map(i64::unsigned_abs)
+            .map_err(|e| (ErrorCode::DependencyUnavailable, e.to_string()))
+    }
+
+    async fn purge_terminal_jobs(
+        &self,
+        tenant: Uuid,
+        retention: JobRetention,
+        limit: i32,
+    ) -> Result<u64, (ErrorCode, String)> {
+        purge_terminal_jobs(self, tenant, retention, limit)
+            .await
+            .map(i64::unsigned_abs)
+            .map_err(|e| (ErrorCode::DependencyUnavailable, e.to_string()))
+    }
+
+    async fn reissue_unsettled_tickets(
+        &self,
+        tenant: Uuid,
+        cooldown: Duration,
+        limit: i32,
+    ) -> Result<u64, (ErrorCode, String)> {
+        reissue_unsettled_tickets(self, tenant, cooldown, limit)
+            .await
+            .map(i64::unsigned_abs)
+            .map_err(|e| (ErrorCode::DependencyUnavailable, e.to_string()))
+    }
+
+    async fn auto_redrive_schema_failed(
+        &self,
+        tenant: Uuid,
+        cooldown: Duration,
+        limit: i32,
+        audit: &RedriveAudit<'_>,
+    ) -> Result<u64, (ErrorCode, String)> {
+        let action = AdminAction {
+            actor: audit.actor,
+            reason: audit.reason,
+            ticket: audit.ticket,
+            trace_id: audit.trace_id,
+            step_up_auth_context: audit.step_up_auth_context,
+        };
+        auto_redrive_schema_failed(self, tenant, cooldown, limit, &action)
+            .await
+            .map(i64::unsigned_abs)
+            .map_err(|e| {
+                let code = match e.exit_code() {
+                    2 => ErrorCode::InvalidInput,
+                    3 => ErrorCode::Forbidden,
+                    _ => ErrorCode::DependencyUnavailable,
+                };
+                (code, e.to_string())
+            })
+    }
+
+    async fn propose_partitions(&self) -> Result<PartitionsRun, String> {
+        propose_partitions(self).await.map_err(|e| e.to_string())
+    }
+
+    async fn dr_evidence(&self) -> Result<DrEvidence, String> {
+        dr_evidence(self, None, None)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn scan_authority_i4(&self) -> Result<AuthorityI4Scan, String> {
+        scan_authority_i4(self).await.map_err(|e| e.to_string())
+    }
 }
 
 #[cfg(test)]

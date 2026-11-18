@@ -3,7 +3,7 @@
 //!   (policy, cutoff, newest leaf, registry = catalog by name and bounds, proposal, holds, row count) lives in
 //!   `control.partition_drop_check`; the SQL calls live in `adapters::maintenance_repo`.
 //! Depends-on: crates=[humaux-adapters, humaux-application, serde_json, time]; services=[PostgreSQL(owner)];
-//!   env=[HUMAUX_MIGRATOR_PG_DSN]; modules=[application::partition_retention, adapters::postgres, maintenance::main]
+//!   env=[HUMAUX_MIGRATOR_PG_DSN]; modules=[application::partition_retention, application::scheduler, adapters::postgres, maintenance::main]
 //! Called-by: [maintenance::main]
 //! Invariants: [never resident: each arm opens the superuser migrator principal for one transaction from the
 //!   operator's shell and exits (both resident modes refuse to boot with that key, ADR-0063 D-H); a non-superuser or
@@ -18,8 +18,9 @@ use std::time::Duration;
 
 use humaux_adapters::postgres::{PoolInitError, RetentionExecutor};
 use humaux_application::partition_retention::{
-    self as retention, DropOutcome, DropRequest, PartitionTable, RetentionAdmin,
+    self as retention, DropOutcome, DropRequest, RetentionAdmin,
 };
+use humaux_application::scheduler::PartitionTable;
 use serde_json::json;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;

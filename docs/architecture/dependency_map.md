@@ -485,6 +485,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::private_inference`
 
+#### `application::projection_maintenance`
+
 #### `application::recall_read`
 
 #### `application::remember`
@@ -2229,6 +2231,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::projection_execution`
 
+#### `application::projection_maintenance`
+
 #### `application::query_embedding_execution`
 
 #### `application::read_quota`
@@ -3183,6 +3187,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::role_rotation`
 - env `HUMAUX_MIGRATOR_PG_DSN`
+
+#### `application::scheduler`
 
 #### `application::signed_token`
 
@@ -4300,6 +4306,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::private_inference`
 
+#### `application::projection_maintenance`
+
 #### `application::recall_read`
 
 #### `application::remember`
@@ -5118,6 +5126,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::private_inference`
 
 #### `application::projection_execution`
+
+#### `application::projection_maintenance`
 
 #### `application::query_embedding_execution`
 
@@ -14572,6 +14582,7 @@ modules naming it:
 - `adapters::retrieval_embedding_rpc`
 - `adapters::retrieve`
 - `adapters::role_hygiene`
+- `adapters::serving_repo`
 - `adapters::subject_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::contribution_execution_repo_0131`
@@ -15528,12 +15539,14 @@ modules naming it:
 - `application::pin`
 - `application::processing_status`
 - `application::projection_execution`
+- `application::projection_maintenance`
 - `application::public_dispatch`
 - `application::read_quota`
 - `application::recall_read`
 - `application::referral`
 - `application::remember`
 - `application::retrieval_embedding_port`
+- `application::scheduler`
 - `application::session`
 - `application::supersede`
 - `tests`
@@ -15681,6 +15694,7 @@ modules naming it:
 - `application::remember`
 - `application::retrieval_embedding_port`
 - `application::role_rotation`
+- `application::scheduler`
 - `tests`
 
 ### humaux-application → `uuid` (normal)
@@ -15711,6 +15725,7 @@ modules naming it:
 - `application::recall_read`
 - `application::remember`
 - `application::retrieval_embedding_port`
+- `application::scheduler`
 - `application::session`
 - `tests`
 
@@ -17720,9 +17735,12 @@ why: operational health sampling use case
 modules naming it:
 - `maintenance::health_serve`
 - `maintenance::member`
+- `maintenance::projection_serve`
 - `maintenance::rebuild_cli`
 - `maintenance::retention`
 - `maintenance::roles`
+- `maintenance::serve`
+- `maintenance::switch_visible`
 - `tests`
 
 ### humaux-maintenance → `humaux-adapters` (normal)

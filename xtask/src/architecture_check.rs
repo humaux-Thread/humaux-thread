@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 43, "HEX-LAYER")
+    hex_exact(actual, baseline, 33, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -14662,6 +14662,88 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         let restored = m08_2_can_read_one_home(&root);
         assert!(matches!(restored, Verdict::Pass), "{restored:?}");
         println!("SLICE-11a read-gate bypass (retrieval-worker::main): restored GREEN");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// ADR-0130 (SLICE-12a): `maintenance::projection_serve`, `maintenance::switch_visible`, and
+    /// `maintenance::serve` reject all 10 eliminated adapter types.
+    #[test]
+    fn hex_boundary_slice12a_entry_red_green() {
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("slice12a-boundary-{}", std::process::id()));
+        hex_copy_boundary_fixture(&real_root(), &root);
+        for (rel_path, use_case, symbol) in [
+            (
+                "bins/maintenance/src/projection_serve.rs",
+                "projection_serve (switch outcome)",
+                "serving_repo::SwitchOutcome",
+            ),
+            (
+                "bins/maintenance/src/switch_visible.rs",
+                "switch_visible (retrieval family)",
+                "qdrant::RetrievalFamily",
+            ),
+            (
+                "bins/maintenance/src/switch_visible.rs",
+                "switch_visible (index face)",
+                "retrieve::IndexFace",
+            ),
+            (
+                "bins/maintenance/src/serve.rs",
+                "serve (dr evidence)",
+                "maintenance_repo::DrEvidence",
+            ),
+            (
+                "bins/maintenance/src/serve.rs",
+                "serve (job retention)",
+                "maintenance_repo::JobRetention",
+            ),
+            (
+                "bins/maintenance/src/serve.rs",
+                "serve (maintenance task)",
+                "maintenance_repo::MaintenanceTask",
+            ),
+            (
+                "bins/maintenance/src/serve.rs",
+                "serve (measured budget)",
+                "maintenance_repo::MeasuredBudget",
+            ),
+            (
+                "bins/maintenance/src/serve.rs",
+                "serve (partition table)",
+                "maintenance_repo::PartitionTable",
+            ),
+            (
+                "bins/maintenance/src/serve.rs",
+                "serve (task outcome)",
+                "maintenance_repo::TaskOutcome",
+            ),
+            (
+                "bins/maintenance/src/serve.rs",
+                "serve (admin action)",
+                "membership_repo::AdminAction",
+            ),
+        ] {
+            let file_path = root.join(rel_path);
+            let original = fs::read_to_string(&file_path).unwrap();
+            fs::write(
+                &file_path,
+                format!("{original}\nuse humaux_adapters::{symbol};\n"),
+            )
+            .unwrap();
+            let red = hex_layer_gate(&root);
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.contains(symbol))),
+                "{red:?}"
+            );
+            println!("SLICE-12a {use_case}: RED {red:?}");
+            fs::write(&file_path, &original).unwrap();
+            let green = hex_layer_gate(&root);
+            assert!(matches!(green, Verdict::Pass), "{green:?}");
+            println!("SLICE-12a {use_case}: restored GREEN");
+        }
         fs::remove_dir_all(root).unwrap();
     }
 

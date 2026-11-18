@@ -6,7 +6,7 @@
 //!   private.memory_records, projection.card_profile_policies, projection.rebuild_tickets, projection.stream_checkpoints,
 //!   projection.stream_log]];
 //!   env=[CARGO_MANIFEST_DIR];
-//!   modules=[adapters::context_repo, adapters::memory_repo, adapters::placement_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant, adapters::read_materialize, adapters::retrieval_query_log, adapters::serving_repo, adapters::stream_repo, application::recall_read, application::signed_token, contracts::retrieval_config, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope]
+//!   modules=[adapters::context_repo, adapters::memory_repo, adapters::placement_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant, adapters::read_materialize, adapters::retrieval_query_log, adapters::serving_repo, adapters::stream_repo, application::projection_maintenance, application::recall_read, application::signed_token, contracts::retrieval_config, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope]
 //! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::provisioning, adapters::read_materialize, adapters::remember, adapters::stream_repo, gateway::bootstrap, maintenance::deploy_check, maintenance::switch_visible, tests]
 //! Invariants: [read-your-writes on role_gateway: an expired token, cross-tenant/workspace scope or a changed serving
 //!   projection is a typed RetrieveError, never a stale answer passed off as caught up; the read-route visible count
@@ -1407,6 +1407,60 @@ async fn count_of(
     )
     .await
     .ok()
+}
+
+struct QdrantVisibleStreamCounter<'a> {
+    registry: &'a IntraCellResourceRegistry,
+    transport: &'a humaux_infra_cell::HttpIntraCellTransport,
+}
+
+#[async_trait::async_trait]
+impl humaux_application::projection_maintenance::VisibleStreamCountPort
+    for QdrantVisibleStreamCounter<'_>
+{
+    async fn count_stream_version(
+        &self,
+        collection: &str,
+        tenant: TenantId,
+        workspace: WorkspaceId,
+        version: &str,
+        tombstoned_seqs: &[i64],
+    ) -> Option<u64> {
+        let permit = authorize_cell_access(
+            self.registry,
+            IntraCellResource::QDRANT_REST,
+            Duration::from_secs(60),
+        )
+        .ok()?;
+        stream_count_of_version(
+            &IndexFace {
+                transport: self.transport,
+                permit: &permit,
+                collection,
+            },
+            tenant,
+            workspace,
+            version,
+            tombstoned_seqs,
+        )
+        .await
+    }
+}
+
+/// Borrow `(registry, transport)` as the outbound [`VisibleStreamCountPort`] for `switch_visible`.
+pub fn visible_stream_counter<'a>(
+    registry: &'a IntraCellResourceRegistry,
+    transport: &'a humaux_infra_cell::HttpIntraCellTransport,
+) -> impl humaux_application::projection_maintenance::VisibleStreamCountPort + 'a {
+    QdrantVisibleStreamCounter {
+        registry,
+        transport,
+    }
+}
+
+/// The `projection.tenant_placements.projection_family` DB wire value for private memory (`RetrievalFamily::PrivateMemoryV1`).
+pub fn private_memory_projection_family() -> &'static str {
+    RetrievalFamily::PrivateMemoryV1.as_db_str()
 }
 
 /// ADR-0068 D-E / D-I: whether recall over `key`'s projection groups its dense candidates by Memory. It is the same

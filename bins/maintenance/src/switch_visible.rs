@@ -1,5 +1,5 @@
 //! `maintenance::switch_visible` — §16.2 serve switch: live visible_* counts taken from Qdrant/Postgres.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-projection, humaux-testkit, postgres, serde_json, tokio, uuid]; services=[PostgreSQL(any) r=[projection.stream_checkpoints, projection.stream_log, projection.tenant_placements], PostgreSQL(owner) w=[control.private_reasoning_domains, control.tenants, control.users, control.workspaces, private.events, private.evidence_objects, private.memory_evidence, private.memory_records, projection.private_memory_points, projection.stream_checkpoints, projection.tenant_placements], PostgreSQL(role_maintenance), Qdrant(*)]; env=[HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_URL]; modules=[adapters::qdrant, adapters::retrieve, domain::ids, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::serving]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell, humaux-projection, humaux-testkit, postgres, serde_json, tokio, uuid]; services=[PostgreSQL(any) r=[projection.stream_checkpoints, projection.stream_log, projection.tenant_placements], PostgreSQL(owner) w=[control.private_reasoning_domains, control.tenants, control.users, control.workspaces, private.events, private.evidence_objects, private.memory_evidence, private.memory_records, projection.private_memory_points, projection.stream_checkpoints, projection.tenant_placements], PostgreSQL(role_maintenance), Qdrant(*)]; env=[HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_URL]; modules=[adapters::retrieve, application::projection_maintenance, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::serving]
 //! Called-by: [maintenance::projection_serve, xtask::soak]
 //! Invariants: [visible_serving/visible_shadow are real Qdrant/Postgres counts, never operator-supplied numbers;
 //!   both count every point of the stream whatever its visibility class (ADR-0057 D-C)]
@@ -38,12 +38,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use humaux_adapters::qdrant::RetrievalFamily;
-use humaux_adapters::retrieve::{IndexFace, stream_count_of_version};
-use humaux_domain::ids::{TenantId, WorkspaceId};
+use humaux_adapters::retrieve::{private_memory_projection_family, visible_stream_counter};
+use humaux_application::projection_maintenance;
+pub use humaux_application::projection_maintenance::{
+    VisiblePair, VisibleStreamCandidate as Candidate,
+};
 use humaux_infra_cell::{
     CallerId, CellId, DEFAULT_MAX_RESPONSE_BYTES, HttpIntraCellTransport, IntraCellResource,
-    IntraCellResourceRegistry, ResourceEntry, authorize_cell_access,
+    IntraCellResourceRegistry, ResourceEntry,
 };
 use humaux_projection::serving::StreamFamily;
 use postgres::Client;
@@ -71,10 +73,6 @@ pub const SERVING_ROW_VERSION_SQL: &str = "SELECT projection_version \
      FROM projection.stream_checkpoints \
      WHERE tenant_id = $1 AND scope_kind = $2 AND scope_id = $3 AND domain = $4 \
        AND projection_kind = $5 AND serving";
-
-/// The `projection_family` value [`COLLECTION_SQL`] binds — private memory is the only family
-/// this deployment projects.
-pub const PRIVATE_MEMORY_FAMILY: RetrievalFamily = RetrievalFamily::PrivateMemoryV1;
 
 /// One live Qdrant face for this ops process: the one-entry `IntraCellResource::QDRANT_REST`
 /// registry plus its transport (same shape as `xtask::e2e_seed::qdrant_registry`, ADR-0003 —
@@ -124,76 +122,14 @@ impl VisibleFace {
             transport,
         })
     }
-
-    /// One §23.1② count. `None` on an unreachable/erroring Qdrant, which stays
-    /// `VisibleUnavailable` — the honest refusal, never a `0`.
-    async fn count(
-        &self,
-        c: &Candidate<'_>,
-        version: &str,
-        tombstoned_seqs: &[i64],
-    ) -> Option<u64> {
-        let permit = authorize_cell_access(
-            &self.registry,
-            IntraCellResource::QDRANT_REST,
-            Duration::from_secs(60),
-        )
-        .ok()?;
-        stream_count_of_version(
-            &IndexFace {
-                transport: &self.transport,
-                permit: &permit,
-                collection: c.collection,
-            },
-            c.tenant,
-            c.workspace,
-            version,
-            tombstoned_seqs,
-        )
-        .await
-    }
 }
-
-/// Everything about one promotion candidate that only PostgreSQL can answer, read by the
-/// caller with its own handle ([`COLLECTION_SQL`], [`TOMBSTONED_SEQS_SQL`]) — this module owns
-/// the Qdrant half only.
-pub struct Candidate<'a> {
-    /// The candidate family's tenant.
-    pub tenant: TenantId,
-    /// The candidate family's workspace (`scope_id`) — the worker stamps it on every point.
-    pub workspace: WorkspaceId,
-    /// The tenant's §17.3 collection.
-    pub collection: &'a str,
-    /// The version being promoted — §16.3's `visible(shadow)` side.
-    pub candidate_version: &'a str,
-    pub candidate_tombstoned: &'a [i64],
-    /// The family's current `serving` version, or `None` for an ADR-0017 first activation
-    /// (nothing to compare against; `evaluate_switch` accepts a lone shadow read-back there).
-    pub serving_version: Option<&'a str>,
-    pub serving_tombstoned: &'a [i64],
-}
-
-/// §16.3 criterion ①'s `(visible_shadow, visible_serving)` pair, each side tagged with the
-/// `projection_version` it was counted against — the exact shape
-/// `projection::serving::SwitchCriteria` takes.
-pub type VisiblePair = (Option<(String, u64)>, Option<(String, u64)>);
 
 /// §16.3 criterion ①'s two inputs, tagged with the version each was counted against —
 /// the exact `(visible_shadow, visible_serving)` pair
 /// `adapters::serving_repo::switch_projection_version` and `xtask::soak`'s report both need.
 pub async fn visible_pair(face: &VisibleFace, c: &Candidate<'_>) -> VisiblePair {
-    let shadow = face
-        .count(c, c.candidate_version, c.candidate_tombstoned)
-        .await
-        .map(|n| (c.candidate_version.to_string(), n));
-    let serving = match c.serving_version {
-        Some(v) => face
-            .count(c, v, c.serving_tombstoned)
-            .await
-            .map(|n| (v.to_string(), n)),
-        None => None,
-    };
-    (shadow, serving)
+    let port = visible_stream_counter(&face.registry, &face.transport);
+    projection_maintenance::visible_pair(&port, c).await
 }
 
 /// `--qdrant-host` / `--qdrant-port` for the two ops subcommands. Same two defaults
@@ -235,7 +171,7 @@ pub fn read_candidate_facts(
     candidate_version: &str,
     serving_version: Option<&str>,
 ) -> Result<Option<CandidateFacts>, String> {
-    let projection_family = PRIVATE_MEMORY_FAMILY.as_db_str();
+    let projection_family = private_memory_projection_family();
     let row = db
         .query_opt(COLLECTION_SQL, &[&family.tenant_id.0, &projection_family])
         .map_err(|e| format!("tenant placement: {e}"))?;
@@ -280,7 +216,10 @@ mod tests {
     use humaux_adapters::qdrant::{
         Distance, ShardingMethod, create_collection_body, tenant_index_body,
     };
-    use humaux_infra_cell::{IntraCellHttpTransport, IntraCellMethod, IntraCellRequest};
+    use humaux_domain::ids::{TenantId, WorkspaceId};
+    use humaux_infra_cell::{
+        IntraCellHttpTransport, IntraCellMethod, IntraCellRequest, authorize_cell_access,
+    };
     use humaux_testkit::fixture_purge::purge_tenant_fixture_sql;
     use humaux_testkit::{ExternalDep, skip_or_fail};
     use postgres::NoTls;
@@ -361,7 +300,7 @@ mod tests {
                    (tenant_id, projection_family, collection_name) VALUES ($1, $2, $3)",
                 &[
                     &tenant,
-                    &PRIVATE_MEMORY_FAMILY.as_db_str(),
+                    &private_memory_projection_family(),
                     &seeded.collection,
                 ],
             )
