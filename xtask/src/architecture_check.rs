@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 26, "HEX-LAYER")
+    hex_exact(actual, baseline, 24, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -14211,6 +14211,48 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
             println!("SLICE-7c {case} restored: GREEN");
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hex_boundary_slice15a_backup_red_green() {
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("slice15a-boundary-{}", std::process::id()));
+        hex_copy_boundary_fixture(&workspace_root(), &root);
+        let path = root.join("bins/maintenance/src/backup.rs");
+        let source = fs::read_to_string(&path).unwrap();
+        for symbol in ["BackupReceipt", "BackupStatusFacts"] {
+            let import = format!("humaux_adapters::maintenance_repo::{symbol}");
+            fs::write(&path, format!("{source}\nuse {import} as Regression;\n")).unwrap();
+            let red = hex_layer_gate(&root);
+            let expected =
+                format!("HEX-LAYER: new violation bins/maintenance/src/backup.rs:{import}");
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines == &[expected]),
+                "{red:?}"
+            );
+            println!("{symbol}: RED {red:?}");
+            fs::write(&path, &source).unwrap();
+            assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
+            println!("{symbol}: GREEN");
+        }
+
+        let path = root.join("docs/architecture/modules.toml");
+        let catalog = fs::read_to_string(&path).unwrap();
+        let file = "crates/application/src/knowledge_backup.rs";
+        fs::write(&path, catalog.replace(&format!("  \"{file}\",\n"), "")).unwrap();
+        let red = hex_coverage_gate(&root);
+        let expected = format!("{file}: expected exactly one file owner");
+        assert!(
+            matches!(&red, Verdict::Fail(lines) if lines.contains(&expected)),
+            "{red:?}"
+        );
+        println!("owner: RED {red:?}");
+        fs::write(&path, catalog).unwrap();
+        assert!(matches!(hex_coverage_gate(&root), Verdict::Pass));
+        println!("owner: GREEN");
         fs::remove_dir_all(root).unwrap();
     }
 

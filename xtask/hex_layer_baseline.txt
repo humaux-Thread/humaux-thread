@@ -3,8 +3,6 @@
 # ponytail: syntax-only legacy debt; upgrade to compiler HIR if macros own contracts.
 # §78 / ADR-0130 step 1. Exact file:symbol set; remove rows as vertical slices migrate.
 # ponytail: frozen migration debt ceiling, never add rows; remember slice removes AffectInput and RememberCommand first.
-bins/maintenance/src/backup.rs:humaux_adapters::maintenance_repo::BackupReceipt
-bins/maintenance/src/backup.rs:humaux_adapters::maintenance_repo::BackupStatusFacts
 bins/maintenance/src/drill.rs:humaux_adapters::maintenance_repo::DrillReceipt
 bins/maintenance/src/drill.rs:humaux_adapters::maintenance_repo::TenantFacts
 bins/maintenance/src/drill.rs:humaux_adapters::maintenance_repo::VerifiedSet

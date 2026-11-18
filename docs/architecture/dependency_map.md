@@ -3129,6 +3129,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::health`
 
+#### `application::knowledge_backup`
+
 #### `application::lifecycle_execution`
 
 #### `application::membership_admin`
@@ -15650,6 +15652,7 @@ modules naming it:
 - `application::forget`
 - `application::health`
 - `application::independent_audit`
+- `application::knowledge_backup`
 - `application::lifecycle_execution`
 - `application::login`
 - `application::mechanism_observation`
@@ -15686,6 +15689,7 @@ modules naming it:
 - `application::distill`
 - `application::distill_execution`
 - `application::forget`
+- `application::knowledge_backup`
 - `application::lifecycle_execution`
 - `application::membership_admin`
 - `application::oauth`
@@ -15719,6 +15723,7 @@ modules naming it:
 - `application::distill`
 - `application::distill_execution`
 - `application::health`
+- `application::knowledge_backup`
 - `application::lifecycle_execution`
 - `application::oauth`
 - `application::oauth_exchange`
@@ -17712,6 +17717,7 @@ modules naming it:
 why: operational health sampling use case
 
 modules naming it:
+- `maintenance::backup`
 - `maintenance::deploy_check`
 - `maintenance::health_serve`
 - `maintenance::member`

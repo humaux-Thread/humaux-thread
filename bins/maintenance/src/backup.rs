@@ -3,10 +3,10 @@
 //!   command runs inside the production `pg` container through `docker compose -f <file> -p <project> exec -T --user
 //!   postgres pg …`; every receipt goes to `ops.backup_receipts` through `adapters::maintenance_repo`. No arm touches a
 //!   metric: the gauges are the daemon's, read from these receipts (D-K, card 37 S6).
-//! Depends-on: crates=[humaux-adapters, serde_json, time]; services=[PostgreSQL(role_maintenance), subprocess(docker)];
+//! Depends-on: crates=[humaux-adapters, humaux-application, serde_json, time]; services=[PostgreSQL(role_maintenance), subprocess(docker)];
 //!   env=[HUMAUX_MAINTENANCE_BACKUP_COMPOSE_FILE, HUMAUX_MAINTENANCE_BACKUP_MIN_FREE_BYTES,
 //!   HUMAUX_MAINTENANCE_BACKUP_PROJECT, HUMAUX_MAINTENANCE_BACKUP_REPO_MAX_BYTES, HUMAUX_MAINTENANCE_PG_DSN];
-//!   modules=[adapters::maintenance_repo, adapters::postgres, maintenance::main]
+//!   modules=[application::knowledge_backup, adapters::maintenance_repo, adapters::postgres, maintenance::main]
 //! Called-by: [maintenance::drill, maintenance::main]
 //! Invariants: [every arm prints `repo_class` = `local_only` and the NOT OFFSITE notice, both consts here, no config
 //!   key, flag or env changes them; `run` keeps the fixed order FS identity + budget precheck on live du/df ->
@@ -28,7 +28,8 @@
 
 use std::process::Command;
 
-use humaux_adapters::maintenance_repo::{self as repo, BackupReceipt, BackupStatusFacts};
+use humaux_adapters::maintenance_repo as repo;
+use humaux_application::knowledge_backup::{self, BackupReceipt, BackupStatusFacts};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 
@@ -318,7 +319,7 @@ async fn record(
     pool: &humaux_adapters::postgres::MaintenanceDbPool,
     receipt: &BackupReceipt,
 ) -> Result<String> {
-    repo::insert_backup_receipt(pool, receipt)
+    knowledge_backup::record_receipt(pool, receipt)
         .await
         .map(|id| id.to_string())
         .map_err(|e| Failure::Infra(format!("backup receipts: {e}")))
@@ -611,7 +612,7 @@ pub async fn status(_args: &Args) -> Result<Output> {
     let repo_max: i64 = env_parsed(REPO_MAX)?;
     let min_free: i64 = env_parsed(MIN_FREE)?;
     let pool = pool().await?;
-    let facts = repo::backup_status_facts(&pool)
+    let facts = knowledge_backup::read_status(&pool)
         .await
         .map_err(|e| Failure::Infra(format!("backup status facts: {e}")))?;
     let info = pg.info()?;
