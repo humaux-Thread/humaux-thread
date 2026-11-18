@@ -253,8 +253,8 @@ impl<T> TenantFairQueue<T> {
 // Maintenance daemon task definitions, DTOs, and port (ADR-0062 / ADR-0063 / ADR-0064 / ADR-0123 / ADR-0130)
 // ============================================================================
 
-use std::time::Duration;
 use humaux_domain::error::ErrorCode;
+use std::time::Duration;
 use uuid::Uuid;
 
 /// The three ages the terminal-jobs door compares with the DB clock (ADR-0062 D-J).
@@ -569,7 +569,8 @@ pub async fn reissue_unsettled_tickets<P: MaintenanceServePort>(
     cooldown: Duration,
     limit: i32,
 ) -> Result<u64, (ErrorCode, String)> {
-    port.reissue_unsettled_tickets(tenant, cooldown, limit).await
+    port.reissue_unsettled_tickets(tenant, cooldown, limit)
+        .await
 }
 
 /// Inbound use case: auto-redrive schema-failed dead jobs of `tenant`.
