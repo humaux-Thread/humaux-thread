@@ -51,8 +51,8 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::audited_read_quota, adapters::credential_repo, adapters::affect_repo, adapters::independent_audit, application::independent_audit, adapters::attribution_repo, adapters::context_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::login_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::distill, application::forget, application::lifecycle_execution, application::login, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::metrics]
-//! Called-by: [gateway::auth, gateway::guard, gateway::main, gateway::mcp_application, gateway::memory, gateway::recall, tests]
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::metrics]
+//! Called-by: [gateway::auth, gateway::context, gateway::guard, gateway::main, gateway::mcp_application, gateway::memory, gateway::recall, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
 //! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7; ADR-0125
 //!
@@ -878,18 +878,13 @@ fn parse_auth_pages(
         [token_keys, &keys],
         guard,
     )?;
-    // ponytail: the registry cannot tell an unset key from a blank one, so blank allows every recipient at enqueue
-    // (`RecipientAllowlist::parse` would read a present blank as "nobody"); the sender enforces it again at send time.
-    let allowlist = match present(effective, EMAIL_RECIPIENT_ALLOWLIST_KEY)?.trim() {
-        "" => RecipientAllowlist::allow_all(),
-        list => RecipientAllowlist::parse(Some(list)),
-    };
+    let recipient_allowlist = present(effective, EMAIL_RECIPIENT_ALLOWLIST_KEY)?.to_owned();
     Ok(Some(AuthPagesConfig {
         keys,
         public_origin,
         mail_from,
         code_pepper,
-        allowlist,
+        recipient_allowlist,
         auth: parse_auth_lifetimes(effective)?,
     }))
 }
@@ -2266,13 +2261,19 @@ pub fn passwordless_login_port(
     guard: &GatewayGuard,
     config: &AuthPagesConfig,
 ) -> Arc<dyn humaux_application::login::PasswordlessLoginPort> {
+    // The registry cannot distinguish unset from blank. Both allow every recipient at enqueue;
+    // the sender enforces its own policy again at send time (ADR-0125 8c).
+    let allowlist = match config.recipient_allowlist.trim() {
+        "" => RecipientAllowlist::allow_all(),
+        list => RecipientAllowlist::parse(Some(list)),
+    };
     Arc::new(humaux_adapters::login_repo::PostgresPasswordlessLogin::new(
         guard.runtime_pool(),
         config.code_pepper.clone(),
         config.auth.login_challenge,
         config.mail_from.clone(),
         crate::auth_pages::LOGIN_MAIL_SUBJECT.to_owned(),
-        config.allowlist.clone(),
+        allowlist,
         humaux_application::session::SessionPolicy::from(&config.auth),
     ))
 }
@@ -2358,6 +2359,13 @@ pub fn grep_store(
 /// Default in-Cell text-processing policy for semantic recall (ADR-0083 U4 / ADR-0084 D-B).
 pub fn default_text_processing_policy() -> fn(humaux_domain::ids::TenantId) -> bool {
     humaux_adapters::projection_worker::in_cell_text_processing_allowed
+}
+
+/// Assemble the PostgreSQL continuity reader (§25.3.1).
+pub(crate) fn continuity_read_port(
+    pool: Arc<RuntimeDbPool>,
+) -> impl humaux_application::continuity::ContinuityReadPort {
+    humaux_adapters::continuity_read::PostgresContinuityReadPort::new(pool)
 }
 
 /// Assemble the PG recall routing/read-state outbound port (ADR-0130: `retrieval_read_model`).

@@ -1,8 +1,6 @@
 //! `gateway::auth_pages` — M02 D1/D2 `/auth/*` SSR pages: email → code → console session, and logout (ADR-0125).
-//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, serde, uuid];
-//!   services=[]; env=[]; modules=[adapters::email, application::login,
-//!   application::auth, application::session, application::signed_token, domain::error,
-//!   gateway::guard, protocol::edge]
+//! Depends-on: crates=[axum, humaux-application, humaux-domain, humaux-protocol, serde, uuid];
+//!   services=[]; env=[]; modules=[application::auth, application::login, application::session, application::signed_token, domain::error, gateway::guard, protocol::edge]
 //! Called-by: [gateway::billing_webhook, gateway::bootstrap, gateway::main, gateway::oauth_http, tests]
 //! Invariants: [every /auth/* request passes the pre-auth guard entry exactly once before any handler runs and every
 //!   response the pages produce, refusals included, carries the hardening headers; a POST is acted on only when its
@@ -35,7 +33,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use humaux_adapters::email::RecipientAllowlist;
 use humaux_application::auth::{AuthConfig, canonicalize_email};
 use humaux_application::login::{self, PasswordlessLoginPort};
 use humaux_application::session::{SessionPolicy, SessionSecret, csrf_token};
@@ -159,7 +156,7 @@ pub struct AuthPagesConfig {
     /// `HUMAUX_GATEWAY_LOGIN_CODE_PEPPER`: the keyed-hash key of login codes, shared with no other credential.
     pub code_pepper: Vec<u8>,
     /// `HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST`; blank allows every recipient at enqueue.
-    pub allowlist: RecipientAllowlist,
+    pub recipient_allowlist: String,
     /// §78.1 challenge and session lifetimes, from the `HUMAUX_GATEWAY_AUTH_*` lifetime keys (ADR-0125 8e).
     pub auth: AuthConfig,
 }

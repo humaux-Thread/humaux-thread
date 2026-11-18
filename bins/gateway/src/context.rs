@@ -1,5 +1,5 @@
 //! `gateway::context` — Authenticated Context result: stable handoff diagnostics plus same-snapshot bodies.
-//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-projection, humaux-retrieval, humaux-telemetry, serde, serde_json, uuid]; services=[]; env=[CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME]; modules=[adapters::postgres, adapters::serving_repo, application::recall_read, domain::context, domain::error, domain::identity, domain::ids, gateway::recall, gateway::remember, humaux-telemetry, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, retrieval::request]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-projection, humaux-retrieval, humaux-telemetry, serde, serde_json, uuid]; services=[]; env=[CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME]; modules=[adapters::postgres, application::recall_read, domain::context, domain::error, domain::identity, domain::ids, gateway::bootstrap, gateway::recall, gateway::remember, humaux-telemetry, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, retrieval::request]
 //! Called-by: [gateway::bootstrap, gateway::mcp_application, gateway::memory, gateway::recall, tests]
 //! Invariants: [every field in a returned Context is read from the same snapshot; a partial read never yields a body silently missing a section]
 //! Spec: Baseline §22.0; §23.1; §25; ADR-0024; ADR-0031; ADR-0054; ADR-0066 Review fix 2; ADR-0110 D-A
@@ -7,13 +7,12 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use humaux_adapters::postgres::RuntimeDbPool;
-use humaux_adapters::serving_repo::FamilyReadState;
-use humaux_adapters::serving_repo::UnservedLedger;
-use humaux_adapters::serving_repo::family_read_state;
 use humaux_application::recall_read::ItemFreshness;
 use humaux_application::recall_read::MaterializedContext;
 use humaux_application::recall_read::MaterializedItem;
-use humaux_application::recall_read::assemble_materialized;
+use humaux_application::recall_read::{
+    RecallReadState, RecallRoutePort, UnservedLedger, assemble_materialized,
+};
 use humaux_domain::{
     context::ContextBudget,
     error::ErrorCode,
@@ -141,27 +140,27 @@ impl ContextBootstrap {
     /// for a missing row). The family's `serving` version rides along as an `Option`: the
     /// PG-authoritative routes serve without it (the visible count is then `null`), and
     /// recall/context answer the B-shaped read when it is absent. One REPEATABLE READ round
-    /// trip (`serving_repo::family_read_state`). The ledger key keeps the process-configured
+    /// trip (`RecallRoutePort::family_read_state`). The ledger key keeps the process-configured
     /// `projection_version` (Q9 ruling).
     ///
     /// `unserved` is the caller's own choice (ADR-0110 D-A): only a route that reports the unserved
     /// key's ledger (`context.assemble`, `recall`) passes [`UnservedLedger::Read`]; every route that reads
-    /// `FamilyReadState::serving` alone passes [`UnservedLedger::Skip`] and pays no O(stream) closure.
+    /// `RecallReadState::serving` alone passes [`UnservedLedger::Skip`] and pays no O(stream) closure.
     pub(crate) async fn provisioned_request_stream(
         &self,
         pool: &RuntimeDbPool,
         authorization: &AuthorizationScope,
         workspace: WorkspaceId,
         unserved: UnservedLedger,
-    ) -> Result<(StreamFamily, StreamKey, FamilyReadState), ErrorCode> {
+    ) -> Result<(StreamFamily, StreamKey, RecallReadState), ErrorCode> {
         let (family, key) = self.request_stream(authorization.tenant_id(), workspace);
         // The serving version is returned, not discarded: §23.1②'s visible count must be scoped
         // to the family's `serving = true` version (§16.2), which is a different string from the
         // ledger key's process-configured `projection_version` whenever a shadow backfill is mid
         // switch.
-        let state = family_read_state(pool, authorization, &key, unserved)
-            .await
-            .map_err(|_| ErrorCode::DependencyUnavailable)?;
+        let state = crate::bootstrap::recall_route_store(pool)
+            .family_read_state(authorization, &key, unserved)
+            .await?;
         if !state.initialized {
             return Err(ErrorCode::DependencyUnavailable);
         }

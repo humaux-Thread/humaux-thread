@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 63, "HEX-LAYER")
+    hex_exact(actual, baseline, 53, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -14340,6 +14340,53 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             let green = hex_layer_gate(&root);
             assert!(matches!(green, Verdict::Pass), "{green:?}");
             println!("{slice} restored GREEN");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// ADR-0130 / §80.1: every removed gateway type remains a discriminating layer violation.
+    #[test]
+    fn hex_boundary_slice12b_entry_red_green() {
+        let source = real_root();
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("slice12b-boundary-{}", std::process::id()));
+        hex_copy_boundary_fixture(&source, &root);
+        for (entry, symbol) in [
+            ("auth_pages", "email::RecipientAllowlist"),
+            ("context", "serving_repo::FamilyReadState"),
+            ("context", "serving_repo::UnservedLedger"),
+            ("continuity", "continuity_read::PostgresContinuityReadPort"),
+            ("mcp_application", "confirm_token_repo::ConfirmationClaim"),
+            ("mcp_application", "memory_governance_repo::ArchiveResult"),
+            ("mcp_application", "memory_governance_repo::RestoreResult"),
+            (
+                "mcp_application",
+                "operation_receipt::AtomicRememberRequest",
+            ),
+            ("mcp_application", "operation_receipt::NoteReplaceOutcome"),
+            ("mcp_application", "operation_receipt::NoteReplaceRequest"),
+        ] {
+            let relative = format!("bins/gateway/src/{entry}.rs");
+            let path = root.join(&relative);
+            let original = fs::read_to_string(&path).unwrap();
+            fs::write(
+                &path,
+                format!("{original}\nuse humaux_adapters::{symbol};\n"),
+            )
+            .unwrap();
+            let red = hex_layer_gate(&root);
+            let expected = format!("HEX-LAYER: new violation {relative}:humaux_adapters::{symbol}");
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines == &[expected]),
+                "{red:?}"
+            );
+            println!("SLICE-12b RED {red:?}");
+            fs::write(&path, original).unwrap();
+            let green = hex_layer_gate(&root);
+            assert!(matches!(green, Verdict::Pass), "{green:?}");
+            println!("SLICE-12b {entry}:{symbol} restored GREEN");
         }
         fs::remove_dir_all(root).unwrap();
     }
