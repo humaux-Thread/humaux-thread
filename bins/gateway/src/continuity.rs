@@ -1,5 +1,5 @@
 //! `gateway::continuity` — Native `continuity.get` and `continuity.publish` application handlers.
-//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json]; services=[]; env=[]; modules=[adapters::continuity_read, adapters::postgres, application::continuity, domain::context, domain::continuity, domain::error, domain::identity, domain::ids]
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json]; services=[]; env=[]; modules=[adapters::postgres, application::continuity, domain::context, domain::continuity, domain::error, domain::identity, domain::ids]
 //! Called-by: [gateway::mcp_application, tests]
 //! Invariants: [an unknown or unpublished continuity project yields the application-layer NotFound error, never a
 //!   partial facet list; a publish hands the adapter's own in-transaction slot read to the compare-and-set and never
@@ -8,10 +8,10 @@
 
 use std::sync::Arc;
 
-use humaux_adapters::{continuity_read::PostgresContinuityReadPort, postgres::RuntimeDbPool};
+use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_application::continuity::{
-    ContinuityEvidenceSource, ContinuityMemorySource, ContinuityResult, PublishContinuityFacet,
-    PublishFacetOutcome, read_project_continuity,
+    ContinuityEvidenceSource, ContinuityMemorySource, ContinuityReadPort, ContinuityResult,
+    PublishContinuityFacet, PublishFacetOutcome, read_project_continuity,
 };
 use humaux_domain::{
     context::ContextBudget,
@@ -57,16 +57,15 @@ pub enum PublishOutcome {
 }
 
 pub async fn get<T>(
-    pool: Arc<RuntimeDbPool>,
+    reader: &dyn ContinuityReadPort,
     authorization: AuthorizationScope,
     project_id: ProjectId,
     requested_workspace: Option<WorkspaceId>,
     budget: ContextBudget,
     accept: impl FnOnce(ContinuityResult) -> Result<T, ErrorCode>,
 ) -> Result<T, ErrorCode> {
-    let adapter = PostgresContinuityReadPort::new(pool);
     let result = read_project_continuity(
-        &adapter,
+        reader,
         &authorization,
         project_id,
         requested_workspace,

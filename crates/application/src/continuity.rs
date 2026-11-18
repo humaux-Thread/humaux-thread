@@ -1,6 +1,6 @@
 //! `application::continuity` — §25.3 continuity 产品的装配入口（G80-31 的被测调用路径）。
 //! Depends-on: crates=[async-trait, hex, humaux-domain, humaux-retrieval, serde, serde_json, sha2, uuid]; services=[]; env=[]; modules=[domain::context, domain::continuity, domain::error, domain::identity, domain::ids, retrieval::handoff]
-//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, gateway::continuity, gateway::mcp_application, tests]
+//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, gateway::bootstrap, gateway::continuity, gateway::mcp_application, tests]
 //! Invariants: [facet_completeness is the one FACET_COMPLETE predicate: only ContinuityStatus::Current covers a
 //!   required facet, and an empty required profile fails closed (§22.0, ADR-0110 D-D)]
 //! Spec: §25.3; §25.3.1; §22.2; §22.0; ADR-0110

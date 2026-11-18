@@ -5,10 +5,7 @@
 //!   services=[HTTP(loopback), PostgreSQL(any) w=[control.auth_events, control.email_challenges, control.sessions,
 //!   control.user_emails, control.users, ops.email_delivery_events, ops.email_outbox]
 //!   x=[control.login_challenge_issue, control.session_issue], PostgreSQL(role_gateway)];
-//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::email, adapters::postgres, adapters::session_repo, application::auth,
-//!   application::login, application::session, application::signed_token, gateway::bootstrap, gateway::admission, gateway::auth_pages, gateway::guard,
-//!   gateway::limiter,
-//!   humaux-testkit, protocol::edge]
+//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, adapters::session_repo, application::auth, application::login, application::session, application::signed_token, gateway::admission, gateway::auth_pages, gateway::bootstrap, gateway::guard, gateway::limiter, humaux-testkit, protocol::edge]
 //! Called-by: [cargo-test]
 //! Invariants: [an existing, a cooling-down and an unknown mailbox get the same status, headers and body from a start;
 //!   a consumed code and a code after the attempt cap are both rejected with the one rejection page and mint no session;
@@ -31,7 +28,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::{Router, routing::get};
 
-use humaux_adapters::email::RecipientAllowlist;
 use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_adapters::session_repo;
 use humaux_application::auth::AuthConfig;
@@ -212,7 +208,7 @@ fn pages_config() -> AuthPagesConfig {
         public_origin: ORIGIN.to_owned(),
         mail_from: "no-reply@humaux.example".to_owned(),
         code_pepper: b"auth-pages-test-login-code-pepper".to_vec(),
-        allowlist: RecipientAllowlist::allow_all(),
+        recipient_allowlist: String::new(),
         auth: AuthConfig::default(),
     }
 }
