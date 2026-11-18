@@ -1,15 +1,19 @@
-//! `maintenance::bootstrap` — Constructs the maintenance Qdrant adapter from operator configuration (ADR-0130 D2).
-//! Depends-on: crates=[humaux-adapters, humaux-application]; services=[]; env=[HUMAUX_MAINTENANCE_EMBEDDING_DIMENSION, HUMAUX_MAINTENANCE_PRIVATE_MEMORY_COLLECTION, HUMAUX_MAINTENANCE_QDRANT_CIDR,
-//!   HUMAUX_MAINTENANCE_QDRANT_HOST, HUMAUX_MAINTENANCE_QDRANT_PORT]; modules=[adapters::postgres, adapters::provisioning, application::operator_provisioning, maintenance::main]
+//! `maintenance::bootstrap` — Wires maintenance operator adapters from process configuration (ADR-0130 D2).
+//! Depends-on: crates=[humaux-adapters, humaux-application, serde_json]; services=[]; env=[HUMAUX_MAINTENANCE_EMBEDDING_DIMENSION, HUMAUX_MAINTENANCE_PRIVATE_MEMORY_COLLECTION, HUMAUX_MAINTENANCE_QDRANT_CIDR,
+//!   HUMAUX_MAINTENANCE_QDRANT_HOST, HUMAUX_MAINTENANCE_QDRANT_PORT]; modules=[adapters::postgres, adapters::provisioning, adapters::reasoning_route_onboarding, application::operator_provisioning, application::reasoning_route_admin, maintenance::main]
 //! Called-by: [maintenance::main]
 //! Invariants: [construction only; the application ports drive all operations]
 //! Spec: ADR-0053; ADR-0130 D2 / SLICE-15c
 
 use humaux_adapters::postgres::MaintenanceDbPool;
 use humaux_adapters::provisioning::{QdrantFace, WorkspaceActivationAdapter};
+use humaux_adapters::reasoning_route_onboarding::ReasoningRouteAdapter;
 use humaux_application::operator_provisioning::{
     CollectionProvisioningPort, WorkspaceActivationPort,
 };
+
+use humaux_application::reasoning_route_admin::ReasoningRoutePort;
+use serde_json::Value;
 
 use crate::{Result, env, env_parsed};
 
@@ -43,4 +47,11 @@ impl Qdrant {
     ) -> impl WorkspaceActivationPort + 'a {
         WorkspaceActivationAdapter::new(pool, &self.face)
     }
+}
+
+/// Binds the reasoning route port without opening another connection.
+pub(super) fn reasoning_routes(
+    pool: &MaintenanceDbPool,
+) -> impl ReasoningRoutePort<Extras = Value> + '_ {
+    ReasoningRouteAdapter::new(pool)
 }

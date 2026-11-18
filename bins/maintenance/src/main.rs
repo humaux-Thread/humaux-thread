@@ -698,7 +698,12 @@ async fn reasoning_register(args: &Args) -> Result<Output> {
         successor_of: optional_uuid("--successor-of")?,
     };
     let pool = pool().await?;
-    let receipt = routes::register_profile(&pool, &request, &admin.action()).await?;
+    let receipt = routes::register_profile(
+        &bootstrap::reasoning_routes(&pool),
+        &request,
+        &admin.action(),
+    )
+    .await?;
     Ok(Output::ok(to_json(&receipt)?))
 }
 
@@ -713,7 +718,7 @@ async fn reasoning_bind(args: &Args) -> Result<Output> {
         ))
     })?;
     let pool = pool().await?;
-    let receipt = pool
+    let receipt = bootstrap::reasoning_routes(&pool)
         .bind_domain(
             uuid_flag(args, "--tenant")?,
             uuid_flag(args, "--domain")?,
@@ -729,7 +734,7 @@ async fn reasoning_bind(args: &Args) -> Result<Output> {
 async fn reasoning_attest_health(args: &Args) -> Result<Output> {
     let admin = Admin::from(args)?;
     let pool = pool().await?;
-    let receipt = pool
+    let receipt = bootstrap::reasoning_routes(&pool)
         .attest_health(
             uuid_flag(args, "--tenant")?,
             profile_flags(args)?,
@@ -744,7 +749,7 @@ async fn reasoning_attest_health(args: &Args) -> Result<Output> {
 async fn reasoning_profile_state(args: &Args) -> Result<Output> {
     let admin = Admin::from(args)?;
     let pool = pool().await?;
-    let receipt = pool
+    let receipt = bootstrap::reasoning_routes(&pool)
         .set_profile_enabled(
             uuid_flag(args, "--tenant")?,
             profile_flags(args)?,
@@ -759,7 +764,11 @@ async fn reasoning_profile_state(args: &Args) -> Result<Output> {
 async fn reasoning_status(args: &Args) -> Result<Output> {
     let tenant_id = uuid_flag(args, "--tenant")?;
     let pool = pool().await?;
-    Ok(Output::ok(pool.route_status(tenant_id).await?))
+    Ok(Output::ok(
+        bootstrap::reasoning_routes(&pool)
+            .route_status(tenant_id)
+            .await?,
+    ))
 }
 
 async fn run(args: Args) -> Result<Output> {

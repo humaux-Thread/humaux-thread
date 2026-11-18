@@ -6,7 +6,7 @@
 //!   control.register_reasoning_profile, control.set_reasoning_profile_enabled]];
 //!   env=[]; modules=[adapters::membership_repo, adapters::postgres, adapters::provisioning, adapters::reasoning_route_admission,
 //!   application::consolidate, application::reasoning_route_admin]
-//! Called-by: []
+//! Called-by: [maintenance::bootstrap]
 //! Invariants: [every write goes through one 0208 owner door as role_maintenance (no table INSERT here); one
 //!   transaction per command: door + §77 SUCCESS audit row; a door refusal (55000) rolls back and writes only its
 //!   DENIED audit row; the account reference text never reaches the database (its sha256 does); no receipt
@@ -362,24 +362,6 @@ pub async fn route_status(pool: &MaintenanceDbPool, tenant_id: Uuid) -> Result<V
     Ok(json!({ "outcome": "existing", "tenant_id": tenant_id, "routes": routes }))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn purpose_parses_the_closed_set_only() {
-        assert_eq!(
-            parse_purpose("PRIVATE_CONSOLIDATE"),
-            Some(PrivateReasoningPurpose::Consolidate)
-        );
-        assert_eq!(
-            parse_purpose("CONTRIBUTION_DEIDENTIFY"),
-            Some(PrivateReasoningPurpose::ContributionDeidentify)
-        );
-        assert_eq!(parse_purpose("private_consolidate"), None);
-    }
-}
-
 impl From<ProvisioningError> for ReasoningRouteError {
     fn from(error: ProvisioningError) -> Self {
         match error {
@@ -391,8 +373,18 @@ impl From<ProvisioningError> for ReasoningRouteError {
     }
 }
 
+/// PostgreSQL implementation of the operator reasoning route port.
+pub struct ReasoningRouteAdapter<'a>(&'a MaintenanceDbPool);
+
+impl<'a> ReasoningRouteAdapter<'a> {
+    /// Binds an already connected maintenance pool.
+    pub fn new(pool: &'a MaintenanceDbPool) -> Self {
+        Self(pool)
+    }
+}
+
 #[async_trait::async_trait]
-impl ReasoningRoutePort for MaintenanceDbPool {
+impl ReasoningRoutePort for ReasoningRouteAdapter<'_> {
     type Extras = Value;
 
     async fn register_profile(
@@ -400,7 +392,7 @@ impl ReasoningRoutePort for MaintenanceDbPool {
         request: &RegisterProfile<'_>,
         admin: &AdminAction<'_>,
     ) -> std::result::Result<RegisterReceipt, ReasoningRouteError> {
-        register_profile(self, request, admin)
+        register_profile(self.0, request, admin)
             .await
             .map_err(Into::into)
     }
@@ -414,7 +406,7 @@ impl ReasoningRoutePort for MaintenanceDbPool {
         admin: &AdminAction<'_>,
     ) -> std::result::Result<BindReceipt, ReasoningRouteError> {
         bind_domain(
-            self,
+            self.0,
             tenant_id,
             reasoning_domain_id,
             purpose,
@@ -432,7 +424,7 @@ impl ReasoningRoutePort for MaintenanceDbPool {
         valid_for_secs: i64,
         admin: &AdminAction<'_>,
     ) -> std::result::Result<AttestReceipt, ReasoningRouteError> {
-        attest_health(self, tenant_id, profile, valid_for_secs, admin)
+        attest_health(self.0, tenant_id, profile, valid_for_secs, admin)
             .await
             .map_err(Into::into)
     }
@@ -444,7 +436,7 @@ impl ReasoningRoutePort for MaintenanceDbPool {
         enabled: bool,
         admin: &AdminAction<'_>,
     ) -> std::result::Result<ProfileStateReceipt, ReasoningRouteError> {
-        set_profile_enabled(self, tenant_id, profile, enabled, admin)
+        set_profile_enabled(self.0, tenant_id, profile, enabled, admin)
             .await
             .map_err(Into::into)
     }
@@ -453,6 +445,24 @@ impl ReasoningRoutePort for MaintenanceDbPool {
         &self,
         tenant_id: Uuid,
     ) -> std::result::Result<Value, ReasoningRouteError> {
-        route_status(self, tenant_id).await.map_err(Into::into)
+        route_status(self.0, tenant_id).await.map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn purpose_parses_the_closed_set_only() {
+        assert_eq!(
+            parse_purpose("PRIVATE_CONSOLIDATE"),
+            Some(PrivateReasoningPurpose::Consolidate)
+        );
+        assert_eq!(
+            parse_purpose("CONTRIBUTION_DEIDENTIFY"),
+            Some(PrivateReasoningPurpose::ContributionDeidentify)
+        );
+        assert_eq!(parse_purpose("private_consolidate"), None);
     }
 }

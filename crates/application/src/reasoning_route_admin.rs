@@ -1,6 +1,6 @@
 //! `application::reasoning_route_admin` — Operator reasoning route commands and persistence port (ADR-0130 D2, SLICE-15c).
 //! Depends-on: crates=[async-trait, serde, serde_json, uuid]; services=[]; env=[]; modules=[application::consolidate, application::membership_admin, application::operator_provisioning]
-//! Called-by: [adapters::reasoning_route_admission, adapters::reasoning_route_onboarding, maintenance::main]
+//! Called-by: [adapters::reasoning_route_admission, adapters::reasoning_route_onboarding, maintenance::bootstrap, maintenance::main]
 //! Invariants: [profile extras are opaque to application; the route door and success audit share a transaction]
 //! Spec: ADR-0060 D-H; ADR-0130 D2
 

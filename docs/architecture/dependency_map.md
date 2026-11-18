@@ -2987,6 +2987,14 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.resolve_user_reasoning_admission`
 - service `PostgreSQL(any)`
 
+#### `adapters::reasoning_route_onboarding`
+- executes `control.attest_reasoning_route_health`
+- executes `control.bind_reasoning_domain`
+- executes `control.reasoning_route_status`
+- executes `control.register_reasoning_profile`
+- executes `control.set_reasoning_profile_enabled`
+- service `PostgreSQL(role_maintenance)`
+
 #### `adapters::rebuild`
 - reads `ops.outbox`
 - reads `private.evidence_objects`
@@ -5526,8 +5534,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::reasoning_route_onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::reasoning_route_onboarding`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.audit_event_identity`
@@ -5734,8 +5742,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::reasoning_route_onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::reasoning_route_onboarding`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.bootstrap_contribution_deidentify_shadow`
@@ -7130,8 +7138,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::reasoning_route_onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::reasoning_route_onboarding`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.record_notice_shown`
@@ -7158,8 +7166,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::reasoning_route_onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::reasoning_route_onboarding`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.reject_partition_key_update`
@@ -7355,8 +7363,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::reasoning_route_onboarding`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::reasoning_route_onboarding`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.set_workspace_membership`
@@ -17862,6 +17870,7 @@ why: the one JSON receipt printed per subcommand
 
 modules naming it:
 - `maintenance::backup`
+- `maintenance::bootstrap`
 - `maintenance::deploy_check`
 - `maintenance::drill`
 - `maintenance::health_serve`
@@ -18022,6 +18031,7 @@ why: parse the binary's JSON receipts
 
 modules naming it:
 - `maintenance::backup`
+- `maintenance::bootstrap`
 - `maintenance::deploy_check`
 - `maintenance::drill`
 - `maintenance::health_serve`
