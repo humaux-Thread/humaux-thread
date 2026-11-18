@@ -1,5 +1,5 @@
 //! `billing-worker::normalize` — provider envelope boundary (§71.2).
-//! Depends-on: crates=[humaux-domain, serde_json]; services=[]; env=[]; modules=[domain::billing, domain::error, domain::plan]
+//! Depends-on: crates=[humaux-application, humaux-domain, serde_json, uuid]; services=[]; env=[]; modules=[application::billing, application::billing_process, domain::billing, domain::error, domain::ids, domain::plan]
 //! Called-by: [billing-worker::creem, billing-worker::process, tests]
 //! Invariants: [no checkout-response money; no status inferred from event type; missing amounts fail closed]
 //! Spec: Baseline §71.2; §71.3; §52; §78.2
@@ -7,78 +7,19 @@
 use humaux_domain::{
     billing::{ObservedStatus, PaymentKind},
     error::ErrorCode,
+    ids::TenantId,
     plan::Currency,
 };
 use serde_json::Value;
+use uuid::Uuid;
 
-/// §71.3: non-payment events carry no invented payment facts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EventKind {
-    /// §71.3: append-only payment direction.
-    Payment(PaymentKind),
-    /// §71.3: requires an authoritative subscription re-fetch.
-    SubscriptionChanged,
-    /// §71.3: retained by the inbox, without billing effects.
-    Ignored,
-}
+use humaux_application::{
+    billing::{ProviderSubscription, VerifiedBillingEvent},
+    billing_process::BillingEventPayload,
+};
 
-/// §71.3: integer cents and millisecond period bounds from payload/fetch only.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Money {
-    /// §71.3: M04-11 stores the explicitly named amount for each direction.
-    pub amount: PaymentAmount,
-    /// §78.2: the existing USD-only vocabulary.
-    pub currency: Currency,
-    /// §71.3: absent tax stays unknown.
-    pub tax_amount: Option<i64>,
-    /// §71.3: transaction period start in epoch milliseconds.
-    pub period_start: i64,
-    /// §71.3: transaction period end in epoch milliseconds.
-    pub period_end: i64,
-}
-
-/// §71.3: M04-11 writes charged_amount, refund_amount or disputed_amount respectively.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PaymentAmount {
-    /// §71.3: CHARGE stores gross tax-inclusive amount_paid (lead ruling 2026-10-29).
-    Charge {
-        /// §71.3: charged cents, never defaulted.
-        charged_amount: i64,
-    },
-    /// §71.3: REFUND stores refund_amount, never original_transaction_amount.
-    Refund {
-        /// §71.3: event-specific reversal, not aggregate refunded_amount.
-        refund_amount: i64,
-        /// §71.3: original charge retained separately.
-        original_transaction_amount: i64,
-    },
-    /// §71.3: CHARGEBACK stores disputed_amount from the dispute object.
-    Chargeback {
-        /// §71.3: disputed cents, independent of the original transaction amount.
-        disputed_amount: i64,
-    },
-}
-
-/// §71.3: normalization does not confer signature verification or deduplication.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NormalizedEvent {
-    /// §71.3: inbox deduplication key.
-    pub id: String,
-    /// §71.3: retained even for ignored events.
-    pub event_type: String,
-    /// §71.3: envelope epoch milliseconds, not a replay check.
-    pub created_at: i64,
-    /// §71.3: effect category independent of subscription status.
-    pub kind: EventKind,
-    /// §71.3: present exactly for payment events.
-    pub money: Option<Money>,
-    /// §71.3: M04-11 stores CHARGE transaction id, REFUND refund id, CHARGEBACK dispute id
-    /// in the ledger UNIQUE key; absent on non-payments (M04 ledger-ref ruling).
-    pub provider_txn_ref: Option<String>,
-    /// §71.3: original transaction id for REFUND/CHARGEBACK linking only, never their ledger key.
-    /// Absent on CHARGE and non-payments (M04 ledger-ref ruling).
-    pub original_txn_ref: Option<String>,
-}
+/// §71.3: normalized provider-neutral values returned to existing provider callers.
+pub use humaux_application::billing_process::{EventKind, Money, NormalizedEvent, PaymentAmount};
 
 /// §71.3: caller supplies the fetched subscription status, never the event type.
 pub fn status(fetched_status: &str) -> Result<ObservedStatus, ErrorCode> {
@@ -204,4 +145,95 @@ fn cents(value: Option<&Value>) -> Result<i64, ErrorCode> {
         .and_then(Value::as_i64)
         .filter(|amount| *amount >= 0)
         .ok_or(ErrorCode::InvalidInput)
+}
+
+/// Stored authenticated envelope, decoded only when reached in the processing sequence.
+pub(crate) struct StoredEnvelope(pub(crate) Value);
+
+impl BillingEventPayload for StoredEnvelope {
+    fn tenant(&self, event: &VerifiedBillingEvent) -> Result<TenantId, ErrorCode> {
+        let payload = &self.0;
+        // §71.3: inbox columns must agree with the authenticated envelope.
+        if event.event_id.is_empty()
+            || event.event_type.is_empty()
+            || payload["id"].as_str() != Some(event.event_id.as_str())
+            || payload["eventType"].as_str() != Some(event.event_type.as_str())
+            || payload["object"]["id"].as_str() != event.object_id.as_deref()
+            || payload["created_at"].as_i64().is_none_or(|n| n < 0)
+        {
+            return Err(ErrorCode::InvalidInput);
+        }
+        let object = &payload["object"];
+        let reversal = matches!(
+            event.event_type.as_str(),
+            "refund.created" | "dispute.created"
+        );
+        event_tenant(object, reversal)
+    }
+
+    fn subscription_ref(&self, event: &VerifiedBillingEvent) -> Result<&str, ErrorCode> {
+        let object = &self.0["object"];
+        let reversal = matches!(
+            event.event_type.as_str(),
+            "refund.created" | "dispute.created"
+        );
+        let subscription = if reversal {
+            object
+                .get("subscription")
+                .unwrap_or(&object["transaction"]["subscription"])
+        } else if event.event_type == "checkout.completed" {
+            &object["subscription"]
+        } else {
+            object
+        };
+        subscription
+            .as_str()
+            .or_else(|| subscription["id"].as_str())
+            .filter(|id| !id.is_empty())
+            .ok_or(ErrorCode::InvalidInput)
+    }
+
+    fn normalize(
+        &self,
+        event: &VerifiedBillingEvent,
+        fetched: &ProviderSubscription,
+    ) -> Result<NormalizedEvent, ErrorCode> {
+        let payload = &self.0;
+        // §71.3: checkout orders omit periods; only the locked authoritative subscription supplies them.
+        let fallback = if event.event_type == "checkout.completed" {
+            Some(serde_json::json!({"id":transaction_source(payload)?.1,
+            "period_start":fetched.current_period_start.unix_timestamp_nanos() / 1_000_000,
+            "period_end":fetched.current_period_end.unix_timestamp_nanos() / 1_000_000}))
+        } else {
+            None
+        };
+        normalize(
+            &serde_json::to_vec(payload).map_err(|_| ErrorCode::InvalidInput)?,
+            fallback.as_ref(),
+        )
+    }
+}
+
+fn event_tenant(object: &Value, reversal: bool) -> Result<TenantId, ErrorCode> {
+    // §71.3: Creem v1 refund/dispute metadata belongs to subscription/checkout (docs 2026-10-29).
+    let subscription = &object["subscription"]["metadata"]["tenant_id"];
+    let checkout = &object["checkout"]["metadata"]["tenant_id"];
+    if reversal && !subscription.is_null() && !checkout.is_null() && subscription != checkout {
+        return Err(ErrorCode::TenantBoundary);
+    }
+    let value = if reversal {
+        if subscription.is_null() {
+            checkout
+        } else {
+            subscription
+        }
+    } else {
+        &object["metadata"]["tenant_id"]
+    };
+    value
+        .as_str()
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .filter(|id| !id.is_nil())
+        .map(TenantId)
+        .ok_or(ErrorCode::NotFound)
 }

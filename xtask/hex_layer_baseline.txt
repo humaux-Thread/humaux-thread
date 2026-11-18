@@ -5,8 +5,6 @@
 # ponytail: frozen migration debt ceiling, never add rows; remember slice removes AffectInput and RememberCommand first.
 bins/admin/src/mechanism.rs:humaux_adapters::mechanism_observation::RuntimeObservations
 bins/admin/src/probe.rs:humaux_adapters::health::AdminProbeSample
-bins/billing-worker/src/process.rs:humaux_adapters::billing_processor_repo::PaymentFacts
-bins/billing-worker/src/process.rs:humaux_adapters::billing_processor_repo::Txn
 bins/maintenance/src/backup.rs:humaux_adapters::maintenance_repo::BackupReceipt
 bins/maintenance/src/backup.rs:humaux_adapters::maintenance_repo::BackupStatusFacts
 bins/maintenance/src/deploy_check.rs:humaux_adapters::retrieve::TokenKeys
