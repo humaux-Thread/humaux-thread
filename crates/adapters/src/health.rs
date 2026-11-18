@@ -253,6 +253,15 @@ impl humaux_application::health::HealthSnapshotPort for MaintenanceDbPool {
     }
 }
 
+#[async_trait::async_trait]
+impl AdminProbeSnapshotPort for AdminDbPool {
+    async fn admin_probe_snapshot(&self) -> Result<AdminProbeSample, String> {
+        read_admin_probe_snapshot(self)
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,14 +277,5 @@ mod tests {
         assert_eq!(outcome("DENIED").unwrap(), DisclosureOutcome::Denied);
         let e = outcome("LOST").unwrap_err().to_string();
         assert!(e.contains("\"LOST\""), "{e}");
-    }
-}
-
-#[async_trait::async_trait]
-impl AdminProbeSnapshotPort for AdminDbPool {
-    async fn admin_probe_snapshot(&self) -> Result<AdminProbeSample, String> {
-        read_admin_probe_snapshot(self)
-            .await
-            .map_err(|error| error.to_string())
     }
 }
