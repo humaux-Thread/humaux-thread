@@ -1,8 +1,7 @@
 //! `maintenance::projection_serve` — §16.2 blue/green switch: flips which projection version recall reads.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, postgres, tokio, uuid];
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-projection, postgres, tokio, uuid];
 //!   services=[PostgreSQL(any), PostgreSQL(role_maintenance)]; env=[HUMAUX_MAINTENANCE_PG_DSN];
-//!   modules=[adapters::postgres, adapters::serving_repo, adapters::stream_repo, domain::ids, projection::serving,
-//!   maintenance::switch_visible]
+//!   modules=[adapters::postgres, application::projection_maintenance, domain::ids, maintenance::switch_visible, projection::serving]
 //! Called-by: [maintenance::main, tests, xtask::projection_serve]
 //! Invariants: [runs under HUMAUX_MAINTENANCE_PG_DSN, the only role with UPDATE(serving, shadow) on the checkpoint row (§6.2.2)]
 //! Spec: Baseline §16.2; §16.3; §6.2.2
@@ -26,7 +25,9 @@
 //! see — the operator keeps believing they supplied the number the §16.3 criterion uses.
 
 use humaux_adapters::postgres::MaintenanceDbPool;
-use humaux_adapters::serving_repo::{SwitchOutcome, switch_projection_version};
+use humaux_application::projection_maintenance::{
+    SwitchOutcome, retire_failed, switch_projection_version,
+};
 use humaux_domain::ids::{TenantId, WorkspaceId};
 use humaux_projection::serving::ContinuationVerdict;
 use humaux_projection::serving::StreamFamily;
@@ -178,9 +179,7 @@ pub fn run(args: &[String]) -> i32 {
     // classes the operator named; a class that matches nothing retires nothing and says so.
     let key = flags.family.with_version(flags.version.clone());
     for class in &flags.retire_failed {
-        match rt.block_on(humaux_adapters::stream_repo::retire_failed(
-            &pool, &key, class,
-        )) {
+        match rt.block_on(retire_failed(&pool, &key, class)) {
             Ok(seqs) if seqs.is_empty() => {
                 println!("projection-serve: retire-failed {class}: no exhausted ticket matched");
             }

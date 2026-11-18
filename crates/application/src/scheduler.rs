@@ -1,6 +1,6 @@
 //! `application::scheduler` — Tenant Fair Scheduler 三层限流骨架 + cost 模型（§32.0）。
-//! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: []
+//! Depends-on: crates=[async-trait, humaux-domain, uuid]; services=[]; env=[]; modules=[domain::error]
+//! Called-by: [maintenance::serve]
 //! Invariants: []
 //! Spec: §32.0; §78.1
 //!
@@ -247,6 +247,361 @@ impl<T> TenantFairQueue<T> {
         }
         None
     }
+}
+
+// ============================================================================
+// Maintenance daemon task definitions, DTOs, and port (ADR-0062 / ADR-0063 / ADR-0064 / ADR-0123 / ADR-0130)
+// ============================================================================
+
+use humaux_domain::error::ErrorCode;
+use std::time::Duration;
+use uuid::Uuid;
+
+/// The three ages the terminal-jobs door compares with the DB clock (ADR-0062 D-J).
+#[derive(Debug, Clone, Copy)]
+pub struct JobRetention {
+    /// A DONE job is kept until its last activity is older than this.
+    pub done: Duration,
+    /// A DEAD or FAILED job is kept until its last activity is older than this.
+    pub dead: Duration,
+    /// The private worker's distill budget window: a job with a provider call inside it is always kept.
+    pub budget_window: Duration,
+}
+
+/// ADR-0062 D-C: the daemon's closed task list, in cycle order; also the `task` label of the D-S counters. Adding one
+/// is one variant, its door and its two keys (`T_EVERY_SECONDS`, `T_LIMIT`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaintenanceTask {
+    /// `stream_repo::sweep_lost` (D-L).
+    Lost,
+    /// `stream_repo::expire_ingest_tickets` (§15.6, ADR-0123 D4); preserves the denominator.
+    IngestTickets,
+    /// `quota_repo::reap_expired`.
+    QuotaReservations,
+    /// `quota_repo::renew_period` (ADR-0072 D-C).
+    QuotaRenewal,
+    /// `provider_budget::reap_expired_retrieval_provider_budget`.
+    ProviderBudgets,
+    /// `confirm_token_repo::sweep_expired` (D-G).
+    ConfirmTokens,
+    /// `purge_expired_selection_snapshots` (D-H).
+    Snapshots,
+    /// `purge_terminal_jobs` (D-J).
+    Jobs,
+    /// `reissue_unsettled_tickets` (D-N).
+    Reissue,
+    /// `auto_redrive_schema_failed` (D-P).
+    Redrive,
+    /// `propose_partitions` (ADR-0063 D-K): cluster-level, no tenant page and no LIMIT key; one run = one count.
+    Partitions,
+    /// `dr_evidence` (ADR-0064 D-K / 10.11 D): cluster-level like PARTITIONS; one run = one count.
+    DrEvidence,
+    /// `scan_authority_i4` (ADR-0123 D3, §65): cluster-level like PARTITIONS and report-only; one run = one count.
+    AuthorityI4,
+}
+
+impl MaintenanceTask {
+    /// Every task, in D-C cycle order (the counters' slot order).
+    pub const ALL: [Self; 13] = [
+        Self::Lost,
+        Self::IngestTickets,
+        Self::QuotaReservations,
+        Self::QuotaRenewal,
+        Self::ProviderBudgets,
+        Self::ConfirmTokens,
+        Self::Snapshots,
+        Self::Jobs,
+        Self::Reissue,
+        Self::Redrive,
+        Self::Partitions,
+        Self::DrEvidence,
+        Self::AuthorityI4,
+    ];
+
+    /// The `/status`, receipt and §41.2 `task` label value (lowercase D-C name; the frozen value set of §41.2).
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Lost => "lost",
+            Self::IngestTickets => "ingest_tickets",
+            Self::QuotaReservations => "quota_reservations",
+            Self::QuotaRenewal => "quota_renewal",
+            Self::ProviderBudgets => "provider_budgets",
+            Self::ConfirmTokens => "confirm_tokens",
+            Self::Snapshots => "snapshots",
+            Self::Jobs => "jobs",
+            Self::Reissue => "reissue",
+            Self::Redrive => "redrive",
+            Self::Partitions => "partitions",
+            Self::DrEvidence => "dr_evidence",
+            Self::AuthorityI4 => "authority_i4",
+        }
+    }
+
+    /// Counter slot index.
+    pub const fn slot(self) -> usize {
+        self as usize
+    }
+}
+
+/// The §41.2 `outcome` label of `maintenance_task_runs_total` (closed set `ok | failed`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskOutcome {
+    /// The door call committed (whatever it affected).
+    Ok,
+    /// The call returned an error or timed out (the cycle's 503 reason).
+    Failed,
+}
+
+impl TaskOutcome {
+    /// Both outcomes, in render order.
+    pub const ALL: [Self; 2] = [Self::Ok, Self::Failed];
+
+    /// The label value.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// ADR-0063 D-C: the closed `table_key` set of `control.partition_registry`, in render order. `retention_policies`
+/// accepts five of them (EVENTS and AUDIT_EVENTS wait for card 37 / a separate approval line, D-G); the contract test
+/// `bins/maintenance/tests/retention.rs` reconciles both CHECKs with this enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartitionTable {
+    /// `ops.model_call_ledger` (`called_at`).
+    ModelCallLedger,
+    /// `ops.stage_runs` (`started_at`).
+    StageRuns,
+    /// `private.messages` (`created_at`).
+    Messages,
+    /// `ops.maintenance_receipts` (`ran_at`).
+    MaintenanceReceipts,
+    /// `private.events` (`recorded_at`).
+    Events,
+    /// `control.audit_events` (`occurred_at`).
+    AuditEvents,
+    /// `ops.retrieval_query_log` (`called_at`).
+    RetrievalQueryLog,
+}
+
+impl PartitionTable {
+    /// Every key, in the gauge's sample order.
+    pub const ALL: [Self; 7] = [
+        Self::ModelCallLedger,
+        Self::StageRuns,
+        Self::Messages,
+        Self::MaintenanceReceipts,
+        Self::Events,
+        Self::AuditEvents,
+        Self::RetrievalQueryLog,
+    ];
+
+    /// The `table_key` value (the DB CHECKs' spelling, SCREAMING_SNAKE).
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::ModelCallLedger => "MODEL_CALL_LEDGER",
+            Self::StageRuns => "STAGE_RUNS",
+            Self::Messages => "MESSAGES",
+            Self::MaintenanceReceipts => "MAINTENANCE_RECEIPTS",
+            Self::Events => "EVENTS",
+            Self::AuditEvents => "AUDIT_EVENTS",
+            Self::RetrievalQueryLog => "RETRIEVAL_QUERY_LOG",
+        }
+    }
+
+    /// The §41.2 `table` label of `partition_horizon_months` (lowercase key).
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ModelCallLedger => "model_call_ledger",
+            Self::StageRuns => "stage_runs",
+            Self::Messages => "messages",
+            Self::MaintenanceReceipts => "maintenance_receipts",
+            Self::Events => "events",
+            Self::AuditEvents => "audit_events",
+            Self::RetrievalQueryLog => "retrieval_query_log",
+        }
+    }
+
+    /// The variant whose [`Self::key`] is `key`.
+    pub fn parse(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.key() == key)
+    }
+}
+
+/// One successful PARTITIONS run (ADR-0063 D-K).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartitionsRun {
+    /// Registry rows whose proposal columns this run (re)wrote.
+    pub proposed: u64,
+    /// Whole months from the current UTC month start to the last attached upper bound, minus 1, per
+    /// [`PartitionTable::ALL`] slot; `-1` for a key without an attached leaf.
+    pub horizon_months: [i64; PartitionTable::ALL.len()],
+}
+
+/// One I4 scan (§59.1 I4): how many rows violate the biconditional, and at most 100 of their ids in `memory_id` order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorityI4Scan {
+    /// Rows of `private.memory_records` with `(status = 'superseded')` different from `(superseded_by IS NOT NULL)`.
+    pub violations: i64,
+    /// The first (up to 100) violating `memory_id`s; empty when `violations` is 0.
+    pub sample_ids: Vec<Uuid>,
+}
+
+/// The newest receipt that measured the repository (a budget refusal qualifies, 10.11 D / F4), with the limits the
+/// arm used then; the daemon reads no budget key (10.11 C / F10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeasuredBudget {
+    /// `du -sk` of the repository at that run.
+    pub repo_bytes: i64,
+    /// `HUMAUX_MAINTENANCE_BACKUP_REPO_MAX_BYTES` as that run used it.
+    pub repo_max_bytes: Option<i64>,
+    /// `HUMAUX_MAINTENANCE_BACKUP_MIN_FREE_BYTES` as that run used it.
+    pub min_free_bytes: Option<i64>,
+    /// The next set's estimate: newest VERIFIED `set_repo_bytes` × 1.25, else that receipt's `estimate_bytes`.
+    pub estimate_bytes: Option<i64>,
+}
+
+/// One DR_EVIDENCE reading from the database (ADR-0064 10.11 D). Timestamps are unix seconds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrEvidence {
+    /// `max(backup_stopped_at)` over the labels whose latest receipt is VERIFIED; `None` before the first.
+    pub backup_last_success: Option<f64>,
+    /// `finished_at` of the newest drill the table derived as succeeded.
+    pub restore_drill_last_success: Option<f64>,
+    /// `None` before the first measuring receipt.
+    pub budget: Option<MeasuredBudget>,
+    /// The latch (a row observed after the newest VERIFIED start) or archiving failing now.
+    pub wal_archive_failing: bool,
+}
+
+/// §77 audit fields for the daemon's or `sweep once`'s schema-failed re-drive (`MaintenanceTask::Redrive`).
+#[derive(Debug, Clone, Copy)]
+pub struct RedriveAudit<'a> {
+    pub actor: &'a str,
+    pub reason: &'a str,
+    pub ticket: &'a str,
+    pub trace_id: &'a str,
+    pub step_up_auth_context: &'a str,
+}
+
+/// Outbound port for `maintenance::serve` task doors and cluster scans in `maintenance_repo`.
+#[async_trait::async_trait]
+pub trait MaintenanceServePort: Send + Sync {
+    /// ADR-0062 D-D: up to `limit` tenant ids strictly after `after` (`None` starts a rotation).
+    async fn tenant_page(&self, after: Option<Uuid>, limit: i32) -> Result<Vec<Uuid>, String>;
+
+    /// ADR-0062 D-H: deletes at most `limit` DB-expired selection snapshots of `tenant`.
+    async fn purge_expired_selection_snapshots(
+        &self,
+        tenant: Uuid,
+        limit: i32,
+    ) -> Result<u64, (ErrorCode, String)>;
+
+    /// ADR-0062 D-J: deletes at most `limit` terminal jobs of `tenant` past `retention`.
+    async fn purge_terminal_jobs(
+        &self,
+        tenant: Uuid,
+        retention: JobRetention,
+        limit: i32,
+    ) -> Result<u64, (ErrorCode, String)>;
+
+    /// ADR-0062 D-N: issues at most `limit` fresh lifecycle tickets for `tenant` in Q.
+    async fn reissue_unsettled_tickets(
+        &self,
+        tenant: Uuid,
+        cooldown: Duration,
+        limit: i32,
+    ) -> Result<u64, (ErrorCode, String)>;
+
+    /// ADR-0062 D-P: re-drives at most `limit` DEAD `FAILED_OUTPUT_SCHEMA` distill jobs of `tenant`.
+    async fn auto_redrive_schema_failed(
+        &self,
+        tenant: Uuid,
+        cooldown: Duration,
+        limit: i32,
+        audit: &RedriveAudit<'_>,
+    ) -> Result<u64, (ErrorCode, String)>;
+
+    /// ADR-0063 D-K: marks candidate partition leaves and reads the attached horizon per key.
+    async fn propose_partitions(&self) -> Result<PartitionsRun, String>;
+
+    /// ADR-0064 10.11 D: reads the DR_EVIDENCE snapshot and latches WAL archive failures.
+    async fn dr_evidence(&self) -> Result<DrEvidence, String>;
+
+    /// ADR-0123 D3: appends the report-only I4 scan finding and returns the count and sample.
+    async fn scan_authority_i4(&self) -> Result<AuthorityI4Scan, String>;
+}
+
+/// Inbound use case: fetch one tenant rotation page.
+pub async fn tenant_page<P: MaintenanceServePort>(
+    port: &P,
+    after: Option<Uuid>,
+    limit: i32,
+) -> Result<Vec<Uuid>, String> {
+    port.tenant_page(after, limit).await
+}
+
+/// Inbound use case: purge expired selection snapshots of `tenant`.
+pub async fn purge_expired_selection_snapshots<P: MaintenanceServePort>(
+    port: &P,
+    tenant: Uuid,
+    limit: i32,
+) -> Result<u64, (ErrorCode, String)> {
+    port.purge_expired_selection_snapshots(tenant, limit).await
+}
+
+/// Inbound use case: purge terminal jobs of `tenant` past `retention`.
+pub async fn purge_terminal_jobs<P: MaintenanceServePort>(
+    port: &P,
+    tenant: Uuid,
+    retention: JobRetention,
+    limit: i32,
+) -> Result<u64, (ErrorCode, String)> {
+    port.purge_terminal_jobs(tenant, retention, limit).await
+}
+
+/// Inbound use case: reissue unsettled tickets of `tenant`.
+pub async fn reissue_unsettled_tickets<P: MaintenanceServePort>(
+    port: &P,
+    tenant: Uuid,
+    cooldown: Duration,
+    limit: i32,
+) -> Result<u64, (ErrorCode, String)> {
+    port.reissue_unsettled_tickets(tenant, cooldown, limit)
+        .await
+}
+
+/// Inbound use case: auto-redrive schema-failed dead jobs of `tenant`.
+pub async fn auto_redrive_schema_failed<P: MaintenanceServePort>(
+    port: &P,
+    tenant: Uuid,
+    cooldown: Duration,
+    limit: i32,
+    audit: &RedriveAudit<'_>,
+) -> Result<u64, (ErrorCode, String)> {
+    port.auto_redrive_schema_failed(tenant, cooldown, limit, audit)
+        .await
+}
+
+/// Inbound use case: propose partition leaves and read the attached horizon.
+pub async fn propose_partitions<P: MaintenanceServePort>(
+    port: &P,
+) -> Result<PartitionsRun, String> {
+    port.propose_partitions().await
+}
+
+/// Inbound use case: read DR evidence and latch WAL archive failures.
+pub async fn dr_evidence<P: MaintenanceServePort>(port: &P) -> Result<DrEvidence, String> {
+    port.dr_evidence().await
+}
+
+/// Inbound use case: run the report-only I4 authority scan.
+pub async fn scan_authority_i4<P: MaintenanceServePort>(
+    port: &P,
+) -> Result<AuthorityI4Scan, String> {
+    port.scan_authority_i4().await
 }
 
 #[cfg(test)]

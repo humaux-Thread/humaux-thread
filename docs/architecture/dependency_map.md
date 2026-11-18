@@ -483,6 +483,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::private_inference`
 
+#### `application::projection_maintenance`
+
 #### `application::recall_read`
 
 #### `application::remember`
@@ -2227,6 +2229,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::projection_execution`
 
+#### `application::projection_maintenance`
+
 #### `application::query_embedding_execution`
 
 #### `application::read_quota`
@@ -3176,6 +3180,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::retrieve`
 
 #### `application::role_rotation`
+
+#### `application::scheduler`
 
 #### `application::signed_token`
 
@@ -4293,6 +4299,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::private_inference`
 
+#### `application::projection_maintenance`
+
 #### `application::recall_read`
 
 #### `application::remember`
@@ -5111,6 +5119,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::private_inference`
 
 #### `application::projection_execution`
+
+#### `application::projection_maintenance`
 
 #### `application::query_embedding_execution`
 
@@ -14372,6 +14382,7 @@ modules naming it:
 - `adapters::independent_audit`
 - `adapters::jobs`
 - `adapters::login_repo`
+- `adapters::maintenance_repo`
 - `adapters::memory_governance_repo`
 - `adapters::memory_repo`
 - `adapters::model_call_ledger`
@@ -14548,6 +14559,7 @@ modules naming it:
 - `adapters::independent_audit`
 - `adapters::jobs`
 - `adapters::login_repo`
+- `adapters::maintenance_repo`
 - `adapters::mechanism_observation`
 - `adapters::memory_governance_repo`
 - `adapters::memory_repo`
@@ -14561,6 +14573,7 @@ modules naming it:
 - `adapters::retrieval_embedding_rpc`
 - `adapters::retrieve`
 - `adapters::role_hygiene`
+- `adapters::serving_repo`
 - `adapters::subject_repo`
 - `adapters::tests::byok_egress_rebinding`
 - `adapters::tests::contribution_execution_repo_0131`
@@ -15517,12 +15530,14 @@ modules naming it:
 - `application::pin`
 - `application::processing_status`
 - `application::projection_execution`
+- `application::projection_maintenance`
 - `application::public_dispatch`
 - `application::read_quota`
 - `application::recall_read`
 - `application::referral`
 - `application::remember`
 - `application::retrieval_embedding_port`
+- `application::scheduler`
 - `application::session`
 - `application::supersede`
 - `tests`
@@ -15666,6 +15681,7 @@ modules naming it:
 - `application::remember`
 - `application::retrieval_embedding_port`
 - `application::role_rotation`
+- `application::scheduler`
 - `tests`
 
 ### humaux-application → `uuid` (normal)
@@ -15694,6 +15710,7 @@ modules naming it:
 - `application::recall_read`
 - `application::remember`
 - `application::retrieval_embedding_port`
+- `application::scheduler`
 - `application::session`
 - `tests`
 
@@ -17701,8 +17718,11 @@ why: operational health sampling use case
 
 modules naming it:
 - `maintenance::health_serve`
+- `maintenance::projection_serve`
 - `maintenance::rebuild_cli`
 - `maintenance::roles`
+- `maintenance::serve`
+- `maintenance::switch_visible`
 
 ### humaux-maintenance → `humaux-adapters` (normal)
 why: the onboarding library (provisioning), typed maintenance pool, quota window and membership admin path

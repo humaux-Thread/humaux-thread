@@ -37,7 +37,6 @@ bins/maintenance/src/main.rs:humaux_adapters::reasoning_route_onboarding::Regist
 bins/maintenance/src/member.rs:humaux_adapters::membership_repo::AdminAction
 bins/maintenance/src/member.rs:humaux_adapters::membership_repo::MembershipRepoError
 bins/maintenance/src/member.rs:humaux_adapters::membership_repo::MembershipRequest
-bins/maintenance/src/projection_serve.rs:humaux_adapters::serving_repo::SwitchOutcome
 bins/maintenance/src/retention.rs:humaux_adapters::maintenance_repo::DropOutcome
 bins/maintenance/src/retention.rs:humaux_adapters::maintenance_repo::DropRequest
 bins/maintenance/src/retention.rs:humaux_adapters::maintenance_repo::PartitionTable
@@ -45,14 +44,5 @@ bins/maintenance/src/roles.rs:humaux_adapters::role_hygiene::CheckResult
 bins/maintenance/src/roles.rs:humaux_adapters::role_hygiene::CheckStatus
 bins/maintenance/src/roles.rs:humaux_adapters::role_hygiene::Placeholders
 bins/maintenance/src/roles.rs:humaux_adapters::role_hygiene::RolePassword
-bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::DrEvidence
-bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::JobRetention
-bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::MaintenanceTask
-bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::MeasuredBudget
-bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::PartitionTable
-bins/maintenance/src/serve.rs:humaux_adapters::maintenance_repo::TaskOutcome
-bins/maintenance/src/serve.rs:humaux_adapters::membership_repo::AdminAction
-bins/maintenance/src/switch_visible.rs:humaux_adapters::qdrant::RetrievalFamily
-bins/maintenance/src/switch_visible.rs:humaux_adapters::retrieve::IndexFace
 bins/public-worker/src/main.rs:humaux_public_pool::public_projection::PublicProjectionAdapter
 bins/public-worker/src/main.rs:humaux_public_pool::public_projection::PublicProjectionAdapter::new
