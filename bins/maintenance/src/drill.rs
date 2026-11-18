@@ -6,7 +6,7 @@
 //!   destroys only its own labelled resources and writes the receipt (source) and the evidence file. `restore pitr`
 //!   restores into a given project (the real restore) and quarantines the worker roles; its target is the end of the
 //!   archive, a time, or (ADR-0066 D-H, the rollback) a named set's own consistency point (`--type=immediate`).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, rand, serde_json, time, tokio, uuid];
+//! Depends-on: crates=[humaux-adapters, humaux-application, rand, serde_json, time, tokio, uuid];
 //!   services=[PostgreSQL(role_maintenance), PostgreSQL(role_gateway), PostgreSQL(role_retrieval_worker),
 //!   PostgreSQL(owner) r=[ops.jobs, ops.model_call_ledger, ops.schema_migrations, projection.stream_log], Qdrant(*),
 //!   subprocess(docker)];
@@ -16,8 +16,7 @@
 //!   HUMAUX_MAINTENANCE_QDRANT_PORT, HUMAUX_MAINTENANCE_RESTORE_MIN_FREE_DISK_BYTES, HUMAUX_MIGRATOR_PG_DSN,
 //!   HUMAUX_PG_LISTEN_ADDRESSES, HUMAUX_PG_REPO_DIR, HUMAUX_RETRIEVAL_WORKER_GITLEAKS_BIN, HUMAUX_RETRIEVAL_WORKER_GITLEAKS_SHA256,
 //!   HUMAUX_RETRIEVAL_WORKER_GITLEAKS_VERSION];
-//!   modules=[adapters::maintenance_repo, adapters::postgres, adapters::projection_worker, adapters::provisioning,
-//!   adapters::qdrant, adapters::rebuild, adapters::stream_repo, domain::egress, maintenance::backup,
+//!   modules=[adapters::postgres, application::knowledge_backup, application::knowledge_backup::drill_projection, maintenance::backup, maintenance::bootstrap,
 //!   maintenance::main]
 //! Called-by: [maintenance::main]
 //! Invariants: [every refusal (exit 3) happens before any project exists; the drill mounts exactly one thing it did
@@ -40,29 +39,22 @@
 //! gets EROFS (SP-5, so no `cp -a` copy and `repo_copy = 0` in the floor); the image's `postgres` is 999:999 (SP-13).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::future::Future;
 use std::io::Write as _;
-use std::pin::Pin;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use humaux_adapters::maintenance_repo::{self as repo, DrillReceipt, TenantFacts, VerifiedSet};
 use humaux_adapters::postgres::{MaintenanceDbPool, RetrievalWorkerDbPool, RuntimeDbPool};
-use humaux_adapters::projection_worker::{
-    PassConfig, SharedProjectionDeps, run_claimed_pass_for_run,
+use humaux_application::knowledge_backup::drill_projection;
+use humaux_application::knowledge_backup::{
+    self, DrillEvidencePort, DrillReceipt, TenantFacts, VerifiedSet,
 };
-use humaux_adapters::provisioning::{self, ProvisioningError, QdrantFace};
-use humaux_adapters::qdrant::RetrievalFamily;
-use humaux_adapters::rebuild::{self, RebuildDeps, ScannerPin, Stream, Verdict};
-use humaux_adapters::stream_repo::{Backoff, ClaimFamily, OnlyRun};
-use humaux_domain::egress::ProcessorId;
 use serde_json::{Map, Value, json};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 use uuid::Uuid;
 
 use crate::backup::{self, NOT_OFFSITE_NOTICE, Pg, REPO_CLASS, STANZA};
+use crate::bootstrap;
 use crate::{Args, Failure, Output, Result, env, env_parsed, pool};
 
 const COMPOSE_FILE: &str = "HUMAUX_MAINTENANCE_DRILL_COMPOSE_FILE";
@@ -91,17 +83,6 @@ const DRILL_LOGIN_ROLES: [&str; 4] = [
 /// D-U: the roles that keep LOGIN after a real restore (the rebuild runs before traffic); every other LOGIN role
 /// is quarantined NOLOGIN until the operator reconciles.
 const PITR_LOGIN_ROLES: [&str; 3] = ["postgres", "role_maintenance", "role_retrieval_worker"];
-/// D-M: the drill's egress identity. The closed no-provider deps never disclose anything, so no ledger row carries it.
-const DRILL_PROCESSOR: Uuid = Uuid::from_u128(0x0c37_d211_0000_0000_0000_0000_0000_0001);
-/// The drill's in-process pass: one claimer, its own run's tickets only (D-N(g)).
-// ponytail: fixed knobs (issue/claim batch 50, lease 60 s, 3 attempts, 1–2 s backoff, 50 ms between passes) — the
-// run-scoped pass has no competitor, so they only bound a stuck pass; read the worker's keys if a drill ever
-// shares its tickets with a resident worker.
-const PASS_BATCH: i32 = 50;
-const PASS_LEASE_SECS: f64 = 60.0;
-const PASS_MAX_ATTEMPTS: i32 = 3;
-const PASS_BACKOFF_SECS: (f64, f64) = (1.0, 2.0);
-const PASS_PAUSE: Duration = Duration::from_millis(50);
 /// Poll step while waiting for promotion / readiness (inside the operator's restore timeout).
 const POLL: Duration = Duration::from_millis(500);
 
@@ -596,7 +577,8 @@ pub(crate) async fn drill(args: &Args) -> Result<Output> {
         ));
     }
     let source = pool().await?;
-    let Some(set) = repo::newest_verified_set(&source)
+    let Some(set) = source
+        .newest_verified_set()
         .await
         .map_err(|e| Failure::Infra(format!("backup receipts: {e}")))?
     else {
@@ -712,8 +694,9 @@ async fn restore_bytes(
         .and_then(|s| s["info"]["size"].as_u64())
         .ok_or_else(|| Failure::Infra(format!("pgbackrest info: no size for {}", set.label)))?;
     let mut vectors: u64 = 0;
-    for tenant in rebuild::all_tenants(source).await? {
-        let facts = repo::tenant_facts(source, tenant, None)
+    for tenant in bootstrap::drill_tenants(source).await? {
+        let facts = source
+            .tenant_facts(tenant, None)
             .await
             .map_err(|e| Failure::Infra(format!("tenant facts: {e}")))?;
         vectors = vectors.saturating_add(u64::try_from(facts.vector_bytes).unwrap_or(0));
@@ -749,13 +732,6 @@ struct Restored {
 }
 
 impl Drill {
-    /// Records the first named failure (a later one never overwrites it).
-    fn fail(&mut self, failure: impl Into<String>) {
-        if self.r.failure.is_none() {
-            self.r.failure = Some(failure.into());
-        }
-    }
-
     fn phase(&mut self, name: &str, since: Instant) {
         self.phases
             .insert(name.to_owned(), json!(since.elapsed().as_secs_f64()));
@@ -769,7 +745,7 @@ impl Drill {
         };
         let before = self.mounts.repo_digest(&self.label);
         if let Err(e) = self.pipeline(&mut guard).await {
-            self.fail(e);
+            self.r.fail(e);
         }
         // Step 8: destroy (only this drill's labelled resources), then the repository digest, then residue.
         let t = Instant::now();
@@ -788,15 +764,16 @@ impl Drill {
             .map_err(Failure::Infra)?;
         self.r.residue = Some(i32::try_from(residue).unwrap_or(i32::MAX));
         if !errors.is_empty() {
-            self.fail(format!("destroy_failed: {}", errors.join("; ")));
+            self.r
+                .fail(format!("destroy_failed: {}", errors.join("; ")));
         }
         self.phase("destroy_s", t);
         self.r.finished_at = Some(OffsetDateTime::now_utc());
-        self.derive_failure();
+        self.r.derive_failure();
         self.r.phase_seconds = Some(Value::Object(self.phases.clone()));
 
         // Step 9: the receipt in the source (success derived by the table), then the evidence file.
-        let succeeded = repo::insert_drill_receipt(&self.source, &self.r)
+        let succeeded = knowledge_backup::record_drill(&self.source, &self.r)
             .await
             .map_err(|e| Failure::Infra(format!("restore_drills receipt: {e}")))?;
         let ev = self.evidence(succeeded);
@@ -819,50 +796,6 @@ impl Drill {
         })
     }
 
-    /// A drill claims success only when every check the table derives success from passed (D-O): any check that
-    /// failed or was not reached becomes the named failure, so the receipt never claims what the CHECK refuses.
-    fn derive_failure(&mut self) {
-        let r = &self.r;
-        let checks = [
-            ("manifest_matches", r.manifest_matches == Some(true)),
-            ("witness_a_present", r.witness_a_present == Some(true)),
-            ("witness_b_absent", r.witness_b_absent == Some(true)),
-            (
-                "server_version_matches",
-                r.server_version_matches == Some(true),
-            ),
-            ("rebuild_equivalent", r.rebuild_equivalent == Some(true)),
-            ("repo_intact", r.repo_intact == Some(true)),
-            ("migrations_drift", r.migrations_drift == Some(0)),
-            ("rls_unforced", r.rls_unforced == Some(0)),
-            ("isolation_violations", r.isolation_violations == Some(0)),
-            ("isolation_pairs", r.isolation_pairs == Some(2)),
-            (
-                "payload_digest_mismatches",
-                r.payload_digest_mismatches == Some(0),
-            ),
-            ("provider_calls", r.provider_calls == Some(0)),
-            (
-                "drill_archiver_attempts",
-                r.drill_archiver_attempts == Some(0),
-            ),
-            (
-                "legacy_points_without_vector",
-                r.legacy_points_without_vector == Some(0),
-            ),
-            ("residue", r.residue == Some(0)),
-            ("rebuild_points", r.rebuild_points.is_some()),
-        ];
-        let failed: Vec<&str> = checks
-            .iter()
-            .filter(|(_, ok)| !ok)
-            .map(|(name, _)| *name)
-            .collect();
-        if !failed.is_empty() {
-            self.fail(format!("checks_failed:{}", failed.join(",")));
-        }
-    }
-
     /// Steps 2–7. An `Err` is the step's named failure; the caller destroys and writes the receipt either way.
     #[allow(clippy::too_many_lines)] // steps 2-7 in their D-L order
     async fn pipeline(&mut self, guard: &mut DestroyGuard) -> Step<()> {
@@ -870,11 +803,13 @@ impl Drill {
         // segment holding B (bounded by pgBackRest's archive-timeout, 10.11 H).
         let t = Instant::now();
         let source = &self.source;
-        let (a_at, _) = repo::write_witness(source, self.id, "A")
+        let (a_at, _) = source
+            .write_witness(self.id, "A")
             .await
             .map_err(infra("witness A"))?;
-        let target = repo::clock(source).await.map_err(infra("clock"))?;
-        let (b_at, b_wal) = repo::write_witness(source, self.id, "B")
+        let target = source.clock().await.map_err(infra("clock"))?;
+        let (b_at, b_wal) = source
+            .write_witness(self.id, "B")
             .await
             .map_err(infra("witness B"))?;
         self.r.target_time = Some(target);
@@ -948,31 +883,38 @@ impl Drill {
 
         // Step 6: the checks (b) first, on the pool every later step uses.
         let t = Instant::now();
-        let kinds = repo::witness_kinds(&restored.maintenance, self.id)
+        let kinds = restored
+            .maintenance
+            .witness_kinds(self.id)
             .await
             .map_err(infra("witness kinds"))?;
-        self.r.witness_a_present = Some(kinds.iter().any(|k| k == "A"));
-        self.r.witness_b_absent = Some(!kinds.iter().any(|k| k == "B"));
-        if kinds.iter().any(|k| k == "B") {
-            return Err("drill_pool_is_not_the_restore".to_owned());
-        }
+        self.r.check_restored_witnesses(&kinds)?;
         self.check_manifest();
         self.check_cluster(&restored, target).await;
-        let tenants = rebuild::all_tenants(&restored.maintenance)
+        let tenants = bootstrap::drill_tenants(&restored.maintenance)
             .await
             .map_err(infra("drill tenants"))?;
         let mut facts = BTreeMap::new();
         for tenant in &tenants {
-            match repo::tenant_facts(&restored.maintenance, *tenant, None).await {
+            match restored.maintenance.tenant_facts(*tenant, None).await {
                 Ok(f) => {
                     facts.insert(*tenant, f);
                 }
-                Err(e) => self.fail(format!("probe_failed:tenant_facts: {e}")),
+                Err(e) => self.r.fail(format!("probe_failed:tenant_facts: {e}")),
             }
         }
-        self.restored_in_flight(&facts);
-        self.check_isolation(&restored, &facts).await;
-        self.check_digests(&facts, target).await;
+        self.r.restored_in_flight(&facts);
+        self.r
+            .check_isolation(&restored.gateway, &restored.reader, &facts)
+            .await;
+        self.r
+            .check_digests(
+                &self.source,
+                bootstrap::drill_tenants(&self.source).await,
+                &facts,
+                target,
+            )
+            .await;
         self.phase("checks_s", t);
 
         // Step 7: rebuild into the empty drill Qdrant with the closed no-provider deps (D-N(g)).
@@ -1001,12 +943,12 @@ impl Drill {
             (Ok(h), Ok(p)) => Some(format!("{h}:{p}")),
             _ => None,
         };
-        let localhost = |a: &str| a.replace("localhost:", "127.0.0.1:");
-        if localhost(&source_addr) == pg_addr
-            || configured_qdrant.as_deref().map(localhost) == Some(qdrant_addr)
-        {
-            return Err("drill_target_is_live".to_owned());
-        }
+        knowledge_backup::check_drill_targets(
+            source_addr,
+            &pg_addr,
+            configured_qdrant,
+            qdrant_addr,
+        )?;
         let dsn = |role: &str| format!("postgres://{role}:{}@{pg_addr}/{db}", passwords[role]);
         let started = Instant::now();
         loop {
@@ -1059,15 +1001,17 @@ impl Drill {
                 let got = String::from_utf8_lossy(&out.stdout).trim().to_owned();
                 self.r.manifest_matches = Some(got == backup::hex(&self.set.manifest_sha256));
             }
-            Ok(out) => self.fail(format!("probe_failed:manifest: {}", tail(&text(&out), 3))),
-            Err(e) => self.fail(format!("probe_failed:manifest: {e}")),
+            Ok(out) => self
+                .r
+                .fail(format!("probe_failed:manifest: {}", tail(&text(&out), 3))),
+            Err(e) => self.r.fail(format!("probe_failed:manifest: {e}")),
         }
     }
 
     /// D-N (c), (d), (e), (j): version, migrations at T, RLS FORCE, archiver attempts.
     async fn check_cluster(&mut self, restored: &Restored, target: OffsetDateTime) {
-        let drill = repo::cluster_facts(&restored.maintenance).await;
-        let source = repo::cluster_facts(&self.source).await;
+        let drill = restored.maintenance.cluster_facts().await;
+        let source = self.source.cluster_facts().await;
         match (drill, source) {
             (Ok(d), Ok(s)) => {
                 self.r.server_version_matches = Some(d.server_version_num == s.server_version_num);
@@ -1078,7 +1022,7 @@ impl Drill {
                     json!({ "server_version_num": s.server_version_num }),
                 );
             }
-            (Err(e), _) | (_, Err(e)) => self.fail(format!("probe_failed:cluster: {e}")),
+            (Err(e), _) | (_, Err(e)) => self.r.fail(format!("probe_failed:cluster: {e}")),
         }
         // D-N (d): `ops.schema_migrations` is owner-only (0201 D-C), so each side is read READ ONLY as the image
         // superuser over its container's socket (the drill already holds the docker CLI, root-equivalent).
@@ -1104,86 +1048,12 @@ impl Drill {
                 let drift = rows(&d).symmetric_difference(&rows(&s.stdout)).count();
                 self.r.migrations_drift = Some(i32::try_from(drift).unwrap_or(i32::MAX));
             }
-            (Ok(_), Ok(s)) => self.fail(format!("probe_failed:migrations: {}", tail(&s.stderr, 3))),
-            (Err(e), _) => self.fail(format!("probe_failed:migrations: {e}")),
-            (_, Err(_)) => self.fail("probe_failed:migrations: source exec"),
+            (Ok(_), Ok(s)) => self
+                .r
+                .fail(format!("probe_failed:migrations: {}", tail(&s.stderr, 3))),
+            (Err(e), _) => self.r.fail(format!("probe_failed:migrations: {e}")),
+            (_, Err(_)) => self.r.fail("probe_failed:migrations: source exec"),
         }
-    }
-
-    /// R-37 quarantine: what the restored cluster still had in flight at T, left untouched (it is destroyed).
-    fn restored_in_flight(&mut self, facts: &BTreeMap<Uuid, TenantFacts>) {
-        let sum = |f: fn(&TenantFacts) -> i64| facts.values().map(f).sum::<i64>();
-        self.r.restored_in_flight = Some(json!({
-            "issued_g1": sum(|f| f.issued_g1),
-            "open_jobs": sum(|f| f.open_jobs),
-            "reserved_calls": sum(|f| f.reserved_calls),
-        }));
-    }
-
-    /// D-N (f): the two tenants with the most memories, each probed as role_gateway (memories, Evidence, registry)
-    /// and role_retrieval_worker (vectors); every other-tenant row seen is a violation, and each tenant must see
-    /// its own memories (non-vacuous).
-    async fn check_isolation(&mut self, restored: &Restored, facts: &BTreeMap<Uuid, TenantFacts>) {
-        let mut ranked: Vec<(Uuid, i64)> = facts
-            .iter()
-            .filter(|(_, f)| f.memories > 0)
-            .map(|(t, f)| (*t, f.memories))
-            .collect();
-        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        ranked.truncate(2);
-        if ranked.len() < 2 {
-            self.fail("isolation_not_applicable: fewer than two tenants with memory records");
-        }
-        let mut violations = 0_i64;
-        let mut pairs = 0;
-        for (tenant, _) in &ranked {
-            let gateway = repo::gateway_isolation(&restored.gateway, *tenant).await;
-            let vectors = repo::vector_isolation(&restored.reader, *tenant).await;
-            match (gateway, vectors) {
-                (Ok((others, own)), Ok(vector_others)) => {
-                    violations += others + vector_others;
-                    pairs += 1;
-                    if own == 0 {
-                        self.fail(format!("isolation_vacuous:{tenant}"));
-                    }
-                }
-                (Err(e), _) | (_, Err(e)) => {
-                    self.fail(format!("probe_failed:isolation: {e}"));
-                    return;
-                }
-            }
-        }
-        self.r.isolation_violations = Some(i32::try_from(violations).unwrap_or(i32::MAX));
-        self.r.isolation_pairs = Some(pairs);
-    }
-
-    /// D-N (h): per tenant, the Evidence digest of the source at T against the restored cluster's (all rows).
-    async fn check_digests(&mut self, facts: &BTreeMap<Uuid, TenantFacts>, target: OffsetDateTime) {
-        let tenants = match rebuild::all_tenants(&self.source).await {
-            Ok(t) => t,
-            Err(e) => {
-                self.fail(format!("probe_failed:digests: {e}"));
-                return;
-            }
-        };
-        let mut mismatches = 0;
-        let mut seen: BTreeSet<Uuid> = BTreeSet::new();
-        for tenant in tenants {
-            seen.insert(tenant);
-            match repo::tenant_facts(&self.source, tenant, Some(target)).await {
-                Ok(s) => {
-                    if facts.get(&tenant).map(|d| &d.evidence_digest) != Some(&s.evidence_digest) {
-                        mismatches += 1;
-                    }
-                }
-                Err(e) => {
-                    self.fail(format!("probe_failed:digests: {e}"));
-                    return;
-                }
-            }
-        }
-        mismatches += facts.keys().filter(|t| !seen.contains(t)).count();
-        self.r.payload_digest_mismatches = Some(i32::try_from(mismatches).unwrap_or(i32::MAX));
     }
 
     /// D-N (g): the D-E sequence for every stream of every restored tenant, `require_stored_vector`, projected by
@@ -1198,76 +1068,37 @@ impl Drill {
         if labels.len() > 1 {
             return Err(format!("drill_labels_ambiguous:{labels:?}"));
         }
-        let mut totals = Totals {
-            equivalent: true,
-            ..Totals::default()
-        };
-        if let Some(label) = labels.first() {
-            let worker = rebuild::worker_label(&restored.maintenance, label)
+        let totals = if let Some(label) = labels.first() {
+            let worker = bootstrap::drill_worker(&restored.maintenance, label)
                 .await
                 .map_err(infra("worker label"))?;
-            // dep: Qdrant(*) — the drill's own Qdrant only (`docker compose port`), never the configured one
-            let face = QdrantFace::new("127.0.0.1", restored.qdrant_port, "127.0.0.1/32")
+            // dep: Qdrant(*) — project-published port; the configured live endpoint is never used.
+            let target = bootstrap::drill_target(worker, restored.qdrant_port)
                 .map_err(infra("drill qdrant face"))?;
-            if !rebuild::collection_names(&face)
-                .await
-                .map_err(infra("drill qdrant"))?
-                .is_empty()
-            {
-                return Err("drill_qdrant_not_fresh".to_owned());
-            }
-            let closed = rebuild::drill_closed_deps(
-                restored
-                    .pass
-                    .take()
-                    .ok_or_else(|| "infra:the pass pool is used once".to_owned())?,
-                restored.qdrant_port,
-                &scanner_pin()?,
-                label,
-                worker.dimension,
-                ProcessorId(DRILL_PROCESSOR),
-                Arc::new(|period| Box::pin(tokio::time::sleep(period))),
-            )
-            .map_err(infra("drill deps"))?;
-            let (shared, no_provider) = rebuild::drill_projection_deps(closed);
-            let cfg = pass_config(self.id)?;
-            let deps = RebuildDeps {
-                maintenance: &restored.maintenance,
-                reader: &restored.reader,
-                qdrant: &face,
-                worker: &worker,
-            };
-            for tenant in tenants {
-                for stream in rebuild::streams(&restored.maintenance, *tenant, None)
-                    .await
-                    .map_err(infra("streams"))?
-                {
-                    let (verdict, report) =
-                        rebuild_one(&deps, &stream, &shared, &cfg, self.timeout)
-                            .await
-                            .map_err(infra("rebuild"))?;
-                    totals.add(verdict, report);
-                }
-            }
-            totals.provider_calls = no_provider.attempts();
-        }
-        self.r.rebuild_equivalent = Some(totals.equivalent);
-        self.r.rebuild_points = Some(totals.points);
-        self.r.legacy_points_without_vector = Some(totals.legacy);
-        self.r.unprojected_at_target = Some(totals.unprojected);
-        self.r.provider_calls = Some(i64::try_from(totals.provider_calls).unwrap_or(i64::MAX));
-        self.ev.insert(
-            "rebuild".to_owned(),
-            json!({
-                "streams": totals.streams,
-                "equivalent": totals.equivalent,
-                "points": totals.points,
-                "orphans_deleted": totals.orphans,
-                "distill_pending_inputs": totals.pending,
-                "unprojected_at_target": totals.unprojected,
-                "provider_calls": totals.provider_calls,
-            }),
-        );
+            let collections = target.collections().await.map_err(infra("drill qdrant"))?;
+            knowledge_backup::check_drill_collections(&collections)?;
+            let pool = restored
+                .pass
+                .take()
+                .ok_or_else(|| "infra:the pass pool is used once".to_owned())?;
+            let key = |name: &str| env(name).map_err(|_| format!("infra:missing {name}"));
+            let scanner = bootstrap::scanner_pin(
+                key("HUMAUX_RETRIEVAL_WORKER_GITLEAKS_BIN")?,
+                key("HUMAUX_RETRIEVAL_WORKER_GITLEAKS_VERSION")?,
+                key("HUMAUX_RETRIEVAL_WORKER_GITLEAKS_SHA256")?,
+            );
+            let pass = target
+                .closed_pass(pool, restored.qdrant_port, scanner, label)
+                .map_err(infra("drill deps"))?;
+            let cfg =
+                bootstrap::pass_config(self.id).ok_or_else(|| "infra:claim family".to_owned())?;
+            let projection = target.projection(&restored.maintenance, &restored.reader, pass, cfg);
+            drill_projection::rebuild(&projection, tenants, self.timeout).await?
+        } else {
+            drill_projection::Totals::empty()
+        };
+        self.ev
+            .insert("rebuild".to_owned(), totals.record(&mut self.r));
         Ok(())
     }
 
@@ -1328,62 +1159,6 @@ impl Drill {
     }
 }
 
-/// The rebuild's sums over every stream report (D-N(g) evidence and receipt columns).
-#[derive(Default)]
-struct Totals {
-    streams: Vec<Value>,
-    equivalent: bool,
-    points: i64,
-    legacy: i64,
-    orphans: i64,
-    unprojected: i64,
-    pending: i64,
-    provider_calls: u64,
-}
-
-impl Totals {
-    fn add(&mut self, verdict: Verdict, report: Value) {
-        let n = |k: &str| report[k].as_i64().unwrap_or(0);
-        self.equivalent &= verdict == Verdict::Equivalent;
-        self.points += n("points");
-        self.legacy += n("legacy_points_without_vector");
-        self.orphans += n("orphans_deleted");
-        self.unprojected += report["excluded"]["without_stored_vector"]
-            .as_i64()
-            .unwrap_or(0);
-        self.pending += report["excluded"]["distill_pending"].as_i64().unwrap_or(0);
-        self.streams.push(report);
-    }
-}
-
-/// The retrieval worker's pinned scanner, read under the worker's own key names (the card-35 peer-key precedent).
-fn scanner_pin() -> Step<ScannerPin> {
-    let key = |name: &str| env(name).map_err(|_| format!("infra:missing {name}"));
-    Ok(ScannerPin {
-        executable: key("HUMAUX_RETRIEVAL_WORKER_GITLEAKS_BIN")?.into(),
-        version: key("HUMAUX_RETRIEVAL_WORKER_GITLEAKS_VERSION")?,
-        sha256: key("HUMAUX_RETRIEVAL_WORKER_GITLEAKS_SHA256")?,
-    })
-}
-
-/// The drill's in-process pass (D-N(g)): the private-memory claim (`TicketFamily::ALL` has one member) under a
-/// lease owner naming the drill.
-fn pass_config(id: Uuid) -> Step<PassConfig> {
-    Ok(PassConfig {
-        claim: ClaimFamily::of(RetrievalFamily::PrivateMemoryV1)
-            .ok_or_else(|| "infra:claim family".to_owned())?,
-        lease_owner: format!("humaux-maintenance-drill/{id}"),
-        lease_secs: PASS_LEASE_SECS,
-        batch: i64::from(PASS_BATCH),
-        per_tenant_cap: i64::from(PASS_BATCH),
-        max_attempts: PASS_MAX_ATTEMPTS,
-        backoff: Backoff {
-            base_secs: PASS_BACKOFF_SECS.0,
-            max_secs: PASS_BACKOFF_SECS.1,
-        },
-    })
-}
-
 /// SQL that lists, comma-joined and sorted, the LOGIN roles [`neutralise_sql`] with the same `keep` is about to turn
 /// NOLOGIN — read BEFORE the quarantine, so the evidence's `nologin_roles` names exactly what the restore locked and
 /// never a role that is NOLOGIN by design (ADR-0059 D-A `role_migration_owner`, ADR-0061 `role_health_reader`;
@@ -1412,61 +1187,6 @@ fn neutralise_sql(passwords: &BTreeMap<&str, String>, keep: &[&str]) -> String {
         keep.join(", ")
     ));
     sql
-}
-
-type PumpFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
-
-/// One stream through D-E steps 1–7 with a pump that claims only this run's tickets (D-N(g)); `(verdict, report)`.
-async fn rebuild_one(
-    deps: &RebuildDeps<'_>,
-    stream: &Stream,
-    shared: &SharedProjectionDeps,
-    cfg: &PassConfig,
-    wait: Duration,
-) -> std::result::Result<(Verdict, Value), ProvisioningError> {
-    if let Err(receipt) = rebuild::precheck(deps, stream, None).await? {
-        return Ok((Verdict::ReEmbedRequired, receipt));
-    }
-    let run = rebuild::open_run(deps, stream).await?;
-    provisioning::ensure_collection(deps.qdrant, &stream.collection, deps.worker.dimension).await?;
-    let issued = rebuild::issue_tickets(deps, stream, &run, PASS_BATCH, true).await?;
-    let only = OnlyRun {
-        tenant_id: stream.key.tenant_id.0,
-        run_id: run.run_id,
-    };
-    let pump = move || -> PumpFuture<'_> {
-        Box::pin(async move {
-            if let Err(e) = run_claimed_pass_for_run(shared, cfg, only).await {
-                eprintln!("humaux-maintenance restore drill: pass: {e:?}");
-            }
-            tokio::time::sleep(PASS_PAUSE).await;
-        })
-    };
-    let settled = rebuild::wait_generation(deps, stream, &run, wait, &pump).await?;
-    let (mut report, orphans) = if settled {
-        rebuild::verify_run(deps, stream, &run, true).await?
-    } else {
-        let mut report = rebuild::verify_stream(deps, stream, Some(run.run_id), true).await?;
-        report.verdict = Verdict::CannotEstablish;
-        report.json["verdict"] = json!(Verdict::CannotEstablish.as_db_str());
-        (report, 0)
-    };
-    report.json["run_id"] = json!(run.run_id);
-    report.json["generation"] = json!(run.generation);
-    report.json["issued"] = json!(issued);
-    report.json["orphans_deleted"] = json!(orphans);
-    if report.verdict == Verdict::Equivalent {
-        match rebuild::close_run(deps, stream, &run, &report).await {
-            Ok(()) => report.json["closed"] = json!(true),
-            Err(ProvisioningError::Refused(reason)) => {
-                report.verdict = Verdict::CannotEstablish;
-                report.json["verdict"] = json!(Verdict::CannotEstablish.as_db_str());
-                report.json["close_refused"] = json!(reason);
-            }
-            Err(other) => return Err(other),
-        }
-    }
-    Ok((report.verdict, report.json))
 }
 
 // ============================================================================

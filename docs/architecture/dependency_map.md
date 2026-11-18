@@ -3141,6 +3141,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::knowledge_backup`
 
+#### `application::knowledge_backup::drill_projection`
+
 #### `application::lifecycle_execution`
 
 #### `application::membership_admin`
@@ -15657,6 +15659,8 @@ modules naming it:
 - `application::distill`
 - `application::distill_execution`
 - `application::entitlement`
+- `application::knowledge_backup`
+- `application::knowledge_backup::drill_projection`
 - `application::lifecycle_execution`
 - `application::mechanism_observation`
 - `application::notify`
@@ -15733,6 +15737,7 @@ modules naming it:
 - `application::distill_execution`
 - `application::forget`
 - `application::knowledge_backup`
+- `application::knowledge_backup::drill_projection`
 - `application::lifecycle_execution`
 - `application::membership_admin`
 - `application::oauth`
@@ -17766,6 +17771,7 @@ modules naming it:
 - `maintenance::backup`
 - `maintenance::bootstrap`
 - `maintenance::deploy_check`
+- `maintenance::drill`
 - `maintenance::health_serve`
 - `maintenance::main`
 - `maintenance::member`
@@ -17806,7 +17812,7 @@ modules naming it:
 why: TicketFamily (the §15.1 family triples) and MembershipRole
 
 modules naming it:
-- `maintenance::drill`
+- `maintenance::bootstrap`
 - `maintenance::health_serve`
 - `maintenance::main`
 - `maintenance::member`
@@ -17841,6 +17847,7 @@ modules naming it:
 why: async runtime for the sqlx pool and the Qdrant transport; signal/time/macros for the resident `health serve` loop (ADR-0061 D-D); spawn_blocking for the DR_EVIDENCE statvfs reads bounded by CYCLE_SECONDS (ADR-0064 10.11 D)
 
 modules naming it:
+- `maintenance::bootstrap`
 - `maintenance::drill`
 - `maintenance::health_serve`
 - `maintenance::main`
@@ -17905,6 +17912,7 @@ modules naming it:
 why: tenant/user/workspace id parsing; v4 for the moved switch_visible cell id (ADR-0066 D-Q)
 
 modules naming it:
+- `maintenance::bootstrap`
 - `maintenance::drill`
 - `maintenance::main`
 - `maintenance::member`
@@ -18060,6 +18068,7 @@ modules naming it:
 why: fixture ids
 
 modules naming it:
+- `maintenance::bootstrap`
 - `maintenance::drill`
 - `maintenance::main`
 - `maintenance::member`

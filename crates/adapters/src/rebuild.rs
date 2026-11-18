@@ -9,8 +9,10 @@
 //!   PostgreSQL(role_retrieval_worker) r=[ops.outbox, private.evidence_objects, private.memory_evidence,
 //!   private.memory_records, projection.memory_vectors, projection.private_memory_points,
 //!   projection.rebuild_tickets, projection.stream_checkpoints, projection.stream_log], Qdrant(*)]; env=[];
-//!   modules=[adapters::maintenance_repo, adapters::postgres, adapters::projection_worker, adapters::provisioning, adapters::qdrant, application::projection_maintenance, domain::egress, domain::error, domain::ids, domain::ticket_family, humaux-local-secret-scan, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::note_chunks, projection::serving, projection::stream]
-//! Called-by: [maintenance::drill, maintenance::rebuild_cli, tests]
+//!   modules=[adapters::maintenance_repo, adapters::postgres, adapters::projection_worker, adapters::provisioning, adapters::qdrant, adapters::stream_repo,
+//!   application::projection_maintenance, domain::egress, domain::error, domain::ids, domain::ticket_family, humaux-local-secret-scan, infra-cell::permit,
+//!   infra-cell::resource, infra-cell::transport, projection::dense, projection::note_chunks, projection::serving, projection::stream]
+//! Called-by: [maintenance::bootstrap, maintenance::rebuild_cli, tests]
 //! Invariants: [every write is an owner definer call as role_maintenance under the tenant GUC (rebuild_open,
 //!   issue_rebuild_tickets, rebuild_close), none is a table write; the verifier reads PostgreSQL in READ ONLY
 //!   transactions as the projector (role_retrieval_worker), so X and the E4 payloads are what the projector writes;
@@ -405,6 +407,31 @@ pub async fn close_run(
 /// The caller's step while generation tickets are in flight: a sleep while the resident worker projects (production),
 /// or an in-process scoped pass (the drill and the tests).
 pub type Pump<'a> = dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Sync + 'a;
+
+/// D-N(g): wait for a generation using only its closed, run-scoped projector.
+pub async fn wait_drill_generation(
+    deps: &RebuildDeps<'_>,
+    stream: &Stream,
+    run: &Run,
+    shared: &SharedProjectionDeps,
+    cfg: &projection_worker::PassConfig,
+    wait: Duration,
+    pause: Duration,
+) -> Result<bool> {
+    let only = crate::stream_repo::OnlyRun {
+        tenant_id: stream.key.tenant_id.0,
+        run_id: run.run_id,
+    };
+    let pump = move || -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            if let Err(e) = projection_worker::run_claimed_pass_for_run(shared, cfg, only).await {
+                eprintln!("humaux-maintenance restore drill: pass: {e:?}");
+            }
+            (shared.sleep)(pause).await;
+        })
+    };
+    wait_generation(deps, stream, run, wait, &pump).await
+}
 
 /// D-E step 5: pumps until no generation ticket of `run` is in flight (`true`) or `wait` has passed (`false`).
 pub async fn wait_generation(
