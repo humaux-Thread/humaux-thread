@@ -1,10 +1,11 @@
 //! `application::remember` — Remember intake and whole-write application port (§34 / §58; ADR-0130 D2/D7a).
 //! Depends-on: crates=[async-trait, humaux-domain, serde_json, time, uuid]; services=[];
-//!   env=[]; modules=[domain::affect, domain::audit, domain::authority, domain::continuity, domain::coordination, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source, domain::subject]
+//!   env=[]; modules=[application::lifecycle_execution, domain::affect, domain::audit, domain::authority, domain::continuity, domain::coordination, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source, domain::subject]
 //! Called-by: [adapters::operation_receipt, adapters::remember, application::affect, application::lifecycle_execution, gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::memory, gateway::remember]
 //! Invariants: [one port call owns the complete PG transaction; no transaction handles cross this boundary]
 //! Spec: §8.5.1; §34.0.1; §58; §60
 
+use crate::lifecycle_execution::LifecycleConfirmation;
 use humaux_domain::{
     affect::{AffectAnnotation, MoodHalfLife},
     audit::AuditEvent,
@@ -248,7 +249,19 @@ pub struct NoteIntake {
     pub requested: AuthorityClass,
 }
 
-/// Commit a new note, its receipt, BMO and audit together (ADR-0067 D-A / §34.0.1).
+/// ADR-0067 D-J: how one replacement call ended. Business refusals with no `ErrorCode` of their own are variants
+/// (§52.1 stays at 18 codes).
+#[derive(Debug)]
+pub enum NoteReplaceOutcome {
+    /// Committed by this call, or (`replayed`) earlier under the same key and intent.
+    Stored(AtomicRememberResult),
+    /// Challenge leg: every check holds, the caller may mint a token. Nothing was written.
+    Confirmable,
+    /// `supersedes` is not the note's head: `STALE_NOTE_VERSION`. Nothing was written.
+    StaleVersion,
+}
+
+/// Commit note changes, receipts, BMO and audit together (ADR-0067 D-A/D-J / §34.0.1).
 #[async_trait::async_trait]
 pub trait NoteStore: Send + Sync {
     /// Return the committed or replayed result from the original receipt transaction.
@@ -258,6 +271,17 @@ pub trait NoteStore: Send + Sync {
         request: AtomicRememberRequest,
         note: NoteIntake,
     ) -> Result<AtomicRememberResult, ErrorCode>;
+
+    /// Check the replacement when confirmation is absent, or commit it with its token in the receipt transaction.
+    async fn replace(
+        &self,
+        authorization: &AuthorizationScope,
+        request: AtomicRememberRequest,
+        note: NoteIntake,
+        note_id: Uuid,
+        supersedes: Uuid,
+        confirmation: Option<LifecycleConfirmation>,
+    ) -> Result<NoteReplaceOutcome, ErrorCode>;
 }
 
 /// Accept a new identity note through the complete transaction port (ADR-0067 D-A).
@@ -268,4 +292,26 @@ pub async fn put_note(
     note: NoteIntake,
 ) -> Result<AtomicRememberResult, ErrorCode> {
     store.put(authorization, request, note).await
+}
+
+/// Execute the challenge or confirmed replacement through the same receipt transaction port (ADR-0067 D-J).
+pub async fn replace_note(
+    store: &dyn NoteStore,
+    authorization: &AuthorizationScope,
+    request: AtomicRememberRequest,
+    note: NoteIntake,
+    note_id: Uuid,
+    supersedes: Uuid,
+    confirmation: Option<LifecycleConfirmation>,
+) -> Result<NoteReplaceOutcome, ErrorCode> {
+    store
+        .replace(
+            authorization,
+            request,
+            note,
+            note_id,
+            supersedes,
+            confirmation,
+        )
+        .await
 }

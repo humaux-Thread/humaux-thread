@@ -1,7 +1,7 @@
 //! `adapters::operation_receipt` — §34.0.1 local `remember.put`: one transaction for business, BMO, audit, and
 //!   receipt.
-//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, application::remember, domain::audit, domain::authority, domain::confirm, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source]
-//! Called-by: [adapters::remember, gateway::bootstrap, gateway::mcp_application, tests]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, application::lifecycle_execution, application::remember, domain::audit, domain::authority, domain::confirm, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source]
+//! Called-by: [adapters::remember, gateway::bootstrap, tests]
 //! Invariants: [receipts are written in the operation's own transaction; a failed COMMIT response is an unknown
 //!   outcome, never permission to repeat the write; tenant/visibility failures are TenantBoundary/NotFound; a note
 //!   replacement checks its receipt before it locks the note head, and consumes its token only under that lock
@@ -85,17 +85,7 @@ pub struct NoteReplaceRequest {
     pub claim: Option<ConfirmationClaim>,
 }
 
-/// ADR-0067 D-J: how one replacement call ended. Business refusals with no `ErrorCode` of their own are variants
-/// (§52.1 stays at 18 codes).
-#[derive(Debug)]
-pub enum NoteReplaceOutcome {
-    /// Committed by this call, or (`replayed`) earlier under the same key and intent.
-    Stored(AtomicRememberResult),
-    /// Challenge leg: every check holds, the caller may mint a token. Nothing was written.
-    Confirmable,
-    /// `supersedes` is not the note's head: `STALE_NOTE_VERSION`. Nothing was written.
-    StaleVersion,
-}
+pub use humaux_application::remember::NoteReplaceOutcome;
 
 /// The coordinates a receipt row repeats from the Evidence's accepted ticket (0114/0265 trigger).
 struct ReceiptRefs {
@@ -303,6 +293,37 @@ impl humaux_application::remember::NoteStore for PostgresNoteStore<'_> {
         note: NoteIntake,
     ) -> Result<AtomicRememberResult, ErrorCode> {
         note_put_atomically(self.pool, authorization, request, note, self.attribution).await
+    }
+
+    async fn replace(
+        &self,
+        authorization: &AuthorizationScope,
+        request: AtomicRememberRequest,
+        note: NoteIntake,
+        note_id: Uuid,
+        supersedes: Uuid,
+        confirmation: Option<humaux_application::lifecycle_execution::LifecycleConfirmation>,
+    ) -> Result<NoteReplaceOutcome, ErrorCode> {
+        let claim = confirmation.map(|binding| ConfirmationClaim {
+            op: binding.op,
+            target_id: binding.target_id,
+            successor_id: binding.successor_id,
+            nonce_sha256: binding.nonce_sha256,
+            request_sha256: binding.request_sha256,
+        });
+        note_replace_atomically(
+            self.pool,
+            authorization,
+            request,
+            note,
+            NoteReplaceRequest {
+                note_id,
+                supersedes,
+                claim,
+            },
+            self.attribution,
+        )
+        .await
     }
 }
 

@@ -1,5 +1,5 @@
 //! `gateway::mcp_application` — Gateway implementation of the native MCP application port.
-//! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-protocol, humaux-testkit, postgres, serde, serde_json, time, tokio, uuid]; services=[PostgreSQL(role_gateway) r=[private.memory_records] w=[control.w2_test_request_intervals] x=[private.publish_continuity_facet, private.register_continuity_project], HTTP(gateway)]; env=[HUMAUX_CONTINUITY_DIRECT_PREAUTH_SAME_KEY, HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID, HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[adapters::affect_repo, adapters::byok, adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::postgres, adapters::subject_repo, application::continuity, application::coordination, application::distill, application::recall_read, application::remember, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source, domain::subject, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::memory, gateway::recall, gateway::remember, protocol::mcp, protocol::mcp_catalog]
+//! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-protocol, humaux-testkit, postgres, serde, serde_json, time, tokio, uuid]; services=[PostgreSQL(role_gateway) r=[private.memory_records] w=[control.w2_test_request_intervals] x=[private.publish_continuity_facet, private.register_continuity_project], HTTP(gateway)]; env=[HUMAUX_CONTINUITY_DIRECT_PREAUTH_SAME_KEY, HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID, HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[adapters::affect_repo, adapters::byok, adapters::coord_repo, adapters::memory_governance_repo, adapters::postgres, adapters::subject_repo, application::continuity, application::coordination, application::distill, application::lifecycle_execution, application::recall_read, application::remember, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source, domain::subject, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::memory, gateway::recall, gateway::remember, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [gateway::bootstrap, tests]
 //! Invariants: [no path mints and accepts in one call; the canonical catalog validates wire arguments before dispatch runs; a valid contract with no local implementation is denied by GatewayGuard, never silently no-op'd]
 //! Spec: Baseline §33.10; §34.0.1; §78.1; ADR-0030; ADR-0031
@@ -20,15 +20,8 @@ use std::{
 use async_trait::async_trait;
 use humaux_adapters::affect_repo;
 use humaux_adapters::byok::json_has_nul;
-use humaux_adapters::confirm_token_repo::ConfirmationClaim;
 use humaux_adapters::coord_repo;
 use humaux_adapters::memory_governance_repo;
-use humaux_adapters::memory_governance_repo::ArchiveResult;
-use humaux_adapters::memory_governance_repo::RestoreResult;
-use humaux_adapters::operation_receipt;
-use humaux_adapters::operation_receipt::AtomicRememberRequest;
-use humaux_adapters::operation_receipt::NoteReplaceOutcome;
-use humaux_adapters::operation_receipt::NoteReplaceRequest;
 use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_adapters::subject_repo;
 use humaux_application::continuity::ContinuityEvidenceSource;
@@ -36,11 +29,16 @@ use humaux_application::continuity::ContinuityMemorySource;
 use humaux_application::coordination;
 use humaux_application::distill::ConfirmOutcome;
 use humaux_application::distill::RejectOutcome;
+use humaux_application::lifecycle_execution::{
+    ArchiveResult, LifecycleConfirmation, RestoreResult,
+};
 use humaux_application::recall_read::Lifecycle;
 use humaux_application::recall_read::MemoryEnumerationParams;
 use humaux_application::recall_read::MemoryGetTarget;
 use humaux_application::recall_read::NoteEnumerationFilter;
-use humaux_application::remember::NoteIntake;
+use humaux_application::remember::{
+    AtomicRememberRequest, NoteIntake, NoteReplaceOutcome, replace_note,
+};
 use humaux_domain::{
     affect::{AffectWriteOp, MoodHalfLife},
     audit::AuditEvent,
@@ -632,7 +630,7 @@ impl GatewayMcpApplication {
     /// token bound to the intent digest `H` (`note::replace_intent_sha256`). First call: the pre-mint leg runs the
     /// transaction's checks without writing — a committed key answers its stored result, a stale `supersedes` is the
     /// business refusal `STALE_NOTE_VERSION`, an invisible note `NOT_FOUND` — and only then a token is minted (0 BMO).
-    /// Second call: `operation_receipt::note_replace_atomically` commits the new version.
+    /// Second call: `NoteStore::replace` commits the new version.
     #[allow(clippy::too_many_lines)] // one gate call with its two legs and the three result shapes it can render
     async fn memory_note_replace(
         &self,
@@ -722,13 +720,7 @@ impl GatewayMcpApplication {
                                 write.finished_audit,
                                 write.reservation_ttl,
                                 write.replay_ttl,
-                                Some(ConfirmationClaim {
-                                    op: write.claim.op,
-                                    target_id: write.claim.target_id,
-                                    successor_id: write.claim.successor_id,
-                                    nonce_sha256: write.claim.nonce_sha256,
-                                    request_sha256: write.claim.request_sha256,
-                                }),
+                                Some(write.claim),
                             )
                             .await
                     };
@@ -938,7 +930,7 @@ impl GatewayMcpApplication {
                     authorization,
                     move |request| async move {
                         continuity::get(
-                            pool,
+                            &crate::bootstrap::continuity_read_port(pool),
                             request.authorization().clone(),
                             project_id,
                             request.workspace_id(),
@@ -963,7 +955,7 @@ impl GatewayMcpApplication {
                 raw_arguments,
                 move |request| async move {
                     continuity::get(
-                        pool,
+                        &crate::bootstrap::continuity_read_port(pool),
                         request.authorization().clone(),
                         project_id,
                         request.workspace_id(),
@@ -2797,7 +2789,7 @@ impl NoteReplaceLeg {
         finished_audit: AuditEvent,
         reservation_ttl: Duration,
         replay_ttl: Duration,
-        claim: Option<ConfirmationClaim>,
+        claim: Option<LifecycleConfirmation>,
     ) -> Result<NoteReplaceOutcome, ErrorCode> {
         let workspace = request
             .workspace_id()
@@ -2823,8 +2815,8 @@ impl NoteReplaceLeg {
             Vec::new(),
             None,
         )?;
-        operation_receipt::note_replace_atomically(
-            &self.pool,
+        replace_note(
+            &crate::bootstrap::note_store(&self.pool),
             request.authorization(),
             AtomicRememberRequest {
                 request_id: request.request_id(),
@@ -2837,12 +2829,9 @@ impl NoteReplaceLeg {
                 finished_audit,
             },
             self.note,
-            NoteReplaceRequest {
-                note_id: self.note_id,
-                supersedes: self.supersedes,
-                claim,
-            },
-            &crate::bootstrap::MEMORY_ATTRIBUTION,
+            self.note_id,
+            self.supersedes,
+            claim,
         )
         .await
     }
