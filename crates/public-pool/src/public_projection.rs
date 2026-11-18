@@ -1,7 +1,7 @@
 //! `public-pool::public_projection` — Public Qdrant projection writes and bounded dispatch assembly (§17.6).
 //! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell, serde_json, sha2, uuid];
 //!   services=[Qdrant(*)]; env=[]; modules=[adapters::postgres, adapters::qdrant, application::public_dispatch, domain::error, domain::ids, infra-cell::permit, infra-cell::transport, public-pool::public_repo]
-//! Called-by: [public-worker::main, tests]
+//! Called-by: [public-worker::bootstrap, tests]
 //! Invariants: [writes only the public payload contract through the same-cell transport; no dense vector, private
 //!   payload; dispatch captures only the public-role pool and retains repository transaction fences; a Qdrant failure is DependencyUnavailable]
 //! Spec: none

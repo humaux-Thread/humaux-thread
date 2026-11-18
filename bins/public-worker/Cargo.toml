@@ -21,7 +21,7 @@ humaux-adapters = { path = "../../crates/adapters" }
 humaux-domain = { path = "../../crates/domain" }
 # why: same-Cell transport and CellAccessPermit for Qdrant/UDS calls; used-by: [public-worker::main]
 humaux-infra-cell = { path = "../../crates/infra-cell" }
-# why: public admission, revocation and projection runners this binary drives; used-by: [public-worker::main]
+# why: public admission, revocation and projection runners this binary drives; used-by: [public-worker::bootstrap]
 humaux-public-pool = { path = "../../crates/public-pool" }
 # why: async runtime; used-by: [public-worker::main]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
