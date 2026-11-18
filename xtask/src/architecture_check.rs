@@ -14972,10 +14972,7 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             .unwrap_or_else(std::env::temp_dir)
             .join(format!("hex-worker-fixture-{}", std::process::id()));
         hex_copy_boundary_fixture(&real_root(), &root);
-        let check = || {
-            let verdict = hex_layer_gate(&root);
-            assert!(matches!(verdict, Verdict::Pass), "{verdict:?}");
-        };
+        let check = || assert_eq!(hex_layer_gate(&root), Verdict::Pass);
         check();
         // SLICE-5d: restoring any removed MANUAL ingress dependency must fail at the real entry.
         for symbol in [
@@ -15026,11 +15023,23 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         }
         let path = root.join(HEX_BASELINE);
         let original = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!(
+            "{original}bins/public-worker/src/main.rs:humaux_adapters::remember::RememberCommand\n"
+        )).unwrap();
+        let verdict = hex_layer_gate(&root);
+        assert!(
+            matches!(&verdict, Verdict::Fail(lines) if lines.iter().any(|l|
+                l.contains("expected exactly ceiling"))),
+            "{verdict:?}"
+        );
+        println!("baseline exceeds ceiling: RED {verdict:?}");
+        fs::write(&path, &original).unwrap();
+        check();
+        println!("baseline exceeds ceiling: restored GREEN");
         // Use a one-row fixture so this case survives even after production debt reaches zero.
         let file = "bins/public-worker/src/main.rs";
         let symbol = "humaux_public_pool::public_repo::PublicRepoEvaluator";
         let worker = root.join(file);
-        let source = fs::read_to_string(&worker).unwrap();
         let row = format!("{file}:{symbol}");
         fs::write(&worker, format!("use {symbol};\n")).unwrap();
         fs::write(&path, format!("{row}\n")).unwrap();
@@ -15047,35 +15056,17 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         println!("registered worker baseline {row}: GREEN");
         fs::write(&path, "").unwrap();
         let errors = fixture_errors();
-        assert!(
-            errors
-                .iter()
-                .any(|l| l.contains("expected exactly ceiling"))
-                && errors
-                    .iter()
-                    .any(|l| l.contains("new violation") && l.contains(&row)),
-            "{errors:?}"
+        assert_eq!(
+            errors,
+            [
+                "HEX-LAYER: baseline row count 0, expected exactly ceiling 1".to_owned(),
+                format!("HEX-LAYER: new violation {row}"),
+            ]
         );
         println!("removed worker baseline {row}: RED {errors:?}");
         fs::write(&path, format!("{row}\n")).unwrap();
         assert!(fixture_errors().is_empty());
         println!("removed worker baseline {row}: restored GREEN");
-        fs::write(&worker, source).unwrap();
-        fs::write(&path, &original).unwrap();
-        check();
-        fs::write(&path, format!(
-            "{original}bins/public-worker/src/main.rs:humaux_adapters::remember::RememberCommand\n"
-        )).unwrap();
-        let verdict = hex_layer_gate(&root);
-        assert!(
-            matches!(&verdict, Verdict::Fail(lines) if lines.iter().any(|l|
-                l.contains("expected exactly ceiling"))),
-            "{verdict:?}"
-        );
-        println!("baseline exceeds ceiling: RED {verdict:?}");
-        fs::write(&path, &original).unwrap();
-        check();
-        println!("baseline exceeds ceiling: restored GREEN");
         fs::remove_dir_all(root).unwrap();
     }
 
