@@ -30,8 +30,7 @@
 //!   control.retention_policy_approve], PostgreSQL(role_gateway) r=[private.evidence_objects, private.memory_records,
 //!   projection.private_memory_points], PostgreSQL(role_retrieval_worker) r=[projection.memory_vectors]]; env=[];
 //!   modules=[application::knowledge_backup, application::partition_retention, adapters::membership_repo, adapters::postgres, adapters::provisioning, domain::audit, domain::error, humaux-adapters]
-//! Called-by: [adapters::rebuild, maintenance::backup, maintenance::drill, maintenance::serve,
-//!   tests]
+//! Called-by: [adapters::rebuild, maintenance::backup, maintenance::serve, tests]
 //! Invariants: [the page returns tenant ids only, strictly after the cursor in tenant_id order, at most `limit`;
 //!   the definer refuses limit <= 0 (22023), so no call can read every tenant at once; every door call is one
 //!   transaction holding the tenant GUC and exactly one statement, so the delete and its receipt (or a reissued
@@ -48,12 +47,16 @@
 //!   ADR-0062 D-I; ADR-0062 D-J; ADR-0062 D-N; ADR-0062 D-P; ADR-0062 D-S; ADR-0063 D-F..D-K; ADR-0064 D-J;
 //!   ADR-0064 D-K; ADR-0064 D-V; ADR-0072 D-C; ADR-0123 D3; §41.2; §44; §59.1; §65; §77
 
-use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
 
-use humaux_application::knowledge_backup::BackupEvidencePort;
-pub use humaux_application::knowledge_backup::{BackupReceipt, BackupStatusFacts, SetVerdict};
+use humaux_application::knowledge_backup::{
+    BackupEvidencePort, DrillEvidencePort, DrillGatewayProbe, DrillVectorProbe,
+};
+pub use humaux_application::knowledge_backup::{
+    BackupReceipt, BackupStatusFacts, ClusterFacts, DrillReceipt, SetVerdict, TenantFacts,
+    VerifiedSet,
+};
 pub use humaux_application::partition_retention::{
     ApproveReceipt, CheckedLeaf, CreatePartitionsReceipt, CreatedLeaf, DropOutcome, DropReceipt,
     DropRequest, DueLeaf,
@@ -1105,6 +1108,57 @@ pub async fn backup_status_facts(
 }
 
 #[async_trait::async_trait(?Send)]
+impl DrillGatewayProbe for RuntimeDbPool {
+    type Error = sqlx::Error;
+    async fn gateway_isolation(&self, tenant: Uuid) -> Result<(i64, i64), Self::Error> {
+        gateway_isolation(self, tenant).await
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl DrillVectorProbe for RetrievalWorkerDbPool {
+    type Error = sqlx::Error;
+    async fn vector_isolation(&self, tenant: Uuid) -> Result<i64, Self::Error> {
+        vector_isolation(self, tenant).await
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl DrillEvidencePort for MaintenanceDbPool {
+    type Error = sqlx::Error;
+
+    async fn newest_verified_set(&self) -> Result<Option<VerifiedSet>, Self::Error> {
+        newest_verified_set(self).await
+    }
+    async fn tenant_facts(
+        &self,
+        tenant: Uuid,
+        at: Option<OffsetDateTime>,
+    ) -> Result<TenantFacts, Self::Error> {
+        tenant_facts(self, tenant, at).await
+    }
+    async fn cluster_facts(&self) -> Result<ClusterFacts, Self::Error> {
+        cluster_facts(self).await
+    }
+    async fn write_witness(
+        &self,
+        drill_id: Uuid,
+        kind: &str,
+    ) -> Result<(OffsetDateTime, String), Self::Error> {
+        write_witness(self, drill_id, kind).await
+    }
+    async fn clock(&self) -> Result<OffsetDateTime, Self::Error> {
+        clock(self).await
+    }
+    async fn witness_kinds(&self, drill_id: Uuid) -> Result<Vec<String>, Self::Error> {
+        witness_kinds(self, drill_id).await
+    }
+    async fn insert_drill_receipt(&self, receipt: &DrillReceipt) -> Result<bool, Self::Error> {
+        insert_drill_receipt(self, receipt).await
+    }
+}
+
+#[async_trait::async_trait(?Send)]
 impl BackupEvidencePort for MaintenanceDbPool {
     type Error = sqlx::Error;
 
@@ -1204,17 +1258,6 @@ pub async fn dr_evidence(
 // isolation probes as role_gateway / role_retrieval_worker. Every tenant-scoped read sets the tenant GUC in its own
 // transaction (RLS on every table with a tenant_id); every read is READ ONLY except the witness and receipt INSERTs.
 
-/// The set a drill or `restore pitr` restores: the newest set whose LATEST receipt is VERIFIED (D-K's rule).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerifiedSet {
-    /// pgBackRest's set label.
-    pub label: String,
-    /// The label's identity (`ops.backup_sets.manifest_sha256`, the first verification's manifest).
-    pub manifest_sha256: Vec<u8>,
-    /// The set's stop as its receipt recorded it.
-    pub stopped_at: Option<OffsetDateTime>,
-}
-
 /// ADR-0064 D-L step 1: the newest set whose latest receipt is VERIFIED, with its identity; `None` when no set
 /// qualifies (the drill then refuses `no_verified_backup`, it never falls back to an unverified set).
 pub async fn newest_verified_set(
@@ -1283,20 +1326,6 @@ pub async fn witness_kinds(
         .await
 }
 
-/// The cluster facts a drill reads through role_maintenance (D-N (c), (e), (j)). D-N (d) is not here:
-/// `ops.schema_migrations` is owner-only (0201 D-C), so the drill reads it as the image superuser over each
-/// container's socket.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ClusterFacts {
-    /// `server_version_num`.
-    pub server_version_num: i32,
-    /// D-N (e): tenant tables (`relkind` r/p with a `tenant_id` column) lacking `relrowsecurity AND
-    /// relforcerowsecurity` or lacking a policy.
-    pub rls_unforced: i64,
-    /// D-N (j): `archived_count + failed_count` of `pg_stat_archiver` (0 when `--archive-mode=off` held).
-    pub archiver_attempts: i64,
-}
-
 /// ADR-0064 D-N (c), (e), (j) in one READ ONLY snapshot.
 pub async fn cluster_facts(pool: &MaintenanceDbPool) -> Result<ClusterFacts, sqlx::Error> {
     // dep: PostgreSQL(role_maintenance) — catalog and pg_stat_archiver (READ ONLY)
@@ -1323,26 +1352,6 @@ pub async fn cluster_facts(pool: &MaintenanceDbPool) -> Result<ClusterFacts, sql
         rls_unforced: row.try_get(1)?,
         archiver_attempts: row.try_get(2)?,
     })
-}
-
-/// What one tenant holds, read as role_maintenance under the tenant GUC (D-N (f) ranking, (h), restored state).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TenantFacts {
-    /// `private.memory_records` rows visible under the GUC (the (f) ranking).
-    pub memories: i64,
-    /// D-N (h): sha256 over the sorted `evidence_id:payload_sha256` pairs, `created_at <= at` when `at` was given.
-    pub evidence_digest: Vec<u8>,
-    /// Restored in-flight state the drill leaves untouched (R-37 quarantine): ISSUED tickets that are not
-    /// generation tickets, non-terminal `ops.jobs`, RESERVED `ops.model_call_ledger` rows.
-    pub issued_g1: i64,
-    /// See `issued_g1`.
-    pub open_jobs: i64,
-    /// See `issued_g1`.
-    pub reserved_calls: i64,
-    /// Distinct `embedding_version` of live registry rows.
-    pub labels: BTreeSet<String>,
-    /// D-L step 0 / 10.11 H: live registry rows × (4 × dimension + 2,048) bytes.
-    pub vector_bytes: i64,
 }
 
 /// ADR-0064 D-N (f), (h) and the restored-state counts for one tenant, in one READ ONLY transaction.
@@ -1448,66 +1457,6 @@ pub async fn vector_isolation(
             .await?;
     txn.commit().await?;
     Ok(n)
-}
-
-/// One `ops.restore_drills` row (D-O as 0234 shaped it). `succeeded` is NOT a field: the receipt claims it only by
-/// leaving `failure` empty, and `restore_drills_succeeded_derived` refuses a claim any check contradicts.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct DrillReceipt {
-    /// The drill id (`restore_drill_id`).
-    pub drill_id: Uuid,
-    /// The restored set.
-    pub backup_label: Option<String>,
-    /// Its identity as the drill read it.
-    pub backup_manifest_sha256: Option<Vec<u8>>,
-    /// T (between the witnesses).
-    pub target_time: Option<OffsetDateTime>,
-    /// Drill start / end.
-    pub started_at: Option<OffsetDateTime>,
-    /// See `started_at`.
-    pub finished_at: Option<OffsetDateTime>,
-    /// D-N (a).
-    pub manifest_matches: Option<bool>,
-    /// D-N (b).
-    pub witness_a_present: Option<bool>,
-    /// D-N (b).
-    pub witness_b_absent: Option<bool>,
-    /// D-N (c).
-    pub server_version_matches: Option<bool>,
-    /// D-N (d).
-    pub migrations_drift: Option<i32>,
-    /// D-N (e).
-    pub rls_unforced: Option<i32>,
-    /// D-N (f).
-    pub isolation_violations: Option<i32>,
-    /// D-N (f).
-    pub isolation_pairs: Option<i32>,
-    /// D-N (h).
-    pub payload_digest_mismatches: Option<i32>,
-    /// D-M: refused embedder attempts.
-    pub provider_calls: Option<i64>,
-    /// D-N (j).
-    pub drill_archiver_attempts: Option<i64>,
-    /// D-N (g).
-    pub rebuild_equivalent: Option<bool>,
-    /// D-N (g).
-    pub rebuild_points: Option<i64>,
-    /// D-G.
-    pub legacy_points_without_vector: Option<i64>,
-    /// D-N (g): memories distilled but unprojected at T.
-    pub unprojected_at_target: Option<i64>,
-    /// R-37 quarantine counts.
-    pub restored_in_flight: Option<serde_json::Value>,
-    /// D-O: labelled resources left after destroy.
-    pub residue: Option<i32>,
-    /// D-Q RTO.
-    pub rto_seconds: Option<f64>,
-    /// Every phase, timed.
-    pub phase_seconds: Option<serde_json::Value>,
-    /// The first named failure; `None` claims success.
-    pub failure: Option<String>,
-    /// 10.11 H.
-    pub repo_intact: Option<bool>,
 }
 
 /// ADR-0064 D-O step 9: the receipt, written AFTER destroy (residue known). A success claim the table refuses comes

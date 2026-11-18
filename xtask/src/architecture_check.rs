@@ -1419,7 +1419,7 @@ fn hex_layer_symbols(source: &str) -> Result<BTreeSet<String>, String> {
 
 /// ADR-0130 step 1: exact debt with a ceiling that may only decrease (#520).
 fn hex_layer_difference(actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    hex_exact(actual, baseline, 15, "HEX-LAYER")
+    hex_exact(actual, baseline, 0, "HEX-LAYER")
 }
 
 // §78 / ADR-0130 D2: composition roots may wire adapters. These exclusions follow the
@@ -13915,7 +13915,6 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         for (kind, file) in [
             (0, "xtask/hex_context_baseline.txt"),
             (1, "xtask/hex_writer_baseline.txt"),
-            (3, HEX_BASELINE),
         ] {
             let path = root.join(file);
             let original = fs::read_to_string(&path).unwrap();
@@ -13933,6 +13932,13 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             println!("{file}: restored GREEN");
             mutate(kind, file, "injected ceiling row", "baseline ceiling");
         }
+        // With a zero production ceiling, adding the first layer row is the disk fault.
+        mutate(
+            3,
+            HEX_BASELINE,
+            "injected ceiling row",
+            "LAYER baseline ceiling",
+        );
     }
 
     #[test]
@@ -14210,6 +14216,48 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             fs::write(&path, &original).unwrap();
             assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
             println!("SLICE-7c {case} restored: GREEN");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hex_boundary_slice15b_drill_red_green() {
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("slice15b-boundary-{}", std::process::id()));
+        hex_copy_boundary_fixture(&workspace_root(), &root);
+        let file = "bins/maintenance/src/drill.rs";
+        let path = root.join(file);
+        let original = fs::read_to_string(&path).unwrap();
+        for import in [
+            "humaux_adapters::maintenance_repo::DrillReceipt",
+            "humaux_adapters::maintenance_repo::TenantFacts",
+            "humaux_adapters::maintenance_repo::VerifiedSet",
+            "humaux_adapters::projection_worker::PassConfig",
+            "humaux_adapters::projection_worker::SharedProjectionDeps",
+            "humaux_adapters::provisioning::ProvisioningError",
+            "humaux_adapters::provisioning::QdrantFace",
+            "humaux_adapters::qdrant::RetrievalFamily",
+            "humaux_adapters::rebuild::RebuildDeps",
+            "humaux_adapters::rebuild::ScannerPin",
+            "humaux_adapters::rebuild::Stream",
+            "humaux_adapters::rebuild::Verdict",
+            "humaux_adapters::stream_repo::Backoff",
+            "humaux_adapters::stream_repo::ClaimFamily",
+            "humaux_adapters::stream_repo::OnlyRun",
+        ] {
+            fs::write(&path, format!("{original}\nuse {import} as Regression;\n")).unwrap();
+            let red = hex_layer_gate(&root);
+            let expected = format!("HEX-LAYER: new violation {file}:{import}");
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.as_slice() == std::slice::from_ref(&expected)),
+                "{red:?}"
+            );
+            println!("SLICE-15b RED {expected}");
+            fs::write(&path, &original).unwrap();
+            assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
+            println!("SLICE-15b GREEN {import}");
         }
         fs::remove_dir_all(root).unwrap();
     }
@@ -15140,25 +15188,21 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         assert_eq!(errors.len(), 2);
         assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
         println!("HEX-LAYER gateway use restored: pass");
-        let shortened = actual
-            .iter()
-            .skip(1)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n");
-        let errors = hex_layer_difference(&actual, &shortened);
-        println!("HEX-LAYER removed baseline row: fail {errors:?}");
-        assert_eq!(errors.len(), 2);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("expected exactly ceiling"))
+        // Exercise baseline deletion and stale debt with a one-row fixture even at zero production debt.
+        let row = format!("{path}:humaux_adapters::affect_repo::AffectInput");
+        let fixture = BTreeSet::from([row.clone()]);
+        assert!(hex_exact(&fixture, &row, 1, "HEX-LAYER").is_empty());
+        assert_eq!(
+            hex_exact(&fixture, "", 1, "HEX-LAYER"),
+            [
+                "HEX-LAYER: baseline row count 0, expected exactly ceiling 1".to_owned(),
+                format!("HEX-LAYER: new violation {row}")
+            ]
         );
-        assert!(matches!(hex_layer_gate(&root), Verdict::Pass));
-        println!("HEX-LAYER removed baseline row restored: pass");
-        let mut fixed = actual.clone();
-        fixed.pop_first();
-        assert_eq!(hex_layer_difference(&fixed, &baseline).len(), 1);
+        assert_eq!(
+            hex_exact(&BTreeSet::new(), &row, 1, "HEX-LAYER"),
+            [format!("HEX-LAYER: stale baseline {row}")]
+        );
         assert!(
             matches!(hex_layer_gate(&root), Verdict::Pass),
             "{:?}",
