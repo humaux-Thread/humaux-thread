@@ -27,6 +27,7 @@ pub mod entitlement;
 pub mod forget;
 pub mod independent_audit;
 pub mod ingest;
+pub mod knowledge_backup;
 pub mod login;
 pub mod notify;
 pub mod oauth;

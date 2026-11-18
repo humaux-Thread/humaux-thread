@@ -29,7 +29,7 @@
 //!   control.partition_drop, control.partition_drop_check, control.partition_drop_statements,
 //!   control.retention_policy_approve], PostgreSQL(role_gateway) r=[private.evidence_objects, private.memory_records,
 //!   projection.private_memory_points], PostgreSQL(role_retrieval_worker) r=[projection.memory_vectors]]; env=[];
-//!   modules=[application::partition_retention, adapters::membership_repo, adapters::postgres, adapters::provisioning, domain::audit, domain::error, humaux-adapters]
+//!   modules=[application::knowledge_backup, application::partition_retention, adapters::membership_repo, adapters::postgres, adapters::provisioning, domain::audit, domain::error, humaux-adapters]
 //! Called-by: [adapters::rebuild, maintenance::backup, maintenance::drill, maintenance::serve,
 //!   tests]
 //! Invariants: [the page returns tenant ids only, strictly after the cursor in tenant_id order, at most `limit`;
@@ -52,6 +52,8 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
 
+use humaux_application::knowledge_backup::BackupEvidencePort;
+pub use humaux_application::knowledge_backup::{BackupReceipt, BackupStatusFacts, SetVerdict};
 pub use humaux_application::partition_retention::{
     ApproveReceipt, CheckedLeaf, CreatePartitionsReceipt, CreatedLeaf, DropOutcome, DropReceipt,
     DropRequest, DueLeaf,
@@ -973,39 +975,6 @@ impl PartitionRetentionPort for RetentionExecutor {
 // role_maintenance (0234: INSERT, SELECT on ops.backup_sets / ops.backup_receipts / ops.wal_archive_failures; no
 // UPDATE, no DELETE: the receipts are append-only). Cluster-level tables: no tenant GUC, no RLS.
 
-/// One `ops.backup_receipts` row as a backup arm writes it. The arm CLAIMS `VERIFIED` by leaving `failure` empty;
-/// the table refuses the claim unless verify exited 0 and the verified manifest is the label's first-verified one
-/// (`backup_receipts_verified_derived`, FK to `ops.backup_sets`) and the row is shaped (`backup_receipts_shape`).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BackupReceipt {
-    /// pgBackRest's set label; `None` for a refusal before any write (10.11 A).
-    pub backup_label: Option<String>,
-    /// The set's start / stop as pgBackRest's `info` reports them.
-    pub backup_started_at: Option<OffsetDateTime>,
-    /// See `backup_started_at`.
-    pub backup_stopped_at: Option<OffsetDateTime>,
-    /// sha256 of the set's `backup.manifest` pulled back now with `repo-get`.
-    pub manifest_sha256: Option<Vec<u8>>,
-    /// `pgbackrest verify --set` exit code; `None` when verify did not run.
-    pub verify_exit: Option<i32>,
-    /// The manifest sha256 this verification proved: set only when every verify step passed.
-    pub verified_manifest_sha256: Option<Vec<u8>>,
-    /// The named failure; `None` claims VERIFIED.
-    pub failure: Option<String>,
-    /// Live `du -sk` of the repository (backup arms only; D-K reads the newest non-NULL one).
-    pub repo_bytes: Option<i64>,
-    /// Live `df -Pk` free bytes of the repository filesystem.
-    pub repo_free_bytes: Option<i64>,
-    /// The set's repository size from `info` (`backup[].info.repository.size`, spike SP-11).
-    pub set_repo_bytes: Option<i64>,
-    /// `HUMAUX_MAINTENANCE_BACKUP_REPO_MAX_BYTES` as the arm used it (10.11 C: the daemon reads no budget key).
-    pub repo_max_bytes: Option<i64>,
-    /// `HUMAUX_MAINTENANCE_BACKUP_MIN_FREE_BYTES` as the arm used it.
-    pub min_free_bytes: Option<i64>,
-    /// The D-V estimate the budget precheck used.
-    pub estimate_bytes: Option<i64>,
-}
-
 /// Appends one receipt (`backup_type` is always `full` in card 37, D-V); returns its id. A VERIFIED claim the table
 /// refuses comes back as the database error (23514 / 23503), never as a quietly FAILED row.
 pub async fn insert_backup_receipt(
@@ -1087,32 +1056,6 @@ pub async fn newest_verified_set_repo_bytes(
     .await
 }
 
-/// The latest verification verdict of one backup set (the newest receipt under its label).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SetVerdict {
-    /// pgBackRest's set label.
-    pub label: String,
-    /// The newest receipt of the label is VERIFIED.
-    pub verified: bool,
-    /// The set's start as the receipt recorded it.
-    pub started_at: Option<OffsetDateTime>,
-    /// The set's stop as the receipt recorded it.
-    pub stopped_at: Option<OffsetDateTime>,
-}
-
-/// What `backup status` reads from the database, in one READ ONLY snapshot (status writes nothing, T-J4).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackupStatusFacts {
-    /// Every labelled set's latest verdict (D-K's `latest` CTE: `DISTINCT ON (backup_label)`, newest first).
-    pub sets: Vec<SetVerdict>,
-    /// The oldest `ops.wal_archive_failures` row newer than the newest VERIFIED start (10.11 D's `v`): the latch.
-    pub latched_since: Option<OffsetDateTime>,
-    /// The newest `ops.wal_archive_failures` row (the PITR window starts after it, 10.11 E).
-    pub newest_failure: Option<OffsetDateTime>,
-    /// `pg_stat_archiver.last_failed_time` when it is newer than `last_archived_time`: failing right now.
-    pub failing_now_since: Option<OffsetDateTime>,
-}
-
 /// ADR-0064 10.11 D / E: the facts `backup status` prints, read-only.
 pub async fn backup_status_facts(
     pool: &MaintenanceDbPool,
@@ -1159,6 +1102,19 @@ pub async fn backup_status_facts(
     };
     txn.commit().await?;
     Ok(facts)
+}
+
+#[async_trait::async_trait(?Send)]
+impl BackupEvidencePort for MaintenanceDbPool {
+    type Error = sqlx::Error;
+
+    async fn append_receipt(&self, receipt: &BackupReceipt) -> Result<Uuid, Self::Error> {
+        insert_backup_receipt(self, receipt).await
+    }
+
+    async fn status_snapshot(&self) -> Result<BackupStatusFacts, Self::Error> {
+        backup_status_facts(self).await
+    }
 }
 
 // ---- ADR-0064 D-K / 10.11 D (card 37 S6): the daemon's DR_EVIDENCE statement ----
