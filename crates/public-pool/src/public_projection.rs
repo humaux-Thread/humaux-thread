@@ -1,6 +1,6 @@
 //! `public-pool::public_projection` — Public Qdrant projection writes and bounded dispatch assembly (§17.6).
 //! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell, serde_json, sha2, uuid];
-//!   services=[Qdrant(*)]; env=[]; modules=[adapters::postgres, adapters::qdrant, application::public_dispatch, domain::error, domain::ids, infra-cell::permit, infra-cell::transport, public-pool::public_repo]
+//!   services=[Qdrant(*)]; env=[]; modules=[adapters::postgres, application::public_dispatch, domain::error, domain::ids, infra-cell::permit, infra-cell::transport, public-pool::public_repo]
 //! Called-by: [public-worker::bootstrap, tests]
 //! Invariants: [writes only the public payload contract through the same-cell transport; no dense vector, private
 //!   payload; dispatch captures only the public-role pool and retains repository transaction fences; a Qdrant failure is DependencyUnavailable]
@@ -9,19 +9,72 @@
 //! This adapter is deliberately narrow: it writes only the public payload contract through the
 //! same-cell HTTP transport. It has no dense vector, private payload, tenant, or database seam.
 
+use humaux_domain::error::ErrorCode;
 use humaux_infra_cell::{
-    CellAccessPermit, IntraCellHttpTransport, IntraCellMethod, IntraCellRequest,
+    CellAccessPermit, IntraCellError, IntraCellHttpTransport, IntraCellMethod, IntraCellRequest,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::num::NonZeroU32;
 use uuid::Uuid;
 
-use humaux_adapters::qdrant::QdrantTransportError;
-
 use crate::public_repo::{
     EligibleObject, ProjectionIdentity, ProjectionWriteOutcome, PublicProjectionPort,
 };
+
+/// Failures of the public Qdrant adapter (§17.6). The application port exposes only ErrorCode.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PublicProjectionError {
+    /// The same-cell transport declined or could not complete the request.
+    Transport(IntraCellError),
+    /// Qdrant returned a non-success HTTP status and an optional diagnostic body.
+    NonSuccessStatus {
+        /// The HTTP status returned by Qdrant.
+        status: u16,
+        /// Qdrant's response JSON, if present.
+        body: Option<Value>,
+    },
+    /// A response or query did not match the public projection contract.
+    UnexpectedResponseShape(String),
+    /// The collection name cannot be used in a same-cell request path.
+    InvalidCollectionName(String),
+}
+
+impl std::fmt::Display for PublicProjectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(error) => write!(f, "{error}"),
+            Self::NonSuccessStatus { status, body } => {
+                write!(f, "Qdrant returned HTTP {status}: {body:?}")
+            }
+            Self::UnexpectedResponseShape(shape) => {
+                write!(f, "unexpected Qdrant response shape: {shape}")
+            }
+            Self::InvalidCollectionName(name) => {
+                write!(f, "invalid Qdrant collection name: {name:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PublicProjectionError {}
+
+impl From<IntraCellError> for PublicProjectionError {
+    fn from(error: IntraCellError) -> Self {
+        Self::Transport(error)
+    }
+}
+
+impl PublicProjectionError {
+    fn into_error_code(self) -> ErrorCode {
+        match self {
+            Self::Transport(..)
+            | Self::NonSuccessStatus { .. }
+            | Self::UnexpectedResponseShape(..)
+            | Self::InvalidCollectionName(..) => ErrorCode::DependencyUnavailable,
+        }
+    }
+}
 
 /// The six fields persisted on a public projection point (§17.6).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,9 +149,9 @@ impl<'a> PublicProjectionAdapter<'a> {
         &self,
         text: &str,
         limit: NonZeroU32,
-    ) -> Result<Vec<PublicProjectionCandidate>, QdrantTransportError> {
+    ) -> Result<Vec<PublicProjectionCandidate>, PublicProjectionError> {
         if text.trim().is_empty() {
-            return Err(QdrantTransportError::UnexpectedResponseShape(
+            return Err(PublicProjectionError::UnexpectedResponseShape(
                 "empty public query".into(),
             ));
         }
@@ -118,7 +171,7 @@ impl<'a> PublicProjectionAdapter<'a> {
             )
             .await?;
         if !(200..300).contains(&response.status) {
-            return Err(QdrantTransportError::NonSuccessStatus {
+            return Err(PublicProjectionError::NonSuccessStatus {
                 status: response.status,
                 body: response.json_body,
             });
@@ -128,7 +181,7 @@ impl<'a> PublicProjectionAdapter<'a> {
             .and_then(|b| b.get("result").and_then(|r| r.get("points")).cloned())
             .and_then(|v| v.as_array().cloned())
             .ok_or_else(|| {
-                QdrantTransportError::UnexpectedResponseShape("missing query points".into())
+                PublicProjectionError::UnexpectedResponseShape("missing query points".into())
             })?;
         points.iter().map(parse_candidate).collect()
     }
@@ -137,7 +190,7 @@ impl<'a> PublicProjectionAdapter<'a> {
         transport: &'a dyn IntraCellHttpTransport,
         permit: &'a CellAccessPermit,
         collection: &'a str,
-    ) -> Result<Self, QdrantTransportError> {
+    ) -> Result<Self, PublicProjectionError> {
         if collection.is_empty()
             || collection.contains('/')
             || collection.contains('@')
@@ -145,7 +198,7 @@ impl<'a> PublicProjectionAdapter<'a> {
                 .chars()
                 .any(|c| c.is_control() || c.is_whitespace())
         {
-            return Err(QdrantTransportError::InvalidCollectionName(
+            return Err(PublicProjectionError::InvalidCollectionName(
                 collection.to_owned(),
             ));
         }
@@ -164,7 +217,7 @@ impl<'a> PublicProjectionAdapter<'a> {
         object_revision: i64,
         evaluation_id: Uuid,
         body: &str,
-    ) -> Result<PublicProjectionReadback, QdrantTransportError> {
+    ) -> Result<PublicProjectionReadback, PublicProjectionError> {
         self.write_live_identity(
             &ProjectionIdentity {
                 object_kind: object_kind.to_owned(),
@@ -186,7 +239,7 @@ impl<'a> PublicProjectionAdapter<'a> {
         object_revision: i64,
         evaluation_id: Uuid,
         body_sha256: &str,
-    ) -> Result<PublicProjectionReadback, QdrantTransportError> {
+    ) -> Result<PublicProjectionReadback, PublicProjectionError> {
         let point_id = point_id(object_kind, object_id, object_revision);
         let payload = PublicProjectionPayload {
             object_kind: object_kind.to_owned(),
@@ -207,7 +260,7 @@ impl<'a> PublicProjectionAdapter<'a> {
         payload: &PublicProjectionPayload,
         body: Option<&str>,
         insert_only: bool,
-    ) -> Result<PublicProjectionReadback, QdrantTransportError> {
+    ) -> Result<PublicProjectionReadback, PublicProjectionError> {
         let vector = body
             .map(|text| json!({"bm25": {"text": text, "model": "qdrant/bm25"}}))
             .unwrap_or_else(|| json!({}));
@@ -231,7 +284,7 @@ impl<'a> PublicProjectionAdapter<'a> {
             )
             .await?;
         if !(200..300).contains(&response.status) {
-            return Err(QdrantTransportError::NonSuccessStatus {
+            return Err(PublicProjectionError::NonSuccessStatus {
                 status: response.status,
                 body: response.json_body,
             });
@@ -250,7 +303,7 @@ impl<'a> PublicProjectionAdapter<'a> {
             )
             .await?;
         if !(200..300).contains(&verify.status) {
-            return Err(QdrantTransportError::NonSuccessStatus {
+            return Err(PublicProjectionError::NonSuccessStatus {
                 status: verify.status,
                 body: verify.json_body,
             });
@@ -259,7 +312,7 @@ impl<'a> PublicProjectionAdapter<'a> {
             .json_body
             .and_then(|body| body.get("result").cloned())
             .ok_or_else(|| {
-                QdrantTransportError::UnexpectedResponseShape("missing result".into())
+                PublicProjectionError::UnexpectedResponseShape("missing result".into())
             })?;
         Ok(PublicProjectionReadback {
             point_id,
@@ -275,11 +328,11 @@ impl<'a> PublicProjectionPort for PublicProjectionAdapter<'a> {
     async fn project_live(
         &self,
         object: &EligibleObject,
-    ) -> Result<ProjectionWriteOutcome, humaux_domain::error::ErrorCode> {
+    ) -> Result<ProjectionWriteOutcome, ErrorCode> {
         let readback = self
             .write_live(object)
             .await
-            .map_err(|_| humaux_domain::error::ErrorCode::DependencyUnavailable)?;
+            .map_err(PublicProjectionError::into_error_code)?;
         Ok(if readback.superseded {
             ProjectionWriteOutcome::Superseded
         } else {
@@ -287,10 +340,7 @@ impl<'a> PublicProjectionPort for PublicProjectionAdapter<'a> {
         })
     }
 
-    async fn retire(
-        &self,
-        identity: &ProjectionIdentity,
-    ) -> Result<(), humaux_domain::error::ErrorCode> {
+    async fn retire(&self, identity: &ProjectionIdentity) -> Result<(), ErrorCode> {
         self.retire_revision_fields(
             &identity.object_kind,
             identity.object_id,
@@ -300,7 +350,7 @@ impl<'a> PublicProjectionPort for PublicProjectionAdapter<'a> {
         )
         .await
         .map(|_| ())
-        .map_err(|_| humaux_domain::error::ErrorCode::DependencyUnavailable)
+        .map_err(PublicProjectionError::into_error_code)
     }
 }
 
@@ -309,7 +359,7 @@ impl<'a> PublicProjectionAdapter<'a> {
     pub async fn write_live(
         &self,
         object: &EligibleObject,
-    ) -> Result<PublicProjectionReadback, QdrantTransportError> {
+    ) -> Result<PublicProjectionReadback, PublicProjectionError> {
         self.write_live_identity(&object.identity(), &object.canonical_body)
             .await
     }
@@ -318,9 +368,9 @@ impl<'a> PublicProjectionAdapter<'a> {
         &self,
         identity: &ProjectionIdentity,
         body: &str,
-    ) -> Result<PublicProjectionReadback, QdrantTransportError> {
+    ) -> Result<PublicProjectionReadback, PublicProjectionError> {
         if Sha256::digest(body.as_bytes()).as_slice() != identity.body_sha256 {
-            return Err(QdrantTransportError::UnexpectedResponseShape(
+            return Err(PublicProjectionError::UnexpectedResponseShape(
                 "canonical projection body does not match identity hash".into(),
             ));
         }
@@ -360,9 +410,9 @@ fn validate_readback(
     readback: &PublicProjectionReadback,
     point_id: Uuid,
     expected: &PublicProjectionPayload,
-) -> Result<(), QdrantTransportError> {
+) -> Result<(), PublicProjectionError> {
     let payload = readback.payload.as_ref().ok_or_else(|| {
-        QdrantTransportError::UnexpectedResponseShape("missing projection payload".into())
+        PublicProjectionError::UnexpectedResponseShape("missing projection payload".into())
     })?;
     let matches = *payload == expected.to_json() && readback.point_id == point_id;
     let vector_empty = readback
@@ -387,16 +437,16 @@ fn validate_readback(
         vector_empty
     };
     if !matches || !vector_matches {
-        return Err(QdrantTransportError::UnexpectedResponseShape(
+        return Err(PublicProjectionError::UnexpectedResponseShape(
             "projection readback mismatch".into(),
         ));
     }
     Ok(())
 }
 
-fn parse_candidate(row: &Value) -> Result<PublicProjectionCandidate, QdrantTransportError> {
+fn parse_candidate(row: &Value) -> Result<PublicProjectionCandidate, PublicProjectionError> {
     let bad =
-        || QdrantTransportError::UnexpectedResponseShape("invalid public query candidate".into());
+        || PublicProjectionError::UnexpectedResponseShape("invalid public query candidate".into());
     let point = row
         .get("id")
         .and_then(Value::as_str)
@@ -514,6 +564,44 @@ impl humaux_application::public_dispatch::PublicDispatchPort for PublicDispatch<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_projection_errors_preserve_diagnostics_and_port_code() {
+        let transport = IntraCellError::ExpiredPermit;
+        let cases = [
+            (
+                PublicProjectionError::from(transport.clone()),
+                "CellAccessPermit expired",
+            ),
+            (
+                PublicProjectionError::NonSuccessStatus {
+                    status: 503,
+                    body: Some(json!("unavailable")),
+                },
+                r#"Qdrant returned HTTP 503: Some(String("unavailable"))"#,
+            ),
+            (
+                PublicProjectionError::NonSuccessStatus {
+                    status: 400,
+                    body: None,
+                },
+                "Qdrant returned HTTP 400: None",
+            ),
+            (
+                PublicProjectionError::UnexpectedResponseShape("missing result".into()),
+                "unexpected Qdrant response shape: missing result",
+            ),
+            (
+                PublicProjectionError::InvalidCollectionName("bad/name".into()),
+                r#"invalid Qdrant collection name: "bad/name""#,
+            ),
+        ];
+        assert_eq!(cases[0].0, PublicProjectionError::Transport(transport));
+        for (error, diagnostic) in cases {
+            assert_eq!(error.to_string(), diagnostic);
+            assert_eq!(error.into_error_code(), ErrorCode::DependencyUnavailable);
+        }
+    }
 
     #[test]
     fn point_id_is_stable_and_revision_scoped() {
