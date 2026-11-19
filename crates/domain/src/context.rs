@@ -30,6 +30,7 @@ use crate::authority::{
     AuthorityClass, AuthorityPolicy, AuthorityStatus, CandidateRejection, MemoryId, NonEmptyVec,
 };
 use crate::confirm::DestructiveOp;
+pub use crate::context_types::SelectorId;
 use crate::error::ErrorCode;
 use crate::evidence::{EvidenceOriginClass, InstructionDisposition};
 use crate::grounding::{GroundingState, GroundingStateKind, RowGrounding};
@@ -41,22 +42,6 @@ use uuid::Uuid;
 // =============================================================================
 // §25.4 ContextSelectorRegistry
 // =============================================================================
-
-/// §25.4 逐字点名的五个确定性 selector。**闭集**——加一个 selector 必须改这里，
-/// 编译器会逼所有 `match` 跟着改。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum SelectorId {
-    /// 任务显式指定的上下文。
-    TaskExplicitContextV1,
-    /// 项目当前生效的约束。
-    ProjectActiveConstraintsV1,
-    /// 用户已确认的纠正。
-    UserConfirmedCorrectionsV1,
-    /// 必须带上的 current-state facet。
-    RequiredCurrentStateFacetsV1,
-    /// 显式建立的 MANDATORY binding。
-    ExplicitMandatoryBindingsV1,
-}
 
 /// §59 Scope 的层级。由窄到宽，[`scope_chain`] 按这个序展开。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

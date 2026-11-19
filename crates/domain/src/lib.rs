@@ -54,6 +54,8 @@ pub mod code;
 pub mod confirm;
 pub mod consolidate;
 pub mod context;
+/// Closed selector identifiers shared by continuity and retrieval (§25.4).
+pub mod context_types;
 pub mod continuity;
 pub mod coordination;
 pub mod dataclass;

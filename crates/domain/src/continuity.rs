@@ -5,6 +5,7 @@
 //! Spec: Baseline §25.3.1
 
 use crate::error::ErrorCode;
+pub use crate::ids::ProjectId;
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -30,7 +31,6 @@ macro_rules! continuity_uuid_v7 {
     };
 }
 
-continuity_uuid_v7!(ProjectId);
 continuity_uuid_v7!(ContinuityFacetVersionId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
