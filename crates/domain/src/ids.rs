@@ -1,4 +1,4 @@
-//! `domain::ids` — seven UUIDv7 newtype ids and `Scope` (§59 core Rust types; id policy §49).
+//! `domain::ids` — shared UUIDv7 newtype ids and `Scope` (§25.3.1; §59 core Rust types; id policy §49).
 //! Depends-on: crates=[uuid]; services=[]; env=[]; modules=[domain::error]
 //! Called-by: [adapters::affect_repo, adapters::billing_processor_repo, adapters::byok, adapters::confirm_token_repo, adapters::consolidate_repo, adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, adapters::contribution_eligibility, adapters::contribution_entry_repo, adapters::contribution_reasoner, adapters::contribution_repo, adapters::coord_repo, adapters::coord_task_repo, adapters::credential_repo, adapters::distill_repo, adapters::egress_policy, adapters::entitlement_repo, adapters::exact_census, adapters::grep_repo, adapters::login_repo, adapters::membership_repo, adapters::memory_governance_repo, adapters::oauth_repo, adapters::operation_receipt, adapters::placement_repo, adapters::private_projection_registry, adapters::processing_status, adapters::projection_worker, adapters::provider_budget, adapters::provisioning, adapters::qdrant, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::rebuild, adapters::remember, adapters::request_guard_repo, adapters::retrieval_query_source, adapters::retrieve, adapters::session_repo, application::api_key, application::auth, application::billing_process, application::confirm, application::continuity, application::coordination, application::correct, application::distill, application::entitlement, application::independent_audit, application::lifecycle_execution, application::login, application::membership_admin, application::notify, application::oauth, application::oauth_exchange, application::pin, application::processing_status, application::projection_maintenance, application::public_dispatch, application::recall_read, application::referral, application::remember, application::retrieval_embedding_port, application::session, billing-worker::creem, billing-worker::normalize, cache::bounded, cache::key, domain::audit, domain::audit_types, domain::authority, domain::context, domain::egress, domain::identity, domain::policy, gateway::auth, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, maintenance::main, maintenance::member, maintenance::projection_serve, maintenance::serve, projection::card, projection::dense, projection::serving, projection::stream, public-pool::notice, public-pool::public_projection, public-pool::public_provenance, public-pool::public_repo, public-worker::main, retrieval-provider::adapters, retrieval-provider::admission, retrieval-provider::contract, retrieval-provider::router, retrieval-worker::rpc, tests, xtask::e2e_seed, xtask::soak]
 //! Invariants: []
@@ -55,6 +55,30 @@ uuid_newtype!(RepositoryId, "Repository id (§59 `Scope`).");
 uuid_newtype!(TaskId, "Task id (§59 `Scope`).");
 uuid_newtype!(RunId, "Run id (§59 `Scope`).");
 uuid_newtype!(AgentId, "Agent id (§59 `Scope`).");
+
+/// Project Continuity identifier (§25.3.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProjectId(pub Uuid);
+
+#[allow(clippy::new_without_default)]
+impl ProjectId {
+    /// Mints a new project identifier (UUIDv7).
+    pub fn new() -> Self {
+        Self(Uuid::now_v7())
+    }
+
+    /// Parses an existing project identifier.
+    ///
+    /// # Errors
+    /// Returns `InvalidInput` for malformed UUIDs and versions other than v7.
+    pub fn parse(value: &str) -> Result<Self, ErrorCode> {
+        let id = Uuid::parse_str(value).map_err(|_| ErrorCode::InvalidInput)?;
+        if id.get_version_num() != 7 {
+            return Err(ErrorCode::InvalidInput);
+        }
+        Ok(Self(id))
+    }
+}
 
 /// Request scope (§59): `tenant_id` is required, the rest narrow progressively by call
 /// layer. Which layer it narrows to is filled in by the caller (HTTP/MCP adapter) — Domain

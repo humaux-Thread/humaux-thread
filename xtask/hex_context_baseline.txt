@@ -34,7 +34,6 @@ crates/adapters/src/applicability_repo.rs:project_continuity->identity_access:hu
 crates/adapters/src/attribution_repo.rs:work_attribution->knowledge_lifecycle:humaux_adapters::memory_repo::MemoryAttribution
 crates/adapters/src/attribution_repo.rs:work_attribution->knowledge_lifecycle:humaux_domain::authority::EvidenceId
 crates/adapters/src/attribution_repo.rs:work_attribution->knowledge_lifecycle:humaux_domain::authority::MemoryId
-crates/adapters/src/attribution_repo.rs:work_attribution->project_continuity:humaux_domain::continuity::ProjectId
 crates/adapters/src/audit_sink.rs:provider_execution->document_acquisition:humaux_adapters::object_store::ObjectKey
 crates/adapters/src/audit_sink.rs:provider_execution->document_acquisition:humaux_adapters::object_store::ObjectStore
 crates/adapters/src/byok.rs:provider_execution->knowledge_lifecycle:humaux_domain::evidence::payload_sha256
@@ -75,9 +74,6 @@ crates/adapters/src/contribution_reasoner.rs:public_knowledge->knowledge_curatio
 crates/adapters/src/contribution_reasoner.rs:public_knowledge->knowledge_curation:humaux_application::consolidate::SealedPrivateReasoningRequest
 crates/adapters/src/contribution_repo.rs:public_knowledge->retrieval_read_model:humaux_adapters::stream_repo
 crates/adapters/src/contribution_repo.rs:public_knowledge->retrieval_read_model:humaux_adapters::stream_repo::next_commit_seq
-crates/adapters/src/coord_task_repo.rs:coordination->project_continuity:humaux_domain::continuity::ProjectId
-crates/adapters/src/coord_task_repo.rs:coordination->project_continuity:humaux_domain::continuity::ProjectId::new
-crates/adapters/src/coord_tree_repo.rs:coordination->project_continuity:humaux_domain::continuity::ProjectId
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::ContributionReasonerConfig
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::admitted_inference_context
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::authorize_structured_egress
@@ -88,7 +84,6 @@ crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:hum
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::DistillFinish
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::JobsError::Db
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::finish_distill_in_txn
-crates/adapters/src/exact_census.rs:retrieval_read_model->project_continuity:humaux_domain::continuity::ProjectId
 crates/adapters/src/maintenance_repo.rs:job_execution->identity_access:humaux_adapters::membership_repo::AdminAction
 crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning
 crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::AUDIT_RESULT_SUCCESS
@@ -119,12 +114,10 @@ crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->commercial:humaux_
 crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::ReserveResult::Existing
 crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::finish_reservation_in_txn
 crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::reserve_bmo_in_txn
-crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->project_continuity:humaux_domain::continuity::ProjectId
 crates/adapters/src/private_projection_registry.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::authority::MemoryId
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind::ALL
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind::from_str
-crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ProjectId
 crates/adapters/src/projection_worker.rs:retrieval_read_model->knowledge_lifecycle:humaux_adapters::affect_repo::affects_for_memories_in_txn
 crates/adapters/src/projection_worker.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectAnnotation
 crates/adapters/src/projection_worker.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::authority::MemoryId
@@ -205,7 +198,6 @@ crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_tel
 crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::set_cache_singleflight_waiters
 crates/domain/src/attribution.rs:work_attribution->knowledge_lifecycle:humaux_domain::authority::EvidenceId
 crates/domain/src/attribution.rs:work_attribution->knowledge_lifecycle:humaux_domain::authority::MemoryId
-crates/domain/src/attribution.rs:work_attribution->project_continuity:humaux_domain::continuity::ProjectId
 crates/domain/src/relation.rs:work_attribution->knowledge_lifecycle:humaux_domain::subject::SubjectKind
 crates/domain/src/relation.rs:work_attribution->knowledge_lifecycle:humaux_domain::subject::SubjectKind::ALL
 crates/domain/src/relation.rs:work_attribution->knowledge_lifecycle:humaux_domain::subject::SubjectKind::Brand
@@ -271,7 +263,6 @@ crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_
 crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
 crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::NeedsVerification
 crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::PinnedLane
-crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::SelectorId
 crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::spec
 crates/retrieval/src/request.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::authority::MemoryId
 crates/retrieval/src/signals.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingState
