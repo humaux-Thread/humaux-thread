@@ -2061,20 +2061,15 @@ fn native_gateway_semantic_recall_real_qdrant_pg_and_ryw_acceptance() {
                     affect_annotation(AffectKind::Emotion, EmotionLabel::Frustration, -8_000, 5_000, 9_000);
                 let first_payload = semantic_payload(&handle, first_updated)
                     .with_subject_ids(vec![sa])
-                    .with_affects(vec![frustration.clone()]);
+                    .with_affects(vec![frustration.index_view()]);
                 // Tampered/stale payload: claims FRUSTRATION, PG holds no affect row.
                 let second_payload = semantic_payload(&handle, second_updated)
                     .with_subject_ids(vec![sa, sb])
-                    .with_affects(vec![frustration]);
+                    .with_affects(vec![frustration.index_view()]);
+                let calm = affect_annotation(AffectKind::Mood, EmotionLabel::Calm, 6_000, -4_000, 8_200);
                 let third_payload = semantic_payload(&handle, third_updated)
                     .with_subject_ids(vec![sa, sb])
-                    .with_affects(vec![affect_annotation(
-                        AffectKind::Mood,
-                        EmotionLabel::Calm,
-                        6_000,
-                        -4_000,
-                        8_200,
-                    )]);
+                    .with_affects(vec![calm.index_view()]);
                 let vector = semantic_vector(query);
                 upsert(
                     transport.as_ref(),

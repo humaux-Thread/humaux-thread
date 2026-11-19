@@ -6,7 +6,7 @@
 //!   private.memory_records, projection.card_profile_policies, projection.rebuild_tickets, projection.stream_checkpoints,
 //!   projection.stream_log]];
 //!   env=[CARGO_MANIFEST_DIR];
-//!   modules=[adapters::context_repo, adapters::placement_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant, adapters::read_materialize, adapters::retrieval_query_log, adapters::serving_repo, adapters::stream_repo, application::projection_maintenance, application::recall_read, application::signed_token, contracts::retrieval_config, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope]
+//!   modules=[adapters::context_repo, adapters::placement_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant, adapters::read_materialize, adapters::retrieval_query_log, adapters::serving_repo, adapters::stream_repo, application::projection_maintenance, application::recall_read, application::signed_token, contracts::retrieval_config, domain::affect_read, domain::error, domain::identity, domain::ids, domain::subject, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope]
 //! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::operation_receipt, adapters::read_materialize, adapters::remember, adapters::retrieval_provisioning, adapters::stream_repo, gateway::bootstrap, maintenance::switch_visible, tests]
 //! Invariants: [read-your-writes on role_gateway: an expired token, cross-tenant/workspace scope or a changed serving
 //!   projection is a typed RetrieveError, never a stale answer passed off as caught up; the read-route visible count
@@ -55,7 +55,7 @@ use humaux_application::recall_read::{
 pub use humaux_application::signed_token::TokenKeys;
 use humaux_application::signed_token::{FIELD_SEP, TokenLabel, labelled_hmac};
 use humaux_contracts::retrieval_config::RETRIEVAL_GROUP_QUERY_MAX_CALLS;
-use humaux_domain::affect::AffectFilter;
+use humaux_domain::affect_read::AffectReadFilter;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::{TenantId, WorkspaceId};
@@ -103,7 +103,7 @@ type ReadMemoryTexts = for<'a, 'tx> fn(
 #[derive(Clone, Copy)]
 pub struct MemoryTextReadPort(pub(crate) ReadMemoryTexts);
 
-type AffectRead<'a> = (&'a AffectFilter, AffectMatchReadPort);
+type AffectRead<'a> = (&'a AffectReadFilter, AffectMatchReadPort);
 
 /// DB/decode-layer failure. Adapter-local, not one of the workspace's two frozen domain
 /// error enums (§52) — same reasoning as `jobs::JobsError` / `postgres::PoolInitError`.

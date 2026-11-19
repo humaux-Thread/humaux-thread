@@ -459,7 +459,7 @@ pub async fn search(
         completeness_request: input.completeness_request,
         limit: input.limit,
         subject_ids: input.subject_ids,
-        affect: input.affect,
+        affect: input.affect.as_ref().map(AffectFilter::read_view),
     };
     search_recall(
         SearchRecallPorts {

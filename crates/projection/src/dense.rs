@@ -1,5 +1,5 @@
 //! `projection::dense` — dense lane 查询构造：自动注入 `tenant + §6.1 AuthorizationScope visibility filter`（§17.1）。
-//! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[domain::affect, domain::identity,
+//! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[domain::affect_read, domain::identity,
 //!   domain::ids, domain::subject]
 //! Called-by: [adapters::qdrant, adapters::rebuild, adapters::retrieve, application::recall_read, projection::sparse, tests]
 //! Invariants: [DenseQueryFilter can only be built by build_dense_filter from a mandatory &AuthorizationScope, so
@@ -25,7 +25,7 @@
 //! 本 crate 不 import HTTP / serde_json / Qdrant SDK（§3/§78.3）：[`Condition`] 是
 //! adapter-中立的条件树，序列化成 Qdrant wire filter 是 `adapters::qdrant`（HTTP 层）的职责。
 
-use humaux_domain::affect::{AffectFilter, BasisPointRange, BasisPoints};
+use humaux_domain::affect_read::AffectReadFilter;
 use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::{TenantId, WorkspaceId};
 use humaux_domain::subject::SubjectId;
@@ -153,8 +153,8 @@ impl DenseQueryFilter {
     /// `labels_any` → `Or(Eq …)` (array-contains any), each VAD interval → `Range`,
     /// `min_effective_intensity` → `Range` on the RAW intensity (effective ≤ raw for every row,
     /// so the raw bound is a superset — the exact effective test is PG's).
-    pub fn with_affect(self, filter: Option<&AffectFilter>) -> Self {
-        let Some(filter) = filter.filter(|f| !f.is_empty()) else {
+    pub fn with_affect(self, filter: Option<&AffectReadFilter>) -> Self {
+        let Some(filter) = filter.and_then(AffectReadFilter::prefilter) else {
             return self;
         };
         let mut clauses = match self.0 {
@@ -169,25 +169,21 @@ impl DenseQueryFilter {
                     .collect(),
             )
         };
-        let range = |field: &'static str, r: BasisPointRange| Condition::Range {
+        let range = |field: &'static str, (lo, hi): (i16, i16)| Condition::Range {
             field,
-            gte: i64::from(r.lo.get()),
-            lte: i64::from(r.hi.get()),
+            gte: i64::from(lo),
+            lte: i64::from(hi),
         };
         if !filter.kinds.is_empty() {
             clauses.push(any_of(
                 AFFECT_KINDS_FIELD,
-                filter.kinds.iter().map(|k| k.as_str().to_owned()).collect(),
+                filter.kinds.iter().map(|k| (*k).to_owned()).collect(),
             ));
         }
         if !filter.labels_any.is_empty() {
             clauses.push(any_of(
                 AFFECT_LABELS_FIELD,
-                filter
-                    .labels_any
-                    .iter()
-                    .map(|l| l.as_str().to_owned())
-                    .collect(),
+                filter.labels_any.iter().map(|l| (*l).to_owned()).collect(),
             ));
         }
         for (field, interval) in [
@@ -199,12 +195,8 @@ impl DenseQueryFilter {
                 clauses.push(range(field, interval));
             }
         }
-        if let Some(min) = filter.min_effective_intensity {
-            clauses.push(Condition::Range {
-                field: AFFECT_INTENSITY_FIELD,
-                gte: i64::from(min.get()),
-                lte: i64::from(BasisPoints::MAX.get()),
-            });
+        if let Some(interval) = filter.intensity {
+            clauses.push(range(AFFECT_INTENSITY_FIELD, interval));
         }
         DenseQueryFilter(Condition::And(clauses))
     }
@@ -508,7 +500,9 @@ mod tests {
 
     #[test]
     fn with_affect_ands_any_of_and_ranges_after_tenant_and_visibility() {
-        use humaux_domain::affect::{AffectKind, EmotionLabel};
+        use humaux_domain::affect::{
+            AffectFilter, AffectKind, BasisPointRange, BasisPoints, EmotionLabel,
+        };
         let s = scope(None, &[]);
         let filter = AffectFilter {
             kinds: vec![AffectKind::Emotion],
@@ -524,7 +518,7 @@ mod tests {
             dominance: None,
             min_effective_intensity: Some(BasisPoints::unit(5_000).expect("bp")),
         };
-        let built = build_dense_filter(&s, &[]).with_affect(Some(&filter));
+        let built = build_dense_filter(&s, &[]).with_affect(Some(&filter.read_view()));
         let Condition::And(clauses) = built.as_condition() else {
             panic!("expected And")
         };
@@ -562,7 +556,7 @@ mod tests {
             build_dense_filter(&s, &[])
         );
         assert_eq!(
-            build_dense_filter(&s, &[]).with_affect(Some(&AffectFilter::default())),
+            build_dense_filter(&s, &[]).with_affect(Some(&AffectFilter::default().read_view())),
             build_dense_filter(&s, &[])
         );
     }

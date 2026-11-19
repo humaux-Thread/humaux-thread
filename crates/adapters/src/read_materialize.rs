@@ -1,6 +1,6 @@
 //! `adapters::read_materialize` — Final PostgreSQL body materialization after authorization and token-ledger
 //!   validation.
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde_json, sha2, sqlx, time]; services=[PostgreSQL(role_gateway) r=[ops.outbox, private.events, private.evidence_objects, private.evidence_subjects, private.identity_note_materializations, private.memory_evidence, private.memory_records, private.memory_subjects, private.note_heads, private.memory_text_v, projection.stream_log]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::retrieve, adapters::selection_repo, adapters::stream_repo, application::recall_read, domain::affect, domain::authority, domain::error, domain::identity, domain::ids, domain::memory, domain::note, domain::selection, domain::subject, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::signals]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde_json, sha2, sqlx, time]; services=[PostgreSQL(role_gateway) r=[ops.outbox, private.events, private.evidence_objects, private.evidence_subjects, private.identity_note_materializations, private.memory_evidence, private.memory_records, private.memory_subjects, private.note_heads, private.memory_text_v, projection.stream_log]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::retrieve, adapters::selection_repo, adapters::stream_repo, application::recall_read, domain::affect_read, domain::authority, domain::error, domain::identity, domain::ids, domain::memory, domain::note, domain::selection, domain::subject, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::signals]
 //! Called-by: [adapters::affect_repo, adapters::context_repo, adapters::continuity_read, adapters::exact_census, adapters::grep_repo, adapters::operation_receipt, adapters::retrieve, tests]
 //! Invariants: [read-only on role_gateway under RLS; an invisible or unknown source is NotFound/Forbidden, never
 //!   partially materialized; a PG error is DependencyUnavailable; the recall/context entry points take no
@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use humaux_domain::affect::AffectFilter;
+use humaux_domain::affect_read::AffectReadFilter;
 use humaux_domain::authority::MemoryId;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::AuthorizationScope;
@@ -37,12 +37,12 @@ pub type AffectMatchReadPort = for<'a, 'tx> fn(
     &'a mut Txn<'tx>,
     Uuid,
     &'a [Uuid],
-    &'a AffectFilter,
+    &'a AffectReadFilter,
 ) -> std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<HashSet<Uuid>, sqlx::Error>> + Send + 'a>,
 >;
 
-type AffectRead<'a> = (&'a AffectFilter, AffectMatchReadPort);
+type AffectRead<'a> = (&'a AffectReadFilter, AffectMatchReadPort);
 
 use humaux_application::recall_read::{
     ItemFreshness, MaterializationSnapshot, MaterializedBodies, MaterializedItem,

@@ -1,6 +1,6 @@
 //! `domain::affect` — the §8.5.1 affect annotation axis (ADR-0030, card E1).
-//! Depends-on: crates=[uuid]; services=[]; env=[]; modules=[domain::error, domain::subject]
-//! Called-by: [adapters::affect_repo, adapters::distill_reasoner, adapters::memory_governance_repo, adapters::projection_worker, adapters::qdrant, adapters::read_materialize, adapters::retrieve, application::affect, application::distill_execution, application::lifecycle_execution, application::recall_read, application::remember, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, projection::dense, tests, xtask::architecture_check]
+//! Depends-on: crates=[uuid]; services=[]; env=[]; modules=[domain::affect_read, domain::error, domain::subject]
+//! Called-by: [adapters::affect_repo, adapters::distill_reasoner, adapters::memory_governance_repo, application::affect, application::distill_execution, application::lifecycle_execution, application::remember, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, tests, xtask::architecture_check]
 //! Invariants: []
 //! Spec: Baseline §8.5.1; §33.10; §59; ADR-0030; ADR-0058
 //!
@@ -40,6 +40,7 @@
 
 use std::time::Duration;
 
+use crate::affect_read::{AffectIndexColumns, AffectIndexRow, AffectPrefilter, AffectReadFilter};
 use crate::error::ErrorCode;
 use crate::subject::SubjectId;
 use uuid::Uuid;
@@ -248,6 +249,20 @@ pub struct AffectAnnotation {
     pub target_scope: Option<AffectTargetScope>,
 }
 
+impl AffectAnnotation {
+    /// Projects the raw columns used by the candidate index without applying read-time decay.
+    pub fn index_view(&self) -> AffectIndexRow {
+        AffectIndexRow::new(AffectIndexColumns {
+            kind: self.kind.as_str(),
+            label: self.label.map(EmotionLabel::as_str),
+            valence: self.valence.map(BasisPoints::get),
+            arousal: self.arousal.map(BasisPoints::get),
+            dominance: self.dominance.map(BasisPoints::get),
+            intensity: self.intensity.get(),
+        })
+    }
+}
+
 /// Read-time derived intensity (ADR-0030 D-B). `half_life` is `None` for an EMOTION (raw is a
 /// historical fact and is returned unchanged however much time passed) and the row's stored
 /// policy for a MOOD: `raw · 2^(−elapsed/half_life)`, rounded, saturating into `[0, raw]` —
@@ -304,6 +319,51 @@ pub struct AffectFilter {
 }
 
 impl AffectFilter {
+    /// Publishes the already parsed query for retrieval and the exact matching port.
+    pub fn read_view(&self) -> AffectReadFilter {
+        let axis = |range: BasisPointRange| (range.lo.get(), range.hi.get());
+        AffectReadFilter::new((!self.is_empty()).then(|| {
+            AffectPrefilter {
+                kinds: self.kinds.iter().map(|kind| kind.as_str()).collect(),
+                labels_any: self.labels_any.iter().map(|label| label.as_str()).collect(),
+                valence: self.valence.map(axis),
+                arousal: self.arousal.map(axis),
+                dominance: self.dominance.map(axis),
+                intensity: self
+                    .min_effective_intensity
+                    .map(|min| (min.get(), BasisPoints::MAX.get())),
+            }
+        }))
+    }
+
+    /// Recovers the original filter for same-snapshot matching. The sealed view is issued
+    /// above using these same closed sets and basis points.
+    pub fn from_read_view(view: &AffectReadFilter) -> Self {
+        let Some(bounds) = view.prefilter() else {
+            return Self::default();
+        };
+        let axis = |(lo, hi)| BasisPointRange {
+            lo: BasisPoints(lo),
+            hi: BasisPoints(hi),
+        };
+        Self {
+            kinds: bounds
+                .kinds
+                .iter()
+                .map(|wire| AffectKind::parse(wire).expect("owner-issued affect kind"))
+                .collect(),
+            labels_any: bounds
+                .labels_any
+                .iter()
+                .map(|wire| EmotionLabel::parse(wire).expect("owner-issued affect label"))
+                .collect(),
+            valence: bounds.valence.map(axis),
+            arousal: bounds.arousal.map(axis),
+            dominance: bounds.dominance.map(axis),
+            min_effective_intensity: bounds.intensity.map(|(min, _)| BasisPoints(min)),
+        }
+    }
+
     /// No clause at all — the unscoped read.
     pub fn is_empty(&self) -> bool {
         self.kinds.is_empty()
@@ -580,6 +640,26 @@ mod tests {
             "decayed below min"
         );
         assert!(!labelled.matches(&frustrated, BasisPoints::MAX));
+    }
+
+    #[test]
+    fn read_view_round_trips_all_filter_clauses() {
+        let range = |lo, hi| BasisPointRange::new(bp(lo), bp(hi)).expect("range");
+        let filter = AffectFilter {
+            kinds: AffectKind::ALL.to_vec(),
+            labels_any: EmotionLabel::ALL.to_vec(),
+            valence: Some(range(-10_000, -1)),
+            arousal: Some(range(0, 0)),
+            dominance: Some(range(1, 10_000)),
+            min_effective_intensity: Some(BasisPoints::MAX),
+        };
+        assert_eq!(AffectFilter::from_read_view(&filter.read_view()), filter);
+
+        let unscoped = AffectFilter::default();
+        assert_eq!(
+            AffectFilter::from_read_view(&unscoped.read_view()),
+            unscoped
+        );
     }
 
     #[test]

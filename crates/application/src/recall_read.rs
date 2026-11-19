@@ -1,11 +1,13 @@
 //! `application::recall_read` — ordered candidates enter one authoritative snapshot (Baseline §23 / ADR-0130).
-//! Depends-on: crates=[async-trait, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, time, tokio, uuid]; services=[]; env=[]; modules=[application::retrieval_embedding_port, application::retrieve, domain::affect, domain::authority, domain::context::budget_views, domain::error, domain::identity, domain::ids, domain::note, domain::subject, projection::dense, projection::note_chunks, projection::serving, projection::sparse, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, retrieval::planner, retrieval::request, retrieval::rerank, retrieval::signals]
+//! Depends-on: crates=[async-trait, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, time, tokio, uuid]; services=[]; env=[]; modules=[application::retrieval_embedding_port, application::retrieve, domain::affect_read, domain::authority, domain::context::budget_views, domain::error, domain::identity, domain::ids, domain::note, domain::subject, projection::dense, projection::note_chunks, projection::serving, projection::sparse, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, retrieval::planner, retrieval::request, retrieval::rerank, retrieval::signals]
 //! Called-by: [adapters::context_repo, adapters::exact_census, adapters::grep_repo, adapters::memory_repo, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, gateway::bootstrap, gateway::context, gateway::mcp_application, gateway::memory, gateway::recall, tests]
 //! Invariants: [the read port owns the complete same-snapshot hydration; candidates confer no authority]
 //! Spec: Baseline §15.5; §22; §23; ADR-0130 D7.2
 
 use async_trait::async_trait;
-use humaux_domain::{affect::AffectFilter, identity::AuthorizationScope, subject::SubjectId};
+use humaux_domain::{
+    affect_read::AffectReadFilter, identity::AuthorizationScope, subject::SubjectId,
+};
 use humaux_domain::{
     authority::MemoryId,
     context::budget_views::ContextBudgetLimits,
@@ -358,7 +360,7 @@ pub struct RecallHydrationRequest<'a> {
     /// Subject any-of filter, rechecked during hydration.
     pub subject_ids: &'a [SubjectId],
     /// Optional affect filter, rechecked during hydration.
-    pub affect: Option<&'a AffectFilter>,
+    pub affect: Option<&'a AffectReadFilter>,
     /// Canonical text read policy inside the same snapshot.
     pub texts: GatedTexts,
 }
@@ -1396,7 +1398,7 @@ pub struct RecallCandidateSearchRequest<'a> {
     pub vector: Vec<f32>,
     pub limit: u32,
     pub subject_ids: &'a [SubjectId],
-    pub affect: Option<&'a AffectFilter>,
+    pub affect: Option<&'a AffectReadFilter>,
     pub workspace_id: WorkspaceId,
     pub tombstoned_seqs: Vec<i64>,
 }
@@ -1617,7 +1619,7 @@ pub struct SearchRecallInput {
     pub completeness_request: Option<String>,
     pub limit: Option<u32>,
     pub subject_ids: Vec<SubjectId>,
-    pub affect: Option<AffectFilter>,
+    pub affect: Option<AffectReadFilter>,
 }
 
 /// Per-request configuration & dependencies for [`search_recall`].

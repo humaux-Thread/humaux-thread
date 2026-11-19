@@ -42,6 +42,7 @@ macro_rules! closed_set {
 }
 
 pub mod affect;
+pub mod affect_read;
 /// ADR-0096: closed applicability vocabulary, independent of visibility (§78.2).
 pub mod applicability;
 pub mod attribution;
