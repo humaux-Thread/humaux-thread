@@ -1,6 +1,6 @@
 //! `domain::memory` — `MemoryType` (§8.5 / §59), the Mandatory facet mapping (§25.4.A) and `EpistemicStatus` (ADR-0124).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::context_repo, adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::projection_worker, adapters::qdrant, adapters::read_materialize, application::confirm, application::correct, application::distill_execution, domain::authority, domain::context, domain::note, domain::policy, projection::card, retrieval::signals, tests]
+//! Called-by: [adapters::context_repo, adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::projection_worker, adapters::qdrant, adapters::read_materialize, application::confirm, application::correct, application::distill_execution, domain::authority, domain::context, domain::policy, projection::card, retrieval::signals, tests]
 //! Invariants: [EpistemicStatus is a closed four-value set whose `as_db_str` labels are the CHECK of migration 0283 (the §78.2
 //!   contract test in `adapters` pins the two); it certifies no truth and decides no authority]
 //! Spec: Baseline §8.5; §24; §25.2; ADR-0045; ADR-0124
@@ -16,83 +16,8 @@
 //! string pinning (the `error.rs` `as_str()` pattern) is deferred to the §78.2 DB↔Rust
 //! contract-test card, not covered here.
 
-/// Memory's fixed classification, a closed set of exactly 12 variants (§8.5, Rust shape §59).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemoryType {
-    /// A stated fact (§8.5).
-    Fact,
-    /// A stated preference (§8.5).
-    Preference,
-    /// A recorded decision (§8.5).
-    Decision,
-    /// A rejected option or approach (§8.5).
-    Rejection,
-    /// Current state of something (§8.5).
-    State,
-    /// A known issue (§8.5).
-    Issue,
-    /// A lesson learned (§8.5).
-    Lesson,
-    /// A constraint that must hold (§8.5).
-    Constraint,
-    /// Retrievable procedural knowledge; does not guarantee the Agent auto-executes it (§8.5).
-    Procedure,
-    /// Action -> Result -> Validation; high-value knowledge for coding/agent continuity (§8.5).
-    Outcome,
-    /// A reference pointer to external material (§8.5).
-    Reference,
-    /// A free-form note (§8.5).
-    Note,
-}
-
-impl MemoryType {
-    /// Every variant, in §8.5's declaration order. Closed set of 12.
-    pub const ALL: [Self; 12] = [
-        Self::Fact,
-        Self::Preference,
-        Self::Decision,
-        Self::Rejection,
-        Self::State,
-        Self::Issue,
-        Self::Lesson,
-        Self::Constraint,
-        Self::Procedure,
-        Self::Outcome,
-        Self::Reference,
-        Self::Note,
-    ];
-
-    /// The DB wire label (`private.memory_records.memory_type`, migration 0004's CHECK set).
-    ///
-    // ponytail: three adapter-side copies of this mapping predate it
-    // (`adapters::qdrant`, `adapters::distill_repo`, `adapters::projection_worker`); they are
-    // outside card 22b's allowed files. Collapse them onto this one when a card owns them —
-    // the §78.2 contract test below now pins THIS list against the live CHECK, so a drift in
-    // the domain copy is a red gate rather than a silent disagreement.
-    #[must_use]
-    pub const fn wire(self) -> &'static str {
-        match self {
-            Self::Fact => "FACT",
-            Self::Preference => "PREFERENCE",
-            Self::Decision => "DECISION",
-            Self::Rejection => "REJECTION",
-            Self::State => "STATE",
-            Self::Issue => "ISSUE",
-            Self::Lesson => "LESSON",
-            Self::Constraint => "CONSTRAINT",
-            Self::Procedure => "PROCEDURE",
-            Self::Outcome => "OUTCOME",
-            Self::Reference => "REFERENCE",
-            Self::Note => "NOTE",
-        }
-    }
-
-    /// Inverse of [`MemoryType::wire`]; `None` for a label outside the closed set.
-    #[must_use]
-    pub fn parse_wire(wire: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|t| t.wire() == wire)
-    }
-}
+/// The shared closed classification for memories (§8.5).
+pub use crate::memory_vocab::MemoryType;
 
 /// ADR-0124: how the text of a Memory came to be, a closed set of four. It is a separate axis from the §10.1 origin
 /// ceiling: it certifies no truth, grants no authority, and `authority_class` is decided without reading it.

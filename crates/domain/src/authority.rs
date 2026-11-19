@@ -28,45 +28,8 @@ use std::cmp::Ordering;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-/// Typed expression of §10's priority chain, a closed set of 7 variants (§59).
-///
-/// The discriminant *is* the priority — larger outranks smaller, mapping item-for-item onto
-/// §10's priority chain (§59.1 I1, first tier of the adjudication total order). No
-/// `#[non_exhaustive]`, no `Other`/`Unknown`/`Custom(String)` (§59 frozen).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum AuthorityClass {
-    /// General public knowledge, no personal or project context (§10, lowest priority).
-    PublicKnowledge = 0,
-    /// Private knowledge specific to this tenant/user (§10).
-    PrivateKnowledge = 1,
-    /// A stated user preference (§10).
-    UserPreference = 2,
-    /// A recorded project decision (§10).
-    ProjectDecision = 3,
-    /// The user explicitly correcting prior output (§10).
-    UserCorrection = 4,
-    /// A project-level constraint that must hold (§10).
-    ProjectConstraint = 5,
-    /// Context explicitly supplied for the current task (§10, highest priority).
-    ExplicitTaskContext = 6,
-}
-
-/// Authority lifecycle state, a closed set of 4 variants (§59).
-///
-/// A non-`Active` row does not participate in adjudication (§59.1 I3), but still counts
-/// toward §23's `visible` and `done` as usual — completeness measures "what you cannot see",
-/// not "which row won adjudication"; the two must never be conflated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AuthorityStatus {
-    /// Currently in force and eligible for adjudication (§59).
-    Active,
-    /// Replaced by a newer Authority row; kept for history (§59).
-    Superseded,
-    /// Explicitly withdrawn (§59).
-    Revoked,
-    /// Past its validity window (§59).
-    Expired,
-}
+/// Shared authority priority and lifecycle classifications (§59).
+pub use crate::memory_vocab::{AuthorityClass, AuthorityStatus};
 
 /// Confidence in the closed `[0.0, 1.0]` interval (§59).
 ///
