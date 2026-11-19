@@ -768,6 +768,7 @@ files = [
   "crates/domain/src/dataclass.rs",
   "crates/domain/src/error.rs",
   "crates/domain/src/ids.rs",
+  "crates/domain/src/lifecycle_types.rs",
   "crates/domain/src/lib.rs",
   "crates/domain/src/memory_vocab.rs",
   "crates/domain/src/reasoning_types.rs",
