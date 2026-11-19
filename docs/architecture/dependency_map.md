@@ -573,6 +573,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::grounding`
 
+#### `domain::grounding_read`
+
 #### `domain::identity`
 
 #### `domain::ids`
@@ -2350,6 +2352,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::grounding`
 
+#### `domain::grounding_read`
+
 #### `domain::identity`
 
 #### `domain::ids`
@@ -3318,6 +3322,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::evidence`
 
 #### `domain::grounding`
+
+#### `domain::grounding_read`
 
 #### `domain::identity`
 
@@ -4479,6 +4485,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::grounding`
 
+#### `domain::grounding_read`
+
 #### `domain::identity`
 
 #### `domain::ids`
@@ -5329,6 +5337,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::evidence`
 
 #### `domain::grounding`
+
+#### `domain::grounding_read`
 
 #### `domain::identity`
 
@@ -21213,11 +21223,11 @@ default run:
 - `crates/adapters/tests/contribution_execution_repo.rs:42` [table-undeclared] (line) — static source-text guard; no DB connection
 - `crates/application/Cargo.toml:43` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
-- `crates/application/src/continuity.rs:1415` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
+- `crates/application/src/continuity.rs:1424` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
 - `crates/protocol/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/public-pool/src/completeness.rs:379` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
-- `crates/retrieval/src/envelope.rs:2161` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
-- `crates/retrieval/src/envelope.rs:2980` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2160` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2979` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/planner.rs:314` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_eval.rs:108` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_registry.rs:173` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census

@@ -169,6 +169,7 @@ mod tests {
         ContextBudget, MandatoryLane, MandatoryRow, PinnedLane, SelectorOutcome,
         SupplementalBudget, spec,
     };
+    use humaux_domain::grounding::GroundingState;
 
     fn freeze_row(row: MandatoryRow) -> FrozenLaneRow {
         FrozenLaneRow {
@@ -178,7 +179,9 @@ mod tests {
             authority: row.authority(),
             source_authority: row.source_authority(),
             est_tokens: row.est_tokens(),
-            grounding: FrozenGrounding::from_snapshot(row.grounding_state()),
+            grounding: FrozenGrounding::from_snapshot(
+                row.grounding_state().map(GroundingState::read_view),
+            ),
         }
     }
 

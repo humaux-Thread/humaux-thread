@@ -1,6 +1,6 @@
 //! `domain::grounding` — §8.8 Grounding Validity：把「证据变了」与「事实错了」分开。
-//! Depends-on: crates=[async-trait]; services=[]; env=[]; modules=[domain::evidence]
-//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::read_materialize, domain::context, retrieval::envelope, retrieval::handoff, retrieval::signals, tests]
+//! Depends-on: crates=[async-trait]; services=[]; env=[]; modules=[domain::evidence, domain::grounding_read]
+//! Called-by: [adapters::context_repo, adapters::continuity_read, application::continuity, domain::context, tests]
 //! Invariants: []
 //! Spec: Baseline §3; §8.1; §8.8; ADR-0006
 //!
@@ -14,6 +14,7 @@
 //! 真正的对错要等 revalidation 产出 `CONFIRM/REVISE/RETRACT/DEFER`（§11.10）。
 
 use crate::evidence::EvidencePayloadSha256;
+use crate::grounding_read::{GroundingRead, GroundingReadKind};
 
 /// §8.8：这条 grounding edge 的陈述**绑定的是哪一种时间语义**——决定来源版本变化算不算过时。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -169,6 +170,16 @@ pub enum GroundingStateKind {
 }
 
 impl GroundingStateKind {
+    /// §25.3 name for a grounding disclosure in a handoff.
+    pub const fn handoff_name(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::RecheckRequired => "recheck_required",
+            Self::Unresolved => "unresolved",
+            Self::CannotEstablish => "cannot_establish",
+        }
+    }
+
     /// §8.8 优先级：`CANNOT_ESTABLISH > UNRESOLVED > RECHECK_REQUIRED > CURRENT`。
     /// 数值只用于取最大者，不对外承诺任何序关系。
     const fn severity(self) -> u8 {
@@ -197,6 +208,17 @@ impl GroundingStateKind {
 pub struct GroundingState(GroundingStateKind);
 
 impl GroundingState {
+    /// Publish a verdict and its truth eligibility without exposing derivation to readers.
+    pub const fn read_view(self) -> GroundingRead {
+        let kind = match self.kind() {
+            GroundingStateKind::Current => GroundingReadKind::Current,
+            GroundingStateKind::RecheckRequired => GroundingReadKind::RecheckRequired,
+            GroundingStateKind::Unresolved => GroundingReadKind::Unresolved,
+            GroundingStateKind::CannotEstablish => GroundingReadKind::CannotEstablish,
+        };
+        GroundingRead::new(kind, self.revokes_current_truth_assumption())
+    }
+
     /// 取出四态之一供 `match`。**只有读取路径**——没有对应的 `set`，见本类型的 doc。
     #[must_use]
     pub const fn kind(self) -> GroundingStateKind {
@@ -268,6 +290,16 @@ pub enum RowGrounding {
     Judged(GroundingState),
     /// 快照内不可裁（有 LIVE 且全部已记版本——要 resolver 才知道版本还同不同）。
     NotJudged,
+}
+
+impl RowGrounding {
+    /// A snapshotted row without a verdict has no read view.
+    pub const fn read_view(self) -> Option<GroundingRead> {
+        match self {
+            Self::Judged(state) => Some(state.read_view()),
+            Self::NotJudged => None,
+        }
+    }
 }
 
 /// §8.8 的**快照内保守投影**——[`derive_grounding_state`] 的 resolver-free 姊妹入口。
