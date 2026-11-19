@@ -16,63 +16,23 @@ pub use humaux_domain::consolidate::{
     AutoMutableMemoryId, ClassifiedMemoryId, ConsolidationRunState, RollupAuthorityViolation,
     check_rollup_authority_ceiling, classify,
 };
+pub use humaux_domain::reasoning_types::{
+    ContentSha256, ContributionReasoningCallKind, LogicalReasoningCallId, PrivateReasoningDomainId,
+    PrivateReasoningPurpose, ProviderTraceRef, ReasoningIntentSha256, ReasoningRouteBindingId,
+    ReasoningRouteBindingVersion, UserReasoningProfileVersion,
+};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
-
-/// §11.2.1: which `USER_REASONING` profile a `PrivateReasoningPort` request is bound to —
-/// `PrivateReasoningDomainId` scopes "谁的 Key 能处理" separately from tenant/user visibility.
-/// Minted here (not `domain::ids`) for the same reason `MemoryId`/`EvidenceId` are minted in
-/// `domain::authority`: this module is its first consumer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PrivateReasoningDomainId(pub uuid::Uuid);
-
-/// Phase 9 R3 caller authority: the exact immutable reasoning route Binding logical identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ReasoningRouteBindingId(pub uuid::Uuid);
-
-/// Phase 9 R3 caller authority: the exact immutable version of [`ReasoningRouteBindingId`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ReasoningRouteBindingVersion(pub i64);
-
-/// Resolver-derived immutable profile version retained for audit/context compatibility.
-/// It is never accepted in a sealed request or other caller authority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct UserReasoningProfileVersion(pub i64);
-
-/// Durable caller-owned identity of one logical contribution reasoning call. Retries carry the
-/// same value; a new user execution carries a new value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LogicalReasoningCallId(pub Uuid);
 
 /// Frozen schema for the semantic contribution intent committed by `intent_sha256`.
 pub const CONTRIBUTION_REASONING_INTENT_SCHEMA_VERSION: u32 = 1;
 
-/// The two Phase 9 contribution calls have independent durable identities and prompt contracts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ContributionReasoningCallKind {
-    CoverageProbe,
-    TypedAssessment,
-}
-
-impl ContributionReasoningCallKind {
-    pub const fn as_db_str(self) -> &'static str {
-        match self {
-            Self::CoverageProbe => "COVERAGE_PROBE",
-            Self::TypedAssessment => "TYPED_ASSESSMENT",
-        }
-    }
-
-    const fn prompt_contract_version(self) -> u32 {
-        match self {
-            Self::CoverageProbe | Self::TypedAssessment => 1,
-        }
+const fn prompt_contract_version(call_kind: ContributionReasoningCallKind) -> u32 {
+    match call_kind {
+        ContributionReasoningCallKind::CoverageProbe
+        | ContributionReasoningCallKind::TypedAssessment => 1,
     }
 }
-
-/// Independent canonical call intent. It deliberately excludes route health/admission timestamps
-/// and provider wire serialization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ReasoningIntentSha256(pub [u8; 32]);
 
 /// Contribution-only attempt authority carried inside the otherwise general sealed request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -81,24 +41,6 @@ pub struct ContributionReasoningAttempt {
     pub call_kind: ContributionReasoningCallKind,
     pub intent_schema_version: u32,
     pub intent_sha256: ReasoningIntentSha256,
-}
-
-/// SHA-256 over the request's input manifest — identifies *what* was sent for inference
-/// without the payload itself needing to leave the sealed RPC body (§11.8).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ContentSha256(pub [u8; 32]);
-
-/// §11.8: one LLM call's purpose. A fixed, closed set — no `Other(String)` — because the
-/// receiving `humaux-private-worker` RPC handler branches its own audit/quota accounting on
-/// this value (§11.5 BYOK usage accounting) and a stringly-typed escape hatch would defeat
-/// that accounting (§78.2 "禁止 stringly-typed domain").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrivateReasoningPurpose {
-    Distill,
-    Consolidate,
-    Vision,
-    /// §12.1: private de-identification before the exact-byte contribution gate.
-    ContributionDeidentify,
 }
 
 /// §11.8 verbatim: the sealed request `humaux-consolidation-worker` sends over internal mTLS.
@@ -133,7 +75,7 @@ impl SealedPrivateReasoningRequest {
         canonical.extend_from_slice(self.binding_id.0.as_bytes());
         canonical.extend_from_slice(&self.binding_version.0.to_be_bytes());
         canonical.extend_from_slice(&self.input_manifest_hash.0);
-        canonical.extend_from_slice(&call_kind.prompt_contract_version().to_be_bytes());
+        canonical.extend_from_slice(&prompt_contract_version(call_kind).to_be_bytes());
         match coverage_digest {
             Some(digest) => {
                 canonical.push(1);
@@ -186,11 +128,6 @@ impl SealedPrivateReasoningRequest {
             == Some(attempt)
     }
 }
-
-/// Opaque reference into the provider call log (§11.5 usage accounting) — this crate never
-/// interprets it, only threads it through.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderTraceRef(pub String);
 
 /// §11.8 verbatim: what `PrivateReasoningPort::infer` returns on success.
 ///

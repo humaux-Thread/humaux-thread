@@ -73,6 +73,7 @@ pub mod policy;
 /// ADR-0101: hierarchy and facet closed sets (§78.2).
 pub mod project_tree;
 pub mod public;
+pub mod reasoning_types;
 pub mod relation;
 pub mod selection;
 pub mod source;
