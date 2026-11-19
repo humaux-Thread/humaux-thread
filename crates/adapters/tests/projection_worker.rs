@@ -4081,7 +4081,7 @@ mod note_chunk_projection {
             is_identity_note,
             policy: NoteChunkPolicy::LegacyOnly,
         }) {
-            ProjectionPlan::LegacyCardV1(CardBuildOutcome::Card(card)) => card.card_text,
+            ProjectionPlan::LegacyCardV1(CardBuildOutcome::Card(card)) => card.into_card_text(),
             other => panic!("a legacy-only policy builds the legacy card: {other:?}"),
         }
     }

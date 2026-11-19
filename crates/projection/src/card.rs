@@ -190,7 +190,7 @@ impl EgressDisposition {
 /// `card_status` column, see that migration's own comment).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardStatus {
-    /// Every source field ([`title`](RetrievalCard::title), `key_claim`, `evidence_excerpt`)
+    /// Every source field (`title`, `key_claim`, `evidence_excerpt`)
     /// was present in the input; no placeholder substitution happened.
     Complete,
     /// At least one of `key_claim`/`evidence_excerpt` was missing from the input and was
@@ -293,30 +293,54 @@ impl Default for CardBudget {
 /// obtain one are [`build_card`] and, for a note chunk, `note_chunks::chunk_card` (ADR-0068 D-G:
 /// its `card_text` is the chunk text and carries the bounded title prefix, not the whole title,
 /// and its plan never admits SECRET_MATERIAL) — there is no other `pub` constructor.
+///
+/// The scanner seals the values minted by those builders (§7.5 B). Callers outside projection
+/// cannot change the Memory, classification, or indexed text:
+///
+/// ```compile_fail,E0616
+/// use humaux_projection::card::RetrievalCard;
+/// fn reassign_memory(card: &mut RetrievalCard) {
+///     card.memory_id.0 = Default::default();
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use humaux_projection::card::RetrievalCard;
+/// fn reclassify(card: &mut RetrievalCard) {
+///     card.data_class = humaux_domain::dataclass::DataClass::Internal;
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use humaux_projection::card::RetrievalCard;
+/// fn replace_text(card: &mut RetrievalCard) {
+///     card.card_text = String::new();
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetrievalCard {
-    pub schema_version: u32,
-    pub card_builder_version: &'static str,
-    pub card_template_hash: &'static str,
-    pub memory_id: MemoryId,
-    pub memory_type: MemoryType,
+    pub(super) schema_version: u32,
+    pub(super) card_builder_version: &'static str,
+    pub(super) card_template_hash: &'static str,
+    pub(super) memory_id: MemoryId,
+    pub(super) memory_type: MemoryType,
     /// Never [`DataClass::SecretMaterial`] on a value this module constructs — see module doc.
-    pub data_class: DataClass,
-    pub egress_disposition: EgressDisposition,
-    pub workspace_id: Option<WorkspaceId>,
-    pub topic: Option<String>,
-    pub effective_from: SystemTime,
+    pub(super) data_class: DataClass,
+    pub(super) egress_disposition: EgressDisposition,
+    pub(super) workspace_id: Option<WorkspaceId>,
+    pub(super) topic: Option<String>,
+    pub(super) effective_from: SystemTime,
     /// §18.3: "永不截断" — [`build_card`] never shortens this field, regardless of
     /// [`CardBudget`]. Always the caller's original `title` byte-for-byte.
-    pub title: String,
-    pub key_claim: String,
-    pub entities: Vec<String>,
-    pub evidence_excerpt: String,
-    pub card_status: CardStatus,
+    pub(super) title: String,
+    pub(super) key_claim: String,
+    pub(super) entities: Vec<String>,
+    pub(super) evidence_excerpt: String,
+    pub(super) card_status: CardStatus,
     /// §18.3's "被索引文本" — [`title`](Self::title) joined with `key_claim`/`entities`/
     /// `evidence_excerpt` per [`assemble`]. [`build_card`]'s `debug_assert!` (§18.3's own
     /// verbatim shape) guarantees this always contains [`title`](Self::title) in full.
-    pub card_text: String,
+    pub(super) card_text: String,
 }
 
 impl RetrievalCard {
@@ -325,11 +349,29 @@ impl RetrievalCard {
     /// job).
     pub const SCHEMA_VERSION: u32 = 1;
 
+    /// §18.2: the Memory whose input the builder used.
+    pub const fn memory_id(&self) -> MemoryId {
+        self.memory_id
+    }
+
+    /// §18.2: the classification supplied to the builder.
+    pub const fn data_class(&self) -> DataClass {
+        self.data_class
+    }
+
+    /// §18.3: the exact indexed text produced by the builder.
+    pub fn card_text(&self) -> &str {
+        &self.card_text
+    }
+
+    /// §18.3: takes ownership of the indexed text when the caller no longer needs the card.
+    pub fn into_card_text(self) -> String {
+        self.card_text
+    }
+
     /// `memory_type`'s wire form for the `projection.retrieval_cards.memory_type` column
     /// (migration 0074's CHECK constraint mirrors exactly [`memory_type_wire`]'s 12 literals)
-    /// — the write-path counterpart to [`data_class`](Self::data_class)`.as_str()` and
-    /// [`egress_disposition`](Self::egress_disposition)`.as_str()`, which are already methods
-    /// on their own types.
+    /// — the write-path counterpart to [`DataClass::as_str`] and [`EgressDisposition::as_str`].
     pub const fn memory_type_wire(&self) -> &'static str {
         memory_type_wire(self.memory_type)
     }

@@ -988,7 +988,7 @@ struct SlotCard {
 impl SlotCard {
     fn new(memory: usize, profile: &'static str, ordinal: u32, card: RetrievalCard) -> Self {
         // ADR-0064 D-B: the embedded bytes are the card text (`seal_card` seals it unchanged).
-        let input_sha256 = Sha256::digest(card.card_text.as_bytes()).into();
+        let input_sha256 = Sha256::digest(card.card_text().as_bytes()).into();
         Self {
             memory,
             profile,
@@ -1126,7 +1126,7 @@ async fn resolve_and_embed(
             ordinal: slot.ordinal,
             input_sha256: slot.input_sha256,
             vector,
-            card_text: slot.card.card_text,
+            card_text: slot.card.into_card_text(),
         });
     }
     Ok(Prepared {
