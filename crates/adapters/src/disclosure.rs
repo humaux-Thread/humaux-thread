@@ -126,27 +126,8 @@ impl std::fmt::Display for DisclosureError {
 
 impl std::error::Error for DisclosureError {}
 
-/// §7.4 `outcome` — the three-way finalize() result, verbatim the `ops.data_disclosures`
-/// CHECK literals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DisclosureOutcome {
-    Success,
-    Failed,
-    Denied,
-}
-
-impl DisclosureOutcome {
-    /// Every outcome; `adapters::health` maps the DB literal back through it (§78.2 fail-closed).
-    pub(crate) const ALL: [Self; 3] = [Self::Success, Self::Failed, Self::Denied];
-
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Success => "SUCCESS",
-            Self::Failed => "FAILED",
-            Self::Denied => "DENIED",
-        }
-    }
-}
+/// Shared disclosure finalization outcome (§7.4).
+pub use humaux_domain::audit_types::DisclosureOutcome;
 
 /// §7.4 `deletion_capability` — "processor 侧能不能删". `Unknown` is the column's own
 /// `DEFAULT`, not a placeholder invented here — a disclosure reserved before the processor's

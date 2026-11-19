@@ -39,8 +39,6 @@ crates/adapters/src/audit_sink.rs:provider_execution->document_acquisition:humau
 crates/adapters/src/audit_sink.rs:provider_execution->document_acquisition:humaux_adapters::object_store::ObjectStore
 crates/adapters/src/byok.rs:provider_execution->knowledge_lifecycle:humaux_domain::evidence::payload_sha256
 crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::AuditEvent
-crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction
-crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction::McpRequestFinished
 crates/adapters/src/consolidate_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::DerivedLease
 crates/adapters/src/consolidate_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::JobsError
 crates/adapters/src/consolidate_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::JobsError::Db
@@ -98,8 +96,6 @@ crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_ada
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::JobsError::Db
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::finish_distill_in_txn
 crates/adapters/src/exact_census.rs:retrieval_read_model->project_continuity:humaux_domain::continuity::ProjectId
-crates/adapters/src/health.rs:operations_platform->provider_execution:humaux_adapters::disclosure::DisclosureOutcome
-crates/adapters/src/health.rs:operations_platform->provider_execution:humaux_adapters::disclosure::DisclosureOutcome::ALL
 crates/adapters/src/maintenance_repo.rs:job_execution->identity_access:humaux_adapters::membership_repo::AdminAction
 crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning
 crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::AUDIT_RESULT_SUCCESS
@@ -111,7 +107,6 @@ crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux
 crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::audit_tagged
 crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::require_admin
 crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::set_tenant
-crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_domain::audit::SYSTEM_TENANT_ID
 crates/adapters/src/mechanism_observation.rs:operations_platform->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/mechanism_observation.rs:operations_platform->public_knowledge:humaux_domain::public::ModerationState
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo
@@ -123,12 +118,6 @@ crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:hu
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::finish_reservation_in_txn
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::reserve_bmo_in_txn
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::AuditEvent
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::AuditEventId
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::AuditEventId::new
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction::McpQuotaConsumed
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction::McpQuotaReserved
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction::McpRequestFinished
 crates/adapters/src/model_call_ledger.rs:provider_execution->knowledge_curation:humaux_adapters::reasoning_route_admission::ReasoningAdmissionLocator
 crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo
 crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::ReservationStatus
@@ -139,11 +128,6 @@ crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->commercial:humaux_
 crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::finish_reservation_in_txn
 crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::reserve_bmo_in_txn
 crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->project_continuity:humaux_domain::continuity::ProjectId
-crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::AuditEventId
-crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::AuditEventId::new
-crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction
-crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction::McpQuotaConsumed
-crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::McpAuditAction::McpQuotaReserved
 crates/adapters/src/private_inference_rpc.rs:provider_execution->knowledge_curation:humaux_application::consolidate::PrivateReasoningError
 crates/adapters/src/private_projection_registry.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::authority::MemoryId
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind
@@ -200,14 +184,6 @@ crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_ada
 crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo::finish_reservation_in_txn
 crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo::reserve_bmo_in_txn
 crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::AuditEvent
-crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::AuditEventId
-crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::AuditEventId::new
-crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::McpAuditAction
-crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::McpAuditAction::McpQuotaConsumed
-crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::McpAuditAction::McpQuotaReleased
-crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::McpAuditAction::McpQuotaReserved
-crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::McpAuditAction::McpRequestFinished
-crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::SYSTEM_TENANT_ID
 crates/adapters/src/retrieve.rs:retrieval_read_model->knowledge_lifecycle:humaux_adapters::memory_repo::memory_texts_in_txn
 crates/adapters/src/retrieve.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
 crates/adapters/src/retrieve.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::subject::SubjectId
