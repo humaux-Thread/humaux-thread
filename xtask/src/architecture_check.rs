@@ -1452,6 +1452,7 @@ const HEX_LAYER_EXCLUDED: &[&str] = &[
     "bins/gateway/src/cached_embedding.rs", // Outbound embedding cache port (§51).
     "bins/gateway/src/rerank_client.rs", // Outbound rerank RPC port (ADR-0084).
     "bins/gateway/src/retrieval_embedding_client.rs", // Outbound embedding RPC port (ADR-0012).
+    "bins/consolidation-worker/src/bootstrap.rs",
 ];
 
 fn hex_layer_source(path: &str) -> bool {
@@ -2136,7 +2137,7 @@ fn hex_context_gate(root: &Path) -> Result<(Verdict, Verdict), Vec<String>> {
         ),
         Err(errors) => (actual, Verdict::Fail(errors)),
     };
-    errors.extend(hex_exact(&remaining, &baseline, 99, "HEX-CONTEXT"));
+    errors.extend(hex_exact(&remaining, &baseline, 86, "HEX-CONTEXT"));
     Ok((hex_verdict(errors), verdict))
 }
 

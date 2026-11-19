@@ -10,7 +10,7 @@
 //!   HUMAUX_TEST_PG_DSN]; modules=[adapters::contribution_entry_repo, adapters::mechanism_observation,
 //!   adapters::postgres, adapters::tests::support::contribution_fixture, application::contribute,
 //!   contracts::mechanism_registry, domain::error, domain::identity, domain::public, infra-cell::permit,
-//!   infra-cell::resource, public-pool::public_repo]
+//!   infra-cell::resource, public-pool::bootstrap, public-pool::public_repo]
 //! Called-by: [cargo-test]
 //! Invariants: [seeded observations exercise the verifier and the review test the writer (humaux-admin subprocess);
 //!   needs role_admin/role_maintenance DSNs, so the tests are #[ignore] lane tests]
@@ -36,7 +36,7 @@ use humaux_contracts::mechanism_registry::{
 };
 use humaux_domain::{error::ErrorCode, identity::AuthorizationScope, public::ModerationState};
 use humaux_infra_cell::{CallerId, CellId, IntraCellResourceRegistry};
-use humaux_public_pool::public_repo::{self, PublicRepoEvaluator};
+use humaux_public_pool::{bootstrap::PublicRepoEvaluator, public_repo};
 use postgres::{Client, NoTls};
 use std::{
     path::Path,

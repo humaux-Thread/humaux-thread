@@ -13,9 +13,9 @@
 //!   public.admit_anonymous_dispatch, public.carry_forward_anonymous_claim_lifecycle, public.current_public_roots,
 //!   public.evaluate_anonymous_claim, public.public_projection_identities, public.revoke_anonymous_dispatch,
 //!   staging.assert_active_contribution_release], PostgreSQL(role_gateway), PostgreSQL(role_private_worker),
-//!   PostgreSQL(role_public_worker), PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::mechanism_observation,
-//!   adapters::postgres, domain::error, domain::identity, domain::ids, domain::public, public-pool::public_evolve]
-//! Called-by: [public-pool::public_projection, tests]
+//!   PostgreSQL(role_public_worker), PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::postgres,
+//!   domain::error, domain::identity, domain::ids, domain::public, public-pool::public_evolve]
+//! Called-by: [public-pool::bootstrap, public-pool::public_projection, tests]
 //! Invariants: [every write uses PublicWorkerDbPool in a real tenant transaction; no function reads private rows or
 //!   accepts caller-provided released content or scanner outcomes; the public DB stays the serving authority]
 //! Spec: none
@@ -24,9 +24,8 @@
 //! remains the serving authority: no function reads private rows or accepts caller-provided
 //! released content or scanner outcomes.
 
-use humaux_adapters::{
-    mechanism_observation::PublicClaimEvaluator,
-    postgres::{PrivateWorkerDbPool, PublicWorkerDbPool, RetrievalWorkerDbPool, RuntimeDbPool},
+use humaux_adapters::postgres::{
+    PrivateWorkerDbPool, PublicWorkerDbPool, RetrievalWorkerDbPool, RuntimeDbPool,
 };
 use humaux_domain::{
     error::ErrorCode, identity::AuthorizationScope, ids::TenantId, public::ModerationState,
@@ -118,24 +117,24 @@ impl AnonymousDispatchJob {
     }
 }
 
-/// The review request and result types are defined beside the evaluator trait in `humaux-adapters`
-/// (core) so `mechanism_observation` can name them without depending on this crate.
-pub use humaux_adapters::mechanism_observation::{EvaluateClaim, EvaluationResult};
+/// Authenticated, revision-pinned manual review request. `expected_body_sha256` is the
+/// database body's SHA-256, never a digest supplied in place of the stored body (§12.6).
+#[derive(Clone, Debug)]
+pub struct EvaluateClaim<'a> {
+    pub claim_id: Uuid,
+    pub expected_revision: i64,
+    pub expected_body_sha256: &'a [u8],
+    pub policy_version: &'a str,
+    pub rationale: &'a str,
+    pub target_state: ModerationState,
+}
 
-/// The evaluator `PublicObservationRecorder` is wired with on cloud entry points: forwards to [`evaluate_claim`].
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PublicRepoEvaluator;
-
-#[async_trait::async_trait]
-impl PublicClaimEvaluator for PublicRepoEvaluator {
-    async fn evaluate_claim(
-        &self,
-        pool: &PublicWorkerDbPool,
-        authorization: &AuthorizationScope,
-        input: &EvaluateClaim<'_>,
-    ) -> Result<EvaluationResult, ErrorCode> {
-        evaluate_claim(pool, authorization, input).await
-    }
+/// Immutable review result linked from the current object revision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvaluationResult {
+    pub evaluation_id: Uuid,
+    pub object_revision: i64,
+    pub moderation_state: String,
 }
 
 /// Immutable identity of one public revision.  It is the complete identity accepted by a

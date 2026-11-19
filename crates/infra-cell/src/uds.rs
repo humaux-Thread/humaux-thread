@@ -2,7 +2,7 @@
 //!   ADR-0066 D-K / D-L / D-M hardening): server boot policy, accept-time peer admission, guarded bind, verified dial.
 //! Depends-on: crates=[tokio]; services=[UDS(serve), UDS(retrieval-worker), UDS(private-worker)]; env=[];
 //!   modules=[]
-//! Called-by: [consolidation-worker::inference_client, consolidation-worker::main, gateway::retrieval_embedding_client,
+//! Called-by: [consolidation-worker::bootstrap, consolidation-worker::inference_client, gateway::retrieval_embedding_client,
 //!   private-worker::inference_rpc, private-worker::main, retrieval-worker::main, retrieval-worker::rpc, tests]
 //! Invariants: [a server whose expected peer uid equals its own uid or 0 does not boot unless the allow key is
 //!   exactly `1`; a bound socket's directory is owned by the server uid with no group-write and no other bits, and

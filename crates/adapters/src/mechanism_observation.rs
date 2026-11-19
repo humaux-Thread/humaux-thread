@@ -4,7 +4,7 @@
 //!   public.corroborated, public.eligible_objects] w=[ops.mechanism_e2e_runs, ops.mechanism_observations]]; env=[];
 //!   modules=[adapters::postgres, application::mechanism_observation, contracts::mechanism_registry, domain::error, domain::identity, domain::public,
 //!   infra-cell::resource]
-//! Called-by: [public-pool::public_repo, tests, xtask::mechanism_registry]
+//! Called-by: [public-pool::bootstrap, tests, xtask::mechanism_registry]
 //! Invariants: [reads use the dedicated read-only identity; recording runs on role_maintenance through an existing
 //!   authorized operation; no SQL or shell executor is exposed; bad input is InvalidInput]
 //! Spec: none
@@ -51,8 +51,8 @@ pub struct EvaluationResult {
 }
 
 /// The one public-claim review call `observe_public_review` needs, inverted so this core crate never names the
-/// cloud `humaux-public-pool` crate (G-M01-2). The signature is that of `public_repo::evaluate_claim`; the cloud
-/// crate implements it and only a cloud entry point constructs a [`PublicObservationRecorder`].
+/// cloud `humaux-public-pool` crate (G-M01-2). Cloud assembly adapts this port to the public
+/// repository; only a cloud entry point constructs a [`PublicObservationRecorder`].
 #[async_trait::async_trait]
 pub trait PublicClaimEvaluator: Send + Sync {
     /// Stores a complete immutable receipt and applies one allowed manual review state (§12.6).

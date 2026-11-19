@@ -1,8 +1,7 @@
 //! `consolidation-worker::dsn` — the one place this process resolves its role_consolidation_worker DSN: `HUMAUX_CONSOLIDATION_WORKER_PG_DSN`, with
 //!   the pre-card-39 name `CONSOLIDATION_WORKER_PG_DSN` accepted as a deprecated alias for one release (ADR-0066 D-O).
-//! Depends-on: crates=[humaux-telemetry]; services=[]; env=[HUMAUX_CONSOLIDATION_WORKER_PG_DSN, alias:CONSOLIDATION_WORKER_PG_DSN];
-//!   modules=[humaux-telemetry]
-//! Called-by: [consolidation-worker::main]
+//! Depends-on: crates=[humaux-telemetry]; services=[]; env=[HUMAUX_CONSOLIDATION_WORKER_PG_DSN, alias:CONSOLIDATION_WORKER_PG_DSN]; modules=[]
+//! Called-by: [consolidation-worker::bootstrap]
 //! Invariants: [reads no environment itself (the caller passes the lookup); the new name wins; both names set with
 //!   different values is a configuration error naming both; neither set names the NEW key]
 //! Spec: §78.1; ADR-0066 D-O
@@ -15,13 +14,25 @@ pub const DEPRECATED_KEY: &str = "CONSOLIDATION_WORKER_PG_DSN";
 /// The DSN plus the deprecation WARN line to print once at boot when only [`DEPRECATED_KEY`] was set.
 pub fn resolve(
     lookup: impl Fn(&str) -> Option<String>,
+    renamed_key: impl FnOnce(
+        &str,
+        Option<String>,
+        &str,
+        Option<String>,
+    ) -> Result<(String, Option<String>), String>,
 ) -> Result<(String, Option<String>), String> {
-    humaux_telemetry::renamed_key(KEY, lookup(KEY), DEPRECATED_KEY, lookup(DEPRECATED_KEY))
+    renamed_key(KEY, lookup(KEY), DEPRECATED_KEY, lookup(DEPRECATED_KEY))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{DEPRECATED_KEY, KEY};
+
+    fn resolve(
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Result<(String, Option<String>), String> {
+        super::resolve(lookup, humaux_telemetry::renamed_key)
+    }
 
     fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
         move |k| {

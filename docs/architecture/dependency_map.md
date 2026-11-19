@@ -1656,14 +1656,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::private_inference`
 
-#### `consolidation-worker::dsn`
-- env `CONSOLIDATION_WORKER_PG_DSN`
-- env `HUMAUX_CONSOLIDATION_WORKER_PG_DSN`
-
-#### `consolidation-worker::inference_client`
-- service `UDS(private-worker)`
-
-#### `consolidation-worker::main`
+#### `consolidation-worker::bootstrap`
 - env `CARGO_PKG_VERSION`
 - env `HUMAUX_BUILD_GIT_SHA`
 - env `HUMAUX_BUILD_TIME`
@@ -1681,6 +1674,15 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `HTTP(loopback)`
 - service `PostgreSQL(role_consolidation_worker)`
 - service `UDS(private-worker)`
+
+#### `consolidation-worker::dsn`
+- env `CONSOLIDATION_WORKER_PG_DSN`
+- env `HUMAUX_CONSOLIDATION_WORKER_PG_DSN`
+
+#### `consolidation-worker::inference_client`
+- service `UDS(private-worker)`
+
+#### `consolidation-worker::main`
 
 #### `domain::authority`
 
@@ -4594,16 +4596,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 ### process(humaux-public-worker)
 
-#### `adapters::mechanism_observation`
-- reads `public.claim_trust_evaluations`
-- reads `public.claims`
-- reads `public.consensus_ready`
-- reads `public.corroborated`
-- reads `public.eligible_objects`
-- writes `ops.mechanism_e2e_runs`
-- writes `ops.mechanism_observations`
-- service `PostgreSQL(any)`
-
 #### `adapters::postgres`
 - reads `private.events`
 - reads `private.ingest_tickets`
@@ -4635,13 +4627,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_reservation_port`
 
-#### `application::mechanism_observation`
-
 #### `application::public_dispatch`
-
-#### `contracts::mechanism_registry`
-- reads `public.consensus_ready`
-- service `PostgreSQL(any)`
 
 #### `domain::authority`
 
@@ -8752,7 +8738,6 @@ read by:
 written by:
 - (no process): `public-pool::tests::mechanism_observation`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 
 executed by:
 
@@ -8765,7 +8750,6 @@ read by:
 written by:
 - (no process): `public-pool::tests::mechanism_observation`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 
 executed by:
 
@@ -12583,7 +12567,6 @@ read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 
 written by:
 - (no process): `public-pool::tests::public_trust`
@@ -12601,7 +12584,6 @@ read by:
 - (no process): `public-pool::tests::public_runtime_qdrant`
 - (no process): `public-pool::tests::support::public_anonymous_seam`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 
 written by:
 - (no process): `adapters::contribution_repo`
@@ -12656,8 +12638,6 @@ read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(cargo-xtask): `contracts::mechanism_registry`
 - process(humaux-admin): `contracts::mechanism_registry`
-- process(humaux-public-worker): `adapters::mechanism_observation`
-- process(humaux-public-worker): `contracts::mechanism_registry`
 
 written by:
 
@@ -12666,7 +12646,6 @@ executed by:
 ### `public.corroborated`
 read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 
 written by:
 
@@ -12701,7 +12680,6 @@ read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 - process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
@@ -13167,7 +13145,7 @@ executed by:
 - `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::process`
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::ops_listener`
 - `gateway::admission`
 - `gateway::main`
@@ -13504,7 +13482,7 @@ executed by:
 - `adapters::tests::forget_race`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::memory_subjects_link`
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::run_once_e2e`
@@ -13866,8 +13844,8 @@ executed by:
 
 ### `UDS (clients)`
 - `admin::cell_resources`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::inference_client`
-- `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `gateway::retrieval_embedding_client`
 - `gateway::status`
@@ -16394,6 +16372,7 @@ modules naming it:
 why: typed per-role pools, Qdrant transport error, claim-evaluator seam
 
 modules naming it:
+- `public-pool::bootstrap`
 - `public-pool::public_projection`
 - `public-pool::public_provenance`
 - `public-pool::public_repo`
@@ -16412,6 +16391,7 @@ modules naming it:
 why: domain types the public plane reads/returns
 
 modules naming it:
+- `public-pool::bootstrap`
 - `public-pool::notice`
 - `public-pool::public_evolve`
 - `public-pool::public_projection`
@@ -16456,6 +16436,7 @@ modules naming it:
 why: dyn-compatible async ports (PublicProjectionPort, PublicClaimEvaluator)
 
 modules naming it:
+- `public-pool::bootstrap`
 - `public-pool::public_projection`
 - `public-pool::public_repo`
 - `public-pool::tests::mechanism_observation`
@@ -17222,8 +17203,8 @@ modules naming it:
 why: humaux-adapters dependency
 
 modules naming it:
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::inference_client`
-- `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::run_once_e2e`
@@ -17244,8 +17225,8 @@ modules naming it:
 why: humaux-domain dependency
 
 modules naming it:
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::inference_client`
-- `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::run_once_e2e`
 - `tests`
@@ -17254,16 +17235,16 @@ modules naming it:
 why: humaux-infra-cell dependency
 
 modules naming it:
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::inference_client`
-- `consolidation-worker::main`
 - `tests`
 
 ### humaux-consolidation-worker → `humaux-telemetry` (normal)
 why: /metrics + /status exposition
 
 modules naming it:
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::dsn`
-- `consolidation-worker::main`
 - `consolidation-worker::tests::exit_codes`
 - `tests`
 
@@ -17271,6 +17252,7 @@ modules naming it:
 why: tokio dependency
 
 modules naming it:
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::inference_client`
 - `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
@@ -17282,8 +17264,8 @@ modules naming it:
 why: uuid dependency
 
 modules naming it:
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::inference_client`
-- `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::run_once_e2e`
@@ -17339,8 +17321,8 @@ modules naming it:
 why: uuid dependency
 
 modules naming it:
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::inference_client`
-- `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::run_once_e2e`
