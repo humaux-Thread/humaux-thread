@@ -51,7 +51,7 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::metrics]
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::auth, gateway::context, gateway::guard, gateway::main, gateway::mcp_application, gateway::memory, gateway::recall, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
 //! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7; ADR-0125
@@ -81,6 +81,7 @@ use humaux_adapters::{
 use humaux_application::auth::{AuthConfig, ChallengePolicy, canonicalize_email};
 use humaux_application::retrieval_embedding_port::RetrievalEmbeddingPort;
 use humaux_cache::CacheConfig;
+use humaux_cache::bounded::CacheObserver;
 use humaux_contracts::config_registry::{
     ConfigEntry, effective_config_fingerprint, gateway_limiter_registry, resolve_effective_config,
 };
@@ -118,10 +119,19 @@ use crate::{
     status::{METRICS_ADDR_KEY, READINESS_REFRESH_KEY, ReadinessProbe, SemanticDeps},
 };
 
+/// Wires the query-embedding cache's §41.2 events to the operations counters and gauges.
+pub const EMBEDDING_CACHE_OBSERVER: CacheObserver = CacheObserver {
+    request: humaux_telemetry::cache::count_cache_request,
+    eviction: humaux_telemetry::cache::count_cache_eviction,
+    bytes: humaux_telemetry::cache::set_cache_bytes,
+    singleflight_waiters: humaux_telemetry::cache::set_cache_singleflight_waiters,
+};
+
 const PREFIX: &str = "HUMAUX_GATEWAY_";
 const ENUMERATION_TTL_KEY: &str = "HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS";
 const ENUMERATION_MANIFEST_CAP_KEY: &str = "HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP";
 const TASK_LEASE_TTL_KEY: &str = "HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS";
+
 /// ADR-0084 D-E: the five parts of the deployment model pin, in `ModelIdentity::new` order (repo, revision, recipe, onnx
 /// sha256, tokenizer sha256). The retrieval worker's `HUMAUX_RETRIEVAL_WORKER_RERANK_*` identity values must equal them.
 const RERANK_PIN_KEYS: [&str; 5] = [
@@ -1632,7 +1642,12 @@ fn build_semantic_recall_runtime(
         registry: registry.clone(),
     };
     let embedding_port: Arc<dyn RetrievalEmbeddingPort> = match config.query_cache {
-        Some((stamp, cache)) => Arc::new(CachedEmbeddingPort::new(client, stamp, cache)),
+        Some((stamp, cache)) => Arc::new(CachedEmbeddingPort::new(
+            client,
+            stamp,
+            cache,
+            EMBEDDING_CACHE_OBSERVER,
+        )),
         None => {
             // §57.1: not_applicable names the missing object.
             eprintln!(

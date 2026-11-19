@@ -1,9 +1,11 @@
 //! `cache::tests::failure` — G-M12-3: failure is a miss (§51.3, M12 D7).
-//! Depends-on: crates=[humaux-domain, humaux-telemetry, tokio]; services=[]; env=[]; modules=[cache::bounded, cache::key, domain::ids, telemetry::cache]
+//! Depends-on: crates=[humaux-domain, humaux-telemetry, tokio]; services=[]; env=[]; modules=[cache::bounded, cache::key, cache::tests::support, domain::ids, telemetry::cache]
 //! Called-by: [cargo-test]
 //! Invariants: [a compute error is returned to its caller, counted as `result=error` and never cached; a disabled or
 //!   zero-capacity cache still serves every call]
 //! Spec: Baseline §51; §41.2; M12 design §6 D7, §8 G-M12-3
+
+mod support;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -11,6 +13,8 @@ use std::time::Duration;
 use humaux_cache::{BoundedCache, CacheConfig, EmbeddingQueryKey};
 use humaux_domain::ids::{TenantId, UserId};
 use humaux_telemetry::cache::{CacheName, CacheResult, cache_requests_total};
+
+use support::CACHE_OBSERVER;
 
 type Cache = BoundedCache<EmbeddingQueryKey, Vec<u8>>;
 
@@ -39,7 +43,7 @@ fn count(result: CacheResult) -> u64 {
 #[tokio::test]
 async fn error_is_not_cached_and_next_call_recomputes() {
     let _serial = COUNTERS.lock().await;
-    let cache = Cache::new(CacheName::EmbedQuery, config(1 << 20, true));
+    let cache = Cache::new(CacheName::EmbedQuery, config(1 << 20, true), CACHE_OBSERVER);
     let computes = AtomicUsize::new(0);
     let k = key();
     let (errors, misses, hits) = (
@@ -91,7 +95,7 @@ async fn zero_capacity_and_disabled_caches_still_serve() {
         ("zero capacity", config(0, true)),
         ("disabled", config(1 << 20, false)),
     ] {
-        let cache = Cache::new(CacheName::EmbedQuery, cfg);
+        let cache = Cache::new(CacheName::EmbedQuery, cfg, CACHE_OBSERVER);
         let computes = AtomicUsize::new(0);
         let k = key();
         let bypasses = count(CacheResult::Bypass);
