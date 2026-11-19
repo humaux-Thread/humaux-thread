@@ -15,7 +15,7 @@
 //!   HUMAUX_MAINTENANCE_RESTORE_MIN_FREE_DISK_BYTES, HUMAUX_PG_ARCHIVE_TIMEOUT_SECONDS, HUMAUX_PG_CONTAINER,
 //!   HUMAUX_PG_IMAGE, HUMAUX_PG_LISTEN_ADDRESSES, HUMAUX_PG_PORT, HUMAUX_PG_REPO_DIR, PATH];
 //!   modules=[adapters::postgres, adapters::private_projection_registry, adapters::projection_worker,
-//!   adapters::provisioning, adapters::qdrant, adapters::rebuild, adapters::stream_repo,
+//!   adapters::qdrant, adapters::rebuild, adapters::retrieval_provisioning, adapters::stream_repo,
 //!   adapters::tests::support::a2_fixture, adapters::tests::support::governance_ops,
 //!   adapters::tests::support::scratch_qdrant, domain::egress, domain::error, domain::ids, humaux-infra-cell,
 //!   humaux-local-secret-scan, humaux-projection, humaux-retrieval, humaux-retrieval-provider, infra-cell::permit,
@@ -65,9 +65,9 @@ use humaux_adapters::private_projection_registry::{
 use humaux_adapters::projection_worker::{
     CardEmbedder, PassConfig, run_claimed_pass_for_run, run_once,
 };
-use humaux_adapters::provisioning::{self, QdrantFace};
 use humaux_adapters::qdrant::RetrievalFamily;
 use humaux_adapters::rebuild::{self, ClosedDeps, RebuildDeps, Stream, Verdict};
+use humaux_adapters::retrieval_provisioning::{self, QdrantFace};
 use humaux_adapters::stream_repo::{Backoff, ClaimFamily, OnlyRun};
 use humaux_domain::egress::ProcessorId;
 use humaux_domain::error::ErrorCode;
@@ -518,8 +518,12 @@ fn role_dsn(h: &Handle, role: &str) -> String {
 /// collection, its stream serving. Returns the stream.
 fn seed_tenant(h: &mut Handle, face: &QdrantFace, n: usize, tag: &str) -> Stream {
     let collection = format!("c37_m2_{}", Uuid::new_v4().simple());
-    h.rt.block_on(provisioning::ensure_collection(face, &collection, DIM))
-        .expect("1024-dim collection");
+    h.rt.block_on(retrieval_provisioning::ensure_collection(
+        face,
+        &collection,
+        DIM,
+    ))
+    .expect("1024-dim collection");
     h.admin
         .execute(
             "INSERT INTO projection.tenant_placements (tenant_id, projection_family, collection_name, placement_class) \
@@ -672,7 +676,7 @@ fn rebuild_once(h: &Handle, face: &QdrantFace, stream: &Stream) -> (f64, f64, f6
             .expect("precheck");
         assert_eq!(precheck, Ok(0), "no legacy point");
         let run = rebuild::open_run(&deps, stream).await.expect("open");
-        provisioning::ensure_collection(face, &stream.collection, DIM)
+        retrieval_provisioning::ensure_collection(face, &stream.collection, DIM)
             .await
             .expect("collection");
         let issued = rebuild::issue_tickets(&deps, stream, &run, 1000, false)
