@@ -4,8 +4,8 @@
 //!   control.reap_quota_reservations, control.renew_quota_period], PostgreSQL(role_gateway),
 //!   PostgreSQL(role_maintenance)]; env=[];
 //!   modules=[adapters::postgres, domain::error, domain::identity, domain::ids]
-//! Called-by: [adapters::audited_read_quota, adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo,
-//!   adapters::operation_receipt,
+//! Called-by: [adapters::audited_read_quota, adapters::context_repo, adapters::distill_repo,
+//!   adapters::operation_receipt, gateway::bootstrap,
 //!   maintenance::main, maintenance::serve, tests, xtask::e2e_seed]
 //! Invariants: [the gateway only consumes existing quota windows; only role_maintenance can issue, renew or reap them;
 //!   exhaustion is QuotaExhausted and a PG error DependencyUnavailable, never an allow;

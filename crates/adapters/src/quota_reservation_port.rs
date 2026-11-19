@@ -1,4 +1,4 @@
-//! PostgreSQL quota port for lifecycle and receipt writes (§34.0.1, §36).
+//! `adapters::quota_reservation_port` — PostgreSQL quota port for lifecycle and receipt writes (§34.0.1, §36).
 //! Depends-on: crates=[async-trait, humaux-domain, sqlx, time, uuid]; services=[]; env=[]; modules=[domain::error, domain::identity]
 //! Called-by: [adapters::memory_governance_repo, gateway::bootstrap, tests]
 //! Invariants: [the business write owns the transaction; reserve and consume never commit it]
