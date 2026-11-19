@@ -1,6 +1,6 @@
 //! `retrieval::tests::freshness` — §21.5 / ADR-0111 pure policy contract and G-M13-6 envelope orthogonality.
-//! Depends-on: crates=[humaux-contracts, humaux-domain, serde_json]; services=[]; env=[];
-//!   modules=[contracts::freshness, domain::memory, domain::selection, retrieval::completeness, retrieval::envelope, retrieval::request, retrieval::signals]
+//! Depends-on: crates=[humaux-contracts, humaux-domain, humaux-telemetry, serde_json]; services=[]; env=[];
+//!   modules=[contracts::freshness, domain::memory, domain::selection, retrieval::completeness, retrieval::envelope, retrieval::request, retrieval::signals, telemetry::metrics]
 //! Called-by: [cargo-test]
 //! Invariants: [freshness never changes completeness; domain MemoryType set exhaustively loads]
 //! Spec: Baseline §21.5; §23.3; §80.1; ADR-0111
@@ -281,7 +281,7 @@ fn g_m13_6_exact_envelope_with_a_stale_item_stays_exact() {
         },
     )
     .expect("final envelope outcome")
-    .finish();
+    .finish(humaux_telemetry::metrics::record_final_classification);
     let json = serde_json::to_value(&envelope).expect("Envelope serialization");
     assert_eq!(json["items"].as_array().unwrap().len(), 1);
     assert_eq!(json["items"][0]["class"], "stale");

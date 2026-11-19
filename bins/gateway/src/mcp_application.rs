@@ -1,5 +1,5 @@
 //! `gateway::mcp_application` — Gateway implementation of the native MCP application port.
-//! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-protocol, humaux-testkit, postgres, serde, serde_json, time, tokio, uuid]; services=[PostgreSQL(role_gateway) r=[private.memory_records] w=[control.w2_test_request_intervals] x=[private.publish_continuity_facet, private.register_continuity_project], HTTP(gateway)]; env=[HUMAUX_CONTINUITY_DIRECT_PREAUTH_SAME_KEY, HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID, HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[adapters::affect_repo, adapters::byok, adapters::coord_repo, adapters::memory_governance_repo, adapters::postgres, adapters::subject_repo, application::continuity, application::coordination, application::distill, application::lifecycle_execution, application::recall_read, application::remember, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source, domain::subject, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::memory, gateway::recall, gateway::remember, protocol::mcp, protocol::mcp_catalog]
+//! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-protocol, humaux-telemetry, humaux-testkit, postgres, serde, serde_json, time, tokio, uuid]; services=[PostgreSQL(role_gateway) r=[private.memory_records] w=[control.w2_test_request_intervals] x=[private.publish_continuity_facet, private.register_continuity_project], HTTP(gateway)]; env=[HUMAUX_CONTINUITY_DIRECT_PREAUTH_SAME_KEY, HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID, HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[adapters::affect_repo, adapters::byok, adapters::coord_repo, adapters::memory_governance_repo, adapters::postgres, adapters::subject_repo, application::continuity, application::coordination, application::distill, application::lifecycle_execution, application::recall_read, application::remember, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source, domain::subject, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::memory, gateway::recall, gateway::remember, protocol::mcp, protocol::mcp_catalog, telemetry::metrics]
 //! Called-by: [gateway::bootstrap, tests]
 //! Invariants: [no path mints and accepts in one call; the canonical catalog validates wire arguments before dispatch runs; a valid contract with no local implementation is denied by GatewayGuard, never silently no-op'd]
 //! Spec: Baseline §33.10; §34.0.1; §78.1; ADR-0030; ADR-0031
@@ -66,6 +66,7 @@ use humaux_protocol::{
     mcp::{McpApplication, McpHttpContext, McpOperation, McpToolArguments, ToolName, ToolOutput},
     mcp_catalog::{CanonicalCatalog, OperationDescriptor},
 };
+use humaux_telemetry::metrics::record_final_classification;
 use serde::Deserialize;
 use serde_json::{Value, json, value::RawValue};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -837,7 +838,7 @@ impl GatewayMcpApplication {
             .await?;
         // Failed output validation, quota settlement or audit drops the pending result.
         // Only the accepted result may publish its final completeness metric.
-        Ok(pending.finish())
+        Ok(pending.finish(record_final_classification))
     }
 
     async fn memory_get(
@@ -899,7 +900,7 @@ impl GatewayMcpApplication {
                 },
             )
             .await?;
-        Ok(pending.finish())
+        Ok(pending.finish(record_final_classification))
     }
 
     async fn continuity_get(
@@ -1208,7 +1209,7 @@ impl GatewayMcpApplication {
                 },
             )
             .await?;
-        Ok(pending.finish())
+        Ok(pending.finish(record_final_classification))
     }
 
     /// ADR-0026 D-E: `memory.enumerate {candidates:true}` — the tenant's PENDING distill
@@ -2362,7 +2363,7 @@ impl GatewayMcpApplication {
                 },
             )
             .await?;
-        Ok(pending.finish())
+        Ok(pending.finish(record_final_classification))
     }
 }
 

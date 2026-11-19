@@ -607,6 +607,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::ticket_family`
 
+#### `domain::vocab`
+
 #### `humaux-adapters`
 
 #### `humaux-infra-network`
@@ -1601,6 +1603,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::ticket_family`
 
+#### `domain::vocab`
+
 #### `humaux-infra-network`
 
 #### `humaux-telemetry`
@@ -1720,6 +1724,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::ids`
 
 #### `domain::memory`
+
+#### `domain::vocab`
 
 #### `humaux-telemetry`
 - service `HTTP(loopback)`
@@ -2383,6 +2389,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::subject`
 
 #### `domain::ticket_family`
+
+#### `domain::vocab`
 
 #### `gateway::admission`
 - service `HTTP(loopback)`
@@ -3352,6 +3360,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::subject`
 
 #### `domain::ticket_family`
+
+#### `domain::vocab`
 
 #### `humaux-adapters`
 
@@ -4513,6 +4523,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::ticket_family`
 
+#### `domain::vocab`
+
 #### `humaux-adapters`
 
 #### `humaux-infra-network`
@@ -5365,6 +5377,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::subject`
 
 #### `domain::ticket_family`
+
+#### `domain::vocab`
 
 #### `humaux-adapters`
 
@@ -15250,6 +15264,7 @@ why: DegradeCode assertions in tests
 
 modules naming it:
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::exact_completeness_eval`
 - `adapters::tests::projection_lag`
 - `adapters::tests::recall_envelope_g23`
 - `adapters::tests::support::a2_fixture`
@@ -16677,6 +16692,7 @@ modules naming it:
 - `retrieval::completeness`
 - `retrieval::envelope`
 - `retrieval::rerank`
+- `retrieval::tests::freshness`
 - `tests`
 
 ### humaux-retrieval → `humaux-domain` (normal)
@@ -16992,6 +17008,7 @@ modules naming it:
 - `testkit::tests::metrics::host_cpu_busy_ratio`
 - `testkit::tests::metrics::host_memory_available_bytes`
 - `testkit::tests::metrics::host_pressure_ratio`
+- `testkit::tests::metrics::humaux_retrieval_requests_total`
 - `testkit::tests::metrics::jobs_dead`
 - `testkit::tests::metrics::jobs_pending`
 - `testkit::tests::metrics::jobs_processing`
@@ -17000,6 +17017,7 @@ modules naming it:
 - `testkit::tests::metrics::processing_gap_count`
 - `testkit::tests::metrics::projection_lag_events`
 - `testkit::tests::metrics::restore_drill_last_success_timestamp_seconds`
+- `testkit::tests::metrics::retrieval_completeness_total`
 - `testkit::tests::metrics::stage_last_error_class`
 - `testkit::tests::metrics::stage_last_output_timestamp_seconds`
 - `testkit::tests::metrics::stage_last_run_timestamp_seconds`
@@ -17605,7 +17623,6 @@ modules naming it:
 - `gateway::memory`
 - `gateway::recall`
 - `gateway::rerank_client`
-- `gateway::status`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::semantic_recall_wiring`
 - `tests`
@@ -17647,6 +17664,7 @@ modules naming it:
 - `gateway::context`
 - `gateway::guard`
 - `gateway::main`
+- `gateway::mcp_application`
 - `gateway::status`
 - `gateway::tests::exit_codes`
 - `gateway::tests::mcp_gateway`
@@ -21218,8 +21236,8 @@ default run:
 - `crates/application/src/continuity.rs:1415` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
 - `crates/protocol/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/public-pool/src/completeness.rs:379` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
-- `crates/retrieval/src/envelope.rs:2160` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
-- `crates/retrieval/src/envelope.rs:2979` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2161` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2980` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/planner.rs:314` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_eval.rs:108` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_registry.rs:173` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
