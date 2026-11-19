@@ -23,6 +23,7 @@
 //! 投影 lane 行。两次都经过同一个读闸（`read_gate::readable_memory_ids`）回验，但不能从投影行的长度反推 expected；否则
 //! `expected == returned + missing` 会退化成恒真算术，少带了多少永远算作 0。
 
+use humaux_application::continuity::ClosedFrozenReads;
 use humaux_domain::audit::{AuditEvent, AuditEventId, McpAuditAction};
 use humaux_domain::authority::{AuthorityClass, MemoryId};
 use humaux_domain::confirm::{DestructiveOp, RISK_TAG_CONFIRMATION_MINTED};
@@ -1499,7 +1500,7 @@ fn grounding_block(outcome: &ContextOutcome) -> Result<GroundingBlock, ErrorCode
     let mut states = Vec::with_capacity(compiled.items().len());
     for item in compiled.items() {
         let state = match item {
-            ContextItem::Mandatory(row) | ContextItem::Pinned(row) => row.grounding_state(),
+            ContextItem::Mandatory(row) | ContextItem::Pinned(row) => row.grounding.state(),
             ContextItem::Supplemental(_) => return Err(ErrorCode::DependencyUnavailable),
         };
         states.push(state);
@@ -1592,7 +1593,7 @@ async fn assemble_materialized_snapshot(
         .await
         .map_err(|_| ErrorCode::DependencyUnavailable)?;
     let frozen = fetch_frozen_in_txn(&mut txn, authorization, scope).await?;
-    let (handoff, outcome) = assemble_with_context(frozen, budget);
+    let (handoff, outcome) = assemble_with_context(ClosedFrozenReads(frozen), budget);
     let ids = materialized_ids(&outcome);
     let grounding = grounding_block(&outcome)?;
     let bodies = materialize_final_bodies_in_txn(

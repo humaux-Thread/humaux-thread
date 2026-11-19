@@ -12,8 +12,8 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use humaux_application::continuity::{
-    ClosedContinuitySnapshot, ContinuityReadPort, DiagnosticCode, SourceFacetInput,
-    SourceFacetState, VerifiedCurrentFacet, W2_FORCED_UNAVAILABLE,
+    ClosedContinuitySnapshot, ClosedFrozenReads, ContinuityReadPort, DiagnosticCode,
+    SourceFacetInput, SourceFacetState, VerifiedCurrentFacet, W2_FORCED_UNAVAILABLE,
 };
 use humaux_domain::{
     context::ContextBudget,
@@ -542,7 +542,7 @@ impl ContinuityReadPort for PostgresContinuityReadPort {
             agent_id: None,
         };
         let frozen = fetch_frozen_in_txn(&mut tx, &narrowed, &scope).await?;
-        let handoff = assemble(frozen, budget);
+        let handoff = assemble(ClosedFrozenReads(frozen), budget);
         let storage_token_sha256: [u8; 32] =
             Sha256::digest(storage_snapshot_token.as_bytes()).into();
         if handoff.context_snapshot_seq != storage_snapshot_seq
