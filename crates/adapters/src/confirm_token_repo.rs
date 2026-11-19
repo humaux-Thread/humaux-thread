@@ -1,5 +1,5 @@
 //! `adapters::confirm_token_repo` — `control.confirm_tokens` (migration 0148, ADR-0018).
-//! Depends-on: crates=[humaux-domain, sqlx, uuid]; services=[PostgreSQL(any) w=[control.confirm_tokens] x=[control.sweep_confirm_tokens, control.assert_write_scope]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, domain::audit, domain::confirm, domain::error, domain::identity, domain::ids]
+//! Depends-on: crates=[humaux-domain, sqlx, uuid]; services=[PostgreSQL(any) w=[control.confirm_tokens] x=[control.sweep_confirm_tokens, control.assert_write_scope]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, domain::audit, domain::audit::write_view, domain::confirm, domain::error, domain::identity, domain::ids]
 //! Called-by: [adapters::affect_repo, adapters::applicability_repo, adapters::candidate_repo, adapters::context_repo, adapters::dedup_repo, adapters::distill_repo, adapters::forget_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::subject_repo, gateway::guard, maintenance::serve, tests]
 //! Invariants: [tokens store only sha256(nonce) and are consumed by one UPDATE inside the caller's transaction;
 //!   replayed, expired or mis-bound tokens — including one minted for another workspace — are one indistinguishable
@@ -25,7 +25,10 @@
 use std::time::Duration;
 
 use humaux_domain::{
-    audit::{AuditEvent, McpAuditAction},
+    audit::{
+        McpAuditAction,
+        write_view::{AuditWriteEvent, AuditWriteSource},
+    },
     confirm::{DestructiveOp, RISK_TAG_CONFIRMATION_MINTED},
     error::ErrorCode,
     identity::AuthorizationScope,
@@ -148,7 +151,7 @@ fn validate_mint(
     target_id: Uuid,
     successor_id: Option<Uuid>,
     ttl: Duration,
-    finished_audit: &AuditEvent,
+    finished_audit: &AuditWriteEvent,
 ) -> Result<(Uuid, f64), ErrorCode> {
     let user_id = auth.user_id().ok_or(ErrorCode::Unauthorized)?.0;
     if auth.tenant_id().0.is_nil() || auth.principal().0.is_nil() || user_id.is_nil() {
@@ -184,10 +187,11 @@ pub async fn mint_with_audit(
     ttl: Duration,
     nonce_sha256: [u8; 32],
     request_sha256: Option<[u8; 32]>,
-    finished_audit: &AuditEvent,
+    finished_audit: &(impl AuditWriteSource + Sync),
 ) -> Result<MintedConfirmation, ErrorCode> {
+    let finished_audit = finished_audit.audit_write_event();
     let (user_id, ttl_seconds) =
-        validate_mint(auth, op, target_id, successor_id, ttl, finished_audit)?;
+        validate_mint(auth, op, target_id, successor_id, ttl, &finished_audit)?;
     // dep: PostgreSQL(any) — opens a PostgreSQL transaction
     let mut txn = pool.pool().begin().await.map_err(db_error)?;
     let workspace = set_write_authorization_local(&mut txn, auth).await?;
@@ -213,7 +217,7 @@ pub async fn mint_with_audit(
     request_guard_repo::audit_event_insert_in_txn(
         &mut txn,
         AuditTenant::Authenticated(auth),
-        finished_audit,
+        finished_audit.as_ref(),
     )
     .await?;
     txn.commit().await.map_err(db_error)?;
@@ -293,7 +297,7 @@ mod tests {
     use std::time::SystemTime;
 
     use humaux_domain::{
-        audit::{AuditEventId, AuditMetadata, SYSTEM_TENANT_ID},
+        audit::{AuditEventId, SYSTEM_TENANT_ID},
         identity::{BoundedSet, PrincipalId},
         ids::{TenantId, UserId, WorkspaceId},
     };
@@ -309,8 +313,8 @@ mod tests {
         )
     }
 
-    fn audit(auth: &AuthorizationScope, resource: &str, result: &str) -> AuditEvent {
-        AuditEvent {
+    fn audit(auth: &AuthorizationScope, resource: &str, result: &str) -> AuditWriteEvent {
+        AuditWriteEvent {
             event_id: AuditEventId::new(),
             ts: SystemTime::now(),
             tenant_id: auth.tenant_id(),
@@ -327,7 +331,7 @@ mod tests {
             risk_tags: vec![RISK_TAG_CONFIRMATION_MINTED.to_owned()],
             before_fingerprint: None,
             after_fingerprint: None,
-            metadata: AuditMetadata::new(),
+            metadata: Default::default(),
         }
     }
 

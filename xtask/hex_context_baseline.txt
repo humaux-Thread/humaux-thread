@@ -14,12 +14,10 @@ bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:hu
 bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::start_line
 bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::version_mode
 crates/adapters/src/applicability_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
-crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::AuditEvent
 crates/adapters/src/continuity_read.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/continuity_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::VisibilityDescriptor
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::AuditEvent
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind::ALL
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind::from_str
@@ -33,9 +31,7 @@ crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycl
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding::Judged
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding::NotJudged
-crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::AuditEvent
 crates/adapters/src/retrieve.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
-crates/application/src/auth.rs:identity_access->provider_execution:humaux_domain::audit::AuditMetadata
 crates/application/src/contribute.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
 crates/application/src/recall_read.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
 crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::CacheName

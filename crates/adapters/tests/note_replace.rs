@@ -997,7 +997,7 @@ fn g21_no_replacement_without_a_confirmation_of_exactly_this_intent() {
                             nonce_sha256: nonce,
                             request_sha256: None,
                         },
-                        finished_audit: finished,
+                        finished_audit: finished.into(),
                         undo_window: Duration::from_secs(86_400),
                         consistency_token_ttl: Duration::from_secs(600),
                         subjects: humaux_domain::subject::SubjectDeclaration::default(),

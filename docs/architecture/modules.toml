@@ -208,6 +208,7 @@ files = [
   "crates/application/src/oauth_exchange.rs",
   "crates/application/src/session.rs",
   "crates/application/src/signed_token.rs",
+  "crates/domain/src/audit/write_view.rs",
   "crates/domain/src/identity.rs",
 ]
 kind = "support"
