@@ -15865,6 +15865,7 @@ why: UUID ids (v7) and parsing
 modules naming it:
 - `domain::affect`
 - `domain::audit`
+- `domain::audit_types`
 - `domain::context`
 - `domain::continuity`
 - `domain::coordination`
