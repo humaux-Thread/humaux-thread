@@ -1,6 +1,6 @@
 //! `retrieval::signals` — §21 检索质量信号，按 §21.5 逐条点名的六个轴：Similarity / Relevance / Association / Completeness / Temporal
 //!   Freshness / Grounding State.
-//! Depends-on: crates=[humaux-contracts, humaux-domain, serde, serde_json]; services=[]; env=[]; modules=[contracts::freshness, domain::grounding, domain::memory, retrieval::completeness, retrieval::envelope]
+//! Depends-on: crates=[humaux-contracts, humaux-domain, serde, serde_json]; services=[]; env=[]; modules=[contracts::freshness, domain::grounding_read, domain::memory, retrieval::completeness, retrieval::envelope]
 //! Called-by: [adapters::read_materialize, application::recall_read, tests]
 //! Invariants: []
 //! Spec: §21; §21.5; §8.8; §20; §80.1
@@ -25,7 +25,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Serialize, Serializer};
 
-use humaux_domain::grounding::GroundingState;
+use humaux_domain::grounding_read::GroundingRead;
 use humaux_domain::memory::MemoryType;
 
 use crate::completeness::FreshnessClass;
@@ -238,34 +238,23 @@ pub fn summarize_freshness(classes: impl IntoIterator<Item = FreshnessClass>) ->
 // §8.8 Grounding State — its own axis, never folded into Freshness
 // ============================================================================
 
-/// §8.8's `GroundingState` carried as a §21 signal.
+/// §8.8's owner-issued [`GroundingRead`] carried as a §21 signal.
 ///
-/// The wrapped [`GroundingState`] is **private and this type has no field-literal
-/// constructor**: the only way in is [`From<GroundingState>`], and a `GroundingState` in turn
-/// can only leave `domain::grounding::derive_grounding_state`. DOD-092's「不存在可手改
-/// `memory.stale=true` 真源」therefore survives the crate boundary — this crate can relay a
-/// grounding verdict but cannot mint one, and there is no second derivation site to drift.
-///
-/// Serializes as §8.8's state name alone ([`GroundingStateWire`]); the mode/version/edge
-/// detail that produced it belongs to the resolver side, not to a retrieval result.
-// ponytail: no `revokes_current_truth_assumption` mirror field and no triggering-edge list —
-// the former is one call on §8.8's own type, the latter has no producer (no `EvidenceResolver`
-// impl exists in this workspace yet). Add the edge list when a resolver lands and a caller
-// actually needs to say *which* source moved.
+/// Only the state name is serialized ([`GroundingStateWire`]). The owner supplies
+/// truth eligibility and retains the source details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GroundingSignal(GroundingState);
+pub struct GroundingSignal(GroundingRead);
 
 impl GroundingSignal {
-    /// The relayed §8.8 verdict, still as the domain type — callers needing
-    /// `revokes_current_truth_assumption()` read it off §8.8's own type rather than a copy.
+    /// The relayed §8.8 verdict, including the owner's truth eligibility.
     #[must_use]
-    pub const fn state(self) -> GroundingState {
+    pub const fn state(self) -> GroundingRead {
         self.0
     }
 }
 
-impl From<GroundingState> for GroundingSignal {
-    fn from(state: GroundingState) -> Self {
+impl From<GroundingRead> for GroundingSignal {
+    fn from(state: GroundingRead) -> Self {
         Self(state)
     }
 }
@@ -306,9 +295,10 @@ pub struct QualitySignals {
 mod tests {
     use super::*;
     use humaux_domain::grounding::{
-        EdgeOutcome, GroundingEdge, GroundingInputs, GroundingMode, GroundingStateKind,
+        EdgeOutcome, GroundingEdge, GroundingInputs, GroundingMode, GroundingState,
         GroundingVersionToken, derive_grounding_state,
     };
+    use humaux_domain::grounding_read::GroundingReadKind;
 
     #[test]
     fn similarity_score_carries_raw_cosine_range_uncapped() {
@@ -453,11 +443,11 @@ mod tests {
                 None,
                 None,
             ),
-            grounding: Some(state_of("v1", "v1").into()),
+            grounding: Some(state_of("v1", "v1").read_view().into()),
         }
     }
 
-    fn grounding_kind(s: &QualitySignals) -> Option<GroundingStateKind> {
+    fn grounding_kind(s: &QualitySignals) -> Option<GroundingReadKind> {
         s.grounding.map(|g| g.state().kind())
     }
 
@@ -469,19 +459,16 @@ mod tests {
     fn grounding_and_freshness_move_independently() {
         let mut s = stale_but_grounded();
         assert_eq!(s.freshness.class, FreshnessClass::Stale);
-        assert_eq!(grounding_kind(&s), Some(GroundingStateKind::Current));
+        assert_eq!(grounding_kind(&s), Some(GroundingReadKind::Current));
 
         // Move grounding only: the source moved under a memory that is just as old as before.
-        s.grounding = Some(state_of("v1", "v2").into());
+        s.grounding = Some(state_of("v1", "v2").read_view().into());
         assert_eq!(
             s.freshness.class,
             FreshnessClass::Stale,
             "grounding 变化不得改动 freshness"
         );
-        assert_eq!(
-            grounding_kind(&s),
-            Some(GroundingStateKind::RecheckRequired)
-        );
+        assert_eq!(grounding_kind(&s), Some(GroundingReadKind::RecheckRequired));
 
         // Move freshness only: rewritten 5 minutes ago, source still at the version it moved
         // to — §8.8's「刚写 5 分钟的 current-state Memory + 代码刚变化 ⇒ RECHECK_REQUIRED」.
@@ -495,7 +482,7 @@ mod tests {
         assert_eq!(s.freshness.class, FreshnessClass::Fresh);
         assert_eq!(
             grounding_kind(&s),
-            Some(GroundingStateKind::RecheckRequired),
+            Some(GroundingReadKind::RecheckRequired),
             "freshness 变化不得改动 grounding"
         );
     }
@@ -505,7 +492,7 @@ mod tests {
     #[test]
     fn grounding_serializes_as_its_own_key_beside_freshness() {
         let mut s = stale_but_grounded();
-        s.grounding = Some(state_of("v1", "v2").into());
+        s.grounding = Some(state_of("v1", "v2").read_view().into());
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains(r#""freshness":{"class":"stale""#));
         assert!(json.contains(r#""grounding":"recheck_required""#));
