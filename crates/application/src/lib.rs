@@ -60,6 +60,7 @@ pub mod query_embedding_execution;
 
 /// Private inference RPC lifecycle.
 pub mod private_inference;
+pub mod private_reasoning;
 
 /// Operational health sampling (ADR-0061 D-D; ADR-0130 D2).
 pub mod health;

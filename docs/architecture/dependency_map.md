@@ -439,6 +439,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_maintenance)`
 - service `PostgreSQL(role_retrieval_worker)`
 
+#### `adapters::structured_reasoning`
+
 #### `adapters::subject_repo`
 - reads `private.memory_subjects`
 - writes `private.evidence_subjects`
@@ -488,6 +490,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::pin`
 
 #### `application::private_inference`
+
+#### `application::private_reasoning`
 
 #### `application::projection_maintenance`
 
@@ -570,6 +574,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::policy`
 
 #### `domain::public`
+
+#### `domain::reasoning_types`
 
 #### `domain::relation`
 
@@ -2145,6 +2151,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_maintenance)`
 - service `PostgreSQL(role_retrieval_worker)`
 
+#### `adapters::structured_reasoning`
+
 #### `adapters::subject_repo`
 - reads `private.memory_subjects`
 - writes `private.evidence_subjects`
@@ -2202,6 +2210,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::pin`
 
 #### `application::private_inference`
+
+#### `application::private_reasoning`
 
 #### `application::projection_execution`
 
@@ -2294,6 +2304,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::policy`
 
 #### `domain::public`
+
+#### `domain::reasoning_types`
 
 #### `domain::relation`
 
@@ -3099,6 +3111,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_maintenance)`
 - service `PostgreSQL(role_retrieval_worker)`
 
+#### `adapters::structured_reasoning`
+
 #### `adapters::subject_repo`
 - reads `private.memory_subjects`
 - writes `private.evidence_subjects`
@@ -3154,6 +3168,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::pin`
 
 #### `application::private_inference`
+
+#### `application::private_reasoning`
 
 #### `application::projection_execution`
 
@@ -3237,6 +3253,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::policy`
 
 #### `domain::public`
+
+#### `domain::reasoning_types`
 
 #### `domain::relation`
 
@@ -4257,6 +4275,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_maintenance)`
 - service `PostgreSQL(role_retrieval_worker)`
 
+#### `adapters::structured_reasoning`
+
 #### `adapters::subject_repo`
 - reads `private.memory_subjects`
 - writes `private.evidence_subjects`
@@ -4300,6 +4320,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::pin`
 
 #### `application::private_inference`
+
+#### `application::private_reasoning`
 
 #### `application::projection_maintenance`
 
@@ -4374,6 +4396,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::policy`
 
 #### `domain::public`
+
+#### `domain::reasoning_types`
 
 #### `domain::relation`
 
@@ -5086,6 +5110,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_maintenance)`
 - service `PostgreSQL(role_retrieval_worker)`
 
+#### `adapters::structured_reasoning`
+
 #### `adapters::subject_repo`
 - reads `private.memory_subjects`
 - writes `private.evidence_subjects`
@@ -5129,6 +5155,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::pin`
 
 #### `application::private_inference`
+
+#### `application::private_reasoning`
 
 #### `application::projection_execution`
 
@@ -5207,6 +5235,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::policy`
 
 #### `domain::public`
+
+#### `domain::reasoning_types`
 
 #### `domain::relation`
 
@@ -14036,6 +14066,7 @@ modules naming it:
 - `adapters::serving_repo`
 - `adapters::session_repo`
 - `adapters::stream_repo`
+- `adapters::structured_reasoning`
 - `adapters::subject_repo`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::billing_doors`
@@ -14191,6 +14222,7 @@ modules naming it:
 - `adapters::serving_repo`
 - `adapters::session_repo`
 - `adapters::stream_repo`
+- `adapters::structured_reasoning`
 - `adapters::subject_repo`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
@@ -14412,6 +14444,7 @@ modules naming it:
 - `adapters::serving_repo`
 - `adapters::session_repo`
 - `adapters::stream_repo`
+- `adapters::structured_reasoning`
 - `adapters::subject_repo`
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
@@ -14649,6 +14682,7 @@ modules naming it:
 - `adapters::retrieval_query_log`
 - `adapters::retrieval_query_source`
 - `adapters::scheduler`
+- `adapters::structured_reasoning`
 - `adapters::subject_repo`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
@@ -14851,6 +14885,7 @@ modules naming it:
 - `adapters::quota_repo`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
+- `adapters::structured_reasoning`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::billing_doors`
@@ -15230,6 +15265,7 @@ modules naming it:
 - `adapters::quota_repo`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
+- `adapters::structured_reasoning`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::billing_doors`
@@ -15539,6 +15575,7 @@ modules naming it:
 - `application::oauth_exchange`
 - `application::operator_provisioning`
 - `application::pin`
+- `application::private_reasoning`
 - `application::processing_status`
 - `application::projection_execution`
 - `application::projection_maintenance`
@@ -15618,6 +15655,7 @@ modules naming it:
 - `application::oauth`
 - `application::oauth_exchange`
 - `application::operator_provisioning`
+- `application::private_reasoning`
 - `application::referral`
 - `application::session`
 - `application::signed_token`
@@ -15628,11 +15666,11 @@ why: hex-encoding digest/token bytes for storage and comparison
 
 modules naming it:
 - `application::auth`
-- `application::consolidate`
 - `application::continuity`
 - `application::contribute`
 - `application::oauth_exchange`
 - `application::operator_provisioning`
+- `application::private_reasoning`
 - `application::referral`
 - `application::session`
 - `application::signed_token`
@@ -15706,6 +15744,7 @@ modules naming it:
 - `application::operator_provisioning`
 - `application::partition_retention`
 - `application::private_inference`
+- `application::private_reasoning`
 - `application::projection_execution`
 - `application::projection_maintenance`
 - `application::public_dispatch`
@@ -15746,6 +15785,7 @@ modules naming it:
 - `application::partition_retention`
 - `application::pin`
 - `application::private_inference`
+- `application::private_reasoning`
 - `application::projection_maintenance`
 - `application::query_embedding_execution`
 - `application::reasoning_route_admin`
