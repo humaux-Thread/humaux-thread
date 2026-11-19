@@ -54,17 +54,6 @@ crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:hum
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::DistillFinish
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::JobsError::Db
 crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::finish_distill_in_txn
-crates/adapters/src/maintenance_repo.rs:job_execution->identity_access:humaux_adapters::membership_repo::AdminAction
-crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning
-crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::AUDIT_RESULT_SUCCESS
-crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::ProvisioningError
-crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::ProvisioningError::InvalidInput
-crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::ProvisioningError::Refused
-crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::REDRIVE_RESOURCE
-crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::REDRIVE_RISK_TAG
-crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::audit_tagged
-crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::require_admin
-crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::set_tenant
 crates/adapters/src/mechanism_observation.rs:operations_platform->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::ReservationStatus

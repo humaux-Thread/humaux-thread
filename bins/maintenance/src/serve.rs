@@ -32,7 +32,7 @@
 //!   HUMAUX_MAINTENANCE_SERVE_TENANTS_PER_RUN, HUMAUX_PRIVATE_WORKER_DISTILL_BUDGET_WINDOW_SECS];
 //!   modules=[adapters::confirm_token_repo, adapters::maintenance_repo, adapters::postgres,
 //!   adapters::provider_budget, adapters::quota_repo, adapters::stream_repo, application::scheduler, domain::error, domain::ids, telemetry::dr,
-//!   telemetry::metrics, maintenance::main, maintenance::resident]
+//!   telemetry::metrics, maintenance::bootstrap, maintenance::main, maintenance::resident]
 //! Called-by: [maintenance::main]
 //! Invariants: [HUMAUX_MIGRATOR_PG_DSN in the environment refuses boot before anything else (ADR-0063 D-H); every
 //!   key is required with no code default and checked before any connection; LOST_AFTER must
@@ -67,8 +67,8 @@ use humaux_adapters::maintenance_repo::{self, count_task_call};
 use humaux_adapters::postgres::MaintenanceDbPool;
 use humaux_adapters::{confirm_token_repo, provider_budget, quota_repo, stream_repo};
 use humaux_application::scheduler::{
-    self, DrEvidence, JobRetention, MaintenanceTask as Task, MeasuredBudget, PartitionTable,
-    RedriveAudit, TaskOutcome,
+    self, DrEvidence, JobRetention, MaintenanceServePort, MaintenanceTask as Task, MeasuredBudget,
+    PartitionTable, RedriveAudit, TaskOutcome,
 };
 use humaux_domain::{error::ErrorCode, ids::TenantId};
 use humaux_telemetry::dr::{self, DrReading, Limit, Volume};
@@ -329,6 +329,7 @@ struct Shared {
 async fn call(
     task: Task,
     pool: &MaintenanceDbPool,
+    serve: &impl MaintenanceServePort,
     tenant: Uuid,
     limit: i32,
     cfg: &Config,
@@ -385,15 +386,15 @@ async fn call(
                 .map_err(task_error)
         }
         // dep: PostgreSQL(role_maintenance) — ops.purge_expired_selection_snapshots (0218 owner purge door)
-        Task::Snapshots => scheduler::purge_expired_selection_snapshots(pool, tenant, limit).await,
-        Task::Jobs => scheduler::purge_terminal_jobs(pool, tenant, cfg.jobs, limit).await,
+        Task::Snapshots => scheduler::purge_expired_selection_snapshots(serve, tenant, limit).await,
+        Task::Jobs => scheduler::purge_terminal_jobs(serve, tenant, cfg.jobs, limit).await,
         // dep: PostgreSQL(role_maintenance) — projection.reissue_unsettled_tickets (0220 owner definer)
         Task::Reissue => {
-            scheduler::reissue_unsettled_tickets(pool, tenant, cfg.reissue_cooldown, limit).await
+            scheduler::reissue_unsettled_tickets(serve, tenant, cfg.reissue_cooldown, limit).await
         }
         // dep: PostgreSQL(role_maintenance) — ops.auto_redrive_schema_failed (0221 owner definer) + §77 row
         Task::Redrive => {
-            scheduler::auto_redrive_schema_failed(pool, tenant, cfg.redrive_cooldown, limit, audit)
+            scheduler::auto_redrive_schema_failed(serve, tenant, cfg.redrive_cooldown, limit, audit)
                 .await
         }
         // Cluster-level: [`cluster`] runs these once per run, never per tenant.
@@ -406,9 +407,9 @@ async fn call(
 
 /// ADR-0063 D-K: one PARTITIONS run, counted once (not per tenant). Success publishes the horizon of every closed
 /// table_key; a failure first removes the whole family (D-F: `PartitionHorizonAbsent` fires, never a stale value).
-async fn partitions(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
+async fn partitions(serve: &impl MaintenanceServePort, cfg: &Config, run: &mut Run) {
     // dep: PostgreSQL(role_maintenance) — control.partition_registry proposal UPDATE + horizon read (adapters::maintenance_repo)
-    let done = match tokio::time::timeout(cfg.cycle, scheduler::propose_partitions(pool)).await {
+    let done = match tokio::time::timeout(cfg.cycle, scheduler::propose_partitions(serve)).await {
         Ok(Ok(done)) => Ok(done),
         Ok(Err(e)) => Err(dependency_error(format!("partitions: {e}"))),
         Err(_) => Err(dependency_error(format!(
@@ -432,9 +433,9 @@ async fn partitions(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
 /// ADR-0123 D3 / §65: one AUTHORITY_I4 run, counted once (not per tenant). Success sets `authority_i4_violations` once, at
 /// the scan's end; a failure removes the sample and never writes 0, because a 0 would silence `authority_i4_violations > 0`
 /// (§41.2) while the scan is broken. One finding row is the run's `affected` count.
-async fn authority_i4(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
+async fn authority_i4(serve: &impl MaintenanceServePort, cfg: &Config, run: &mut Run) {
     // dep: PostgreSQL(role_maintenance) — the one-statement scan (adapters::maintenance_repo::scan_authority_i4)
-    let done = match tokio::time::timeout(cfg.cycle, scheduler::scan_authority_i4(pool)).await {
+    let done = match tokio::time::timeout(cfg.cycle, scheduler::scan_authority_i4(serve)).await {
         Ok(Ok(scan)) => Ok(scan),
         Ok(Err(e)) => Err(dependency_error(format!("authority_i4: {e}"))),
         Err(_) => Err(dependency_error(format!(
@@ -457,11 +458,16 @@ async fn authority_i4(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
 
 /// Runs a cluster-level `task` once, without a tenant page (ADR-0063 D-K, ADR-0064 D-K, ADR-0123 D3); `false` for a
 /// per-tenant task, which the caller walks page by page.
-async fn cluster(task: Task, pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) -> bool {
+async fn cluster(
+    task: Task,
+    serve: &impl MaintenanceServePort,
+    cfg: &Config,
+    run: &mut Run,
+) -> bool {
     match task {
-        Task::Partitions => partitions(pool, cfg, run).await,
-        Task::DrEvidence => dr_evidence(pool, cfg, run).await,
-        Task::AuthorityI4 => authority_i4(pool, cfg, run).await,
+        Task::Partitions => partitions(serve, cfg, run).await,
+        Task::DrEvidence => dr_evidence(serve, cfg, run).await,
+        Task::AuthorityI4 => authority_i4(serve, cfg, run).await,
         _ => return false,
     }
     true
@@ -553,11 +559,11 @@ fn dr_reading(e: &DrEvidence, free: [i64; Volume::ALL.len()]) -> DrReading {
 
 /// ADR-0064 D-K / 10.11 D: one DR_EVIDENCE run, counted once. Success publishes all six families; a failure
 /// publishes nothing (the last values stay: an absent series would silence BackupFailure) and counts `failed`.
-async fn dr_evidence(pool: &MaintenanceDbPool, cfg: &Config, run: &mut Run) {
+async fn dr_evidence(serve: &impl MaintenanceServePort, cfg: &Config, run: &mut Run) {
     let done = async {
         // dep: PostgreSQL(role_maintenance) — the DR_EVIDENCE statement (adapters::maintenance_repo::dr_evidence);
         // production binds no archiver override
-        let evidence = match tokio::time::timeout(cfg.cycle, scheduler::dr_evidence(pool)).await {
+        let evidence = match tokio::time::timeout(cfg.cycle, scheduler::dr_evidence(serve)).await {
             Ok(Ok(e)) => e,
             Ok(Err(e)) => return Err(dependency_error(format!("dr_evidence: {e}"))),
             Err(_) => {
@@ -622,6 +628,7 @@ async fn run_page(
 /// ADR-0062 D-B: due tasks run from `first`; unvisited tenants remain under the cursor.
 async fn cycle(
     pool: &MaintenanceDbPool,
+    serve: &impl MaintenanceServePort,
     cfg: &Config,
     cursors: &mut [Cursor; Task::ALL.len()],
     first: usize,
@@ -643,7 +650,7 @@ async fn cycle(
         stage_started(task.label(), resident::stage_now());
         run.ran = true;
         cursor.last_run = Some(Instant::now());
-        if cluster(task, pool, cfg, &mut run).await {
+        if cluster(task, serve, cfg, &mut run).await {
             run.finish(task, resident::stage_now(), true);
             runs.push((task, run));
             continue;
@@ -652,7 +659,7 @@ async fn cycle(
         // with work" definer per task if rotation latency matters (ADR-0062 L1).
         let page = tokio::time::timeout(
             cfg.cycle,
-            scheduler::tenant_page(pool, cursor.after, cfg.tenants_per_run),
+            scheduler::tenant_page(serve, cursor.after, cfg.tenants_per_run),
         )
         .await;
         let page = match page {
@@ -682,7 +689,7 @@ async fn cycle(
             &mut run,
             async |tenant| match tokio::time::timeout(
                 cfg.cycle,
-                call(task, pool, tenant, limit, cfg, audit),
+                call(task, pool, serve, tenant, limit, cfg, audit),
             )
             .await
             {
@@ -853,6 +860,7 @@ pub(crate) async fn serve() -> Result<Output> {
     let mut latch = Latch::install()?;
     // dep: PostgreSQL(role_maintenance) — the daemon's pool; every statement bounded by CYCLE_SECONDS
     let pool = connect_pool(&dsn, cfg.cycle).await?;
+    let serve = crate::bootstrap::maintenance_serve(&pool);
     let shared = Arc::new(Shared {
         last: Last::pending(),
         cycles: Mutex::new((0, false, Value::Null)),
@@ -892,7 +900,7 @@ pub(crate) async fn serve() -> Result<Output> {
             .unwrap_or_else(PoisonError::into_inner)
             .1 = true;
         let first = usize::try_from(cycles % Task::ALL.len() as u64).unwrap_or(0);
-        let runs = cycle(&pool, &cfg, &mut cursors, first, &latch, &audit).await;
+        let runs = cycle(&pool, &serve, &cfg, &mut cursors, first, &latch, &audit).await;
         cycles += 1;
         let failure = runs
             .iter()
@@ -944,6 +952,7 @@ pub(crate) async fn sweep_once(args: &Args) -> Result<Output> {
     let latch = Latch::install()?;
     // dep: PostgreSQL(role_maintenance) — the one-shot pool; every statement bounded by CYCLE_SECONDS
     let pool = connect_pool(&dsn, cfg.cycle).await?;
+    let serve = crate::bootstrap::maintenance_serve(&pool);
     let mut cursors = [Cursor::default(); Task::ALL.len()];
     let audit = RedriveAudit {
         actor: &admin.actor,
@@ -952,7 +961,7 @@ pub(crate) async fn sweep_once(args: &Args) -> Result<Output> {
         trace_id: &admin.trace_id,
         step_up_auth_context: &admin.step_up,
     };
-    let runs = cycle(&pool, &cfg, &mut cursors, 0, &latch, &audit).await;
+    let runs = cycle(&pool, &serve, &cfg, &mut cursors, 0, &latch, &audit).await;
     let failed = runs.iter().any(|(_, run)| run.failed > 0);
     let mut output = Output::ok(json!({
         "command": "sweep once",

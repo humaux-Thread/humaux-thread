@@ -336,6 +336,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `ops.requeue_dead_distill`
 - executes `projection.ensure_tenant_placement`
 - service `PostgreSQL(role_maintenance)`
+- service `PostgreSQL(owner)`
 
 #### `adapters::qdrant`
 - service `Qdrant(*)`
@@ -2995,6 +2996,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `ops.requeue_dead_distill`
 - executes `projection.ensure_tenant_placement`
 - service `PostgreSQL(role_maintenance)`
+- service `PostgreSQL(owner)`
 
 #### `adapters::qdrant`
 - service `Qdrant(*)`
@@ -13364,6 +13366,7 @@ executed by:
 - `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::maintenance_repo`
 - `adapters::postgres`
+- `adapters::provisioning`
 - `adapters::role_hygiene`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::applicability`
@@ -18271,6 +18274,7 @@ modules naming it:
 - `private-worker::main`
 - `private-worker::route_providers`
 - `private-worker::tests::contribution_execution_runner`
+- `private-worker::tests::derived_dispatch_e2e`
 - `private-worker::tests::distill_hop_e2e`
 - `private-worker::tests::start_manual_contribution_command_0131`
 - `tests`
