@@ -190,7 +190,7 @@ impl EgressDisposition {
 /// `card_status` column, see that migration's own comment).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardStatus {
-    /// Every source field ([`title`](RetrievalCard::title), `key_claim`, `evidence_excerpt`)
+    /// Every source field (`title`, `key_claim`, `evidence_excerpt`)
     /// was present in the input; no placeholder substitution happened.
     Complete,
     /// At least one of `key_claim`/`evidence_excerpt` was missing from the input and was
@@ -371,9 +371,7 @@ impl RetrievalCard {
 
     /// `memory_type`'s wire form for the `projection.retrieval_cards.memory_type` column
     /// (migration 0074's CHECK constraint mirrors exactly [`memory_type_wire`]'s 12 literals)
-    /// — the write-path counterpart to [`data_class`](Self::data_class)`.as_str()` and
-    /// [`egress_disposition`](Self::egress_disposition)`.as_str()`, which are already methods
-    /// on their own types.
+    /// — the write-path counterpart to [`DataClass::as_str`] and [`EgressDisposition::as_str`].
     pub const fn memory_type_wire(&self) -> &'static str {
         memory_type_wire(self.memory_type)
     }
