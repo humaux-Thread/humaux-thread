@@ -4571,27 +4571,17 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_retrieval_worker)`
 - service `PostgreSQL(owner)`
 
-#### `adapters::qdrant`
-- service `Qdrant(*)`
-
 #### `application::mechanism_observation`
 
 #### `application::public_dispatch`
-
-#### `contracts::config_registry`
-- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::mechanism_registry`
 - reads `public.consensus_ready`
 - service `PostgreSQL(any)`
 
-#### `domain::affect`
-
 #### `domain::authority`
 
 #### `domain::boundary`
-
-#### `domain::dataclass`
 
 #### `domain::error`
 
@@ -4605,10 +4595,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::public`
 
-#### `domain::subject`
-
-#### `domain::ticket_family`
-
 #### `humaux-infra-network`
 
 #### `infra-cell::permit`
@@ -4620,10 +4606,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `infra-network::http`
 - service `HTTP(loopback)`
-
-#### `projection::card`
-
-#### `projection::dense`
 
 #### `public-pool::public_evolve`
 
