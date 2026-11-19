@@ -625,9 +625,7 @@ kind = "support"
 legacy_m = ["M08", "M09", "M10", "M11", "M12", "M13"]
 owned_tables = [
   "ops.consistency_reports",
-  "ops.jobs",
   "ops.outbox",
-  "ops.scheduler_leases",
   "ops.selection_snapshot_items",
   "ops.selection_snapshots",
   "ops.stage_runs",
@@ -832,8 +830,10 @@ kind = "support"
 legacy_m = ["M21"]
 owned_tables = [
   "ops.column_vitality",
+  "ops.jobs",
   "ops.maintenance_receipts",
   "ops.repair_findings",
+  "ops.scheduler_leases",
 ]
 may_depend_on = [
   "contract_kernel",
