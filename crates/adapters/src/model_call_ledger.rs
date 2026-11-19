@@ -4,7 +4,7 @@
 //!   in the token/latency/actual-cost/ error columns and flips `status` to `SUCCEEDED`/`FAILED` after the call
 //!   returns.
 //! Depends-on: crates=[humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(any) r=[control.provider_pricing_versions, ops.data_disclosures] w=[ops.model_call_ledger, ops.tenant_cost_events]]; env=[]; modules=[adapters::disclosure, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, domain::egress, domain::ledger, humaux-adapters]
-//! Called-by: [adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::provider_budget, private-worker::main, retrieval-provider::adapters, tests]
+//! Called-by: [adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::provider_budget, adapters::structured_reasoning, private-worker::main, retrieval-provider::adapters, tests]
 //! Invariants: [every real provider call is bracketed by reserve_call/finalize_call (a skipped reserve leaves no row,
 //!   which the 0094 guard cannot see); costs are persisted as given, never computed here; a reservation conflict is a
 //!   typed error, not a second attempt identity; one (tenant_id, request_id) is reserved once: both writers take the

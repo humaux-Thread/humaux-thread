@@ -670,6 +670,8 @@ files = [
   "crates/adapters/src/model_call_ledger.rs",
   "crates/adapters/src/openbao.rs",
   "crates/application/src/private_inference.rs",
+  "crates/application/src/private_reasoning.rs",
+  "crates/adapters/src/structured_reasoning.rs",
   "crates/application/src/operator_provisioning.rs",
   "crates/adapters/src/provider_budget.rs",
   "crates/adapters/src/provisioning.rs",
