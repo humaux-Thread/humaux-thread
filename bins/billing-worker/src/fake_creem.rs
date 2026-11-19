@@ -1,5 +1,5 @@
 //! `billing-worker::fake_creem` — test-only HTTP double (§71.2).
-//! Depends-on: crates=[async-trait, axum, hex, hmac, humaux-domain, humaux-infra-egress, serde_json, sha2, tokio]; services=[HTTP(loopback)]; env=[]; modules=[domain::error, infra-egress::http]
+//! Depends-on: crates=[axum, hex, hmac, serde_json, sha2, tokio]; services=[HTTP(loopback)]; env=[]; modules=[]
 //! Called-by: [billing-worker::tests::cancel, billing-worker::tests::fetch, billing-worker::tests::process]
 //! Invariants: [loopback only; exact query identities; no M04-10 dependency]
 //! Spec: Baseline §71.2; §71.3; §79.4
@@ -10,8 +10,6 @@ use axum::{
     routing::get,
 };
 use hmac::{Hmac, KeyInit, Mac};
-use humaux_domain::error::ErrorCode;
-use humaux_infra_egress::http::{EgressSecret, RetrievalCredentialSource};
 use serde_json::Value;
 use sha2::Sha256;
 use std::collections::BTreeMap;
@@ -34,17 +32,6 @@ type ServerState = ([Value; 2], Arc<AtomicU16>, Option<Arc<FetchOrder>>);
 
 /// §79.4: public fixture token, not an API credential.
 pub const TEST_KEY: &str = "public-fixture-api-token";
-/// §79.4: injectable test source, never reads a real key.
-pub struct FixtureCredential(
-    /// §79.4: public fixture material only.
-    pub &'static str,
-);
-#[async_trait::async_trait]
-impl RetrievalCredentialSource for FixtureCredential {
-    async fn credential(&self) -> Result<EgressSecret, ErrorCode> {
-        Ok(EgressSecret::new(self.0.into()))
-    }
-}
 /// §71.3: signature covers the exact supplied bytes, without serializing again.
 pub fn sign(raw: &[u8], secret: &[u8]) -> String {
     let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(secret).unwrap();

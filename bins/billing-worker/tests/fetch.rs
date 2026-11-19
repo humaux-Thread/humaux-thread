@@ -1,13 +1,18 @@
 //! `billing-worker::tests::fetch` — authoritative reads through HTTP (§71.3).
-//! Depends-on: crates=[humaux-application, humaux-domain, humaux-infra-egress, serde_json, tokio, uuid]; services=[HTTP(loopback)]; env=[]; modules=[application::billing, billing-worker::creem, billing-worker::fake_creem, billing-worker::mode, billing-worker::normalize, domain::billing, domain::egress, domain::error, domain::ids, infra-egress::http]
+//! Depends-on: crates=[humaux-application, humaux-domain, humaux-infra-egress, serde_json, tokio, uuid]; services=[HTTP(loopback)]; env=[]; modules=[application::billing, billing-worker::creem, billing-worker::creem_egress, billing-worker::fake_creem, billing-worker::mode, billing-worker::normalize, domain::billing, billing-worker::tests::support::fixture_credential, domain::egress, domain::error, domain::ids, infra-egress::http]
 //! Called-by: [cargo-test]
 //! Invariants: [no external calls; wrong credentials and altered bodies fail closed]
 //! Spec: Baseline §71.2; §71.3; §79.5
 #[path = "../src/fake_creem.rs"]
 mod fake_creem;
-use fake_creem::{FixtureCredential, TEST_KEY};
+#[path = "support/fixture_credential.rs"]
+mod fixture_credential;
+use fake_creem::TEST_KEY;
+use fixture_credential::FixtureCredential;
 use humaux_application::billing::{BillingProvider, ExternalSubscriptionRef};
-use humaux_billing_worker::{creem::CreemClient, mode::BillingMode, normalize::PaymentAmount};
+use humaux_billing_worker::{
+    creem::CreemClient, creem_egress::CreemEgress, mode::BillingMode, normalize::PaymentAmount,
+};
 use humaux_domain::{
     billing::ObservedStatus, egress::ProcessorId, error::ErrorCode, ids::TenantId,
 };
@@ -25,11 +30,13 @@ fn client(base: &str, key: &'static str) -> CreemClient {
     CreemClient::new(
         base,
         &BillingMode::parse(Some("fake"), None).unwrap(),
-        TenantId::new(),
-        ProcessorId(Uuid::new_v4()),
-        HttpEgressConfig::default(),
-        Arc::new(FixtureCredential(key)),
-        Arc::new(FixtureCredential(test_secret())),
+        Arc::new(CreemEgress::new(
+            TenantId::new(),
+            ProcessorId(Uuid::new_v4()),
+            HttpEgressConfig::default(),
+            Arc::new(FixtureCredential(key)),
+            Arc::new(FixtureCredential(test_secret())),
+        )),
     )
     .unwrap()
 }

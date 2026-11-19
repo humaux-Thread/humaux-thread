@@ -1,17 +1,20 @@
 //! `billing-worker::tests::process` — real PG + fake Creem processor gates (§71.3).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-egress, humaux-testkit, postgres, serde_json, tokio, uuid];
 //!   services=[HTTP(loopback), PostgreSQL(owner) r=[control.subscriptions, control.subscription_events, control.entitlement_grants, control.entitlement_snapshots, control.billing_inbox, control.billing_payments] w=[control.tenants, control.plans, control.plan_versions, control.billing_inbox, control.entitlement_grants], PostgreSQL(role_maintenance)]; env=[];
-//!   modules=[adapters::postgres, adapters::entitlement_repo, adapters::tests::support::throwaway_db, billing-worker::creem, billing-worker::process, billing-worker::fake_creem, billing-worker::mode, domain::egress, domain::error, domain::ids, infra-egress::http, humaux-testkit]
+//!   modules=[adapters::postgres, adapters::entitlement_repo, adapters::tests::support::throwaway_db, billing-worker::creem, billing-worker::creem_egress, billing-worker::process, billing-worker::fake_creem, billing-worker::mode, billing-worker::tests::support::fixture_credential, domain::egress, domain::error, domain::ids, infra-egress::http, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [real maintenance identity; complete snapshot and effect counts; no mock PostgreSQL]
 //! Spec: Baseline §71.3; §76; §79.2
 #[path = "../src/fake_creem.rs"]
 mod fake_creem;
+#[path = "support/fixture_credential.rs"]
+mod fixture_credential;
 #[path = "../../../crates/adapters/tests/support/throwaway_db.rs"]
 mod throwaway_db;
 use humaux_adapters::{entitlement_repo, postgres::MaintenanceDbPool};
 use humaux_billing_worker::{
     creem::CreemClient,
+    creem_egress::CreemEgress,
     mode::BillingMode,
     process::{ProcessorConfig, process_one},
 };
@@ -122,11 +125,13 @@ fn process_fetched(
         let provider = CreemClient::new(
             &base,
             &BillingMode::parse(Some("fake"), None).unwrap(),
-            TenantId(h.tenant),
-            ProcessorId(Uuid::new_v4()),
-            HttpEgressConfig::default(),
-            Arc::new(fake_creem::FixtureCredential(fake_creem::TEST_KEY)),
-            Arc::new(fake_creem::FixtureCredential(secret)),
+            Arc::new(CreemEgress::new(
+                TenantId(h.tenant),
+                ProcessorId(Uuid::new_v4()),
+                HttpEgressConfig::default(),
+                Arc::new(fixture_credential::FixtureCredential(fake_creem::TEST_KEY)),
+                Arc::new(fixture_credential::FixtureCredential(secret)),
+            )),
         )
         .unwrap();
         // §71.3: the signature contract remains the merged ingress boundary, not JSON reserialization.
@@ -166,11 +171,13 @@ fn concurrent_subscription_observations_are_ordered() {
                 let provider = CreemClient::new(
                     &base,
                     &BillingMode::parse(Some("fake"), None).unwrap(),
-                    TenantId(tenant),
-                    ProcessorId(Uuid::new_v4()),
-                    HttpEgressConfig::default(),
-                    Arc::new(fake_creem::FixtureCredential(fake_creem::TEST_KEY)),
-                    Arc::new(fake_creem::FixtureCredential(fake_creem::TEST_KEY)),
+                    Arc::new(CreemEgress::new(
+                        TenantId(tenant),
+                        ProcessorId(Uuid::new_v4()),
+                        HttpEgressConfig::default(),
+                        Arc::new(fixture_credential::FixtureCredential(fake_creem::TEST_KEY)),
+                        Arc::new(fixture_credential::FixtureCredential(fake_creem::TEST_KEY)),
+                    )),
                 )
                 .unwrap();
                 let newer_done = AtomicBool::new(false);
