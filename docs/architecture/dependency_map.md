@@ -146,6 +146,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.register_continuity_project`
 - service `PostgreSQL(role_gateway)`
 
+#### `adapters::derived_job_lease`
+
 #### `adapters::disclosure`
 - writes `ops.data_disclosure_sources`
 - writes `ops.data_disclosures`
@@ -199,19 +201,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::ingest_ticket_repo`
 - writes `private.ingest_tickets`
-- service `PostgreSQL(any)`
-
-#### `adapters::jobs`
-- reads `ops.claim_derived_work`
-- writes `ops.jobs`
-- executes `ops.admit_distill_budget`
-- executes `ops.begin_call`
-- executes `ops.claim_derived_work`
-- executes `ops.claim_derived_work_v2`
-- executes `ops.distill_slots_all_bound`
-- executes `ops.finish_derived_work_v2`
-- executes `ops.renew_lease`
-- env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
 
 #### `adapters::mechanism_observation`
@@ -1853,6 +1842,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.api_key_touch_last_used`
 - service `PostgreSQL(any)`
 
+#### `adapters::derived_job_lease`
+
 #### `adapters::disclosure`
 - writes `ops.data_disclosure_sources`
 - writes `ops.data_disclosures`
@@ -1931,19 +1922,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::ingest_ticket_repo`
 - writes `private.ingest_tickets`
-- service `PostgreSQL(any)`
-
-#### `adapters::jobs`
-- reads `ops.claim_derived_work`
-- writes `ops.jobs`
-- executes `ops.admit_distill_budget`
-- executes `ops.begin_call`
-- executes `ops.claim_derived_work`
-- executes `ops.claim_derived_work_v2`
-- executes `ops.distill_slots_all_bound`
-- executes `ops.finish_derived_work_v2`
-- executes `ops.renew_lease`
-- env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
 
 #### `adapters::login_repo`
@@ -2754,6 +2732,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.register_continuity_project`
 - service `PostgreSQL(role_gateway)`
 
+#### `adapters::derived_job_lease`
+
 #### `adapters::disclosure`
 - writes `ops.data_disclosure_sources`
 - writes `ops.data_disclosures`
@@ -2807,19 +2787,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::ingest_ticket_repo`
 - writes `private.ingest_tickets`
-- service `PostgreSQL(any)`
-
-#### `adapters::jobs`
-- reads `ops.claim_derived_work`
-- writes `ops.jobs`
-- executes `ops.admit_distill_budget`
-- executes `ops.begin_call`
-- executes `ops.claim_derived_work`
-- executes `ops.claim_derived_work_v2`
-- executes `ops.distill_slots_all_bound`
-- executes `ops.finish_derived_work_v2`
-- executes `ops.renew_lease`
-- env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
 
 #### `adapters::maintenance_repo`
@@ -4058,6 +4025,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.register_continuity_project`
 - service `PostgreSQL(role_gateway)`
 
+#### `adapters::derived_job_lease`
+
 #### `adapters::disclosure`
 - writes `ops.data_disclosure_sources`
 - writes `ops.data_disclosures`
@@ -4855,6 +4824,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.register_continuity_project`
 - service `PostgreSQL(role_gateway)`
 
+#### `adapters::derived_job_lease`
+
 #### `adapters::disclosure`
 - writes `ops.data_disclosure_sources`
 - writes `ops.data_disclosures`
@@ -4906,19 +4877,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::ingest_ticket_repo`
 - writes `private.ingest_tickets`
-- service `PostgreSQL(any)`
-
-#### `adapters::jobs`
-- reads `ops.claim_derived_work`
-- writes `ops.jobs`
-- executes `ops.admit_distill_budget`
-- executes `ops.begin_call`
-- executes `ops.claim_derived_work`
-- executes `ops.claim_derived_work_v2`
-- executes `ops.distill_slots_all_bound`
-- executes `ops.finish_derived_work_v2`
-- executes `ops.renew_lease`
-- env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
 
 #### `adapters::memory_governance_repo`
@@ -8019,13 +7977,9 @@ written by:
 executed by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::maintenance_doors`
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 ### `ops.anonymous_public_revocations`
 read by:
@@ -8118,13 +8072,9 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::distill_dispatch_v2`
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 ### `ops.c35_fault_definer_trigger`
 read by:
@@ -8174,26 +8124,18 @@ executed by:
 read by:
 - (no process): `adapters::tests::jobs_claim`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 written by:
 
 executed by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 ### `ops.claim_derived_work_v2`
 read by:
@@ -8207,13 +8149,9 @@ executed by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 ### `ops.claim_global_anonymous_public_dispatches`
 read by:
@@ -8428,13 +8366,9 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 ### `ops.distill_tenant_scheduler`
 read by:
@@ -8556,13 +8490,9 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::distill_dispatch_v2`
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 ### `ops.global_anonymous_public_dispatch_live_lease`
 read by:
@@ -8679,17 +8609,13 @@ written by:
 - (no process): `public-pool::tests::public_runtime`
 - (no process): `public-pool::tests::support::public_anonymous_seam`
 - process(cargo-xtask): `adapters::consolidate_repo`
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-gateway): `adapters::consolidate_repo`
-- process(humaux-gateway): `adapters::jobs`
 - process(humaux-maintenance): `adapters::consolidate_repo`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::consolidate_repo`
 - process(humaux-private-worker): `adapters::jobs`
 - process(humaux-retrieval-worker): `adapters::consolidate_repo`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 executed by:
 
@@ -9179,13 +9105,9 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 ### `ops.repair_findings`
 read by:
@@ -14078,6 +14000,7 @@ modules naming it:
 - `adapters::cost_repo`
 - `adapters::credential_repo`
 - `adapters::dedup_repo`
+- `adapters::derived_job_lease`
 - `adapters::disclosure`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
@@ -14476,6 +14399,7 @@ modules naming it:
 - `adapters::contribution_scan`
 - `adapters::coord_repo`
 - `adapters::credential_repo`
+- `adapters::derived_job_lease`
 - `adapters::distill_reasoner`
 - `adapters::distill_repo`
 - `adapters::entitlement_repo`
