@@ -763,6 +763,7 @@ files = [
   "crates/contracts/tests/feature_registry_contract.rs",
   "crates/contracts/tests/freshness.rs",
   "crates/domain/src/network.rs",
+  "crates/domain/src/audit_types.rs",
   "crates/domain/src/dataclass.rs",
   "crates/domain/src/error.rs",
   "crates/domain/src/ids.rs",
