@@ -557,6 +557,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - service `PostgreSQL(any)`
 
+#### `domain::context::budget_views`
+
 #### `domain::continuity`
 
 #### `domain::coordination`
@@ -2326,6 +2328,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - service `PostgreSQL(any)`
 
+#### `domain::context::budget_views`
+
 #### `domain::continuity`
 
 #### `domain::coordination`
@@ -3290,6 +3294,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::context`
 - reads `private.memory_records`
 - service `PostgreSQL(any)`
+
+#### `domain::context::budget_views`
 
 #### `domain::continuity`
 
@@ -4447,6 +4453,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - service `PostgreSQL(any)`
 
+#### `domain::context::budget_views`
+
 #### `domain::continuity`
 
 #### `domain::coordination`
@@ -5293,6 +5301,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::context`
 - reads `private.memory_records`
 - service `PostgreSQL(any)`
+
+#### `domain::context::budget_views`
 
 #### `domain::continuity`
 

@@ -2701,7 +2701,7 @@ impl ContextAssemblyReadPort for RuntimeDbPool {
             self,
             request.authorization,
             request.scope,
-            request.budget,
+            request.budget.into(),
             request.expected_family,
             request.validated_key,
         )
