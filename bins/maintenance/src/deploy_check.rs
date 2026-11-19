@@ -2257,7 +2257,7 @@ mod tests {
                 [
                     ("admin/src/mechanism.rs", 3),
                     ("admin/src/probe.rs", 1),
-                    ("consolidation-worker/src/main.rs", 5),
+                    ("consolidation-worker/src/bootstrap.rs", 5),
                     ("gateway/src/bootstrap.rs", 2),
                     ("gateway/src/mcp_application.rs", 3),
                     ("maintenance/src/deploy_check.rs", 8),

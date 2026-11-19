@@ -4,7 +4,7 @@
 //! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-application, humaux-domain, humaux-infra-cell, serde, serde_json, sha2, tokio, uuid];
 //!   services=[UDS(private-worker)]; env=[]; modules=[adapters::postgres, adapters::private_inference_rpc,
 //!   application::consolidate, domain::error, infra-cell::uds]
-//! Called-by: [consolidation-worker::main, tests]
+//! Called-by: [consolidation-worker::bootstrap, tests]
 //! Invariants: [one fresh UDS connection per call to the private worker's inference socket; a dial/IO/parse failure
 //!   is TRANSPORT/INVALID_RESPONSE mapped to PrivateReasoningError, never a local fallback inference]
 //! Spec: none
