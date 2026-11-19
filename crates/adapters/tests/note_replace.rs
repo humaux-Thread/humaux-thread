@@ -1056,6 +1056,7 @@ fn g21_no_replacement_without_a_confirmation_of_exactly_this_intent() {
                 .rt
                 .block_on(humaux_adapters::memory_governance_repo::correct_atomically(
                     &handle.runtime,
+                    &governance_ops::TestWriteQuota,
                     &editor.auth,
                     humaux_adapters::memory_governance_repo::CorrectRequest {
                         request_id,
@@ -1249,5 +1250,311 @@ fn g27_a_tombstoned_head_cannot_be_replaced() {
         assert_eq!(residue(&mut handle), before);
         assert!(!token_consumed(&mut handle, &token));
         assert_eq!(head(&mut handle, first), Some(first));
+    });
+}
+
+// The real settlement succeeds before the database lease expires. Delay its return to
+// exercise the final lease check after settlement and before the business commit.
+struct ExpireSettledQuota;
+struct ExpiringLease(Box<dyn humaux_adapters::quota_reservation_port::ReservedQuota>);
+
+use humaux_adapters::quota_reservation_port::{
+    QuotaReservationPort, QuotaTransaction, ReservedQuota,
+};
+
+#[async_trait::async_trait]
+impl QuotaReservationPort for ExpireSettledQuota {
+    async fn reserve(
+        &self,
+        txn: &mut QuotaTransaction<'_>,
+        auth: &AuthorizationScope,
+        request_id: Uuid,
+        operation: &str,
+        fingerprint: &str,
+        ttl: Duration,
+    ) -> Result<Option<Box<dyn ReservedQuota>>, ErrorCode> {
+        let lease = governance_ops::TestWriteQuota
+            .reserve(txn, auth, request_id, operation, fingerprint, ttl)
+            .await?;
+        Ok(lease.map(|lease| Box::new(ExpiringLease(lease)) as Box<dyn ReservedQuota>))
+    }
+}
+
+#[async_trait::async_trait]
+impl ReservedQuota for ExpiringLease {
+    fn id(&self) -> Uuid {
+        self.0.id()
+    }
+
+    fn expires_at(&self) -> OffsetDateTime {
+        self.0.expires_at()
+    }
+
+    async fn consume(
+        &self,
+        txn: &mut QuotaTransaction<'_>,
+        auth: &AuthorizationScope,
+    ) -> Result<bool, ErrorCode> {
+        assert!(
+            self.0.consume(txn, auth).await?,
+            "native settlement before expiry"
+        );
+        sqlx::query(
+            "SELECT pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM $1::timestamptz - clock_timestamp())))",
+        )
+        .bind(self.expires_at())
+        .execute(&mut **txn)
+        .await
+        .expect("wait for the actual database reservation deadline");
+        Ok(true)
+    }
+}
+
+fn governance_quota_state(handle: &mut Handle, target: Uuid) -> (Residue, Vec<i64>, String, bool) {
+    let facts = residue(handle);
+    let row = handle
+        .admin
+        .query_one(
+            "SELECT ARRAY[
+             (SELECT count(*) FROM control.usage_reservations WHERE tenant_id=$1),
+             (SELECT reserved FROM control.quota_windows WHERE tenant_id=$1),
+             (SELECT consumed FROM control.quota_windows WHERE tenant_id=$1),
+             (SELECT count(*) FROM control.audit_events WHERE tenant_id=$1)
+         ], status, archived_at IS NOT NULL
+         FROM private.memory_records WHERE tenant_id=$1 AND memory_id=$2",
+            &[&handle.tenant_id, &target],
+        )
+        .expect("read the fixture's business, quota and audit state");
+    (facts, row.get(0), row.get(1), row.get(2))
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One target follows the confirmed lifecycle in order.
+fn governance_quota_rolls_back_audit_failure_and_expired_lease_and_replays_once() {
+    use humaux_adapters::{
+        memory_governance_repo::{
+            self as governance, ArchiveRequest, CorrectRequest, RestoreRequest, RestoreResult,
+            SupersedeRequest,
+        },
+        request_guard_repo::{self, AuditTenant},
+    };
+    use humaux_domain::authority::MemoryId;
+
+    run_db_fixture::<Fixture, _>("governance_quota_atomicity", |mut handle| {
+        let editor = editor(&mut handle);
+        let auth = &editor.auth;
+        let target = plain_memory(&mut handle);
+        let successor = plain_memory(&mut handle);
+        let stream = governance_ops::stream(handle.tenant_id, handle.workspace_id);
+        for op in [
+            DestructiveOp::MemorySupersede,
+            DestructiveOp::MemoryRestore,
+            DestructiveOp::MemoryArchive,
+            DestructiveOp::MemoryUnarchive,
+            DestructiveOp::MemoryCorrect,
+        ] {
+            let claim = governance_ops::confirm(
+                &handle.rt,
+                &handle.runtime,
+                auth,
+                op,
+                target,
+                (op == DestructiveOp::MemorySupersede).then_some(successor),
+            );
+            let request_id = Uuid::now_v7();
+            let finished_audit = governance_ops::audit(auth, op, request_id, false);
+            let duplicate_id = governance_ops::audit(auth, op, Uuid::now_v7(), false);
+            handle
+                .rt
+                .block_on(request_guard_repo::audit_event_insert(
+                    &handle.runtime,
+                    AuditTenant::Authenticated(auth),
+                    &duplicate_id,
+                ))
+                .expect("seed an audit ID that the final audit cannot insert a second time");
+            let fingerprint = governance_ops::fingerprint();
+            let execute = |handle: &Handle, quota: &dyn QuotaReservationPort, finished_audit| {
+                let pool = &handle.runtime;
+                let request_fingerprint = fingerprint.clone();
+                let claim = claim.clone();
+                let stream = stream.clone();
+                let reservation_ttl = Duration::from_secs(2);
+                let undo_window = Duration::from_secs(600);
+                let consistency_token_ttl = Duration::from_secs(600);
+                handle.rt.block_on(async {
+                    match op {
+                        DestructiveOp::MemorySupersede => {
+                            let result = governance::supersede_atomically(
+                                pool,
+                                quota,
+                                auth,
+                                SupersedeRequest {
+                                    request_id,
+                                    request_fingerprint,
+                                    reservation_ttl,
+                                    target: MemoryId(target),
+                                    successor: MemoryId(successor),
+                                    stream,
+                                    claim,
+                                    finished_audit,
+                                    undo_window,
+                                },
+                            )
+                            .await?;
+                            Ok((result.stream_seq, result.commit_seq))
+                        }
+                        DestructiveOp::MemoryRestore => {
+                            let RestoreResult::Restored(result) = governance::restore_atomically(
+                                pool,
+                                quota,
+                                auth,
+                                RestoreRequest {
+                                    request_id,
+                                    request_fingerprint,
+                                    reservation_ttl,
+                                    target: MemoryId(target),
+                                    stream,
+                                    claim,
+                                    finished_audit,
+                                    consistency_token_ttl,
+                                },
+                            )
+                            .await?
+                            else {
+                                panic!("restore refused a valid request")
+                            };
+                            Ok((result.stream_seq, result.commit_seq))
+                        }
+                        DestructiveOp::MemoryArchive | DestructiveOp::MemoryUnarchive => {
+                            let ArchiveResult::Done(result) =
+                                governance::archive_or_unarchive_atomically(
+                                    pool,
+                                    quota,
+                                    auth,
+                                    ArchiveRequest {
+                                        request_id,
+                                        request_fingerprint,
+                                        reservation_ttl,
+                                        target: MemoryId(target),
+                                        stream,
+                                        claim,
+                                        finished_audit,
+                                        op,
+                                    },
+                                )
+                                .await?
+                            else {
+                                panic!("archive/unarchive refused a valid request")
+                            };
+                            Ok((result.stream_seq, result.commit_seq))
+                        }
+                        DestructiveOp::MemoryCorrect => {
+                            let content = serde_json::Value::String("governance correction".into());
+                            let result = governance::correct_atomically(
+                                pool,
+                                quota,
+                                auth,
+                                CorrectRequest {
+                                    request_id,
+                                    request_fingerprint,
+                                    reservation_ttl,
+                                    target: MemoryId(target),
+                                    payload_sha256: payload_sha256(
+                                        &serde_json::to_vec(&content).unwrap(),
+                                    ),
+                                    content,
+                                    stream,
+                                    claim,
+                                    finished_audit,
+                                    undo_window,
+                                    consistency_token_ttl,
+                                    subjects: Default::default(),
+                                    affects: Vec::new(),
+                                    mood_half_life: None,
+                                },
+                                &humaux_adapters::attribution_repo::AttributionLadder,
+                            )
+                            .await?;
+                            Ok((result.stream_seq, result.commit_seq))
+                        }
+                        _ => unreachable!("this test drives the four governance transactions"),
+                    }
+                })
+            };
+
+            let before = governance_quota_state(&mut handle, target);
+            let mut fault = finished_audit.clone();
+            fault.event_id = duplicate_id.event_id;
+            assert_eq!(
+                execute(&handle, &governance_ops::TestWriteQuota, fault),
+                Err(ErrorCode::Conflict),
+                "{op:?} final audit duplicate"
+            );
+            assert_eq!(
+                governance_quota_state(&mut handle, target),
+                before,
+                "{op:?} final audit must roll back all writes"
+            );
+
+            assert_eq!(
+                execute(&handle, &ExpireSettledQuota, finished_audit.clone()),
+                Err(ErrorCode::Conflict),
+                "{op:?} expired after settlement"
+            );
+            assert_eq!(
+                governance_quota_state(&mut handle, target),
+                before,
+                "{op:?} expiry must roll back all writes"
+            );
+
+            let success = execute(
+                &handle,
+                &governance_ops::TestWriteQuota,
+                finished_audit.clone(),
+            )
+            .expect("the same confirmation and reservation can succeed after rollback");
+            let after = governance_quota_state(&mut handle, target);
+            assert_eq!(
+                after.0.lifecycle_events,
+                before.0.lifecycle_events + 1,
+                "{op:?}"
+            );
+            assert_eq!(
+                after.0.consumed_tokens,
+                before.0.consumed_tokens + 1,
+                "{op:?}"
+            );
+            assert_eq!(after.0.consumed_bmo, before.0.consumed_bmo + 1, "{op:?}");
+            assert_eq!(
+                after.0.receipts, before.0.receipts,
+                "{op:?} has no operation receipt"
+            );
+            assert_eq!(
+                after.1,
+                [
+                    before.1[0] + 1,
+                    before.1[1],
+                    before.1[2] + 1,
+                    before.1[3] + 3
+                ],
+                "{op:?}"
+            );
+
+            let replay = execute(&handle, &governance_ops::TestWriteQuota, finished_audit);
+            assert_eq!(
+                replay,
+                if op == DestructiveOp::MemorySupersede {
+                    Err(ErrorCode::Conflict)
+                } else {
+                    Ok(success)
+                },
+                "{op:?}"
+            );
+            assert_eq!(
+                governance_quota_state(&mut handle, target),
+                after,
+                "{op:?} replay writes nothing"
+            );
+        }
     });
 }
