@@ -70,12 +70,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::context_repo`
 - reads `coord.tasks`
+- reads `ops.selection_snapshots`
 - reads `private.evidence_objects`
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
 - reads `projection.stream_log`
-- writes `ops.selection_snapshots`
 - writes `private.context_bindings`
 - writes `private.task_binding_grants`
 - service `PostgreSQL(any)`
@@ -1753,12 +1753,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::context_repo`
 - reads `coord.tasks`
+- reads `ops.selection_snapshots`
 - reads `private.evidence_objects`
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
 - reads `projection.stream_log`
-- writes `ops.selection_snapshots`
 - writes `private.context_bindings`
 - writes `private.task_binding_grants`
 - service `PostgreSQL(any)`
@@ -2661,12 +2661,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::context_repo`
 - reads `coord.tasks`
+- reads `ops.selection_snapshots`
 - reads `private.evidence_objects`
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
 - reads `projection.stream_log`
-- writes `ops.selection_snapshots`
 - writes `private.context_bindings`
 - writes `private.task_binding_grants`
 - service `PostgreSQL(any)`
@@ -3957,12 +3957,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::context_repo`
 - reads `coord.tasks`
+- reads `ops.selection_snapshots`
 - reads `private.evidence_objects`
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
 - reads `projection.stream_log`
-- writes `ops.selection_snapshots`
 - writes `private.context_bindings`
 - writes `private.task_binding_grants`
 - service `PostgreSQL(any)`
@@ -4758,12 +4758,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::context_repo`
 - reads `coord.tasks`
+- reads `ops.selection_snapshots`
 - reads `private.evidence_objects`
 - reads `private.memory_evidence`
 - reads `private.memory_records`
 - reads `private.memory_subjects`
 - reads `projection.stream_log`
-- writes `ops.selection_snapshots`
 - writes `private.context_bindings`
 - writes `private.task_binding_grants`
 - service `PostgreSQL(any)`
@@ -9292,6 +9292,11 @@ executed by:
 ### `ops.selection_snapshots`
 read by:
 - (no process): `adapters::tests::note_history`
+- process(cargo-xtask): `adapters::context_repo`
+- process(humaux-gateway): `adapters::context_repo`
+- process(humaux-maintenance): `adapters::context_repo`
+- process(humaux-private-worker): `adapters::context_repo`
+- process(humaux-retrieval-worker): `adapters::context_repo`
 
 written by:
 - (no process): `adapters::tests::g80_31_handoff`
@@ -9301,16 +9306,11 @@ written by:
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `maintenance::tests::serve`
-- process(cargo-xtask): `adapters::context_repo`
 - process(cargo-xtask): `adapters::selection_repo`
 - process(cargo-xtask): `xtask::e2e_seed`
-- process(humaux-gateway): `adapters::context_repo`
 - process(humaux-gateway): `adapters::selection_repo`
-- process(humaux-maintenance): `adapters::context_repo`
 - process(humaux-maintenance): `adapters::selection_repo`
-- process(humaux-private-worker): `adapters::context_repo`
 - process(humaux-private-worker): `adapters::selection_repo`
-- process(humaux-retrieval-worker): `adapters::context_repo`
 - process(humaux-retrieval-worker): `adapters::selection_repo`
 
 executed by:
