@@ -128,6 +128,8 @@ pub struct PublicRepoEvaluator;
 
 #[async_trait::async_trait]
 impl PublicClaimEvaluator for PublicRepoEvaluator {
+    type Authorization = AuthorizationScope;
+
     async fn evaluate_claim(
         &self,
         pool: &PublicWorkerDbPool,
