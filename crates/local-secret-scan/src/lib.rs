@@ -19,7 +19,10 @@
 //! repository persists with the candidate and release.
 
 use humaux_domain::{
-    dataclass::DataClass, error::ErrorCode, evidence::EvidencePayloadSha256, note,
+    dataclass::DataClass,
+    error::ErrorCode,
+    evidence::EvidencePayloadSha256,
+    note::{MAX_BODY_BYTES, MAX_TITLE_BYTES},
 };
 use humaux_projection::card::RetrievalCard;
 use humaux_retrieval::request::{ProfileFingerprint, TrustedRetrievalQuery};
@@ -566,7 +569,7 @@ pub const RETRIEVAL_QUERY_MAX_CHARS: usize = 4_096;
 pub const SEALED_RETRIEVAL_MAX_BYTES: usize = 16 * 1024;
 /// ADR-0068 D-G: byte ceiling of a whole note source — the largest title and body `memory.note_put` admits
 /// (ADR-0067 D-E) plus the one `\n` that joins them. Never sent, so the per-card cap does not apply.
-pub const SEALED_SOURCE_MAX_BYTES: usize = note::MAX_TITLE_BYTES + 1 + note::MAX_BODY_BYTES;
+pub const SEALED_SOURCE_MAX_BYTES: usize = MAX_TITLE_BYTES + 1 + MAX_BODY_BYTES;
 
 const LOCAL_SECRET_RULES_VERSION: &str = "contribution-privacy-v2";
 /// ADR-0056 D-B: the seal path's rule identity — gitleaks only, no deterministic privacy rule.
@@ -945,8 +948,8 @@ mod tests {
     fn source_seal_scans_the_whole_note_under_its_own_cap() {
         let scanner = scanner_without_runtime_fixture();
         let id = uuid::Uuid::now_v7();
-        let title = "t".repeat(note::MAX_TITLE_BYTES);
-        let body = "b".repeat(note::MAX_BODY_BYTES);
+        let title = "t".repeat(MAX_TITLE_BYTES);
+        let body = "b".repeat(MAX_BODY_BYTES);
         assert_eq!(
             scanner.seal_source(id, DataClass::Private, &title, &body),
             Err(ErrorCode::DependencyUnavailable)

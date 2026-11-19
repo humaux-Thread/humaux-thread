@@ -87,7 +87,6 @@ crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_tel
 crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::set_cache_singleflight_waiters
 crates/local-secret-scan/src/lib.rs:provider_execution->knowledge_lifecycle:humaux_domain::evidence::EvidencePayloadSha256
 crates/local-secret-scan/src/lib.rs:provider_execution->knowledge_lifecycle:humaux_domain::evidence::payload_sha256
-crates/local-secret-scan/src/lib.rs:provider_execution->knowledge_lifecycle:humaux_domain::note
 crates/local-secret-scan/src/lib.rs:provider_execution->retrieval_read_model:humaux_projection::card::RetrievalCard
 crates/local-secret-scan/src/lib.rs:provider_execution->retrieval_read_model:humaux_retrieval::request::ProfileFingerprint
 crates/local-secret-scan/src/lib.rs:provider_execution->retrieval_read_model:humaux_retrieval::request::TrustedRetrievalQuery
