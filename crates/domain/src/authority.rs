@@ -1,6 +1,6 @@
 //! `domain::authority` — `Authority` value object, its four-tier adjudication order, and the `AuthorityClass` /
 //!   `AuthorityStatus` / `Confidence` types it is built from (§59 / §59.1).
-//! Depends-on: crates=[time, uuid]; services=[]; env=[]; modules=[domain::error, domain::evidence, domain::ids, domain::memory]
+//! Depends-on: crates=[time]; services=[]; env=[]; modules=[domain::error, domain::evidence, domain::ids, domain::memory]
 //! Called-by: [adapters::affect_repo, adapters::attribution_repo, adapters::candidate_repo, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::context_repo, adapters::contribution_eligibility, adapters::contribution_entry_repo, adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::operation_receipt, adapters::private_projection_registry, adapters::projection_worker, adapters::qdrant, adapters::read_materialize, application::affect, application::confirm, application::consolidate, application::consolidation_execution, application::correct, application::distill_execution, application::lifecycle_execution, application::pin, application::recall_read, application::remember, application::supersede, domain::attribution, domain::consolidate, domain::context, domain::lifecycle, domain::note, domain::policy, domain::public, gateway::mcp_application, gateway::memory, private-worker::bootstrap, projection::card, retrieval::compiler, retrieval::request, tests]
 //! Invariants: []
 //! Spec: Baseline §8.7; §10; §10.1
@@ -15,18 +15,12 @@
 //! `Authority::new` normalises it to `UtcOffset::UTC`, so the stored offset is not part of the
 //! value. Pure value type: no I/O, no ENV (§3, §78.3).
 //!
-//! `MemoryId` / `EvidenceId` are minted here rather than in `domain::ids`: they are not among
-//! that module's fixed seven §59 core types, and this module is their first consumer
-//! (`Authority::superseded_by`, `Authority::evidence`, and G59-1's adjudication tuple). Their
-//! mint/parse shape hand-matches `ids::uuid_newtype!` rather than reusing it — that macro is
-//! private to `ids.rs` and exporting it is a change to a file outside this task's assigned
-//! scope (`crates/domain/src/authority.rs`, `crates/domain/Cargo.toml`); flagged for the
-//! orchestrating task to fold into `ids::uuid_newtype!` or relocate these two ids.
+//! The §49 row IDs are re-exported from the contract kernel.
 
 use crate::error::ErrorCode;
+pub use crate::lifecycle_types::{EvidenceId, MemoryId};
 use std::cmp::Ordering;
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 /// Shared authority priority and lifecycle classifications (§59).
 pub use crate::memory_vocab::{AuthorityClass, AuthorityStatus};
@@ -55,51 +49,6 @@ impl Confidence {
     /// Reads out the inner `f32` value.
     pub fn get(self) -> f32 {
         self.0
-    }
-}
-
-/// Memory row id, UUIDv7 (§49). See module doc for why it is minted here instead of
-/// `domain::ids`; `parse` and the mint/parse split otherwise match `ids::uuid_newtype!`
-/// exactly (§49: "exactly two entry points, mint and parse").
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MemoryId(pub Uuid);
-
-impl MemoryId {
-    // See `domain::ids`'s identical rationale: `Default` would silently mint a fresh random
-    // id, a bigger trap than one extra `::new()` call.
-    #[allow(clippy::new_without_default)]
-    /// Mints a new id (UUIDv7, §49).
-    pub fn new() -> Self {
-        Self(Uuid::now_v7())
-    }
-
-    /// Parses an existing UUID string (§49's second entry point; no legacy uuid5/hash
-    /// formula compatibility).
-    pub fn parse(s: &str) -> Result<Self, ErrorCode> {
-        Uuid::parse_str(s)
-            .map(Self)
-            .map_err(|_| ErrorCode::InvalidInput)
-    }
-}
-
-/// Evidence row id, UUIDv7 (§49). See module doc for why it is minted here instead of
-/// `domain::ids`; not ordered — I1 tier 4 orders `MemoryId`, never `EvidenceId`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EvidenceId(pub Uuid);
-
-impl EvidenceId {
-    #[allow(clippy::new_without_default)]
-    /// Mints a new id (UUIDv7, §49).
-    pub fn new() -> Self {
-        Self(Uuid::now_v7())
-    }
-
-    /// Parses an existing UUID string (§49's second entry point; no legacy uuid5/hash
-    /// formula compatibility).
-    pub fn parse(s: &str) -> Result<Self, ErrorCode> {
-        Uuid::parse_str(s)
-            .map(Self)
-            .map_err(|_| ErrorCode::InvalidInput)
     }
 }
 

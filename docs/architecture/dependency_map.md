@@ -15906,7 +15906,6 @@ modules naming it:
 - `domain::affect`
 - `domain::audit`
 - `domain::audit_types`
-- `domain::authority`
 - `domain::context`
 - `domain::continuity`
 - `domain::coordination`
@@ -15914,11 +15913,11 @@ modules naming it:
 - `domain::identity`
 - `domain::ids`
 - `domain::lifecycle`
+- `domain::lifecycle_types`
 - `domain::note`
 - `domain::reasoning_types`
 - `domain::relation`
 - `domain::selection`
-- `domain::subject`
 - `tests`
 
 ### humaux-domain → `sha2` (normal)
