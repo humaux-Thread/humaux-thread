@@ -1,10 +1,10 @@
 //! `telemetry::metrics` — the §41.2 family table this workspace exports, a hand-written Prometheus text-format
 //!   0.0.4 encoder, and the std-only loopback listener that serves `/metrics` and `/status` (ADR-0061 D-A, D-B).
-//! Depends-on: crates=[humaux-domain]; services=[HTTP(loopback)]; env=[]; modules=[domain::error, telemetry::degrade]
+//! Depends-on: crates=[humaux-domain]; services=[HTTP(loopback)]; env=[]; modules=[domain::error, domain::vocab, telemetry::degrade]
 //! Called-by: [admin::cell_resources, admin::ops_status, consolidation-worker::main, gateway::bootstrap,
-//!   gateway::guard, gateway::main, gateway::status, humaux-telemetry, maintenance::health_serve, maintenance::resident, maintenance::serve,
-//!   private-worker::distill, private-worker::main, retrieval-worker::main, retrieval::completeness,
-//!   telemetry::admission, telemetry::cache, telemetry::degrade, telemetry::dr, telemetry::health, telemetry::host, tests]
+//!   gateway::guard, gateway::main, gateway::mcp_application, gateway::status, humaux-telemetry,
+//!   maintenance::health_serve, maintenance::resident, maintenance::serve, private-worker::distill, private-worker::main, retrieval-worker::main,
+//!   telemetry::admission, telemetry::cache, telemetry::dr, telemetry::health, telemetry::host, tests]
 //! Invariants: [every exported family is a `families::*` const and nowhere else; label values are `&'static str`
 //!   from a closed enum; the listener refuses a non-loopback address and names the config key]
 //! Spec: Baseline §41.2; §53.5; ADR-0061 D-A; ADR-0061 D-B; ADR-0123 D3
@@ -15,6 +15,7 @@
 //! `Box::leak` — the cardinality and privacy bound is carried by the type.
 
 use humaux_domain::error::ErrorCode;
+use humaux_domain::vocab::IntentKind;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::{self, Read as _, Write as _};
@@ -767,6 +768,177 @@ pub fn write_single_label(
     write_family(out, f, &samples);
 }
 
+/// Renders `degrade_total{code}` seeded in the closed PascalCase label order (ADR-0061 D-A).
+pub fn render_degrade(out: &mut String) {
+    use crate::degrade::{DegradeCode, degrade_total_count};
+
+    write_single_label(
+        out,
+        &families::DEGRADE_TOTAL,
+        &DegradeCode::ALL.map(DegradeCode::as_str),
+        |index| degrade_total_count(DegradeCode::ALL[index]) as f64,
+    );
+}
+
+/// Process-local `AtomicU64` grid, one cell per (class, reason) label pair; rendered through
+/// the shared Prometheus encoder (ADR-0061 D-A).
+struct CompletenessTotal(Counters<{ CompletenessTotal::CELLS }>);
+
+impl CompletenessTotal {
+    const CLASSES: [&'static str; 4] = [
+        "exact",
+        "facet_complete",
+        "semantic_bounded",
+        "cannot_establish",
+    ];
+    const REASONS: [&'static str; 14] = [
+        "none",
+        "ledger_not_closed",
+        "predicate_not_enumerable",
+        "census_failed",
+        "lane_failed",
+        "index_count_unavailable",
+        "a2_overshoot_beyond_pending",
+        "mandatory_context_overflow",
+        "count_unknown",
+        "count_scope_mismatch",
+        "pipeline_count_mismatch",
+        "mandatory_not_satisfied",
+        "no_serving_projection",
+        "projection_lag",
+    ];
+    const CELLS: usize = Self::CLASSES.len() * Self::REASONS.len();
+
+    const fn new() -> Self {
+        Self(Counters::new())
+    }
+
+    fn idx(class_label: &str, reason_label: &str) -> usize {
+        let c = Self::CLASSES
+            .iter()
+            .position(|&s| s == class_label)
+            .expect("class_label must be one of CompletenessClass::wire_labels' outputs");
+        let r = Self::REASONS
+            .iter()
+            .position(|&s| s == reason_label)
+            .expect(
+                "reason_label must be one of CannotEstablishReason::label's outputs, or \"none\"",
+            );
+        c * Self::REASONS.len() + r
+    }
+
+    fn inc(&self, class_label: &str, reason_label: &str) {
+        self.0.inc(Self::idx(class_label, reason_label), 1);
+    }
+
+    fn count(&self, class_label: &str, reason_label: &str) -> u64 {
+        self.0.get(Self::idx(class_label, reason_label))
+    }
+}
+
+static RETRIEVAL_COMPLETENESS_TOTAL: CompletenessTotal = CompletenessTotal::new();
+
+/// current count for `{class,reason}` — read-only accessor for witness/test assertions,
+/// without exposing the counter itself (mirrors `degrade::degrade_total_count`). `class`/
+/// `reason` are the wire label strings `CompletenessClass::wire_labels` produces (e.g.
+/// `"cannot_establish"` / `"ledger_not_closed"`, or `"none"` for a non-`CannotEstablish`
+/// class's reason).
+pub fn retrieval_completeness_total_count(class: &str, reason: &str) -> u64 {
+    RETRIEVAL_COMPLETENESS_TOTAL.count(class, reason)
+}
+
+/// §41.2 `humaux_retrieval_requests_total{intent,completeness_class}`: one cell per
+/// (`IntentKind`, wire class) pair, 4 × 4 (ADR-0061 D-C).
+struct RequestsTotal(Counters<{ RequestsTotal::CELLS }>);
+
+impl RequestsTotal {
+    const CELLS: usize = IntentKind::ALL.len() * CompletenessTotal::CLASSES.len();
+
+    const fn new() -> Self {
+        Self(Counters::new())
+    }
+
+    fn idx(intent: IntentKind, class_label: &str) -> usize {
+        let i = IntentKind::ALL
+            .iter()
+            .position(|k| *k == intent)
+            .expect("IntentKind::ALL is exhaustive");
+        let c = CompletenessTotal::CLASSES
+            .iter()
+            .position(|&s| s == class_label)
+            .expect("class_label must be one of CompletenessClass::wire_labels' outputs");
+        i * CompletenessTotal::CLASSES.len() + c
+    }
+
+    fn inc(&self, intent: IntentKind, class_label: &'static str) {
+        self.0.inc(Self::idx(intent, class_label), 1);
+    }
+
+    fn count(&self, intent: IntentKind, class_label: &str) -> u64 {
+        self.0.get(Self::idx(intent, class_label))
+    }
+}
+
+static HUMAUX_RETRIEVAL_REQUESTS_TOTAL: RequestsTotal = RequestsTotal::new();
+
+/// Sole final-outcome metric emission. Call only after the envelope outcome's invariants have
+/// been checked; provisional classifier answers must never be observed as result statistics.
+/// The same point counts the returned envelope by intent (§41.2 "envelope 返回时 · 1", the §53.5
+/// INV-1 denominator), so both families move together or not at all (ADR-0061 D-C).
+pub fn record_final_classification(
+    intent: IntentKind,
+    class_label: &'static str,
+    reason_label: &'static str,
+) {
+    // labels: class,reason
+    RETRIEVAL_COMPLETENESS_TOTAL.inc(class_label, reason_label);
+    // labels: intent,completeness_class
+    HUMAUX_RETRIEVAL_REQUESTS_TOTAL.inc(intent, class_label);
+}
+
+/// Renders `humaux_retrieval_requests_total` (4 intents × 4 classes) and
+/// `retrieval_completeness_total` (the 16 (class, reason) pairs `wire_labels` can produce), every
+/// series seeded at 0 so the first scrape already carries INV-1's denominator (ADR-0061 D-A).
+pub fn render_retrieval(out: &mut String) {
+    let classes = CompletenessTotal::CLASSES;
+    let requests: Vec<([&'static str; 2], f64)> = IntentKind::ALL
+        .iter()
+        .flat_map(|&intent| {
+            classes.iter().map(move |&class| {
+                (
+                    [intent.as_str(), class],
+                    HUMAUX_RETRIEVAL_REQUESTS_TOTAL.count(intent, class) as f64,
+                )
+            })
+        })
+        .collect();
+    let samples: Vec<(&[&'static str], f64)> =
+        requests.iter().map(|(l, v)| (l.as_slice(), *v)).collect();
+    write_family(out, &families::HUMAUX_RETRIEVAL_REQUESTS_TOTAL, &samples);
+
+    // `reason` is "none" exactly when the class is not cannot_establish (`wire_labels`), so the
+    // other 40 grid cells can never be incremented and are not rendered.
+    let completeness: Vec<([&'static str; 2], f64)> = classes
+        .iter()
+        .flat_map(|&class| {
+            CompletenessTotal::REASONS
+                .iter()
+                .filter(move |&&reason| (class == "cannot_establish") != (reason == "none"))
+                .map(move |&reason| {
+                    (
+                        [class, reason],
+                        RETRIEVAL_COMPLETENESS_TOTAL.count(class, reason) as f64,
+                    )
+                })
+        })
+        .collect();
+    let samples: Vec<(&[&'static str], f64)> = completeness
+        .iter()
+        .map(|(l, v)| (l.as_slice(), *v))
+        .collect();
+    write_family(out, &families::RETRIEVAL_COMPLETENESS_TOTAL, &samples);
+}
+
 /// A histogram family with count and sum only, rendered as one `le="+Inf"` bucket.
 // ponytail: +Inf bucket only — no quantiles; upgrade = a §78 bucket-boundary key and real buckets
 // in HistogramFamily when §54 p95 needs it.
@@ -1023,6 +1195,12 @@ fn json_str(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_completeness_cell_array_matches_cells() {
+        let CompletenessTotal(Counters(cells)) = CompletenessTotal::new();
+        assert_eq!(cells.len(), CompletenessTotal::CELLS);
+    }
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::mpsc;
 

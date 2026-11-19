@@ -1,8 +1,41 @@
 //! `domain::vocab` — shared visibility and moderation labels (ADR-0131).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: []
+//! Called-by: [retrieval::request, telemetry::metrics]
 //! Invariants: [closed variant sets and stable database labels]
 //! Spec: Baseline §6.1.1; §12; §78.2
+
+/// §41.2 `humaux_retrieval_requests_total.intent`: a closed label for the request constructor (ADR-0061 D-C).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntentKind {
+    /// The Text request intent.
+    Text,
+    /// The Context request intent.
+    Context,
+    /// The DirectGet request intent.
+    DirectGet,
+    /// The MemoryEnumerate request intent.
+    MemoryEnumerate,
+}
+
+impl IntentKind {
+    /// Every value, in render order; the label's cardinality bound (ADR-0061 D-A).
+    pub const ALL: [Self; 4] = [
+        Self::Text,
+        Self::Context,
+        Self::DirectGet,
+        Self::MemoryEnumerate,
+    ];
+
+    /// The `intent` label value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Context => "context",
+            Self::DirectGet => "direct_get",
+            Self::MemoryEnumerate => "memory_enumerate",
+        }
+    }
+}
 
 /// The three intra-tenant visibility classes (§6.1.1), frozen closed set — no `Other`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

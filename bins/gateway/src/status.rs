@@ -1,11 +1,11 @@
 //! `gateway::status` — the gateway's truthful readiness and its ops surface: the cached dependency snapshot behind
 //!   `/readyz`, the loopback `/status` document and the `/metrics` exposition (ADR-0061 D-B, D-C, D-F).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-retrieval, humaux-telemetry, serde_json, tokio];
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-infra-cell, humaux-telemetry, serde_json, tokio];
 //!   services=[PostgreSQL(role_gateway), Qdrant(*), UDS(retrieval-worker)]; env=[CARGO_PKG_VERSION,
 //!   HUMAUX_BUILD_GIT_SHA, HUMAUX_GATEWAY_METRICS_ADDR, HUMAUX_GATEWAY_READINESS_REFRESH_SECONDS,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH]; modules=[adapters::postgres, domain::error, gateway::guard,
 //!   gateway::retrieval_embedding_client, infra-cell::permit, infra-cell::resource, infra-cell::transport,
-//!   retrieval::completeness, telemetry::degrade, telemetry::metrics]
+//!   telemetry::degrade, telemetry::metrics]
 //! Called-by: [gateway::bootstrap, gateway::main]
 //! Invariants: [a request never runs a dependency check, it reads the last snapshot; `/readyz` carries a status word
 //!   only (ready | not_ready | stale | draining) and every dependency name, path, error and age goes to the loopback
@@ -415,8 +415,8 @@ fn degrade_json() -> Value {
 #[must_use]
 pub fn render_metrics(guard: &GuardMetrics) -> String {
     let mut out = String::new();
-    humaux_telemetry::degrade::render(&mut out);
-    humaux_retrieval::completeness::render_metrics(&mut out);
+    humaux_telemetry::metrics::render_degrade(&mut out);
+    humaux_telemetry::metrics::render_retrieval(&mut out);
     guard.render(&mut out);
     humaux_telemetry::metrics::render_stage_liveness(&mut out, &STAGES);
     out

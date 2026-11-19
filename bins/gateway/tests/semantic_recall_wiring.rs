@@ -17,7 +17,7 @@
 //!   infra-cell::resource, infra-cell::transport, projection::card, projection::dense, protocol::mcp,
 //!   protocol::mcp_catalog,
 //!   retrieval-provider::adapters, retrieval-provider::contract, retrieval-worker::rpc, retrieval::rerank,
-//!   telemetry::degrade]
+//!   telemetry::degrade, telemetry::metrics]
 //! Called-by: [cargo-test]
 //! Invariants: [each test wires its own PostgreSQL/Qdrant/UDS fixtures; a missing fixture fails the test rather than skipping it]
 //! Spec: ADR-0012; ADR-0014; ADR-0055; ADR-0065; ADR-0081; ADR-0083; ADR-0084
@@ -655,7 +655,9 @@ fn happy_path_placement_and_point_hit() {
                 recall_request("operation receipt scoped context", handle.workspace_id),
             )
             .await;
-            let output = result.expect("semantic recall hit").finish();
+            let output = result
+                .expect("semantic recall hit")
+                .finish(humaux_telemetry::metrics::record_final_classification);
             let items = output.structured_content["items"]
                 .as_array()
                 .expect("items array");
@@ -1063,7 +1065,9 @@ fn recall_stage_ms_cover_at_least_ninety_percent_of_in_process_search_time() {
             )
             .await;
             let wall_ms = started.elapsed().as_secs_f64() * 1_000.0;
-            let output = result.expect("semantic recall answers").finish();
+            let output = result
+                .expect("semantic recall answers")
+                .finish(humaux_telemetry::metrics::record_final_classification);
             let stage_ms = &output.structured_content["provenance"]["stage_ms"];
             let stage = |name: &str| {
                 stage_ms[name]
@@ -1296,7 +1300,10 @@ fn a_transient_query_embedding_failure_fails_fast_with_one_worker_call() {
             );
 
             let started = std::time::Instant::now();
-            let second = search().await.expect("the next recall answers").finish();
+            let second = search()
+                .await
+                .expect("the next recall answers")
+                .finish(humaux_telemetry::metrics::record_final_classification);
             // Evidence line for ADR-0065 Debt A (the first recall also pays the cold pool's connects).
             eprintln!(
                 "fail-fast recall {first_elapsed:?}; answering recall {:?}",
@@ -1457,7 +1464,7 @@ impl LogEnv {
                 context_bootstrap(handle),
                 request,
             ))
-            .map(|pending| pending.finish())
+            .map(|pending| pending.finish(humaux_telemetry::metrics::record_final_classification))
     }
 
     fn recall(
@@ -1869,7 +1876,7 @@ fn a_blocked_log_does_not_hold_the_answer() {
         let _output = answered
             .expect("the answer arrived within the handler deadline while the log was locked")
             .expect("the recall answers")
-            .finish();
+            .finish(humaux_telemetry::metrics::record_final_classification);
         let mut reader = handle.owner_client().expect("owner client");
         assert_eq!(
             log_rows(&mut reader, handle.tenant_id).len(),
@@ -2241,7 +2248,11 @@ impl HybridEnv {
                 hybrid_bootstrap_with(handle, sparse_leg, profile),
                 recall_request(HYBRID_QUERY, handle.workspace_id),
             ))
-            .map(|pending| pending.finish().structured_content)
+            .map(|pending| {
+                pending
+                    .finish(humaux_telemetry::metrics::record_final_classification)
+                    .structured_content
+            })
     }
 
     fn teardown(&self, handle: &Handle) {
