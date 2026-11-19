@@ -462,6 +462,7 @@ files = [
   "crates/adapters/src/contribution_reasoner.rs",
   "crates/adapters/src/contribution_repo.rs",
   "crates/adapters/src/contribution_scan.rs",
+  "crates/adapters/src/public_outbox_port.rs",
   "crates/application/src/contribute.rs",
   "crates/application/src/contribution_execution.rs",
   "crates/domain/src/public.rs",
@@ -569,6 +570,7 @@ id = "retrieval_read_model"
 files = [
   "crates/adapters/src/exact_census.rs",
   "crates/adapters/src/grep_repo.rs",
+  "crates/adapters/src/outbox_repo.rs",
   "crates/adapters/src/placement_repo.rs",
   "crates/adapters/src/private_projection_registry.rs",
   "crates/adapters/src/projection_worker.rs",
