@@ -18,10 +18,21 @@ env:
 jobs:
   pg19-probe:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    name: PostgreSQL ${{ matrix.postgres.version }} / ${{ matrix.lane }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres:
+          # AMD64 sibling of the Dockerfile's ARM64 manifest in the official 18.7 index.
+          - version: '18.7'
+            image: postgres:18.7@sha256:12060a1464f232e4f8c721538b342687c6f17cead32a389586cd683262b1d848
+          - version: '19rc2'
+            image: postgres:19rc2@sha256:66d3af79fe7e5bbc96eb0bda246d2b1e0a62bb937473802892047b72de9b46d8
+        lane: [test-a, test-b, serial-lane]
     services:
       postgres:
-        image: postgres:19rc2@sha256:66d3af79fe7e5bbc96eb0bda246d2b1e0a62bb937473802892047b72de9b46d8
+        image: ${{ matrix.postgres.image }}
         env:
           POSTGRES_PASSWORD: ci
           POSTGRES_DB: humaux_thread_ci
@@ -121,14 +132,109 @@ jobs:
             echo "HUMAUX_PUBLIC_WORKER_PG_DSN=postgres://role_public_worker:${HUMAUX_ROLE_PASSWORD_PUBLIC_WORKER}@${base}"
           } >> "$GITHUB_ENV"
 
-      - name: cargo test (workspace)
-        id: workspace-tests
-        timeout-minutes: 60
-        run: cargo test --workspace --no-fail-fast
+      # Scratch Qdrant and pgBackRest fixtures pin ARM64 images independently of the database under test.
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.lane != 'serial-lane'
+        with:
+          platforms: arm64
+
+      - uses: taiki-e/install-action@v2
+        if: matrix.lane != 'serial-lane'
+        with:
+          tool: nextest@0.9.148
+
+      - name: cargo test (CI test-a)
+        if: matrix.lane == 'test-a'
+        timeout-minutes: 40
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          # Quiet pass (alone, -j 1, after the parallel pass): g80_31_handoff asserts a quiet cluster between two
+          # snapshot reads; the two derived_dispatch_e2e binaries assert HTTP/lease timing windows. The private E11
+          # scenario no longer needs it: its failures (also seen here under -j 1) were a claim race between its pass
+          # and its sweeper, not load, and the sweeper now starts only after the pass holds the lease. Whether these
+          # binaries can rejoin the parallel pass is a separate decision.
+          cargo nextest run --profile ci --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider -E 'not (binary_id(humaux-adapters::g80_31_handoff) | binary_id(humaux-private-worker::derived_dispatch_e2e) | binary_id(humaux-consolidation-worker::derived_dispatch_e2e))' || rc=1
+          cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-a-parallel.xml" 2>/dev/null || true
+          cargo nextest run --profile ci --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider -j 1 -E 'binary_id(humaux-adapters::g80_31_handoff) | binary_id(humaux-private-worker::derived_dispatch_e2e) | binary_id(humaux-consolidation-worker::derived_dispatch_e2e)' || rc=1
+          cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-a-quiet.xml" 2>/dev/null || true
+          cargo test --doc --workspace --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider || rc=1
+          exit $rc
+      - name: cargo test (CI test-b)
+        if: matrix.lane == 'test-b'
+        timeout-minutes: 40
+        shell: bash
+        env:
+          POSTGRES_VERSION: ${{ matrix.postgres.version }}
+        run: |
+          set -uo pipefail
+          rc=0
+          # §79.2: every humaux-retrieval-provider test runs; none is skipped by name (M24-8).
+          # One -p set for both nextest invocations (T-CI-1): cargo unifies features per selected package set, `-p humaux-gateway`
+          # turns on tokio's rt-multi-thread / signal / macros that `-p humaux-retrieval-provider` alone does not, and tokio, sqlx,
+          # reqwest and every workspace crate above them were compiled twice (31 s; diag run 39433240461). Same tests, selected by -E.
+          # ponytail: CI no longer builds humaux-retrieval-provider's tests with its own feature set; a dependency feature it
+          # forgets to declare stays green here and fails `cargo nextest run -p humaux-retrieval-provider` alone. Add a
+          # provider-only `cargo check --tests -p humaux-retrieval-provider` to lint if that ever bites.
+          cargo nextest run --profile ci -p humaux-retrieval-provider -p humaux-gateway -E 'package(=humaux-retrieval-provider)' || rc=1
+          cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-provider.xml" 2>/dev/null || true
+          # -j 1: gateway tests spawn the real binary and assert 2 s / 5 s barriers; under -j 2 one missed its PG barrier
+          # (run 38644754111, native_mcp_context_records_final_metric_only_after_quota_settlement).
+          cargo nextest run --profile ci -p humaux-retrieval-provider -p humaux-gateway -j 1 -E 'package(=humaux-gateway)' || rc=1
+          cargo test --doc -p humaux-gateway -p humaux-retrieval-provider || rc=1
+          cp target/nextest/ci/junit.xml "$RUNNER_TEMP/junit-gateway.xml" 2>/dev/null || true
+          # 10.11 A: the pgbackrest repository must sit on its own filesystem (backup.rs
+          # `stat -c %d` of the bind target vs PGDATA refuses `repo_shares_pgdata_fs`). The
+          # dev Mac gets that for free (virtiofs); on the runner a loop-mounted ext4 image
+          # under TMPDIR is the equivalent of the runbook's loop-mounted repository filesystem.
+          truncate -s 12G "$RUNNER_TEMP/scratch.img"
+          mkfs.ext4 -q -F "$RUNNER_TEMP/scratch.img"
+          mkdir -p "$RUNNER_TEMP/scratch"
+          sudo mount -o loop "$RUNNER_TEMP/scratch.img" "$RUNNER_TEMP/scratch"
+          sudo chmod 1777 "$RUNNER_TEMP/scratch"
+          # drill.rs tampers with repository files the container's postgres user (uid 999)
+          # created 0640 — from the host side, as the test's own user. Docker Desktop's
+          # virtiofs lets the Mac user through; native Linux needs root for that one package.
+          # The target dir is handed back to the runner user afterwards.
+          if [ "$POSTGRES_VERSION" = '18.7' ]; then
+            sudo -E env "PATH=$PATH" TMPDIR="$RUNNER_TEMP/scratch" bash -c 'umask 000 && cargo test -p humaux-maintenance --no-fail-fast' || rc=1
+          else
+            echo 'Expected not applicable on PostgreSQL 19: humaux-maintenance backup and drill use the pinned PostgreSQL 18 + pgBackRest fixture.'
+            targets=$(cargo metadata --no-deps --format-version 1 | jq -r '
+              .packages[] | select(.name == "humaux-maintenance") | .targets[]
+              | select(.kind == ["test"] and .name != "backup" and .name != "drill") | .name') || exit 1
+            test_args=(--lib --bins)
+            while IFS= read -r target; do
+              test_args+=(--test "$target")
+            done <<< "$targets"
+            sudo -E env "PATH=$PATH" TMPDIR="$RUNNER_TEMP/scratch" bash -c '
+              umask 000
+              cargo test -p humaux-maintenance --no-fail-fast "$@"
+            ' _ "${test_args[@]}" || rc=1
+          fi
+          sudo chown -R "$(id -u):$(id -g)" target "$HOME/.cargo" "$RUNNER_TEMP/scratch"
+          exit $rc
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && matrix.lane != 'serial-lane' }}
+        with:
+          name: nextest-junit-${{ matrix.postgres.version }}-${{ matrix.lane }}
+          path: ${{ runner.temp }}/junit-*.xml
 
       - name: cargo xtask serial-lane (the ignored tier)
-        if: ${{ !cancelled() && (steps.workspace-tests.outcome == 'success' || steps.workspace-tests.outcome == 'failure') }}
+        id: serial-lane
+        if: matrix.lane == 'serial-lane'
         timeout-minutes: 45
         env:
           HUMAUX_TEST_DISPOSABLE_CLUSTER: "1"
         run: cargo xtask serial-lane
+
+      # serial-lane only prints captured test output on failure. Measure both versions with
+      # the same standalone invocation so a passing test also exposes its first-page p95.
+      - name: Record enumerate first-page p95
+        if: ${{ !cancelled() && (steps.serial-lane.outcome == 'success' || steps.serial-lane.outcome == 'failure') }}
+        timeout-minutes: 10
+        run: >-
+          cargo test -p humaux-adapters --test enumerate_scale --
+          --ignored --exact --nocapture --test-threads=1
+          enumerate_first_page_scales_with_a_capped_manifest
