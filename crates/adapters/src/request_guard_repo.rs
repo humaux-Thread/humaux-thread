@@ -1,20 +1,17 @@
 //! `adapters::request_guard_repo` — PostgreSQL effective-entitlement reads and
 //!   FORCE-RLS operational-audit writes.
 //! Depends-on: crates=[humaux-domain, serde_json, sqlx]; services=[PostgreSQL(role_gateway)
-//!   r=[control.entitlement_snapshots] x=[control.audit_event_insert]]; env=[]; modules=[adapters::postgres,
-//!   adapters::quota_repo, domain::audit, domain::error, domain::identity, domain::ids]
+//!   r=[control.entitlement_snapshots] x=[control.audit_event_insert]]; env=[]; modules=[adapters::postgres, domain::audit, domain::error, domain::identity, domain::ids]
 //! Called-by: [adapters::audited_read_quota, adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::independent_audit, adapters::memory_governance_repo, adapters::operation_receipt, tests]
 //! Invariants: [this reads the effective entitlement snapshot (its staged successor
-//!   once that is in force, ADR-0072 D-A) and commits quota transitions together with the §77 audit row in one
-//!   transaction; a missing entitlement is EntitlementRequired]
+//!   once that is in force, ADR-0072 D-A); a missing entitlement is EntitlementRequired]
 //! Spec: Baseline §72.2.1; §77; ADR-0072
 //!
-//! Policy belongs to the commercial application. This adapter reads the effective snapshot and commits
-//! read-request quota transitions together with §77's audit writer, preserving the rule
-//! that runtime pools and SQL transactions never escape the adapter layer.
+//! Policy belongs to the commercial application. This adapter supplies the effective snapshot
+//! and the §77 audit writer for the caller's PostgreSQL transaction.
 
 use humaux_domain::{
-    audit::{AuditEvent, AuditEventId, McpAuditAction, SYSTEM_TENANT_ID},
+    audit::{AuditEvent, AuditEventId, SYSTEM_TENANT_ID},
     error::ErrorCode,
     identity::AuthorizationScope,
     ids::{TenantId, UserId},
@@ -23,10 +20,7 @@ use serde_json::Value;
 use sqlx::types::time::OffsetDateTime;
 use sqlx::{Row, types::Uuid};
 
-use crate::{
-    postgres::RuntimeDbPool,
-    quota_repo::{self, QuotaReservation, ReservationStatus, ReserveResult},
-};
+use crate::postgres::RuntimeDbPool;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
@@ -58,7 +52,7 @@ impl AuditTenant<'_> {
     }
 }
 
-fn db_error(error: sqlx::Error) -> ErrorCode {
+pub(crate) fn db_error(error: sqlx::Error) -> ErrorCode {
     match error {
         sqlx::Error::RowNotFound => ErrorCode::NotFound,
         sqlx::Error::Database(ref db) => match db.code().as_deref() {
@@ -248,107 +242,4 @@ async fn insert_bound_audit_in_txn(
         code => code,
     })?;
     Ok(AuditEventId(event_id))
-}
-
-fn validate_request_audit(
-    auth: &AuthorizationScope,
-    event: &AuditEvent,
-    action: McpAuditAction,
-) -> Result<Uuid, ErrorCode> {
-    if event.tenant_id != auth.tenant_id() || event.actor_id != auth.principal().0.to_string() {
-        return Err(ErrorCode::TenantBoundary);
-    }
-    let request_id = Uuid::parse_str(&event.request_id).map_err(|_| ErrorCode::InvalidInput)?;
-    if request_id.is_nil()
-        || event.action != action.as_str()
-        || event.resource_type != "MCP_OPERATION"
-    {
-        return Err(ErrorCode::InvalidInput);
-    }
-    Ok(request_id)
-}
-
-/// Reserve one read BMO and its audit atomically; a failed audit leaves no reservation.
-pub async fn reserve_read_with_audit(
-    pool: &RuntimeDbPool,
-    auth: &AuthorizationScope,
-    operation: &str,
-    request_fingerprint: &str,
-    ttl: std::time::Duration,
-    reserved_audit: &AuditEvent,
-) -> Result<QuotaReservation, ErrorCode> {
-    let request_id =
-        validate_request_audit(auth, reserved_audit, McpAuditAction::McpQuotaReserved)?;
-    if reserved_audit.resource_id != operation || reserved_audit.result != "OK" {
-        return Err(ErrorCode::InvalidInput);
-    }
-    // dep: PostgreSQL(role_gateway) — transaction entry for `reserve_read_with_audit`
-    let mut txn = pool.pool().begin().await.map_err(db_error)?;
-    let reservation = match quota_repo::reserve_bmo_in_txn(
-        &mut txn,
-        auth,
-        request_id,
-        operation,
-        request_fingerprint,
-        ttl,
-    )
-    .await?
-    {
-        ReserveResult::Created(reservation) => reservation,
-        ReserveResult::Existing(_) => return Err(ErrorCode::Conflict),
-    };
-    audit_event_insert_in_txn(&mut txn, AuditTenant::Authenticated(auth), reserved_audit).await?;
-    txn.commit().await.map_err(db_error)?;
-    Ok(reservation)
-}
-
-/// Settle a local read with both quota and finished audits in the same transaction.
-/// False means the read did not consume a BMO; the caller must withhold a success when
-/// consumption was requested but its lease expired. A failed audit rolls back settlement.
-pub async fn settle_read_with_audit(
-    pool: &RuntimeDbPool,
-    auth: &AuthorizationScope,
-    reservation: Option<&QuotaReservation>,
-    consume: bool,
-    finished_audit: &AuditEvent,
-) -> Result<bool, ErrorCode> {
-    let request_id =
-        validate_request_audit(auth, finished_audit, McpAuditAction::McpRequestFinished)?;
-    if reservation.is_some_and(|r| r.request_id() != request_id) {
-        return Err(ErrorCode::Conflict);
-    }
-    // dep: PostgreSQL(role_gateway) — transaction entry for `settle_read_with_audit`
-    let mut txn = pool.pool().begin().await.map_err(db_error)?;
-    let mut consumed = false;
-    if let Some(reservation) = reservation {
-        let status =
-            quota_repo::finish_reservation_in_txn(&mut txn, auth, reservation, consume).await?;
-        consumed = status == ReservationStatus::Consumed;
-        let mut quota_audit = finished_audit.clone();
-        quota_audit.event_id = AuditEventId::new();
-        quota_audit.action = if consumed {
-            McpAuditAction::McpQuotaConsumed
-        } else {
-            McpAuditAction::McpQuotaReleased
-        }
-        .as_str()
-        .to_owned();
-        audit_event_insert_in_txn(&mut txn, AuditTenant::Authenticated(auth), &quota_audit).await?;
-    }
-    let mut finished = finished_audit.clone();
-    if consume && reservation.is_some() && !consumed {
-        finished.result = ErrorCode::Conflict.as_str().to_owned();
-    }
-    audit_event_insert_in_txn(&mut txn, AuditTenant::Authenticated(auth), &finished).await?;
-    if let Some(reservation) = reservation.filter(|_| consumed) {
-        let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
-            .fetch_one(&mut *txn)
-            .await
-            .map_err(db_error)?;
-        if now >= reservation.expires_at() {
-            return Err(ErrorCode::Conflict);
-        }
-    }
-    txn.commit().await.map_err(db_error)?;
-    Ok(consumed || reservation.is_none())
 }
