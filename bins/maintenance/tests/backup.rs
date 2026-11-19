@@ -196,7 +196,7 @@ fn the_dr_wrapper_refuses_a_group_readable_env_file() {
 }
 
 /// T-H1: the Dockerfile's base is the pinned digest in the one stage `pg`, pgBackRest is installed by exact version,
-/// and the built image carries exactly that package and PostgreSQL 18.6. Fault: unpin the package version → red.
+/// and the built image carries exactly that package and PostgreSQL 18.7. Fault: unpin the package version → red.
 #[test]
 fn the_image_is_pinned_and_carries_pgbackrest() {
     let dockerfile = std::fs::read_to_string(root().join("deploy/images/postgres/Dockerfile"))
@@ -208,9 +208,9 @@ fn the_image_is_pinned_and_carries_pgbackrest() {
     let from: Vec<&&str> = live.iter().filter(|l| l.starts_with("FROM ")).collect();
     assert_eq!(from.len(), 1, "one stage");
     let digest = from[0]
-        .strip_prefix("FROM postgres:18.6@sha256:")
+        .strip_prefix("FROM postgres:18.7@sha256:")
         .and_then(|r| r.strip_suffix(" AS pg"))
-        .expect("FROM postgres:18.6@sha256:<digest> AS pg");
+        .expect("FROM postgres:18.7@sha256:<digest> AS pg");
     assert!(
         digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()),
         "{digest}"
@@ -245,7 +245,7 @@ fn the_image_is_pinned_and_carries_pgbackrest() {
         lines.next(),
         Some(format!("pgBackRest {upstream}").as_str())
     );
-    assert!(lines.next().is_some_and(|l| l.contains("18.6")), "{got}");
+    assert!(lines.next().is_some_and(|l| l.contains("18.7")), "{got}");
 }
 
 /// T-H2: `archive-push` (archive-async=n) answers 0 for an already archived segment with the same content and refuses
