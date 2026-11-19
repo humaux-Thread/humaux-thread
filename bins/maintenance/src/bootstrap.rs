@@ -1,12 +1,13 @@
 //! `maintenance::bootstrap` — Wires maintenance operator adapters from process configuration (ADR-0130 D2).
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json, tokio, uuid]; services=[]; env=[HUMAUX_MAINTENANCE_EMBEDDING_DIMENSION, HUMAUX_MAINTENANCE_PRIVATE_MEMORY_COLLECTION, HUMAUX_MAINTENANCE_QDRANT_CIDR,
-//!   HUMAUX_MAINTENANCE_QDRANT_HOST, HUMAUX_MAINTENANCE_QDRANT_PORT]; modules=[adapters::postgres, adapters::projection_worker, adapters::provisioning, adapters::qdrant, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::retrieval_provisioning,
+//!   HUMAUX_MAINTENANCE_QDRANT_HOST, HUMAUX_MAINTENANCE_QDRANT_PORT]; modules=[adapters::maintenance_repo, adapters::postgres, adapters::projection_worker, adapters::provisioning, adapters::qdrant, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::retrieval_provisioning,
 //!   adapters::stream_repo, application::knowledge_backup::drill_projection, application::operator_provisioning, application::reasoning_route_admin,
 //!   domain::egress, maintenance::main]
-//! Called-by: [maintenance::drill, maintenance::main]
+//! Called-by: [maintenance::drill, maintenance::main, maintenance::rebuild_cli]
 //! Invariants: [construction only; the application ports drive all operations]
 //! Spec: ADR-0053; ADR-0130 D2 / SLICE-15c
 
+use humaux_adapters::maintenance_repo;
 use humaux_adapters::postgres::{MaintenanceDbPool, RetrievalWorkerDbPool};
 use humaux_adapters::projection_worker::{PassConfig, SharedProjectionDeps};
 use humaux_adapters::provisioning::ProvisioningError;
@@ -179,7 +180,13 @@ pub(super) async fn drill_worker(
 pub(super) async fn drill_tenants(
     pool: &MaintenanceDbPool,
 ) -> std::result::Result<Vec<Uuid>, ProvisioningError> {
-    rebuild::all_tenants(pool).await
+    rebuild::all_tenants(pool, tenant_page_reader()).await
+}
+
+pub(super) fn tenant_page_reader() -> rebuild::TenantPageReadPort {
+    |pool, after, limit| {
+        Box::pin(async move { Ok(maintenance_repo::tenant_page(pool, after, limit).await?) })
+    }
 }
 
 struct Projection<'a> {

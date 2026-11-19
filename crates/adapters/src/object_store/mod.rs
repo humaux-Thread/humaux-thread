@@ -1,7 +1,7 @@
 //! `adapters::object_store` — C-M17-2: the `ObjectStore` port, its typed keys and prefixes, and the session temp-prefix
 //!   constructor.
 //! Depends-on: crates=[uuid]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::audit_sink, adapters::object_store::fs, tests]
+//! Called-by: [adapters::object_store::fs, tests]
 //! Invariants: [a key is `/`-separated segments of 1-128 chars from [A-Za-z0-9._-], each starting alphanumeric, at most
 //!   1024 bytes in all, so `.`, `..`, dot-files, empty segments, backslash and NUL cannot be built; a prefix is the same
 //!   grammar plus a mandatory trailing `/` and matches whole segments only; `temp_prefix` is the one constructor of

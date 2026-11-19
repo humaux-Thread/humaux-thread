@@ -16,7 +16,7 @@
 //!   projection.stream_log], Qdrant(*)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::forget_repo, adapters::postgres,
 //!   adapters::private_projection_registry, adapters::projection_worker, adapters::provisioning, adapters::qdrant,
-//!   adapters::rebuild, adapters::retrieve, adapters::stream_repo, adapters::tests::support::a2_fixture,
+//!   adapters::rebuild, adapters::retrieval_provisioning, adapters::retrieve, adapters::stream_repo, adapters::tests::support::a2_fixture,
 //!   adapters::tests::support::governance_ops, adapters::tests::support::scratch_qdrant,
 //!   adapters::tests::support::throwaway_db, domain::authority, domain::confirm, domain::egress, domain::error,
 //!   domain::ids, humaux-local-secret-scan, humaux-testkit, infra-cell::permit, infra-cell::resource,

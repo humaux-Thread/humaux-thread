@@ -6,8 +6,8 @@
 //!   private.memory_records, projection.card_profile_policies, projection.rebuild_tickets, projection.stream_checkpoints,
 //!   projection.stream_log]];
 //!   env=[CARGO_MANIFEST_DIR];
-//!   modules=[adapters::context_repo, adapters::memory_repo, adapters::placement_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant, adapters::read_materialize, adapters::retrieval_query_log, adapters::serving_repo, adapters::stream_repo, application::projection_maintenance, application::recall_read, application::signed_token, contracts::retrieval_config, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope]
-//! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::provisioning, adapters::read_materialize, adapters::remember, adapters::stream_repo, gateway::bootstrap, maintenance::switch_visible, tests]
+//!   modules=[adapters::context_repo, adapters::placement_repo, adapters::postgres, adapters::private_projection_registry, adapters::qdrant, adapters::read_materialize, adapters::retrieval_query_log, adapters::serving_repo, adapters::stream_repo, application::projection_maintenance, application::recall_read, application::signed_token, contracts::retrieval_config, domain::affect, domain::error, domain::identity, domain::ids, domain::subject, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::dense, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope]
+//! Called-by: [adapters::distill_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::operation_receipt, adapters::read_materialize, adapters::remember, adapters::retrieval_provisioning, adapters::stream_repo, gateway::bootstrap, maintenance::switch_visible, tests]
 //! Invariants: [read-your-writes on role_gateway: an expired token, cross-tenant/workspace scope or a changed serving
 //!   projection is a typed RetrieveError, never a stale answer passed off as caught up; the read-route visible count
 //!   is caller-scoped (family_probe), the visibility-free stream count serves ops callers only (ADR-0057 D-C);
@@ -73,7 +73,6 @@ use humaux_retrieval::completeness::LedgerClosure;
 use humaux_retrieval::envelope::GroundingBlock;
 
 use crate::context_repo::stream_pipeline_counts_in_txn;
-use crate::memory_repo::memory_texts_in_txn;
 use crate::placement_repo::tenant_placement;
 use crate::postgres::RuntimeDbPool;
 use crate::private_projection_registry::{
@@ -85,12 +84,26 @@ use crate::qdrant::{
     RetrievalFamily, TenantPlacementRow, VisibleCountFilter, count_visible_excluding_seqs,
     ha_profile_for, query_dense, query_dense_groups_bounded, query_sparse_groups,
 };
-use crate::read_materialize::materialize_final_bodies_about_in_txn;
+use crate::read_materialize::{AffectMatchReadPort, materialize_final_bodies_about_in_txn};
 use crate::retrieval_query_log::{self, QueryLogCounts};
 use crate::serving_repo::{self, ServingRepoError};
 use crate::stream_repo::close_ledger_in_txn;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
+
+type ReadMemoryTexts = for<'a, 'tx> fn(
+    &'a mut Txn<'tx>,
+    Uuid,
+    &'a [Uuid],
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Vec<MemoryText>, sqlx::Error>> + Send + 'a>,
+>;
+
+/// Binds a canonical text reader to hydrate. Only hydrate may invoke it on the gated IDs.
+#[derive(Clone, Copy)]
+pub struct MemoryTextReadPort(pub(crate) ReadMemoryTexts);
+
+type AffectRead<'a> = (&'a AffectFilter, AffectMatchReadPort);
 
 /// DB/decode-layer failure. Adapter-local, not one of the workspace's two frozen domain
 /// error enums (§52) — same reasoning as `jobs::JobsError` / `postgres::PoolInitError`.
@@ -931,7 +944,7 @@ pub async fn materialize_private_read_serving(
         semantic,
         &[],
         None,
-        GatedTexts::Skip,
+        None,
     )
     .await
 }
@@ -952,8 +965,8 @@ pub async fn materialize_private_read_serving_about(
     embedding_version: &str,
     semantic: &[DenseCandidate],
     subject_ids: &[SubjectId],
-    affect: Option<&AffectFilter>,
-    texts: GatedTexts,
+    affect: Option<AffectRead<'_>>,
+    read_texts: Option<MemoryTextReadPort>,
 ) -> Result<MaterializedPrivateReadServing, RetrieveError> {
     // dep: PostgreSQL(role_gateway) — transaction entry for `materialize_private_read_serving_about`
     let mut txn = pool.pool().begin().await?;
@@ -972,9 +985,9 @@ pub async fn materialize_private_read_serving_about(
         affect,
     )
     .await?;
-    let gated_texts = match texts {
-        GatedTexts::Skip => BTreeMap::new(),
-        GatedTexts::Read => gated_memory_texts(&mut txn, authorization, &bodies).await?,
+    let gated_texts = match read_texts {
+        None => BTreeMap::new(),
+        Some(read) => gated_memory_texts(&mut txn, authorization, &bodies, read).await?,
     };
     let key = family.with_version(projection_version);
     let ledger = close_ledger_in_txn(&mut txn, &key, authorization).await?;
@@ -1043,7 +1056,7 @@ pub(crate) async fn materialize_private_read_serving_in_txn(
     embedding_version: &str,
     semantic: &[DenseCandidate],
     subject_ids: &[SubjectId],
-    affect: Option<&AffectFilter>,
+    affect: Option<AffectRead<'_>>,
 ) -> Result<(MaterializedBodies, PointSlots), RetrieveError> {
     let envelope = match consistency_token {
         Some(token) => recall_with_overlay_in_txn(txn, token, authorization, family).await?,
@@ -1124,6 +1137,7 @@ async fn gated_memory_texts(
     txn: &mut Txn<'_>,
     authorization: &AuthorizationScope,
     bodies: &MaterializedBodies,
+    read_texts: MemoryTextReadPort,
 ) -> Result<BTreeMap<Uuid, MemoryText>, RetrieveError> {
     let gated: Vec<Uuid> = bodies
         .items
@@ -1133,7 +1147,7 @@ async fn gated_memory_texts(
             _ => None,
         })
         .collect();
-    let texts = memory_texts_in_txn(txn, authorization.tenant_id().0, &gated).await?;
+    let texts = (read_texts.0)(txn, authorization.tenant_id().0, &gated).await?;
     Ok(texts
         .into_iter()
         .map(|text| (text.memory_id, text))
@@ -2106,8 +2120,30 @@ mod contract_tests {
     }
 }
 
+/// PG hydration keeps the final gate and all source reads in one repeatable-read transaction.
+pub struct PostgresRecallHydration<'a> {
+    pool: &'a RuntimeDbPool,
+    read_affect: AffectMatchReadPort,
+    read_texts: MemoryTextReadPort,
+}
+
+impl<'a> PostgresRecallHydration<'a> {
+    /// Binds the read-model source ports supplied by process assembly.
+    pub fn new(
+        pool: &'a RuntimeDbPool,
+        read_affect: AffectMatchReadPort,
+        read_texts: MemoryTextReadPort,
+    ) -> Self {
+        Self {
+            pool,
+            read_affect,
+            read_texts,
+        }
+    }
+}
+
 #[async_trait::async_trait]
-impl humaux_application::recall_read::RecallHydrationReadPort for RuntimeDbPool {
+impl humaux_application::recall_read::RecallHydrationReadPort for PostgresRecallHydration<'_> {
     type Error = RetrieveError;
     async fn hydrate(
         &self,
@@ -2127,7 +2163,7 @@ impl humaux_application::recall_read::RecallHydrationReadPort for RuntimeDbPool 
             })
             .collect();
         materialize_private_read_serving_about(
-            self,
+            self.pool,
             request.consistency_token,
             request.authorization,
             request.family,
@@ -2135,8 +2171,8 @@ impl humaux_application::recall_read::RecallHydrationReadPort for RuntimeDbPool 
             request.embedding_version,
             &candidates,
             request.subject_ids,
-            request.affect,
-            request.texts,
+            request.affect.map(|filter| (filter, self.read_affect)),
+            matches!(request.texts, GatedTexts::Read).then_some(self.read_texts),
         )
         .await
     }

@@ -421,6 +421,7 @@ pub async fn search(
     let text_processing_allowed = (runtime.text_processing_allowed)(authorization.tenant_id());
     let (family, key) = bootstrap.request_stream(authorization.tenant_id(), input.workspace_id);
     let route_store = crate::bootstrap::recall_route_store(&pool);
+    let hydration = crate::bootstrap::recall_hydration(&pool);
     let index_store = crate::bootstrap::recall_index_store(
         &pool,
         runtime.qdrant.as_ref(),
@@ -465,7 +466,7 @@ pub async fn search(
             embedding: runtime.port.as_ref(),
             route: &route_store,
             index: &index_store,
-            hydration: pool.as_ref(),
+            hydration: &hydration,
             query_log: log_port,
             late_rerank: &late_rerank,
             async_support: &async_support,

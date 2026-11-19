@@ -15,7 +15,7 @@
 //!   HUMAUX_MAINTENANCE_RESTORE_MIN_FREE_DISK_BYTES, HUMAUX_PG_ARCHIVE_TIMEOUT_SECONDS, HUMAUX_PG_CONTAINER,
 //!   HUMAUX_PG_IMAGE, HUMAUX_PG_LISTEN_ADDRESSES, HUMAUX_PG_PORT, HUMAUX_PG_REPO_DIR, PATH];
 //!   modules=[adapters::postgres, adapters::private_projection_registry, adapters::projection_worker,
-//!   adapters::provisioning, adapters::qdrant, adapters::rebuild, adapters::stream_repo,
+//!   adapters::qdrant, adapters::rebuild, adapters::retrieval_provisioning, adapters::stream_repo,
 //!   adapters::tests::support::a2_fixture, adapters::tests::support::governance_ops,
 //!   adapters::tests::support::scratch_qdrant, domain::egress, domain::error, domain::ids, humaux-infra-cell,
 //!   humaux-local-secret-scan, humaux-projection, humaux-retrieval, humaux-retrieval-provider, infra-cell::permit,
