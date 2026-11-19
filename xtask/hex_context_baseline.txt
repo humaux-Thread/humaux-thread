@@ -52,10 +52,6 @@ crates/adapters/src/consolidation_reasoner.rs:knowledge_curation->public_knowled
 crates/adapters/src/continuity_read.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/continuity_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
-crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::VisibilityClass
-crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::VisibilityClass::TenantShared
-crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::VisibilityClass::UserPrivate
-crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::VisibilityClass::WorkspaceShared
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::VisibilityDescriptor
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->knowledge_curation:humaux_adapters::reasoning_route_admission::ReasoningAdmissionError
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->knowledge_curation:humaux_adapters::reasoning_route_admission::ReasoningAdmissionError::Database
@@ -78,9 +74,6 @@ crates/adapters/src/contribution_reasoner.rs:public_knowledge->knowledge_curatio
 crates/adapters/src/contribution_reasoner.rs:public_knowledge->knowledge_curation:humaux_application::consolidate::SealedPrivateReasoningRequest
 crates/adapters/src/contribution_repo.rs:public_knowledge->retrieval_read_model:humaux_adapters::stream_repo
 crates/adapters/src/contribution_repo.rs:public_knowledge->retrieval_read_model:humaux_adapters::stream_repo::next_commit_seq
-crates/adapters/src/dedup_repo.rs:knowledge_lifecycle->knowledge_curation:humaux_adapters::candidate_repo
-crates/adapters/src/dedup_repo.rs:knowledge_lifecycle->knowledge_curation:humaux_adapters::candidate_repo::Proposal
-crates/adapters/src/dedup_repo.rs:knowledge_lifecycle->knowledge_curation:humaux_adapters::candidate_repo::propose_in_txn
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::ContributionReasonerConfig
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::admitted_inference_context
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::authorize_structured_egress
@@ -103,7 +96,6 @@ crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux
 crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::require_admin
 crates/adapters/src/maintenance_repo.rs:job_execution->provider_execution:humaux_adapters::provisioning::set_tenant
 crates/adapters/src/mechanism_observation.rs:operations_platform->identity_access:humaux_domain::identity::AuthorizationScope
-crates/adapters/src/mechanism_observation.rs:operations_platform->public_knowledge:humaux_domain::public::ModerationState
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::ReservationStatus
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::ReservationStatus::Consumed
@@ -122,7 +114,6 @@ crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->commercial:humaux_
 crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::ReserveResult::Existing
 crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::finish_reservation_in_txn
 crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::reserve_bmo_in_txn
-crates/adapters/src/private_inference_rpc.rs:provider_execution->knowledge_curation:humaux_application::consolidate::PrivateReasoningError
 crates/adapters/src/private_projection_registry.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::authority::MemoryId
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind::ALL
@@ -186,11 +177,6 @@ crates/application/src/contribute.rs:public_knowledge->identity_access:humaux_do
 crates/application/src/contribute.rs:public_knowledge->knowledge_curation:humaux_application::consolidate::PrivateReasoningPort
 crates/application/src/contribute.rs:public_knowledge->knowledge_curation:humaux_application::consolidate::PrivateReasoningResult
 crates/application/src/contribute.rs:public_knowledge->knowledge_curation:humaux_application::consolidate::SealedPrivateReasoningRequest
-crates/application/src/pin.rs:knowledge_lifecycle->project_continuity:humaux_domain::context::BindingMode
-crates/application/src/pin.rs:knowledge_lifecycle->project_continuity:humaux_domain::context::BindingMode::Pinned
-crates/application/src/pin.rs:knowledge_lifecycle->project_continuity:humaux_domain::context::BindingRequest
-crates/application/src/pin.rs:knowledge_lifecycle->project_continuity:humaux_domain::context::ScopeKind
-crates/application/src/pin.rs:knowledge_lifecycle->project_continuity:humaux_domain::context::ScopeKind::Workspace
 crates/application/src/recall_read.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
 crates/application/src/recall_read.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::authority::MemoryId
 crates/application/src/recall_read.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::subject::SubjectId
@@ -212,16 +198,6 @@ crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_tel
 crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::set_cache_singleflight_waiters
 crates/domain/src/attribution.rs:work_attribution->knowledge_lifecycle:humaux_domain::authority::EvidenceId
 crates/domain/src/attribution.rs:work_attribution->knowledge_lifecycle:humaux_domain::authority::MemoryId
-crates/domain/src/policy.rs:identity_access->knowledge_lifecycle:humaux_domain::authority::AuthorityPolicy
-crates/domain/src/policy.rs:identity_access->knowledge_lifecycle:humaux_domain::authority::AuthorizedAuthority
-crates/domain/src/policy.rs:identity_access->knowledge_lifecycle:humaux_domain::authority::CandidateRejection
-crates/domain/src/policy.rs:identity_access->knowledge_lifecycle:humaux_domain::authority::CandidateRejection::OriginAuthorityCeiling
-crates/domain/src/policy.rs:identity_access->knowledge_lifecycle:humaux_domain::authority::CandidateRejection::UntrustedInstruction
-crates/domain/src/policy.rs:identity_access->knowledge_lifecycle:humaux_domain::authority::NonEmptyVec
-crates/domain/src/policy.rs:identity_access->knowledge_lifecycle:humaux_domain::evidence::EvidenceOriginClass
-crates/domain/src/policy.rs:identity_access->knowledge_lifecycle:humaux_domain::evidence::InstructionDisposition
-crates/domain/src/policy.rs:identity_access->knowledge_lifecycle:humaux_domain::evidence::InstructionDisposition::BehaviorEligible
-crates/domain/src/policy.rs:identity_access->knowledge_lifecycle:humaux_domain::evidence::InstructionDisposition::DataOnly
 crates/domain/src/relation.rs:work_attribution->knowledge_lifecycle:humaux_domain::subject::SubjectKind
 crates/domain/src/relation.rs:work_attribution->knowledge_lifecycle:humaux_domain::subject::SubjectKind::ALL
 crates/domain/src/relation.rs:work_attribution->knowledge_lifecycle:humaux_domain::subject::SubjectKind::Brand
