@@ -1,0 +1,2 @@
+# ADR-0132 exact context exceptions. Each data row ends with " # ADR-0132 X-<n>".
+# Shrink with HEX_CONTEXT_EXCEPTION_CEILING when an exception is removed.
