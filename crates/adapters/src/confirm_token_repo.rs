@@ -342,7 +342,7 @@ mod tests {
         let (target, successor) = (Uuid::now_v7(), Some(Uuid::now_v7()));
         let ttl = Duration::from_secs(60);
         let ok = audit(&auth, op.operation_key(), "OK");
-        let mint = |auth: &AuthorizationScope, successor, ttl, event: &AuditEvent| {
+        let mint = |auth: &AuthorizationScope, successor, ttl, event: &AuditWriteEvent| {
             validate_mint(auth, op, target, successor, ttl, event).err()
         };
         assert_eq!(mint(&auth, successor, ttl, &ok), None);
