@@ -7,10 +7,7 @@
 //!   control.contribution_confirmations, ops.outbox, staging.contribution_candidate_phase9_assessments,
 //!   staging.contribution_candidate_sources, staging.contribution_candidates, staging.contribution_release_sources,
 //!   staging.contribution_releases, staging.sanitized_public_candidates] x=[ops.lock_contribution_inputs,
-//!   public.phase9_public_coverage_for_probe]]; env=[]; modules=[adapters::contribution_scan, adapters::postgres,
-//!   adapters::read_gate, adapters::reasoning_route_admission, adapters::stream_repo, application::consolidate,
-//!   application::contribute, domain::authority, domain::error, domain::evidence, domain::identity, domain::ids,
-//!   domain::public]
+//!   public.phase9_public_coverage_for_probe]]; env=[]; modules=[adapters::contribution_scan, adapters::postgres, adapters::read_gate, adapters::stream_repo, adapters::structured_reasoning, application::consolidate, application::contribute, domain::authority, domain::error, domain::evidence, domain::identity, domain::ids, domain::public]
 //! Called-by: [adapters::contribution_execution_ingress, adapters::contribution_reasoner, tests]
 //! Invariants: [provider/scanner work runs outside the short input lock; every durable step re-checks policy,
 //!   membership, profile and source hashes; no public pool can read candidates; a failed re-check is
@@ -51,10 +48,10 @@ use crate::{
     contribution_scan::ContributionScanReceipt,
     postgres::{PrivateWorkerDbPool, RuntimeDbPool},
     read_gate::visibility_readable,
-    reasoning_route_admission::{
-        ReasoningAdmissionError, ReasoningAdmissionLocator, resolve_user_reasoning_admission,
-    },
     stream_repo,
+    structured_reasoning::{
+        ReasoningAdmissionError, ReasoningAdmissionLocator, ReasoningAdmissionPort,
+    },
 };
 
 type Txn<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
@@ -231,19 +228,19 @@ async fn load_execution_with_admission(
     txn: &mut Txn<'_>,
     request: &ContributionPreparationInput,
 ) -> Result<(PreparationSnapshot, ReasoningAdmissionLocator), ErrorCode> {
-    let admission = resolve_user_reasoning_admission(
-        txn,
-        request.binding_id,
-        request.binding_version,
-        request.reasoning_domain_id,
-        PrivateReasoningPurpose::ContributionDeidentify,
-    )
-    .await
-    .map_err(|error| match error {
-        ReasoningAdmissionError::Database => ErrorCode::DependencyUnavailable,
-        ReasoningAdmissionError::InvalidLocator => ErrorCode::Conflict,
-    })?
-    .ok_or(ErrorCode::Forbidden)?;
+    let admission = txn
+        .resolve_user_reasoning_admission(
+            request.binding_id,
+            request.binding_version,
+            request.reasoning_domain_id,
+            PrivateReasoningPurpose::ContributionDeidentify,
+        )
+        .await
+        .map_err(|error| match error {
+            ReasoningAdmissionError::Database => ErrorCode::DependencyUnavailable,
+            ReasoningAdmissionError::InvalidLocator => ErrorCode::Conflict,
+        })?
+        .ok_or(ErrorCode::Forbidden)?;
     if admission.tenant_id != request.authorization.tenant_id().0 {
         return Err(ErrorCode::TenantBoundary);
     }

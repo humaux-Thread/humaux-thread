@@ -1,6 +1,6 @@
 //! `domain::reasoning_types` — shared private-reasoning identifiers, SHA-256 digests, version counters, and closed purpose/call-kind enums (§11.2.1, §11.5, §11.8, §12.1, ADR-0130 D2).
 //! Depends-on: crates=[uuid]; services=[]; env=[]; modules=[]
-//! Called-by: []
+//! Called-by: [adapters::structured_reasoning, application::private_reasoning]
 //! Invariants: [§78.2 closed-set enums, no stringly-typed domain escape hatch]
 //! Spec: §11.2.1; §11.5; §11.8; §12.1; §78.2; ADR-0130
 //!

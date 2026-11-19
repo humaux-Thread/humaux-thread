@@ -341,6 +341,11 @@ pub enum DistillError<E = Box<dyn std::error::Error + Send + Sync>> {
 }
 
 impl<E> DistillError<E> {
+    /// Preserve the worker job error as an unclassified, redacted reasoning failure.
+    pub fn job_reasoning_failure(message: String) -> Self {
+        Self::Reasoning(PrivateReasoningError::new(message))
+    }
+
     /// Static class for `last_error_class` and the job line — never DB or provider text.
     pub fn class(&self) -> &'static str {
         match self {

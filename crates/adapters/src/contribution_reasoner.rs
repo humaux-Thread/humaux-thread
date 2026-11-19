@@ -1,6 +1,6 @@
 //! `adapters::contribution_reasoner` — §12.1.1 production bridge from a sealed contribution request to
 //!   USER_REASONING.
-//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.private_reasoning_domains, control.tenants, control.users, private.events, private.evidence_objects, private.memory_evidence, private.memory_records] x=[ops.lock_contribution_inputs, public.phase9_public_coverage_for_probe]]; env=[]; modules=[adapters::byok, adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::contribution_scan, adapters::disclosure, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, application::contribute, application::contribution_execution, domain::dataclass, domain::egress, domain::error, domain::evidence, domain::ids, domain::ledger, domain::public]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.private_reasoning_domains, control.tenants, control.users, private.events, private.evidence_objects, private.memory_evidence, private.memory_records] x=[ops.lock_contribution_inputs, public.phase9_public_coverage_for_probe]]; env=[]; modules=[adapters::byok, adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::contribution_scan, adapters::disclosure, adapters::model_call_ledger, adapters::postgres, adapters::structured_reasoning, application::consolidate, application::contribute, application::contribution_execution, domain::dataclass, domain::egress, domain::error, domain::evidence, domain::ids, domain::ledger, domain::public]
 //! Called-by: [adapters::consolidation_reasoner, adapters::contribution_execution_ingress, adapters::distill_reasoner, private-worker::bootstrap, private-worker::route_providers, tests]
 //! Invariants: [private-worker only: source identifiers are reloaded and validated under the authenticated scope
 //!   before any outbound body is built; callers cannot inject private text; an existing reservation or failed
@@ -12,6 +12,12 @@
 //! validates them under the authenticated scope before it ever builds an outbound body; callers
 //! cannot supply arbitrary private text to [`ContributionReasoner::infer`].
 
+pub use crate::structured_reasoning::{
+    ContributionReasonerConfig, PROFILE_LACKS_STRUCTURED_OUTPUT, ROUTE_PROVIDER_MISMATCH,
+};
+use crate::structured_reasoning::{
+    admitted_inference_context, fail, provider_failure_line, provider_matches_admission,
+};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,7 +45,7 @@ use humaux_domain::{
     egress::{AuthorizedEgressPayload, EgressPermit, PrivateDataPurpose, authorize},
     error::ErrorCode,
     evidence::payload_sha256,
-    ids::{TenantId, UserId},
+    ids::TenantId,
     ledger::ModelCallPurpose,
     public::ReleaseSource,
 };
@@ -50,52 +56,21 @@ use uuid::Uuid;
 
 use crate::{
     byok::{
-        CredentialRef, OutputChannel, PrivateInferenceContext, ReasoningCapability,
-        ReasoningDomainId, ReasoningProviderError, StructuredReasoningRequest, TokenUsage,
-        UserReasoningProvider, json_has_nul, structured_request_body,
+        OutputChannel, PrivateInferenceContext, ReasoningProviderError, StructuredReasoningRequest,
+        TokenUsage, UserReasoningProvider, json_has_nul, structured_request_body,
     },
     contribution_entry_repo,
     contribution_execution_repo::{
         ContributionExecutionRead, ContributionExecutionRepoError, ContributionExecutionSource,
         ContributionExecutionSourceKind, ContributionReservePlan, PreparedRouteExpectation,
     },
-    disclosure::{self, DeletionCapability, DisclosureOutcome, DisclosureSource},
+    disclosure::{self, DisclosureOutcome, DisclosureSource},
     model_call_ledger::{
         self, FinalizeCall, ModelCallOutcome, ReasoningCallLookup, ReasoningReserveCall,
     },
     postgres::PrivateWorkerDbPool,
-    reasoning_route_admission::{
-        ProviderFor, ReasoningAdmissionLocator, resolve_user_reasoning_admission,
-    },
+    structured_reasoning::{ProviderFor, ReasoningAdmissionLocator, ReasoningAdmissionPort},
 };
-
-/// Deployment-owned inputs for one contribution de-identification call.
-///
-/// No provider, model, recipient, region, credential, source bytes or fallback key appears here:
-/// the admitted route names all of them, and the caller's [`ProviderFor`] maps that route to its
-/// provider instance (ADR-0060 D-B/D-C). The deployment's deny-only recipient and region lists
-/// live with that mapping, not here, so no config can select a recipient (§11.2.5).
-pub struct ContributionReasonerConfig {
-    pub permit_ttl: Duration,
-    pub deletion_capability: DeletionCapability,
-    pub system_prompt: String,
-    pub json_schema: String,
-    pub max_output_tokens: u32,
-}
-
-impl ContributionReasonerConfig {
-    /// Rejects an incomplete deployment configuration before any private DB read or egress.
-    pub fn validate(&self) -> Result<(), ErrorCode> {
-        if self.permit_ttl.is_zero()
-            || self.system_prompt.trim().is_empty()
-            || self.json_schema.trim().is_empty()
-            || self.max_output_tokens == 0
-        {
-            return Err(ErrorCode::InvalidInput);
-        }
-        Ok(())
-    }
-}
 
 pub const COVERAGE_PROMPT_CONTRACT_VERSION: i64 = 1;
 pub const ASSESSMENT_PROMPT_CONTRACT_VERSION: i64 = 1;
@@ -455,16 +430,16 @@ impl<'a> ContributionReasoner<'a> {
             .map_err(|_| ErrorCode::DependencyUnavailable)?;
         scope_execution(&mut txn, execution.tenant_id, execution.user_id).await?;
         validate_execution_user_domain(&mut txn, execution).await?;
-        let admission = resolve_user_reasoning_admission(
-            &mut txn,
-            sealed.binding_id,
-            sealed.binding_version,
-            sealed.reasoning_domain_id,
-            sealed.purpose,
-        )
-        .await
-        .map_err(|_| ErrorCode::DependencyUnavailable)?
-        .ok_or(ErrorCode::Forbidden)?;
+        let admission = txn
+            .resolve_user_reasoning_admission(
+                sealed.binding_id,
+                sealed.binding_version,
+                sealed.reasoning_domain_id,
+                sealed.purpose,
+            )
+            .await
+            .map_err(|_| ErrorCode::DependencyUnavailable)?
+            .ok_or(ErrorCode::Forbidden)?;
         validate_admission(execution, &admission)?;
         // ADR-0060 D-B/D-C: the instance comes from the admitted route only, after admission.
         let provider = self
@@ -840,30 +815,6 @@ pub(crate) fn authorize_structured_egress(
     Ok((wire_payload, permit))
 }
 
-/// §11.1 [`PrivateInferenceContext`] from one admitted route + the permit minted over the
-/// exact wire bytes. Shared by the same three dispatch paths as
-/// [`authorize_structured_egress`].
-pub(crate) fn admitted_inference_context(
-    tenant_id: Uuid,
-    user_id: Uuid,
-    reasoning_domain_id: Uuid,
-    admission: &ReasoningAdmissionLocator,
-    permit: EgressPermit,
-    trace_id: String,
-) -> Result<PrivateInferenceContext, crate::byok::InferenceContextError> {
-    PrivateInferenceContext::new(
-        TenantId(tenant_id),
-        UserId(user_id),
-        ReasoningDomainId(reasoning_domain_id),
-        CredentialRef::new(admission.credential_ref),
-        permit,
-        admission.processor_id.clone(),
-        admission.provider_model_id.clone(),
-        admission.profile_version,
-        trace_id,
-    )
-}
-
 /// §19.1's token legs for ONE successful generative call — the whole reason it is a named
 /// function is that it is the single place both priced dimensions are read off the provider's
 /// usage block, for every hop that goes through [`complete_structured_timed`] (contribution,
@@ -940,32 +891,6 @@ pub(crate) async fn complete_structured_timed(
         ),
     };
     (response, disclosure_outcome, model_outcome, finalize)
-}
-
-/// ADR-0058 D-N: the ONE operator line for a failed provider call, printed by every dispatch path
-/// (contribution, distill, consolidation). It carries what the ledger row holds — the static
-/// class, the latency and the `model_call_id` to join on — so a timeout (`RETRY_WAIT` with
-/// latency ≈ the transport timeout), a 429/5xx (`RETRY_WAIT`, short) and a refusal
-/// (`PROVIDER_PERMANENT`) are told apart without a SQL session. Never the provider message: it
-/// may carry provider or user text. ADR-0060 D-M: it names the route of the call (provider,
-/// model, Profile@version, Binding@version), so with several providers the line says which one.
-pub(crate) fn provider_failure_line(
-    purpose: ModelCallPurpose,
-    route: &ReasoningAdmissionLocator,
-    model_call_id: Uuid,
-    finalize: &FinalizeCall,
-    error: &ReasoningProviderError,
-) -> String {
-    let latency_ms = finalize
-        .latency_ms
-        .map_or_else(|| "-".to_owned(), |ms| ms.to_string());
-    format!(
-        "humaux-reasoning: provider call failed purpose={} tenant={} {} model_call_id={model_call_id} error_class={} latency_ms={latency_ms}",
-        purpose.as_db_str(),
-        route.tenant_id,
-        route.route_fields(),
-        error.class()
-    )
 }
 
 struct MaterializedSources {
@@ -1098,44 +1023,6 @@ fn validate_admission(
         || admission.purpose != PrivateReasoningPurpose::ContributionDeidentify
     {
         return Err(ErrorCode::Conflict);
-    }
-    Ok(())
-}
-
-/// ADR-0060 D-C: the class of an instance that is not the one its admitted route names — a seam
-/// or cache bug, never a deployment choice.
-pub const ROUTE_PROVIDER_MISMATCH: &str = "ROUTE_PROVIDER_MISMATCH";
-/// ADR-0060 D-C: the admitted Profile@version does not declare `STRUCTURED_OUTPUT`.
-pub const PROFILE_LACKS_STRUCTURED_OUTPUT: &str = "PROFILE_LACKS_STRUCTURED_OUTPUT";
-
-/// ADR-0060 D-C: the instance that will send equals the admitted route on every axis it serves
-/// (provider, model, revision, endpoint, capability SET, request extras), and the route's own Profile@version
-/// declares structured output. The deployment's deny-only recipient / region lists are not here:
-/// they belong to the one production source of instances (D-B), which can refuse a route but
-/// never select one (§11.2.5).
-pub(crate) fn provider_matches_admission(
-    provider: &dyn UserReasoningProvider,
-    admission: &ReasoningAdmissionLocator,
-) -> Result<(), &'static str> {
-    let descriptor = provider.descriptor();
-    let declared: std::collections::BTreeSet<&str> =
-        descriptor.capabilities.iter().map(|c| c.as_str()).collect();
-    let admitted: std::collections::BTreeSet<&str> =
-        admission.capabilities.iter().map(|c| c.as_str()).collect();
-    if admission.processor_id != descriptor.provider_id
-        || admission.provider_model_id != descriptor.model_id
-        || provider.model_revision() != admission.model_revision.as_deref()
-        || provider.endpoint_ref() != admission.endpoint_ref
-        || declared != admitted
-        || descriptor.request_extras != admission.request_extras
-    {
-        return Err(ROUTE_PROVIDER_MISMATCH);
-    }
-    if !admission
-        .capabilities
-        .contains(&ReasoningCapability::StructuredOutput)
-    {
-        return Err(PROFILE_LACKS_STRUCTURED_OUTPUT);
     }
     Ok(())
 }
@@ -1722,14 +1609,6 @@ impl PublicCoveragePort for ContributionReasoner<'_> {
     }
 }
 
-/// Every private-reasoning failure raised in this crate goes through here, so every one of them
-/// carries a loggable static class (`PrivateReasoningError::class`) while `Display` stays
-/// redacted. Card 16: without the class a permanently not-ready tenant's deferrals were
-/// indistinguishable from a provider blip in any log.
-pub(crate) fn fail(label: &'static str) -> PrivateReasoningError {
-    PrivateReasoningError::classified(label)
-}
-
 use crate::{
     contribution_execution_repo::{ContributionExecutionRepo, ContributionJobLease},
     contribution_scan::{ContributionScanOutcome, ContributionScanner},
@@ -2083,6 +1962,8 @@ mod tests {
     use humaux_domain::egress::ProcessorId;
 
     /// One admitted route, every id distinct.
+    use crate::byok::ReasoningCapability;
+
     fn route() -> ReasoningAdmissionLocator {
         ReasoningAdmissionLocator {
             tenant_id: Uuid::from_u128(1),
