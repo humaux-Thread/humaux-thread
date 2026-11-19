@@ -3960,9 +3960,9 @@ mod tests {
             (
                 "pg on an upstream image",
                 |d| {
-                    service(d, "pg").insert("image".into(), json!("postgres:18.6"));
+                    service(d, "pg").insert("image".into(), json!("postgres:18.7"));
                 },
-                &["pg_image_unverified:postgres:18.6"],
+                &["pg_image_unverified:postgres:18.7"],
             ),
             (
                 "pg on another release's image",
