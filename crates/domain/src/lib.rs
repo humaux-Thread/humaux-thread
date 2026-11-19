@@ -68,6 +68,7 @@ pub mod ledger;
 pub mod lifecycle;
 mod lifecycle_types;
 pub mod memory;
+mod memory_vocab;
 pub mod note;
 pub mod plan;
 pub mod policy;
