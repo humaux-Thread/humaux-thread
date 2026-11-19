@@ -479,8 +479,8 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::evidence_sources_dedupe`
+- (no process): `adapters::tests::governance_quota`
 - (no process): `adapters::tests::note_put`
-- (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `adapters::tests::project_tree`
 - (no process): `adapters::tests::request_guard`
@@ -949,6 +949,7 @@ read by:
 - (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::note_replace`
+- (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::mcp_forget`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -1905,9 +1906,12 @@ executed by:
 - (no process): `adapters::tests::quota_and_rate`
 - process(cargo-xtask): `adapters::quota_repo`
 - process(cargo-xtask): `xtask::e2e_onboard`
+- process(humaux-admin): `adapters::quota_repo`
+- process(humaux-consolidation-worker): `adapters::quota_repo`
 - process(humaux-gateway): `adapters::quota_repo`
 - process(humaux-maintenance): `adapters::quota_repo`
 - process(humaux-private-worker): `adapters::quota_repo`
+- process(humaux-public-worker): `adapters::quota_repo`
 - process(humaux-retrieval-worker): `adapters::quota_repo`
 
 ### `control.login_challenge_claim`
@@ -2642,6 +2646,7 @@ read by:
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::operation_receipts`
+- (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `private-worker::tests::m29_attribution_e2e`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -3527,7 +3532,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::evidence_task_runs`
-- (no process): `adapters::tests::note_replace`
+- (no process): `adapters::tests::governance_quota`
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `gateway::tests::coordinate_task`
 - (no process): `gateway::tests::mcp_gateway`
@@ -3544,9 +3549,12 @@ written by:
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `maintenance::tests::partitions`
 - process(cargo-xtask): `adapters::quota_repo`
+- process(humaux-admin): `adapters::quota_repo`
+- process(humaux-consolidation-worker): `adapters::quota_repo`
 - process(humaux-gateway): `adapters::quota_repo`
 - process(humaux-maintenance): `adapters::quota_repo`
 - process(humaux-private-worker): `adapters::quota_repo`
+- process(humaux-public-worker): `adapters::quota_repo`
 - process(humaux-retrieval-worker): `adapters::quota_repo`
 
 executed by:
@@ -3569,9 +3577,12 @@ written by:
 executed by:
 - (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `adapters::quota_repo`
+- process(humaux-admin): `adapters::quota_repo`
+- process(humaux-consolidation-worker): `adapters::quota_repo`
 - process(humaux-gateway): `adapters::quota_repo`
 - process(humaux-maintenance): `adapters::quota_repo`
 - process(humaux-private-worker): `adapters::quota_repo`
+- process(humaux-public-worker): `adapters::quota_repo`
 - process(humaux-retrieval-worker): `adapters::quota_repo`
 
 ### `control.reasoning_binding_close_only`
@@ -4425,10 +4436,13 @@ executed by:
 - (no process): `adapters::tests::quota_and_rate`
 - process(cargo-xtask): `adapters::quota_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-admin): `adapters::quota_repo`
+- process(humaux-consolidation-worker): `adapters::quota_repo`
 - process(humaux-gateway): `adapters::quota_repo`
 - process(humaux-maintenance): `adapters::quota_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::quota_repo`
+- process(humaux-public-worker): `adapters::quota_repo`
 - process(humaux-retrieval-worker): `adapters::quota_repo`
 
 ### `control.repositories`
@@ -5318,9 +5332,11 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::evidence_task_runs`
+- (no process): `adapters::tests::governance_quota`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::operation_receipts`
+- (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -5333,9 +5349,12 @@ written by:
 - (no process): `maintenance::tests::partitions`
 - process(cargo-xtask): `adapters::quota_repo`
 - process(cargo-xtask): `xtask::e2e_seed`
+- process(humaux-admin): `adapters::quota_repo`
+- process(humaux-consolidation-worker): `adapters::quota_repo`
 - process(humaux-gateway): `adapters::quota_repo`
 - process(humaux-maintenance): `adapters::quota_repo`
 - process(humaux-private-worker): `adapters::quota_repo`
+- process(humaux-public-worker): `adapters::quota_repo`
 - process(humaux-retrieval-worker): `adapters::quota_repo`
 
 executed by:
@@ -7575,8 +7594,8 @@ read by:
 - (no process): `adapters::tests::contribution_execution_ingress_0131`
 - (no process): `adapters::tests::contribution_policy_lifecycle_0132`
 - (no process): `adapters::tests::hot_path_indexes`
-- (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::phase9_assessed_contract`
+- (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `private-worker::tests::start_manual_contribution_command_0131`
 - (no process): `private-worker::tests::support::dispatch_fence`
 - process(cargo-xtask): `adapters::distill_repo`
@@ -7847,6 +7866,7 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::candidates`
 - (no process): `adapters::tests::note_replace`
+- (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::mcp_forget`
 - process(cargo-xtask): `adapters::memory_governance_repo`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -10920,6 +10940,7 @@ read by:
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
+- (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `private-worker::tests::m29_attribution_e2e`
 - process(cargo-xtask): `adapters::attribution_repo`
@@ -11030,7 +11051,6 @@ written by:
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
-- (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::offset_pagination_positive_control`
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `adapters::tests::outbox_batch_remember`
@@ -11329,7 +11349,7 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::note_reads`
-- (no process): `adapters::tests::note_replace`
+- (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::mcp_gateway`
 - process(cargo-xtask): `adapters::distill_repo`
 - process(cargo-xtask): `adapters::note_repo`
@@ -11823,6 +11843,7 @@ read by:
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
+- (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::mcp_forget`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - (no process): `private-worker::tests::m29_attribution_e2e`
@@ -11922,7 +11943,6 @@ written by:
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::note_put`
-- (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::offset_pagination_positive_control`
 - (no process): `adapters::tests::private_projection_registry`
 - (no process): `adapters::tests::project_continuity_0136`
@@ -12174,9 +12194,12 @@ read by:
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::facet_contract`
 - (no process): `adapters::tests::forget_race`
+- (no process): `adapters::tests::governance_quota`
 - (no process): `adapters::tests::hot_path_indexes`
 - (no process): `adapters::tests::memory_attribution`
+- (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
+- (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_forget`
 - (no process): `gateway::tests::semantic_recall_wiring`
