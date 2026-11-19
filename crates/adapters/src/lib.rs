@@ -88,6 +88,8 @@ pub mod provider_budget;
 pub mod provisioning;
 pub mod qdrant;
 pub mod quota_repo;
+/// Same-transaction BMO port for knowledge lifecycle writes (ADR-0130 D5).
+pub mod quota_reservation_port;
 pub mod read_gate;
 pub mod read_materialize;
 pub mod reasoning_route_admission;

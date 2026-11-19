@@ -1,6 +1,6 @@
 //! `adapters::memory_governance_repo` — §36 `memory.supersede`, the first confirm-gated governance write (ADR-0018,
 //!   D-C).
-//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time, uuid]; services=[PostgreSQL(any) r=[ops.memory_lifecycle_events, ops.outbox, private.evidence_objects, private.memory_evidence, projection.stream_checkpoints, projection.stream_log] w=[private.memory_records] x=[ops.append_memory_lifecycle]]; env=[]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::archive, application::correct, application::lifecycle_execution, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::lifecycle, domain::memory, domain::subject, projection::stream]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time, uuid]; services=[PostgreSQL(any) r=[ops.memory_lifecycle_events, ops.outbox, private.evidence_objects, private.memory_evidence, projection.stream_checkpoints, projection.stream_log] w=[private.memory_records] x=[ops.append_memory_lifecycle]]; env=[]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::memory_repo, adapters::postgres, adapters::quota_reservation_port, adapters::read_gate, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::archive, application::correct, application::lifecycle_execution, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::lifecycle, domain::memory, domain::subject, projection::stream]
 //! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::operation_receipt, gateway::bootstrap, gateway::mcp_application, tests]
 //! Invariants: [one role_gateway transaction: BMO reserve -> confirm token consume -> visibility -> successor rule ->
 //!   conditional UPDATE -> lifecycle ticket; the UPDATE's WHERE is the only status judge (0 rows = Conflict); any
@@ -62,7 +62,7 @@ use crate::{
     confirm_token_repo::{self, ConfirmationClaim},
     memory_repo::{self, AttributionSource, LoadedEvidence, MemoryProducer, NewMemory},
     postgres::RuntimeDbPool,
-    quota_repo::{self, ReservationStatus, ReserveResult},
+    quota_reservation_port::QuotaReservationPort,
     read_gate,
     remember::{self, RememberCommand, RememberError},
     request_guard_repo::{self, AuditTenant},
@@ -477,6 +477,7 @@ pub async fn refuse_note_targets(
 #[allow(clippy::too_many_lines)] // one confirmed supersede transaction read top to bottom; ADR-0067 D-J's note refusal is its first step
 pub async fn supersede_atomically(
     pool: &RuntimeDbPool,
+    quota: &dyn QuotaReservationPort,
     auth: &AuthorizationScope,
     request: SupersedeRequest,
 ) -> Result<SupersedeOutcome, ErrorCode> {
@@ -495,19 +496,17 @@ pub async fn supersede_atomically(
         return Err(ErrorCode::Conflict);
     }
 
-    let reservation = match quota_repo::reserve_bmo_in_txn(
-        &mut txn,
-        auth,
-        request.request_id,
-        OP.operation_key(),
-        &request.request_fingerprint,
-        request.reservation_ttl,
-    )
-    .await?
-    {
-        ReserveResult::Created(reservation) => reservation,
-        ReserveResult::Existing(_) => return Err(ErrorCode::Conflict),
-    };
+    let reservation = quota
+        .reserve(
+            &mut txn,
+            auth,
+            request.request_id,
+            OP.operation_key(),
+            &request.request_fingerprint,
+            request.reservation_ttl,
+        )
+        .await?
+        .ok_or(ErrorCode::Conflict)?;
     let mut quota_audit = request.finished_audit.clone();
     quota_audit.event_id = AuditEventId::new();
     quota_audit.action = McpAuditAction::McpQuotaReserved.as_str().to_owned();
@@ -562,9 +561,7 @@ pub async fn supersede_atomically(
     .map_err(db_error)?;
     let superseded_at = superseded_at.ok_or(ErrorCode::Conflict)?;
 
-    if quota_repo::finish_reservation_in_txn(&mut txn, auth, &reservation, true).await?
-        != ReservationStatus::Consumed
-    {
+    if !reservation.consume(&mut txn, auth).await? {
         return Err(ErrorCode::Conflict);
     }
     quota_audit.event_id = AuditEventId::new();
@@ -768,6 +765,7 @@ async fn head_state(
 #[allow(clippy::too_many_lines)]
 pub async fn restore_atomically(
     pool: &RuntimeDbPool,
+    quota: &dyn QuotaReservationPort,
     auth: &AuthorizationScope,
     request: RestoreRequest,
 ) -> Result<RestoreResult, ErrorCode> {
@@ -848,19 +846,17 @@ pub async fn restore_atomically(
     }
     let undoes_event = head.head_event_id.ok_or(ErrorCode::Internal)?;
 
-    let reservation = match quota_repo::reserve_bmo_in_txn(
-        &mut txn,
-        auth,
-        request.request_id,
-        RESTORE_OP.operation_key(),
-        &request.request_fingerprint,
-        request.reservation_ttl,
-    )
-    .await?
-    {
-        ReserveResult::Created(reservation) => reservation,
-        ReserveResult::Existing(_) => return Err(ErrorCode::Conflict),
-    };
+    let reservation = quota
+        .reserve(
+            &mut txn,
+            auth,
+            request.request_id,
+            RESTORE_OP.operation_key(),
+            &request.request_fingerprint,
+            request.reservation_ttl,
+        )
+        .await?
+        .ok_or(ErrorCode::Conflict)?;
     let mut quota_audit = request.finished_audit.clone();
     quota_audit.event_id = AuditEventId::new();
     quota_audit.action = McpAuditAction::McpQuotaReserved.as_str().to_owned();
@@ -944,9 +940,7 @@ pub async fn restore_atomically(
         deactivated.ok_or(ErrorCode::Conflict)?;
     }
 
-    if quota_repo::finish_reservation_in_txn(&mut txn, auth, &reservation, true).await?
-        != ReservationStatus::Consumed
-    {
+    if !reservation.consume(&mut txn, auth).await? {
         return Err(ErrorCode::Conflict);
     }
     quota_audit.event_id = AuditEventId::new();
@@ -1112,6 +1106,7 @@ async fn archive_state(
 #[allow(clippy::too_many_lines)]
 pub async fn archive_or_unarchive_atomically(
     pool: &RuntimeDbPool,
+    quota: &dyn QuotaReservationPort,
     auth: &AuthorizationScope,
     request: ArchiveRequest,
 ) -> Result<ArchiveResult, ErrorCode> {
@@ -1174,19 +1169,17 @@ pub async fn archive_or_unarchive_atomically(
         return Ok(ArchiveResult::Refused(reason));
     }
 
-    let reservation = match quota_repo::reserve_bmo_in_txn(
-        &mut txn,
-        auth,
-        request.request_id,
-        op.operation_key(),
-        &request.request_fingerprint,
-        request.reservation_ttl,
-    )
-    .await?
-    {
-        ReserveResult::Created(reservation) => reservation,
-        ReserveResult::Existing(_) => return Err(ErrorCode::Conflict),
-    };
+    let reservation = quota
+        .reserve(
+            &mut txn,
+            auth,
+            request.request_id,
+            op.operation_key(),
+            &request.request_fingerprint,
+            request.reservation_ttl,
+        )
+        .await?
+        .ok_or(ErrorCode::Conflict)?;
     let mut quota_audit = request.finished_audit.clone();
     quota_audit.event_id = AuditEventId::new();
     quota_audit.action = McpAuditAction::McpQuotaReserved.as_str().to_owned();
@@ -1264,9 +1257,7 @@ pub async fn archive_or_unarchive_atomically(
         .map_err(db_error)?;
     let changed_at = changed_at.ok_or(ErrorCode::Conflict)?;
 
-    if quota_repo::finish_reservation_in_txn(&mut txn, auth, &reservation, true).await?
-        != ReservationStatus::Consumed
-    {
+    if !reservation.consume(&mut txn, auth).await? {
         return Err(ErrorCode::Conflict);
     }
     quota_audit.event_id = AuditEventId::new();
@@ -1482,6 +1473,7 @@ async fn correction_source(
 #[allow(clippy::too_many_lines)] // one confirmed correction transaction, read top to bottom like supersede/restore
 pub async fn correct_atomically(
     pool: &RuntimeDbPool,
+    quota: &dyn QuotaReservationPort,
     auth: &AuthorizationScope,
     request: CorrectRequest,
     attribution: &dyn memory_repo::MemoryAttribution,
@@ -1580,19 +1572,17 @@ pub async fn correct_atomically(
         return Err(ErrorCode::Conflict);
     }
 
-    let reservation = match quota_repo::reserve_bmo_in_txn(
-        &mut txn,
-        auth,
-        request.request_id,
-        CORRECT_OP.operation_key(),
-        &request.request_fingerprint,
-        request.reservation_ttl,
-    )
-    .await?
-    {
-        ReserveResult::Created(reservation) => reservation,
-        ReserveResult::Existing(_) => return Err(ErrorCode::Conflict),
-    };
+    let reservation = quota
+        .reserve(
+            &mut txn,
+            auth,
+            request.request_id,
+            CORRECT_OP.operation_key(),
+            &request.request_fingerprint,
+            request.reservation_ttl,
+        )
+        .await?
+        .ok_or(ErrorCode::Conflict)?;
     let mut quota_audit = request.finished_audit.clone();
     quota_audit.event_id = AuditEventId::new();
     quota_audit.action = McpAuditAction::McpQuotaReserved.as_str().to_owned();
@@ -1808,9 +1798,7 @@ pub async fn correct_atomically(
     )
     .await?;
 
-    if quota_repo::finish_reservation_in_txn(&mut txn, auth, &reservation, true).await?
-        != ReservationStatus::Consumed
-    {
+    if !reservation.consume(&mut txn, auth).await? {
         return Err(ErrorCode::Conflict);
     }
     quota_audit.event_id = AuditEventId::new();
@@ -1855,15 +1843,21 @@ pub async fn correct_atomically(
 /// PostgreSQL whole-transaction lifecycle boundary (§36; ADR-0130).
 pub struct PostgresLifecycleStore<'a> {
     pool: &'a RuntimeDbPool,
+    quota: &'a dyn QuotaReservationPort,
     attribution: &'a dyn memory_repo::MemoryAttribution,
 }
 impl<'a> PostgresLifecycleStore<'a> {
     /// Assemble existing PG lifecycle dependencies (§36).
     pub fn new(
         pool: &'a RuntimeDbPool,
+        quota: &'a dyn QuotaReservationPort,
         attribution: &'a dyn memory_repo::MemoryAttribution,
     ) -> Self {
-        Self { pool, attribution }
+        Self {
+            pool,
+            quota,
+            attribution,
+        }
     }
 }
 fn lifecycle_parts(
@@ -1923,6 +1917,7 @@ impl humaux_application::lifecycle_execution::LifecycleStore for PostgresLifecyc
         let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
         supersede_atomically(
             self.pool,
+            self.quota,
             auth,
             SupersedeRequest {
                 request_id: command.request_id,
@@ -1946,6 +1941,7 @@ impl humaux_application::lifecycle_execution::LifecycleStore for PostgresLifecyc
         let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
         restore_atomically(
             self.pool,
+            self.quota,
             auth,
             RestoreRequest {
                 request_id: command.request_id,
@@ -1968,6 +1964,7 @@ impl humaux_application::lifecycle_execution::LifecycleStore for PostgresLifecyc
         let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
         correct_atomically(
             self.pool,
+            self.quota,
             auth,
             CorrectRequest {
                 request_id: command.request_id,
@@ -1997,6 +1994,7 @@ impl humaux_application::lifecycle_execution::LifecycleStore for PostgresLifecyc
         let (audit, claim) = lifecycle_parts(command.finished_audit, command.claim)?;
         archive_or_unarchive_atomically(
             self.pool,
+            self.quota,
             auth,
             ArchiveRequest {
                 request_id: command.request_id,

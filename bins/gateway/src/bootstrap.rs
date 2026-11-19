@@ -3,8 +3,8 @@
 //!   (ADR-0031 D-A / ADR-0032 D-A, §34.0.1 Q9: one process serves every pair; no registry table, no per-process
 //!   stream cache) — the same family the 14 governance / subject / affect writes attach to since ADR-0054, so
 //!   the process holds no default write pair at all.
-//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
-//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde, serde_json, sha2, tokio, uuid];
+//! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
+//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde, serde_json, sha2, time, tokio, uuid];
 //!   services=[PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_BILLING_WEBHOOK_PROVIDERS, HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS, HUMAUX_GATEWAY_DEPLOYMENT, HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS,
 //!   HUMAUX_GATEWAY_RATE_USER_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_TENANT_MAX_SUBJECTS,
@@ -51,7 +51,7 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::metrics]
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::quota_repo, adapters::quota_reservation_port, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::metrics]
 //! Called-by: [gateway::auth, gateway::context, gateway::guard, gateway::main, gateway::mcp_application, gateway::memory, gateway::recall, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
 //! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7; ADR-0125
@@ -76,6 +76,8 @@ use humaux_adapters::{
     attribution_repo::AttributionLadder,
     email::RecipientAllowlist,
     postgres::{PoolSettings, RuntimeDbPool, SessionLock},
+    quota_repo::{self, QuotaReservation, ReservationStatus, ReserveResult},
+    quota_reservation_port::{QuotaReservationPort, QuotaTransaction, ReservedQuota},
     retrieve::{TokenKeys, install_token_keys},
 };
 use humaux_application::auth::{AuthConfig, ChallengePolicy, canonicalize_email};
@@ -87,7 +89,12 @@ use humaux_contracts::config_registry::{
 use humaux_contracts::retrieval_config::{
     RERANK_TIMEOUT_MS, resolve_registered_retrieval_profile, retrieval_profile_registry,
 };
-use humaux_domain::{context::ContextBudget, dataclass::DataClass, identity::VisibilityClass};
+use humaux_domain::{
+    context::ContextBudget,
+    dataclass::DataClass,
+    error::ErrorCode,
+    identity::{AuthorizationScope, VisibilityClass},
+};
 use humaux_infra_cell::{
     CallerId, CellAccessMode, CellCidr, CellId, DEFAULT_MAX_RESPONSE_BYTES, HttpIntraCellTransport,
     IntraCellResource, IntraCellResourceRegistry, ResourceEntry,
@@ -2314,11 +2321,60 @@ pub(crate) fn note_store(
     humaux_adapters::operation_receipt::PostgresNoteStore::new(pool, &MEMORY_ATTRIBUTION)
 }
 
+struct CommercialWriteQuota;
+struct CommercialWriteLease(QuotaReservation);
+
+#[async_trait::async_trait]
+impl QuotaReservationPort for CommercialWriteQuota {
+    async fn reserve(
+        &self,
+        txn: &mut QuotaTransaction<'_>,
+        auth: &AuthorizationScope,
+        request_id: Uuid,
+        operation: &str,
+        fingerprint: &str,
+        ttl: Duration,
+    ) -> Result<Option<Box<dyn ReservedQuota>>, ErrorCode> {
+        Ok(
+            match quota_repo::reserve_bmo_in_txn(txn, auth, request_id, operation, fingerprint, ttl)
+                .await?
+            {
+                ReserveResult::Created(lease) => Some(Box::new(CommercialWriteLease(lease))),
+                ReserveResult::Existing(_) => None,
+            },
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl ReservedQuota for CommercialWriteLease {
+    fn id(&self) -> Uuid {
+        self.0.id()
+    }
+
+    fn expires_at(&self) -> time::OffsetDateTime {
+        self.0.expires_at()
+    }
+
+    async fn consume(
+        &self,
+        txn: &mut QuotaTransaction<'_>,
+        auth: &AuthorizationScope,
+    ) -> Result<bool, ErrorCode> {
+        let status = quota_repo::finish_reservation_in_txn(txn, auth, &self.0, true).await?;
+        Ok(status == ReservationStatus::Consumed)
+    }
+}
+
 /// Assemble the existing atomic PG lifecycle implementation (§36).
 pub fn lifecycle_store(
     pool: &humaux_adapters::postgres::RuntimeDbPool,
 ) -> impl humaux_application::lifecycle_execution::LifecycleStore + '_ {
-    humaux_adapters::memory_governance_repo::PostgresLifecycleStore::new(pool, &MEMORY_ATTRIBUTION)
+    humaux_adapters::memory_governance_repo::PostgresLifecycleStore::new(
+        pool,
+        &CommercialWriteQuota,
+        &MEMORY_ATTRIBUTION,
+    )
 }
 
 /// Assemble the existing atomic PG deletion implementation (§37).

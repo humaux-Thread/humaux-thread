@@ -1,9 +1,9 @@
 //! `adapters::tests::support::governance_ops` — the five confirm-gated governance writes driven through the real
 //!   `memory_governance_repo` ops (ADR-0057 D-J), for projection / completeness integration tests.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(owner)
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-domain, humaux-projection, postgres, serde_json, sqlx, time, tokio]; services=[PostgreSQL(owner)
 //!   w=[control.api_keys, control.confirm_tokens, control.memberships, control.quota_windows, control.tenants,
 //!   control.usage_reservations, control.users, control.workspace_memberships], PostgreSQL(role_gateway)]; env=[]; modules=[adapters::attribution_repo, adapters::confirm_token_repo,
-//!   adapters::memory_governance_repo, adapters::postgres, adapters::quota_repo, adapters::tests::support::token_keys, domain::audit, domain::authority,
+//!   adapters::memory_governance_repo, adapters::postgres, adapters::quota_repo, adapters::quota_reservation_port, adapters::tests::support::token_keys, domain::audit, domain::authority,
 //!   domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::subject,
 //!   projection::stream]
 //! Called-by: [adapters::tests::a2_point_identity, adapters::tests::memory_attribution, adapters::tests::note_history, adapters::tests::note_replace, adapters::tests::projection_lag,
@@ -29,7 +29,10 @@ use humaux_adapters::memory_governance_repo::{
     RestoreResult, SupersedeOutcome, SupersedeRequest,
 };
 use humaux_adapters::postgres::RuntimeDbPool;
-use humaux_adapters::quota_repo;
+use humaux_adapters::quota_repo::{self, QuotaReservation, ReservationStatus, ReserveResult};
+use humaux_adapters::quota_reservation_port::{
+    QuotaReservationPort, QuotaTransaction, ReservedQuota,
+};
 use humaux_domain::audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction};
 use humaux_domain::authority::MemoryId;
 use humaux_domain::confirm::{DestructiveOp, RISK_TAG_CONFIRMATION_MINTED};
@@ -40,6 +43,52 @@ use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use humaux_projection::stream::StreamKey;
 use postgres::Client;
 use sqlx::types::Uuid;
+
+/// Binds the production commercial reservation operations to the governance PG tests.
+pub struct TestWriteQuota;
+struct TestWriteLease(QuotaReservation);
+
+#[async_trait::async_trait]
+impl QuotaReservationPort for TestWriteQuota {
+    async fn reserve(
+        &self,
+        txn: &mut QuotaTransaction<'_>,
+        auth: &AuthorizationScope,
+        request_id: Uuid,
+        operation: &str,
+        fingerprint: &str,
+        ttl: Duration,
+    ) -> Result<Option<Box<dyn ReservedQuota>>, ErrorCode> {
+        Ok(
+            match quota_repo::reserve_bmo_in_txn(txn, auth, request_id, operation, fingerprint, ttl)
+                .await?
+            {
+                ReserveResult::Created(lease) => Some(Box::new(TestWriteLease(lease))),
+                ReserveResult::Existing(_) => None,
+            },
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl ReservedQuota for TestWriteLease {
+    fn id(&self) -> Uuid {
+        self.0.id()
+    }
+
+    fn expires_at(&self) -> time::OffsetDateTime {
+        self.0.expires_at()
+    }
+
+    async fn consume(
+        &self,
+        txn: &mut QuotaTransaction<'_>,
+        auth: &AuthorizationScope,
+    ) -> Result<bool, ErrorCode> {
+        let status = quota_repo::finish_reservation_in_txn(txn, auth, &self.0, true).await?;
+        Ok(status == ReservationStatus::Consumed)
+    }
+}
 
 /// The governance principal of one fixture tenant.
 pub struct Governor {
@@ -235,6 +284,7 @@ pub fn supersede(
     let request_id = Uuid::now_v7();
     rt.block_on(memory_governance_repo::supersede_atomically(
         pool,
+        &TestWriteQuota,
         auth,
         SupersedeRequest {
             request_id,
@@ -263,6 +313,7 @@ pub fn restore(
     let request_id = Uuid::now_v7();
     rt.block_on(memory_governance_repo::restore_atomically(
         pool,
+        &TestWriteQuota,
         auth,
         RestoreRequest {
             request_id,
@@ -290,6 +341,7 @@ pub fn archive(
     let request_id = Uuid::now_v7();
     rt.block_on(memory_governance_repo::archive_or_unarchive_atomically(
         pool,
+        &TestWriteQuota,
         auth,
         ArchiveRequest {
             request_id,
@@ -322,6 +374,7 @@ pub fn correct(
     let bytes = serde_json::to_vec(&content).expect("json bytes");
     rt.block_on(memory_governance_repo::correct_atomically(
         pool,
+        &TestWriteQuota,
         auth,
         CorrectRequest {
             request_id,
