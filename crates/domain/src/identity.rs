@@ -118,16 +118,7 @@ impl<T: PartialEq> BoundedSet<T> {
     }
 }
 
-/// The three intra-tenant visibility classes (§6.1.1), frozen closed set — no `Other`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VisibilityClass {
-    /// Visible only to one specific user.
-    UserPrivate,
-    /// Visible to members of one specific workspace.
-    WorkspaceShared,
-    /// Visible tenant-wide.
-    TenantShared,
-}
+pub use crate::vocab::VisibilityClass;
 
 /// An object's visibility, as read off the row being checked (§6.1.1). `user_id`/`workspace_id`
 /// are only meaningful for the matching `class` — [`can_read`] treats a class/id mismatch
