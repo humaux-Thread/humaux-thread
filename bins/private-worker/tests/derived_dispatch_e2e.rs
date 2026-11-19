@@ -1,6 +1,6 @@
 //! `private-worker::tests::derived_dispatch_e2e` — ADR-0036 / ADR-0058 acceptance, distill side: the cross-tenant,
 //!   slot-bounded, tenant-fair dispatcher behind `humaux-private-worker --distill-once` / `--distill-serve`.
-//! Depends-on: crates=[async-trait, humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, tokio,
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-application, humaux-domain, humaux-testkit, postgres, serde_json, tokio,
 //!   uuid]; services=[PostgreSQL(owner) r=[control.audit_events, ops.claim_derived_work_v2, ops.commit_seq_seq, ops.distill_calls, ops.distill_tenant_scheduler, ops.model_call_ledger,
 //!   ops.provider_arbiters, ops.provider_slots, private.memory_affects, private.memory_records, private.processing_runs]
 //!   w=[control.credentials, control.memberships, control.private_reasoning_domains, control.processor_models,
@@ -20,7 +20,7 @@
 //!   HUMAUX_PRIVATE_WORKER_HEALTH_RENEW_SECS, HUMAUX_PRIVATE_WORKER_HTTP_TIMEOUT_SECS,
 //!   HUMAUX_PRIVATE_WORKER_PERMIT_TTL_SECS, HUMAUX_PRIVATE_WORKER_REGIONS, HUMAUX_PRIVATE_WORKER_RPC_SOCKET_PATH,
 //!   HUMAUX_PRIVATE_WORKER_SERVE_RPC_METRICS_ADDR, HUMAUX_TEST_PG_DSN, MINIMAX_API_KEY, PRIVATE_WORKER_PG_DSN,
-//!   refused:HUMAUX_PRIVATE_WORKER_EGRESS_PROCESSOR_ID]; modules=[adapters::byok, adapters::byok::ssrf, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_reasoner, adapters::jobs, adapters::maintenance_repo, adapters::membership_repo, adapters::postgres, adapters::provisioning, adapters::reasoning_route_admission, adapters::tests::support::throwaway_db, domain::evidence, humaux-testkit, private-worker::bootstrap, private-worker::distill, private-worker::inference_rpc, private-worker::route_providers, private-worker::tests::support::dispatch_fence, private-worker::tests::support::distill_lane, private-worker::tests::support::double_spend, private-worker::tests::support::live_minimax, private-worker::tests::support::live_provider, testkit::fixture_purge, testkit::reaped]
+//!   refused:HUMAUX_PRIVATE_WORKER_EGRESS_PROCESSOR_ID]; modules=[adapters::byok, adapters::byok::ssrf, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_reasoner, adapters::jobs, adapters::maintenance_repo, adapters::membership_repo, adapters::postgres, adapters::provisioning, adapters::reasoning_route_admission, adapters::tests::support::throwaway_db, application::partition_retention, application::scheduler, domain::error, domain::evidence, humaux-testkit, private-worker::bootstrap, private-worker::distill, private-worker::inference_rpc, private-worker::route_providers, private-worker::tests::support::dispatch_fence, private-worker::tests::support::distill_lane, private-worker::tests::support::double_spend, private-worker::tests::support::live_minimax, private-worker::tests::support::live_provider, testkit::fixture_purge, testkit::reaped]
 //! Called-by: [cargo-test]
 //! Invariants: [only this file's tenants are ever claimed (foreign scheduler rows are fenced FOR UPDATE); every
 //!   scenario's faults are named in its doc (ADR-0058 records the red→green runs); a fixture deletes its jobs, slots
@@ -43,7 +43,9 @@ use humaux_adapters::byok::{
 use humaux_adapters::contribution_reasoner::ContributionReasonerConfig;
 use humaux_adapters::disclosure::DeletionCapability;
 use humaux_adapters::jobs::{self, DistillLease};
-use humaux_adapters::maintenance_repo;
+use humaux_adapters::maintenance_repo::{
+    MaintenanceError, MaintenanceGuardPort, MaintenanceServe, Txn,
+};
 use humaux_adapters::membership_repo::AdminAction;
 use humaux_adapters::postgres::{MaintenanceDbPool, PrivateWorkerDbPool};
 use humaux_adapters::provisioning::{
@@ -53,6 +55,9 @@ use humaux_adapters::provisioning::{
 use humaux_adapters::reasoning_route_admission::{
     ProviderFor, ROUTE_HEALTH_DENIED, ROUTE_HEALTH_STALE, ReasoningAdmissionLocator,
 };
+use humaux_application::partition_retention::RetentionAdmin;
+use humaux_application::scheduler::{self, RedriveAudit};
+use humaux_domain::error::ErrorCode;
 use humaux_private_worker::distill::{DistillDispatchConfig, DistillDispatchReport};
 use humaux_private_worker::route_providers::{
     self, CREDENTIAL_NOT_MAPPED, EGRESS_RECIPIENTS, REGIONS, RouteProviders,
@@ -3150,13 +3155,63 @@ fn requeue_dead_by_class_reports_the_dead_jobs_it_skipped() {
 const REDRIVE_COOLDOWN: Duration = Duration::from_secs(1);
 
 /// The §77 fields `humaux-maintenance --serve` writes under its own identity (`sweep once` passes the operator's).
-fn daemon() -> AdminAction<'static> {
-    AdminAction {
+fn daemon() -> RedriveAudit<'static> {
+    RedriveAudit {
         actor: "system:humaux-maintenance --serve",
         reason: "ADR-0062 D-P",
         ticket: "ADR-0062 D-P",
         trace_id: "c35-redrive-trace",
         step_up_auth_context: "none: scheduled task (ADR-0062 D-P)",
+    }
+}
+
+struct RedriveGuard;
+
+impl MaintenanceGuardPort for RedriveGuard {
+    async fn install_tenant(
+        &self,
+        txn: &mut Txn<'_>,
+        tenant: Uuid,
+    ) -> Result<(), MaintenanceError> {
+        provisioning::install_maintenance_tenant(txn, tenant)
+            .await
+            .map_err(|error| MaintenanceError::Dependency(error.to_string()))
+    }
+
+    fn require_retention_admin(&self, _: &RetentionAdmin<'_>) -> Result<(), MaintenanceError> {
+        unreachable!("the redrive fixture never executes retention")
+    }
+
+    async fn audit_retention(
+        &self,
+        _: &mut Txn<'_>,
+        _: &str,
+        _: (&str, &str),
+        _: &RetentionAdmin<'_>,
+        _: serde_json::Value,
+    ) -> Result<Uuid, MaintenanceError> {
+        unreachable!("the redrive fixture never executes retention")
+    }
+
+    async fn audit_redrive(
+        &self,
+        txn: &mut Txn<'_>,
+        tenant: Uuid,
+        resource_id: &str,
+        audit: &RedriveAudit<'_>,
+        metadata: serde_json::Value,
+    ) -> Result<(), MaintenanceError> {
+        let admin = AdminAction {
+            actor: audit.actor,
+            reason: audit.reason,
+            ticket: audit.ticket,
+            trace_id: audit.trace_id,
+            step_up_auth_context: audit.step_up_auth_context,
+        };
+        provisioning::audit_maintenance_redrive(txn, tenant, resource_id, &admin, metadata)
+            .await
+            .map(|_| ())
+            .map_err(|error| MaintenanceError::Dependency(error.to_string()))
     }
 }
 
@@ -3181,7 +3236,16 @@ fn refusing(refusals: u32) -> Arc<StubProvider> {
 impl Handle {
     /// One daemon call of the `redrive` task for `tenant`: the library call behind it, as role_maintenance (0221
     /// grants EXECUTE to role_maintenance only).
-    fn auto_redrive(&self, tenant_id: Uuid, cooldown: Duration) -> i64 {
+    fn auto_redrive(&self, tenant_id: Uuid, cooldown: Duration) -> u64 {
+        self.try_auto_redrive(tenant_id, cooldown)
+            .expect("auto re-drive")
+    }
+
+    fn try_auto_redrive(
+        &self,
+        tenant_id: Uuid,
+        cooldown: Duration,
+    ) -> Result<u64, (ErrorCode, String)> {
         let pool = self
             .rt
             // dep: PostgreSQL(role_maintenance) — the daemon's pool on this test's throwaway database
@@ -3190,15 +3254,13 @@ impl Handle {
                 "role_maintenance",
             )))
             .expect("maintenance pool");
-        self.rt
-            .block_on(maintenance_repo::auto_redrive_schema_failed(
-                &pool,
-                tenant_id,
-                cooldown,
-                10,
-                &daemon(),
-            ))
-            .expect("auto re-drive")
+        self.rt.block_on(scheduler::auto_redrive_schema_failed(
+            &MaintenanceServe::new(&pool, RedriveGuard),
+            tenant_id,
+            cooldown,
+            10,
+            &daemon(),
+        ))
     }
 
     /// (status, attempt, last_error_class, auto_redrives) of one job.
@@ -3251,7 +3313,7 @@ impl Handle {
 /// T-P1 (ADR-0062 D-P; card 32 debt): calls 1-2 are refused, so the job dies DEAD `FAILED_OUTPUT_SCHEMA` at attempt
 /// 2; after the cool-down one daemon call re-arms it, call 3 answers, and the Evidence is distilled with no operator,
 /// under one `DISTILL_AUTO_REDRIVE` §77 row. Fault: the definer skips the `requeue_dead_distill` call ⇒ the job stays
-/// DEAD ⇒ red.
+/// DEAD ⇒ red. Refusing the audit insert leaves both job and outbox unchanged.
 #[test]
 fn a_schema_failed_death_is_redriven_once_after_cooldown_and_distilled() {
     run_redrive(
@@ -3263,6 +3325,41 @@ fn a_schema_failed_death_is_redriven_once_after_cooldown_and_distilled() {
             let provider = refusing(2);
             handle.die_of_schema(&provider, &[job]);
             std::thread::sleep(REDRIVE_COOLDOWN + Duration::from_millis(300));
+
+            let other_tenant = handle.tenants[1].tenant_id;
+            assert_eq!(handle.auto_redrive(other_tenant, REDRIVE_COOLDOWN), 0);
+            assert_eq!(handle.auto_redrive_audits(other_tenant), 0);
+
+            handle
+                .admin
+                .batch_execute(
+                    "ALTER TABLE control.audit_events ADD CONSTRAINT t_redrive_reject_audit \
+                     CHECK (action <> 'DISTILL_AUTO_REDRIVE') NOT VALID",
+                )
+                .expect("install test-only audit fault");
+            let (code, error) = handle
+                .try_auto_redrive(tenant, REDRIVE_COOLDOWN)
+                .expect_err("audit failure rejects redrive");
+            assert_eq!(code, ErrorCode::DependencyUnavailable);
+            assert!(error.contains("t_redrive_reject_audit"), "{error}");
+            assert_eq!(
+                handle.redrive_state(job),
+                (
+                    "DEAD".to_owned(),
+                    2,
+                    Some("FAILED_OUTPUT_SCHEMA".to_owned()),
+                    0
+                ),
+                "audit failure must roll back the redrive"
+            );
+            assert_eq!(handle.outbox_status(evidence), "FAILED");
+            assert_eq!(handle.auto_redrive_audits(tenant), 0);
+            handle
+                .admin
+                .batch_execute(
+                    "ALTER TABLE control.audit_events DROP CONSTRAINT t_redrive_reject_audit",
+                )
+                .expect("remove test-only audit fault");
 
             assert_eq!(handle.auto_redrive(tenant, REDRIVE_COOLDOWN), 1);
             assert_eq!(

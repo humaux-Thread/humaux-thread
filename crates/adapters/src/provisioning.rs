@@ -1,19 +1,19 @@
 //! `adapters::provisioning` — the single home of production onboarding writes (ADR-0053) and of the operator
-//!   re-drive of DEAD distill jobs (ADR-0058 R4).
+//!   re-drive of DEAD distill jobs (ADR-0058 R4), plus the daemon and retention audit guard (ADR-0062/0063).
 //! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(role_maintenance) r=[control.api_keys, control.memberships,
 //!   control.retrieval_provider_admission_limits, control.tenants, control.workspaces, projection.family_activations,
 //!   projection.stream_checkpoints, projection.tenant_placements] x=[control.audit_event_insert,
 //!   control.ensure_admission_tier, control.ensure_user, control.issue_api_key, control.onboard_tenant,
 //!   control.onboard_workspace, control.revoke_api_key, control.set_workspace_membership, ops.requeue_dead_distill,
-//!   projection.ensure_tenant_placement]]; env=[];
+//!   projection.ensure_tenant_placement], PostgreSQL(owner) x=[control.audit_event_insert]]; env=[];
 //!   modules=[adapters::entitlement_repo, adapters::membership_repo, adapters::postgres,
 //!   application::auth, application::operator_provisioning, domain::audit, domain::identity, domain::ids,
 //!   domain::ticket_family]
-//! Called-by: [adapters::cost_repo, adapters::maintenance_repo, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::retrieval_provisioning, adapters::role_hygiene, maintenance::bootstrap,
+//! Called-by: [adapters::cost_repo, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::retrieval_provisioning, adapters::role_hygiene, maintenance::bootstrap,
 //!   tests, xtask::e2e_seed]
 //! Invariants: [every write goes through a 0186 / 0197 owner definer as role_maintenance, no table INSERT here; one transaction
 //!   per tenant (onboard_tenant installs the tenant GUC for the caller's transaction);
-//!   no receipt carries a wire key or the pepper]
+//!   the maintenance guard borrows the caller transaction and never commits it; no receipt carries a wire key or the pepper]
 //! Spec: Baseline §4.2; §6.2.2; §16.2; §16.3; §17.3; §17.6; §17.7; §77; ADR-0017; ADR-0053; ADR-0057; ADR-0058; ADR-0083 D-B;
 //!   ADR-0086
 //!
@@ -228,6 +228,61 @@ pub(crate) async fn audit_tagged(
     .fetch_one(&mut **txn)
     .await?;
     Ok(event_id)
+}
+
+/// Install tenant scope on the caller's maintenance transaction.
+pub async fn install_maintenance_tenant(txn: &mut Txn<'_>, tenant: Uuid) -> Result<()> {
+    set_tenant(txn, tenant).await
+}
+
+/// Validate the administrator fields before a retention operation.
+pub fn require_retention_admin(admin: &AdminAction<'_>) -> Result<()> {
+    require_admin(admin)
+}
+
+/// Record the result of a nonempty automatic re-drive in its transaction.
+pub async fn audit_maintenance_redrive(
+    txn: &mut Txn<'_>,
+    tenant: Uuid,
+    resource_id: &str,
+    admin: &AdminAction<'_>,
+    metadata: Value,
+) -> Result<Uuid> {
+    audit_tagged(
+        txn,
+        tenant,
+        ("DISTILL_AUTO_REDRIVE", REDRIVE_RISK_TAG),
+        REDRIVE_RESOURCE,
+        resource_id,
+        AUDIT_RESULT_SUCCESS,
+        admin,
+        metadata,
+    )
+    .await
+}
+
+/// ADR-0063 D-I: the §77 row of one executor effect, under the system tenant, in the effect's own transaction right
+/// before COMMIT. The client never sets `row_security`, so the owner definer's FORCE-RLS insert runs with it on
+/// (review finding 5).
+pub async fn audit_retention_effect(
+    txn: &mut Txn<'_>,
+    action: &str,
+    (resource_type, resource_id): (&str, &str),
+    admin: &AdminAction<'_>,
+    metadata: Value,
+) -> Result<Uuid> {
+    set_tenant(txn, SYSTEM_TENANT_ID.0).await?;
+    audit_tagged(
+        txn,
+        SYSTEM_TENANT_ID.0,
+        (action, "retention"),
+        resource_type,
+        resource_id,
+        AUDIT_RESULT_SUCCESS,
+        admin,
+        metadata,
+    )
+    .await
 }
 
 /// A refusal decided after its transaction rolled back still gets its `DENIED` row (§77 "全部
