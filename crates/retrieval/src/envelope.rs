@@ -1,6 +1,6 @@
 //! `retrieval::envelope` — §23 Recall Result Envelope.
 //! Depends-on: crates=[humaux-domain, humaux-telemetry, serde, serde_json]; services=[]; env=[]; modules=[domain::context, domain::error, domain::grounding, retrieval::compiler, retrieval::completeness, retrieval::planner, retrieval::request, telemetry::degrade]
-//! Called-by: [adapters::context_repo, adapters::processing_status, adapters::read_materialize, adapters::retrieve, application::recall_read, gateway::context, gateway::memory, gateway::recall, retrieval::completeness, retrieval::rerank, retrieval::signals, tests]
+//! Called-by: [adapters::context_repo, adapters::processing_status, adapters::read_materialize, adapters::retrieve, application::continuity, application::recall_read, gateway::context, gateway::memory, gateway::recall, retrieval::compiler, retrieval::completeness, retrieval::rerank, retrieval::signals, tests]
 //! Invariants: [A2 compares the Qdrant point count with the ledger's ProjectionReads points, never with ticket
 //!   counts (ADR-0057 D-A); build_projection_block is the only place completeness_ratio / current are computed
 //!   and the only producer of PROJECTION_INVISIBLE_LOSS / PROJECTION_LAG, composed loss-then-lag (ADR-0057 D-E);
@@ -1284,6 +1284,23 @@ impl GroundingBlock {
     }
 }
 
+/// Grounding already judged by the frozen-lane owner. The envelope can tally the
+/// original state without reinterpreting it from a wire label.
+#[derive(Debug)]
+pub struct FrozenGrounding(Option<GroundingState>);
+
+impl FrozenGrounding {
+    #[must_use]
+    pub const fn from_snapshot(state: Option<GroundingState>) -> Self {
+        Self(state)
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> Option<GroundingState> {
+        self.0
+    }
+}
+
 // ============================================================================
 // §25.5 Mandatory / Pinned 顶层块
 // ============================================================================
@@ -1888,7 +1905,7 @@ mod tests {
             .expect("budget")
             .reserve(&lane, &pinned)
             .expect("空 lane 不该溢出");
-        let compiled = crate::compiler::compile(lane, pinned, budget, vec![]);
+        let compiled = crate::compiler::compile(vec![], vec![], budget, vec![]);
 
         let outcome = ContextOutcome::Compiled(compiled);
         let (_class, reason, report) = mandatory_outcome_blocks(&outcome, 0);
