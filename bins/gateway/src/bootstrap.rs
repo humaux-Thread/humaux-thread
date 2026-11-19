@@ -2372,7 +2372,9 @@ pub fn default_text_processing_policy() -> fn(humaux_domain::ids::TenantId) -> b
 /// Assemble the PostgreSQL continuity reader (§25.3.1).
 pub(crate) fn continuity_read_port(
     pool: Arc<RuntimeDbPool>,
-) -> impl humaux_application::continuity::ContinuityReadPort {
+) -> impl humaux_application::continuity::ContinuityReadPort<
+    Authorization = humaux_domain::identity::AuthorizationScope,
+> {
     humaux_adapters::continuity_read::PostgresContinuityReadPort::new(pool)
 }
 
