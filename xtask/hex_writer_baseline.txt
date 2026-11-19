@@ -10,7 +10,6 @@ crates/adapters/src/contribution_repo.rs:insert into ops.outbox:3
 crates/adapters/src/cost_repo.rs:insert into ops.tenant_cost_events:1
 crates/adapters/src/distill_repo.rs:update ops.outbox:2
 crates/adapters/src/forget_repo.rs:update projection.stream_log:1
-crates/adapters/src/jobs.rs:update ops.jobs:7
 crates/adapters/src/maintenance_repo.rs:insert into ops.backup_receipts:1
 crates/adapters/src/maintenance_repo.rs:insert into ops.backup_sets:1
 crates/adapters/src/maintenance_repo.rs:insert into ops.restore_drills:1
@@ -25,8 +24,6 @@ crates/adapters/src/remember.rs:insert into private.evidence_task_runs:1
 crates/adapters/src/remember.rs:update private.ingest_tickets:1
 crates/adapters/src/retrieval_query_source.rs:insert into private.retrieval_query_sources:1
 crates/adapters/src/retrieval_query_source.rs:update private.retrieval_query_sources:1
-crates/adapters/src/scheduler.rs:insert into ops.jobs:1
-crates/adapters/src/scheduler.rs:insert into ops.scheduler_leases:1
 crates/adapters/src/stream_repo.rs:update private.ingest_tickets:1
 crates/public-pool/src/public_repo.rs:insert into public.claim_trust_evaluation_sources:1
 crates/public-pool/src/public_repo.rs:insert into public.claim_trust_evaluations:1

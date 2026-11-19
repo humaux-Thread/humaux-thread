@@ -1980,7 +1980,7 @@ fn hex_context_cycles(root: &Path, actual: &BTreeSet<String>, baseline: &str) ->
 
 fn hex_boundary_gate(root: &Path, writer: bool) -> Verdict {
     let (file, ceiling, label) = if writer {
-        ("xtask/hex_writer_baseline.txt", 43, "HEX-WRITER")
+        ("xtask/hex_writer_baseline.txt", 40, "HEX-WRITER")
     } else {
         ("xtask/hex_context_baseline.txt", 205, "HEX-CONTEXT")
     };
