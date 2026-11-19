@@ -66,6 +66,7 @@ pub mod ids;
 pub mod knowledge;
 pub mod ledger;
 pub mod lifecycle;
+mod lifecycle_types;
 pub mod memory;
 pub mod note;
 pub mod plan;
