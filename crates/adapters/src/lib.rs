@@ -47,6 +47,7 @@ pub mod credential_repo;
 pub mod dashscope;
 /// §11.6: exact-duplicate groups remain proposals; no identity or lifecycle changes.
 pub mod dedup_repo;
+mod derived_job_lease;
 pub mod disclosure;
 pub mod distill_reasoner;
 pub mod distill_repo;
