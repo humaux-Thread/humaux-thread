@@ -14210,6 +14210,7 @@ modules naming it:
 - `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
+- `adapters::tests::support::quota_expiry`
 - `adapters::tests::switch_user_private`
 - `adapters::tests::tenant_placements_migration`
 - `adapters::tests::token_keys_unset`
@@ -14396,6 +14397,7 @@ modules naming it:
 - `adapters::tests::support::g8031_snapshot_fixture`
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
+- `adapters::tests::support::quota_expiry`
 - `adapters::tests::switch_user_private`
 - `adapters::tests::task_grant_contract`
 - `adapters::tests::visible_index_count`
@@ -14713,7 +14715,7 @@ modules naming it:
 - `adapters::tests::rebuild`
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::contribution_fixture`
-- `adapters::tests::support::governance_ops`
+- `adapters::tests::support::quota_expiry`
 - `tests`
 
 ### humaux-adapters → `lettre` (normal)
@@ -14861,7 +14863,7 @@ modules naming it:
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_worker`
 - `adapters::tests::support::a2_fixture`
-- `adapters::tests::support::governance_ops`
+- `adapters::tests::support::quota_expiry`
 - `adapters::tests::token_keys_unset`
 - `tests`
 
@@ -15167,6 +15169,7 @@ modules naming it:
 - `adapters::tests::support::governance_ops`
 - `adapters::tests::support::operation_receipt_fixture`
 - `adapters::tests::support::private_route`
+- `adapters::tests::support::quota_expiry`
 - `adapters::tests::support::token_keys`
 - `adapters::tests::switch_user_private`
 - `adapters::tests::tenant_placements_migration`
