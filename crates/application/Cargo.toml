@@ -34,7 +34,7 @@ rand = "0.9"
 hmac = "0.13"
 # why: token/handoff sha256 digests; used-by: [application::auth, application::consolidate, application::continuity, application::contribute, application::contribution_execution, application::forget, application::oauth, application::referral, application::signed_token]
 sha2 = "0.11"
-# why: hex-encoding digest/token bytes for storage and comparison; used-by: [application::auth, application::consolidate, application::continuity, application::contribute, application::referral, application::signed_token]
+# why: hex-encoding digest/token bytes for storage and comparison; used-by: [application::auth, application::continuity, application::contribute, application::private_reasoning, application::referral, application::signed_token]
 hex = "0.4"
 # why: wire/DTO (de)serialization for continuity handoff and notify payloads; used-by: [application::continuity, application::notify]
 serde = { version = "1", features = ["derive"] }

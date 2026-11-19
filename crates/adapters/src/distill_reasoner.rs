@@ -1,6 +1,6 @@
 //! `adapters::distill_reasoner` — §15.5 / §16.1.1 / §10.1 Distill inference (ADR-0016) — the private-worker reasoner
 //!   that turns ONE accepted Evidence into 0..N memory candidates.
-//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-projection, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(role_private_worker)]; env=[]; modules=[adapters::affect_repo, adapters::byok, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_repo, adapters::memory_repo, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, application::distill_execution, domain::affect, domain::authority, domain::dataclass, domain::error, domain::evidence, domain::ledger, domain::memory]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-projection, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(role_private_worker)]; env=[]; modules=[adapters::affect_repo, adapters::byok, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_repo, adapters::memory_repo, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, adapters::structured_reasoning, application::consolidate, application::distill_execution, domain::affect, domain::authority, domain::dataclass, domain::error, domain::evidence, domain::ledger, domain::memory]
 //! Called-by: [adapters::consolidation_reasoner, adapters::distill_repo, private-worker::route_providers, tests]
 //! Invariants: [reuses the shared provider pipeline (admission -> egress permit -> disclosure reserve -> provider ->
 //!   finalize) with purpose Distill and the same model_call_ledger leg; no second provider path; any step failing
@@ -60,16 +60,17 @@ use crate::{
     },
     consolidate_repo::authority_class_from_db_str,
     consolidation_reasoner::domain_owner,
-    contribution_reasoner::{
-        ContributionReasonerConfig, admitted_inference_context, authorize_structured_egress,
-        complete_structured_timed, fail, provider_failure_line, provider_matches_admission,
-    },
+    contribution_reasoner::{authorize_structured_egress, complete_structured_timed},
     disclosure::{self, DisclosureOutcome, DisclosureSource},
     model_call_ledger::{self, FinalizeCall, ModelCallOutcome},
     postgres::PrivateWorkerDbPool,
     reasoning_route_admission::{
         ProviderFor, ReasoningAdmissionLocator, resolve_user_reasoning_admission,
         route_health_refusal,
+    },
+    structured_reasoning::{
+        ContributionReasonerConfig, admitted_inference_context, fail, provider_failure_line,
+        provider_matches_admission,
     },
 };
 

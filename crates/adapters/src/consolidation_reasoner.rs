@@ -3,7 +3,7 @@
 //!   contract both hop ends share (§78 single-source): the input manifest hash ([`compute_input_manifest_hash`]), the
 //!   prompt/schema contract ([`consolidation_prompt_contract`]) and the rollup output parser
 //!   ([`parse_rollup_output`]).
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.private_reasoning_domains, control.tenants, control.users, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::byok, adapters::consolidate_repo, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_reasoner, adapters::memory_repo, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, domain::authority, domain::consolidate, domain::dataclass, domain::error, domain::ledger]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sha2, sqlx, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.private_reasoning_domains, control.tenants, control.users, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records]]; env=[]; modules=[adapters::byok, adapters::consolidate_repo, adapters::contribution_reasoner, adapters::disclosure, adapters::distill_reasoner, adapters::memory_repo, adapters::model_call_ledger, adapters::postgres, adapters::reasoning_route_admission, adapters::structured_reasoning, application::consolidate, domain::authority, domain::consolidate, domain::dataclass, domain::error, domain::ledger]
 //! Called-by: [adapters::consolidate_repo, adapters::distill_reasoner, private-worker::bootstrap, tests]
 //! Invariants: [reads only under role_private_worker's SELECT grants and writes only §7.4 disclosure-ledger rows; the
 //!   run is located by the registered call id, never a caller-supplied memory id; admission or provider failure
@@ -48,16 +48,17 @@ use uuid::Uuid;
 use crate::{
     byok::{OutputChannel, ReasoningProviderError, StructuredReasoningRequest, json_has_nul},
     consolidate_repo::{self, MaterializedInput},
-    contribution_reasoner::{
-        ContributionReasonerConfig, admitted_inference_context, authorize_structured_egress,
-        complete_structured_timed, fail, provider_failure_line, provider_matches_admission,
-    },
+    contribution_reasoner::{authorize_structured_egress, complete_structured_timed},
     disclosure::{self, DisclosureSource},
     distill_reasoner::admissible_classes,
     memory_repo, model_call_ledger,
     postgres::PrivateWorkerDbPool,
     reasoning_route_admission::{
         ProviderFor, resolve_user_reasoning_admission, route_health_refusal,
+    },
+    structured_reasoning::{
+        ContributionReasonerConfig, admitted_inference_context, fail, provider_failure_line,
+        provider_matches_admission,
     },
 };
 
