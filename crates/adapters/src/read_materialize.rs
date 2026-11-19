@@ -1,6 +1,6 @@
 //! `adapters::read_materialize` — Final PostgreSQL body materialization after authorization and token-ledger
 //!   validation.
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde_json, sha2, sqlx, time]; services=[PostgreSQL(role_gateway) r=[ops.outbox, private.events, private.evidence_objects, private.evidence_subjects, private.identity_note_materializations, private.memory_evidence, private.memory_records, private.memory_subjects, private.note_heads, private.memory_text_v, projection.stream_log]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::retrieve, adapters::selection_repo, adapters::stream_repo, application::recall_read, domain::affect, domain::authority, domain::error, domain::grounding, domain::identity, domain::ids, domain::memory, domain::note, domain::selection, domain::subject, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::signals]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde_json, sha2, sqlx, time]; services=[PostgreSQL(role_gateway) r=[ops.outbox, private.events, private.evidence_objects, private.evidence_subjects, private.identity_note_materializations, private.memory_evidence, private.memory_records, private.memory_subjects, private.note_heads, private.memory_text_v, projection.stream_log]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::retrieve, adapters::selection_repo, adapters::stream_repo, application::recall_read, domain::affect, domain::authority, domain::error, domain::identity, domain::ids, domain::memory, domain::note, domain::selection, domain::subject, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::signals]
 //! Called-by: [adapters::affect_repo, adapters::context_repo, adapters::continuity_read, adapters::exact_census, adapters::grep_repo, adapters::operation_receipt, adapters::retrieve, tests]
 //! Invariants: [read-only on role_gateway under RLS; an invisible or unknown source is NotFound/Forbidden, never
 //!   partially materialized; a PG error is DependencyUnavailable; the recall/context entry points take no
@@ -1051,11 +1051,7 @@ async fn direct_get_grounding_in_txn(
         row.try_get("has_live_unversioned")
             .map_err(|_| ErrorCode::Internal)?,
     );
-    let state = match grounding {
-        RowGrounding::Judged(state) => Some(state),
-        RowGrounding::NotJudged => None,
-    };
-    Ok(GroundingBlock::tally([state]))
+    Ok(GroundingBlock::tally([grounding.read_view()]))
 }
 
 /// ADR-0067 D-J2: `private.note_heads` resolves a note to its head under the tenant RLS GUC of `txn` (migration 0236:
@@ -1573,7 +1569,6 @@ use humaux_application::recall_read::*;
 
 pub use humaux_application::recall_read::Lifecycle;
 use humaux_domain::{
-    grounding::RowGrounding,
     ids::Scope,
     selection::{AUTHORIZED_MEMORY_ENUMERATION_V1, Cursor, query_fingerprint},
 };

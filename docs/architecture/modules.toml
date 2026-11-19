@@ -596,6 +596,7 @@ files = [
   "crates/cache/tests/failure.rs",
   "crates/cache/tests/isolation.rs",
   "crates/cache/tests/singleflight.rs",
+  "crates/domain/src/grounding_read.rs",
   "crates/domain/src/selection.rs",
   "crates/projection/src/card.rs",
   "crates/projection/src/code.rs",

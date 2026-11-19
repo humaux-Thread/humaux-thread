@@ -1,5 +1,5 @@
 //! `retrieval::envelope` — §23 Recall Result Envelope.
-//! Depends-on: crates=[humaux-domain, humaux-telemetry, serde, serde_json]; services=[]; env=[]; modules=[domain::context, domain::error, domain::grounding, retrieval::compiler, retrieval::completeness, retrieval::planner, retrieval::request, telemetry::degrade]
+//! Depends-on: crates=[humaux-domain, humaux-telemetry, serde, serde_json]; services=[]; env=[]; modules=[domain::context, domain::error, domain::grounding_read, retrieval::compiler, retrieval::completeness, retrieval::planner, retrieval::request, telemetry::degrade]
 //! Called-by: [adapters::context_repo, adapters::processing_status, adapters::read_materialize, adapters::retrieve, application::continuity, application::recall_read, gateway::context, gateway::memory, gateway::recall, retrieval::compiler, retrieval::completeness, retrieval::rerank, retrieval::signals, tests]
 //! Invariants: [A2 compares the Qdrant point count with the ledger's ProjectionReads points, never with ticket
 //!   counts (ADR-0057 D-A); build_projection_block is the only place completeness_ratio / current are computed
@@ -40,7 +40,7 @@ use crate::planner::{PlannerDecision, QueryClass};
 use crate::request::{
     IntentKind, ProfileFingerprint, RegisteredRetrievalProfile, RetrievalRequest, candidate_depth,
 };
-use humaux_domain::grounding::{GroundingState, GroundingStateKind};
+use humaux_domain::grounding_read::{GroundingRead, GroundingReadKind};
 use humaux_telemetry::degrade::{DegradeCode, Outcome, abstain};
 
 // ============================================================================
@@ -1192,7 +1192,7 @@ pub struct FreshnessBlock {
 // §8.8 `grounding` — a separate block from `freshness` above, on purpose
 // ============================================================================
 
-/// Wire mirror of [`GroundingStateKind`], for the same reason [`CompletenessClassWire`]
+/// Wire mirror of [`GroundingReadKind`], for the same reason [`CompletenessClassWire`]
 /// exists: §8.8's type carries no serde derive (domain stays free of wire concerns, §3) and
 /// the envelope must not re-spell the vocabulary as free strings (§78.2).
 ///
@@ -1208,13 +1208,13 @@ pub enum GroundingStateWire {
     CannotEstablish,
 }
 
-impl From<GroundingStateKind> for GroundingStateWire {
-    fn from(k: GroundingStateKind) -> Self {
+impl From<GroundingReadKind> for GroundingStateWire {
+    fn from(k: GroundingReadKind) -> Self {
         match k {
-            GroundingStateKind::Current => Self::Current,
-            GroundingStateKind::RecheckRequired => Self::RecheckRequired,
-            GroundingStateKind::Unresolved => Self::Unresolved,
-            GroundingStateKind::CannotEstablish => Self::CannotEstablish,
+            GroundingReadKind::Current => Self::Current,
+            GroundingReadKind::RecheckRequired => Self::RecheckRequired,
+            GroundingReadKind::Unresolved => Self::Unresolved,
+            GroundingReadKind::CannotEstablish => Self::CannotEstablish,
         }
     }
 }
@@ -1245,7 +1245,7 @@ pub struct GroundingBlock {
     pub not_judged: u32,
     /// How many returned items no longer qualify to be assumed current truth (§8.8). Kept as
     /// its own count rather than left to the reader to sum: the "which states revoke" rule is
-    /// §8.8's, read here off [`GroundingState::revokes_current_truth_assumption`], so a JSON
+    /// §8.8's, read here off [`GroundingRead::revokes_current_truth_assumption`], so a JSON
     /// consumer never has to re-implement it and this number cannot disagree with the domain.
     pub revokes_current_truth_assumption: u32,
 }
@@ -1253,10 +1253,9 @@ pub struct GroundingBlock {
 impl GroundingBlock {
     /// One entry per returned item; `None` means §8.8's judgement never ran for that item.
     ///
-    /// Takes [`GroundingState`] values rather than re-deriving anything — this crate has no
-    /// derivation path of its own (§8.8: `derive_grounding_state` is the sole one).
+    /// Takes the grounding owner's read views of the existing verdicts.
     #[must_use]
-    pub fn tally(states: impl IntoIterator<Item = Option<GroundingState>>) -> Self {
+    pub fn tally(states: impl IntoIterator<Item = Option<GroundingRead>>) -> Self {
         let mut b = Self {
             current: 0,
             recheck_required: 0,
@@ -1271,10 +1270,10 @@ impl GroundingBlock {
                 continue;
             };
             match state.kind() {
-                GroundingStateKind::Current => b.current += 1,
-                GroundingStateKind::RecheckRequired => b.recheck_required += 1,
-                GroundingStateKind::Unresolved => b.unresolved += 1,
-                GroundingStateKind::CannotEstablish => b.cannot_establish += 1,
+                GroundingReadKind::Current => b.current += 1,
+                GroundingReadKind::RecheckRequired => b.recheck_required += 1,
+                GroundingReadKind::Unresolved => b.unresolved += 1,
+                GroundingReadKind::CannotEstablish => b.cannot_establish += 1,
             }
             if state.revokes_current_truth_assumption() {
                 b.revokes_current_truth_assumption += 1;
@@ -1287,16 +1286,16 @@ impl GroundingBlock {
 /// Grounding already judged by the frozen-lane owner. The envelope can tally the
 /// original state without reinterpreting it from a wire label.
 #[derive(Debug)]
-pub struct FrozenGrounding(Option<GroundingState>);
+pub struct FrozenGrounding(Option<GroundingRead>);
 
 impl FrozenGrounding {
     #[must_use]
-    pub const fn from_snapshot(state: Option<GroundingState>) -> Self {
+    pub const fn from_snapshot(state: Option<GroundingRead>) -> Self {
         Self(state)
     }
 
     #[must_use]
-    pub const fn state(&self) -> Option<GroundingState> {
+    pub const fn state(&self) -> Option<GroundingRead> {
         self.0
     }
 }
@@ -2007,8 +2006,8 @@ mod tests {
     /// No fixture in this module has a pending age, so the threshold never fires here.
     const LAG: Duration = Duration::from_secs(30);
     use humaux_domain::grounding::{
-        EdgeOutcome, GroundingEdge, GroundingInputs, GroundingMode, GroundingVersionToken,
-        derive_grounding_state,
+        EdgeOutcome, GroundingEdge, GroundingInputs, GroundingMode, GroundingState,
+        GroundingVersionToken, derive_grounding_state,
     };
 
     /// The pre-ADR-0057 fixtures state A2 in tickets. On a stream where every ticket projects
@@ -3247,7 +3246,7 @@ mod tests {
     /// twin of §23.1's "不许输出数字充数".
     #[test]
     fn unjudged_items_are_counted_apart_from_current() {
-        let b = GroundingBlock::tally([None, None, Some(state_of("v1", "v1"))]);
+        let b = GroundingBlock::tally([None, None, Some(state_of("v1", "v1").read_view())]);
         assert_eq!(b.not_judged, 2);
         assert_eq!(b.current, 1);
         assert_eq!(b.revokes_current_truth_assumption, 0);
@@ -3261,10 +3260,10 @@ mod tests {
     fn tally_keeps_the_four_states_apart_and_counts_revocations() {
         let [current, recheck, unresolved, cannot_establish] = one_of_each_state();
         let b = GroundingBlock::tally([
-            Some(current),
-            Some(recheck),
-            Some(unresolved),
-            Some(cannot_establish),
+            Some(current.read_view()),
+            Some(recheck.read_view()),
+            Some(unresolved.read_view()),
+            Some(cannot_establish.read_view()),
             None,
         ]);
         assert_eq!(b.current, 1);
@@ -3288,7 +3287,7 @@ mod tests {
     #[test]
     fn revocation_count_agrees_with_the_domain_predicate_state_by_state() {
         for state in one_of_each_state() {
-            let b = GroundingBlock::tally([Some(state)]);
+            let b = GroundingBlock::tally([Some(state.read_view())]);
             assert_eq!(
                 b.revokes_current_truth_assumption == 1,
                 state.revokes_current_truth_assumption(),
@@ -3335,7 +3334,7 @@ mod tests {
                 state_age_seconds: Some(300),
             },
             // §8.8's own worked example: a 5-minute-old memory whose source just moved.
-            grounding: GroundingBlock::tally([Some(state_of("v1", "v2"))]),
+            grounding: GroundingBlock::tally([Some(state_of("v1", "v2").read_view())]),
         };
         let json = serde_json::to_string(&envelope).unwrap();
         assert!(json.contains(r#""freshness":{"class":"fresh""#));
