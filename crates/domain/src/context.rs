@@ -1,6 +1,6 @@
 //! `domain::context` — §25.4 Mandatory Context Lane + §25.5 Budget/Overflow。
-//! Depends-on: crates=[sha2, uuid]; services=[PostgreSQL(any) r=[private.memory_records]]; env=[]; modules=[domain::authority, domain::confirm, domain::error, domain::evidence, domain::grounding, domain::ids, domain::memory]
-//! Called-by: [adapters::context_repo, adapters::continuity_read, application::continuity, application::pin, application::recall_read, gateway::bootstrap, gateway::context, gateway::continuity, gateway::mcp_application, gateway::memory, retrieval::brief, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, tests]
+//! Depends-on: crates=[sha2, uuid]; services=[PostgreSQL(any) r=[private.memory_records]]; env=[]; modules=[domain::authority, domain::confirm, domain::context::budget_views, domain::error, domain::evidence, domain::grounding, domain::ids, domain::memory]
+//! Called-by: [adapters::context_repo, adapters::continuity_read, application::continuity, application::pin, gateway::bootstrap, gateway::context, gateway::continuity, gateway::mcp_application, gateway::memory, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, tests]
 //! Invariants: [zero IO: Mandatory selection has no query/embedding input, Mandatory items are never evicted by
 //!   rerank, and an overflow is cannot_establish, never a silent truncation]
 //! Spec: Baseline §1.2.1; §8.8; §10.1; ADR-0006; ADR-0019; ADR-0045
@@ -26,6 +26,8 @@
 //! confirm_token 之后（card 22b, ADR-0045）。PINNED 见
 //! [`ConfirmedUserActor`]——唯一铸造点是 §33.10 规则 9 的 confirm_token 被消费之后（ADR-0019）。
 
+pub mod budget_views;
+
 use crate::authority::{
     AuthorityClass, AuthorityPolicy, AuthorityStatus, CandidateRejection, MemoryId, NonEmptyVec,
 };
@@ -36,6 +38,7 @@ use crate::evidence::{EvidenceOriginClass, InstructionDisposition};
 use crate::grounding::{GroundingState, GroundingStateKind, RowGrounding};
 use crate::ids::Scope;
 use crate::memory::MemoryType;
+use budget_views::{BriefBudgetView, ContextBudgetLimits, SupplementalBudgetView};
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -894,6 +897,24 @@ impl ContextBudget {
     }
 }
 
+impl From<ContextBudget> for ContextBudgetLimits {
+    fn from(budget: ContextBudget) -> Self {
+        Self {
+            total_tokens: budget.total_tokens,
+            mandatory_cap_tokens: budget.mandatory_cap_tokens,
+        }
+    }
+}
+
+impl From<ContextBudgetLimits> for ContextBudget {
+    fn from(limits: ContextBudgetLimits) -> Self {
+        Self {
+            total_tokens: limits.total_tokens,
+            mandatory_cap_tokens: limits.mandatory_cap_tokens,
+        }
+    }
+}
+
 /// §78.1: registry-supplied brief limits have no domain defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BriefBudget {
@@ -950,6 +971,18 @@ impl BriefBudget {
     }
 }
 
+impl From<BriefBudget> for BriefBudgetView {
+    fn from(budget: BriefBudget) -> Self {
+        Self {
+            cap_tokens: budget.cap_tokens(),
+            prefix_share_percent: budget.prefix_share_percent,
+            optional_prefix_tokens: budget.optional_prefix_tokens(),
+            prevention_cap: budget.prevention_cap(),
+            reuse_cap: budget.reuse_cap(),
+        }
+    }
+}
+
 /// 补充位可用的 token 预算。
 ///
 /// 私有字段、无 `Default`、无 `From<u32>`、无第二构造点——只能由
@@ -962,6 +995,12 @@ impl SupplementalBudget {
     #[must_use]
     pub const fn tokens(self) -> u32 {
         self.0
+    }
+}
+
+impl From<SupplementalBudget> for SupplementalBudgetView {
+    fn from(reservation: SupplementalBudget) -> Self {
+        Self(reservation.tokens())
     }
 }
 

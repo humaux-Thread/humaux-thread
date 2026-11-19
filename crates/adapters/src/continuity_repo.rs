@@ -460,6 +460,8 @@ pub async fn publish_facet(
 
 #[async_trait::async_trait]
 impl humaux_application::continuity::FacetPublicationPort for RuntimeDbPool {
+    type Authorization = AuthorizationScope;
+
     async fn publish_facet(
         &self,
         authorization: &AuthorizationScope,

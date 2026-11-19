@@ -807,10 +807,11 @@ pub struct PendingEnvelope<T> {
 
 impl<T> PendingEnvelope<T> {
     /// Commits the one observable final classification after the caller has accepted its output.
-    /// It also counts the returned envelope in `humaux_retrieval_requests_total` (§41.2 "envelope
-    /// returns", the §53.5 INV-1 denominator; ADR-0061 D-C).
-    pub fn finish(self) -> T {
-        crate::completeness::record_final_classification(self.class, self.intent);
+    /// The caller supplies the observer for the final class, reason, and returned-envelope intent
+    /// (§41.2 "envelope returns", the §53.5 INV-1 denominator; ADR-0061 D-C).
+    pub fn finish(self, observe: impl FnOnce(IntentKind, &'static str, &'static str)) -> T {
+        let (class, reason) = self.class.wire_labels();
+        observe(self.intent, class, reason);
         self.value
     }
 }
@@ -1709,7 +1710,7 @@ mod tests {
             Ok,
         )
         .unwrap()
-        .finish();
+        .finish(crate::completeness::trace_final_classification);
         assert_eq!(final_out.class, CompletenessClassWire::CannotEstablish);
         assert_eq!(
             final_out.reason,
@@ -1775,7 +1776,7 @@ mod tests {
             Ok,
         )
         .unwrap()
-        .finish();
+        .finish(crate::completeness::trace_final_classification);
         assert_eq!(out.class, CompletenessClassWire::CannotEstablish);
         assert_eq!(
             out.reason,
@@ -1853,7 +1854,7 @@ mod tests {
             Ok,
         )
         .unwrap()
-        .finish();
+        .finish(crate::completeness::trace_final_classification);
         assert_eq!(out.reason, Some(CannotEstablishReasonWire::LedgerNotClosed));
         assert_eq!(out.known_lower_bound, Some(2));
         assert_eq!(
@@ -2629,7 +2630,7 @@ mod tests {
         assert!(take_final_record_trace().is_empty());
         let pending = valid_final_exact_outcome(Ok).unwrap();
         assert!(take_final_record_trace().is_empty());
-        let out = pending.finish();
+        let out = pending.finish(crate::completeness::trace_final_classification);
         assert_eq!(out.class, CompletenessClassWire::Exact);
         assert!(out.exact.is_some());
         assert_eq!(take_final_record_trace(), vec![("exact", "none")]);
@@ -2699,7 +2700,7 @@ mod tests {
                 take_requests_trace().is_empty(),
                 "{want_intent}: counted before finish"
             );
-            let out = pending.finish();
+            let out = pending.finish(crate::completeness::trace_final_classification);
             assert_eq!(
                 take_requests_trace(),
                 vec![(want_intent, want_class)],
@@ -2750,7 +2751,7 @@ mod tests {
             Ok,
         )
         .unwrap()
-        .finish();
+        .finish(crate::completeness::trace_final_classification);
         assert_eq!(out.class, CompletenessClassWire::CannotEstablish);
         assert_eq!(out.reason, Some(CannotEstablishReasonWire::CountUnknown));
         assert!(out.exact.is_none());
@@ -2780,7 +2781,7 @@ mod tests {
             Ok,
         )
         .unwrap()
-        .finish();
+        .finish(crate::completeness::trace_final_classification);
         assert_eq!(
             cross_scope_out.reason,
             Some(CannotEstablishReasonWire::CountScopeMismatch)
@@ -3554,7 +3555,7 @@ mod tests {
         ));
         let out = dense_lane_outcome_block(&request, inputs(), Ok)
             .expect("dense lane answer")
-            .finish();
+            .finish(crate::completeness::trace_final_classification);
         assert_eq!(out.class, CompletenessClassWire::SemanticBounded);
         assert!(out.exact.is_none());
     }
@@ -4220,7 +4221,7 @@ mod frontier_tests {
             take_final_record_trace().is_empty(),
             "counted before finish"
         );
-        let outcome = pending.finish();
+        let outcome = pending.finish(crate::completeness::trace_final_classification);
         assert_eq!(outcome.class, CompletenessClassWire::CannotEstablish);
         assert_eq!(
             outcome.reason,

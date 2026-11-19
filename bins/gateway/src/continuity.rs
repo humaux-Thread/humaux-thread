@@ -57,7 +57,7 @@ pub enum PublishOutcome {
 }
 
 pub async fn get<T>(
-    reader: &dyn ContinuityReadPort,
+    reader: &dyn ContinuityReadPort<Authorization = AuthorizationScope>,
     authorization: AuthorizationScope,
     project_id: ProjectId,
     requested_workspace: Option<WorkspaceId>,

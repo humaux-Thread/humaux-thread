@@ -3,10 +3,7 @@ crates/adapters/src/context_repo.rs:insert into private.context_bindings:1
 crates/adapters/src/context_repo.rs:insert into private.task_binding_grants:1
 crates/adapters/src/context_repo.rs:update private.context_bindings:2
 crates/adapters/src/context_repo.rs:update private.task_binding_grants:1
-crates/adapters/src/contribution_entry_repo.rs:insert into ops.outbox:2
-crates/adapters/src/contribution_repo.rs:insert into ops.outbox:3
 crates/adapters/src/cost_repo.rs:insert into ops.tenant_cost_events:1
-crates/adapters/src/distill_repo.rs:update ops.outbox:2
 crates/adapters/src/forget_repo.rs:update projection.stream_log:1
 crates/adapters/src/maintenance_repo.rs:insert into ops.backup_receipts:1
 crates/adapters/src/maintenance_repo.rs:insert into ops.backup_sets:1

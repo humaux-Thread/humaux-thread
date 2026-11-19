@@ -3,8 +3,6 @@
 # read_gate.rs:RowGrounding{,::Judged,::NotJudged} -> read_materialize.rs:same symbols (3 rows).
 # read_gate.rs:MemoryId -> application/recall_read.rs:MemoryId.
 # read_gate.rs:NoteKind -> application/recall_read.rs:NoteKind.
-# retrieval/handoff.rs:ContextBudget -> application/recall_read.rs:ContextBudget; old handoff row remains.
-# Net +1: the existing handoff ContextBudget dependency now has a second consumer in the inbound request.
 bins/consolidation-worker/src/dsn.rs:knowledge_curation->operations_platform:humaux_telemetry::renamed_key
 bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::ModeFailure
 bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::ModeFailure::runtime
@@ -21,7 +19,6 @@ crates/adapters/src/continuity_read.rs:project_continuity->identity_access:humau
 crates/adapters/src/continuity_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::VisibilityDescriptor
-crates/adapters/src/mechanism_observation.rs:operations_platform->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::AuditEvent
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind::ALL
@@ -36,10 +33,8 @@ crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycl
 crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::AuditEvent
 crates/adapters/src/retrieve.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
 crates/application/src/auth.rs:identity_access->provider_execution:humaux_domain::audit::AuditMetadata
-crates/application/src/continuity.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/application/src/contribute.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
 crates/application/src/recall_read.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
-crates/application/src/recall_read.rs:retrieval_read_model->project_continuity:humaux_domain::context::ContextBudget
 crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::CacheName
 crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::CacheResult
 crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::CacheResult::Bypass
@@ -72,19 +67,7 @@ crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_mod
 crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source::reserve_retrieval_query_batch
 crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_model:humaux_retrieval_provider::contract::RetrievalQueryCallContext
 crates/retrieval-provider/src/contract.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source::RetrievalQueryCallContext
-crates/retrieval/src/brief.rs:retrieval_read_model->project_continuity:humaux_domain::context::BriefBudget
 crates/retrieval/src/compiler.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
-crates/retrieval/src/compiler.rs:retrieval_read_model->project_continuity:humaux_domain::context::SupplementalBudget
-crates/retrieval/src/completeness.rs:retrieval_read_model->operations_platform:humaux_telemetry::metrics::families
-crates/retrieval/src/completeness.rs:retrieval_read_model->operations_platform:humaux_telemetry::metrics::families::HUMAUX_RETRIEVAL_REQUESTS_TOTAL
-crates/retrieval/src/completeness.rs:retrieval_read_model->operations_platform:humaux_telemetry::metrics::families::RETRIEVAL_COMPLETENESS_TOTAL
-crates/retrieval/src/completeness.rs:retrieval_read_model->operations_platform:humaux_telemetry::metrics::write_family
 crates/retrieval/src/completeness.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
 crates/retrieval/src/envelope.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
-crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::ContextBudget
 crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
-crates/telemetry/src/degrade.rs:contract_kernel->operations_platform:humaux_telemetry::metrics::Counters
-crates/telemetry/src/degrade.rs:contract_kernel->operations_platform:humaux_telemetry::metrics::Counters::new
-crates/telemetry/src/degrade.rs:contract_kernel->operations_platform:humaux_telemetry::metrics::families
-crates/telemetry/src/degrade.rs:contract_kernel->operations_platform:humaux_telemetry::metrics::families::DEGRADE_TOTAL
-crates/telemetry/src/degrade.rs:contract_kernel->operations_platform:humaux_telemetry::metrics::write_single_label

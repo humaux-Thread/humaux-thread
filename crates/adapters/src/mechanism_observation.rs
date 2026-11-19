@@ -2,7 +2,7 @@
 //! Depends-on: crates=[async-trait, humaux-application, humaux-contracts, humaux-domain, humaux-infra-cell, sha2, sqlx];
 //!   services=[PostgreSQL(any) r=[public.claim_trust_evaluations, public.claims, public.consensus_ready,
 //!   public.corroborated, public.eligible_objects] w=[ops.mechanism_e2e_runs, ops.mechanism_observations]]; env=[];
-//!   modules=[adapters::postgres, application::mechanism_observation, contracts::mechanism_registry, domain::error, domain::identity, domain::public,
+//!   modules=[adapters::postgres, application::mechanism_observation, contracts::mechanism_registry, domain::error, domain::public,
 //!   infra-cell::resource]
 //! Called-by: [public-pool::public_repo, tests, xtask::mechanism_registry]
 //! Invariants: [reads use the dedicated read-only identity; recording runs on role_maintenance through an existing
@@ -19,7 +19,7 @@ use humaux_contracts::mechanism_registry::{
     MechanismE2eEvidence, MechanismObservation, MechanismStatus, ObservationTarget, derive_status,
     parse_registry,
 };
-use humaux_domain::{error::ErrorCode, identity::AuthorizationScope, public::ModerationState};
+use humaux_domain::{error::ErrorCode, public::ModerationState};
 use sha2::{Digest, Sha256};
 use sqlx::{
     Row,
@@ -55,11 +55,13 @@ pub struct EvaluationResult {
 /// crate implements it and only a cloud entry point constructs a [`PublicObservationRecorder`].
 #[async_trait::async_trait]
 pub trait PublicClaimEvaluator: Send + Sync {
+    type Authorization: Sync;
+
     /// Stores a complete immutable receipt and applies one allowed manual review state (§12.6).
     async fn evaluate_claim(
         &self,
         pool: &PublicWorkerDbPool,
-        authorization: &AuthorizationScope,
+        authorization: &Self::Authorization,
         input: &EvaluateClaim<'_>,
     ) -> Result<EvaluationResult, ErrorCode>;
 }
@@ -222,21 +224,21 @@ async fn public_scan(
 /// name the same non-nil cell. Deployment/build come only from trusted bootstrap
 /// configuration, not request parameters. This does not attest operator honesty or
 /// grant business authority: every review still checks its moderator authorization.
-pub struct PublicObservationRecorder<'a> {
+pub struct PublicObservationRecorder<'a, Authorization: Sync> {
     writer: &'a MaintenanceDbPool,
     business: &'a PublicWorkerDbPool,
-    evaluator: &'a dyn PublicClaimEvaluator,
+    evaluator: &'a dyn PublicClaimEvaluator<Authorization = Authorization>,
     target: ObservationTarget,
     binary_build: String,
 }
 
-impl<'a> PublicObservationRecorder<'a> {
+impl<'a, Authorization: Sync> PublicObservationRecorder<'a, Authorization> {
     /// Bind immutable identity at startup. A mismatch or unknown database identity
     /// fails before any business mutation or observation is attempted.
     pub async fn new(
         writer: &'a MaintenanceDbPool,
         business: &'a PublicWorkerDbPool,
-        evaluator: &'a dyn PublicClaimEvaluator,
+        evaluator: &'a dyn PublicClaimEvaluator<Authorization = Authorization>,
         writer_resources: &humaux_infra_cell::IntraCellResourceRegistry,
         business_resources: &humaux_infra_cell::IntraCellResourceRegistry,
         deployment_id: Uuid,
@@ -275,7 +277,7 @@ impl<'a> PublicObservationRecorder<'a> {
     /// business review and evidence commit are separate transactions.
     pub async fn review(
         &self,
-        authorization: &AuthorizationScope,
+        authorization: &Authorization,
         input: &EvaluateClaim<'_>,
     ) -> Result<EvaluationResult, ErrorCode> {
         observe_public_review(
@@ -292,11 +294,11 @@ impl<'a> PublicObservationRecorder<'a> {
 }
 
 /// Only the startup-bound recorder can call this implementation.
-async fn observe_public_review(
+async fn observe_public_review<Authorization: Sync>(
     writer: &MaintenanceDbPool,
     business: &PublicWorkerDbPool,
-    evaluator: &dyn PublicClaimEvaluator,
-    authorization: &AuthorizationScope,
+    evaluator: &dyn PublicClaimEvaluator<Authorization = Authorization>,
+    authorization: &Authorization,
     target: &ObservationTarget,
     binary_build: &str,
     input: &EvaluateClaim<'_>,

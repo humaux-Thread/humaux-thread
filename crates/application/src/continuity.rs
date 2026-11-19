@@ -1,5 +1,5 @@
 //! `application::continuity` — §25.3 continuity 产品的装配入口（G80-31 的被测调用路径）。
-//! Depends-on: crates=[async-trait, hex, humaux-domain, humaux-retrieval, serde, serde_json, sha2, uuid]; services=[]; env=[]; modules=[domain::context, domain::continuity, domain::error, domain::grounding, domain::identity, domain::ids, retrieval::compiler, retrieval::envelope, retrieval::handoff]
+//! Depends-on: crates=[async-trait, hex, humaux-domain, humaux-retrieval, serde, serde_json, sha2, uuid]; services=[]; env=[]; modules=[domain::context, domain::continuity, domain::error, domain::grounding, domain::ids, retrieval::compiler, retrieval::envelope, retrieval::handoff]
 //! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, gateway::bootstrap, gateway::continuity, gateway::mcp_application, tests]
 //! Invariants: [facet_completeness is the one FACET_COMPLETE predicate: only ContinuityStatus::Current covers a
 //!   required facet, and an empty required profile fails closed (§22.0, ADR-0110 D-D)]
@@ -19,7 +19,6 @@ use humaux_domain::continuity::{
 };
 use humaux_domain::error::{ConflictReason, ErrorCode};
 use humaux_domain::grounding::GroundingState;
-use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::{Scope, WorkspaceId};
 use humaux_retrieval::compiler::FrozenLaneRow;
 use humaux_retrieval::envelope::FrozenGrounding;
@@ -34,7 +33,7 @@ use uuid::Uuid;
 /// Projects the owner's admitted lanes without reopening the captured snapshot.
 pub struct ClosedFrozenReads(pub FrozenReads);
 
-impl FrozenHandoffRead for ClosedFrozenReads {
+impl FrozenHandoffRead<ContextBudget> for ClosedFrozenReads {
     fn prepare(self, budget: ContextBudget) -> FrozenSnapshot {
         let FrozenReads {
             mandatory,
@@ -43,7 +42,7 @@ impl FrozenHandoffRead for ClosedFrozenReads {
             snapshot_token_sha256,
         } = self.0;
         let pinned = pinned.excluding_mandatory(&mandatory);
-        let reservation = budget.reserve(&mandatory, &pinned);
+        let reservation = budget.reserve(&mandatory, &pinned).map(Into::into);
         FrozenSnapshot {
             context_snapshot_seq,
             snapshot_token_sha256,
@@ -124,9 +123,11 @@ pub async fn assemble_handoff(
 /// only a closed snapshot; application assembly cannot perform another read.
 #[async_trait::async_trait]
 pub trait ContinuityReadPort: Send + Sync {
+    type Authorization: Sync;
+
     async fn read_snapshot(
         &self,
-        authorization: &AuthorizationScope,
+        authorization: &Self::Authorization,
         project_id: ProjectId,
         requested_workspace: Option<WorkspaceId>,
         budget: ContextBudget,
@@ -348,9 +349,9 @@ pub struct ContinuityResult {
 
 /// Runs the application use case and builds the exact W0 wire result after the adapter has
 /// committed its one closed RR snapshot.
-pub async fn read_project_continuity(
-    port: &dyn ContinuityReadPort,
-    authorization: &AuthorizationScope,
+pub async fn read_project_continuity<Authorization: Sync>(
+    port: &dyn ContinuityReadPort<Authorization = Authorization>,
+    authorization: &Authorization,
     project_id: ProjectId,
     requested_workspace: Option<WorkspaceId>,
     budget: ContextBudget,
@@ -1187,18 +1188,20 @@ pub enum PublishFacetOutcome {
 /// Whole publication operation, including slot read, CAS, source links and commit (§25.3.1).
 #[async_trait::async_trait]
 pub trait FacetPublicationPort: Send + Sync {
+    type Authorization: Sync;
+
     /// Publish in a single adapter-owned transaction (ADR-0094 D-C).
     async fn publish_facet(
         &self,
-        authorization: &AuthorizationScope,
+        authorization: &Self::Authorization,
         command: &PublishContinuityFacet<'_>,
     ) -> Result<PublishFacetOutcome, ErrorCode>;
 }
 
 /// Publish a facet through the transaction-owning adapter (§25.3.1).
-pub async fn publish_facet(
-    port: &dyn FacetPublicationPort,
-    authorization: &AuthorizationScope,
+pub async fn publish_facet<Authorization: Sync>(
+    port: &dyn FacetPublicationPort<Authorization = Authorization>,
+    authorization: &Authorization,
     command: &PublishContinuityFacet<'_>,
 ) -> Result<PublishFacetOutcome, ErrorCode> {
     port.publish_facet(authorization, command).await

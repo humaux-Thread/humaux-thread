@@ -1105,7 +1105,7 @@ const HEX_MODULES: &str = "docs/architecture/modules.toml";
 const HEX_BASELINE: &str = "xtask/hex_layer_baseline.txt";
 const HEX_CONTEXT_BASELINE: &str = "xtask/hex_context_baseline.txt";
 const HEX_CONTEXT_CYCLE_BASELINE: &str = "xtask/hex_context_cycle_baseline.txt";
-const HEX_CONTEXT_CYCLE_CEILING: usize = 7;
+const HEX_CONTEXT_CYCLE_CEILING: usize = 6;
 const HEX_CONTEXT_EXCEPTIONS: &str = "xtask/hex_context_exceptions.txt";
 const HEX_CONTEXT_EXCEPTION_CEILING: usize = 16;
 const HEX_CONTEXT_EXCEPTION_ADR: &str = "docs/adr/0132-*.md";
@@ -2136,7 +2136,7 @@ fn hex_context_gate(root: &Path) -> Result<(Verdict, Verdict), Vec<String>> {
         ),
         Err(errors) => (actual, Verdict::Fail(errors)),
     };
-    errors.extend(hex_exact(&remaining, &baseline, 83, "HEX-CONTEXT"));
+    errors.extend(hex_exact(&remaining, &baseline, 68, "HEX-CONTEXT"));
     Ok((hex_verdict(errors), verdict))
 }
 
@@ -2150,7 +2150,7 @@ fn hex_context_verdicts(root: &Path) -> (Verdict, Verdict) {
 fn hex_writer_gate(root: &Path) -> Verdict {
     hex_verdict(match hex_writer_actual(root) {
         Ok(actual) => match hex_read(root, "xtask/hex_writer_baseline.txt") {
-            Ok(text) => hex_exact(&actual, &text, 33, "HEX-WRITER"),
+            Ok(text) => hex_exact(&actual, &text, 30, "HEX-WRITER"),
             Err(errors) => errors,
         },
         Err(errors) => errors,
