@@ -1,15 +1,14 @@
 //! `adapters::remember` — T3.2 `remember` (§34 / §34.1 / §60 transaction B).
 //! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, sqlx]; services=[PostgreSQL(role_gateway)
-//!   r=[control.private_reasoning_domains, ops.outbox, private.evidence_sources, projection.stream_log] w=[private.events, private.evidence_projects, private.evidence_sources,
-//!   private.evidence_task_runs, private.ingest_tickets] x=[private.declared_project_visible]];
-//!   env=[]; modules=[adapters::affect_repo, adapters::coord_repo, adapters::evidence_repo, adapters::memory_repo, adapters::note_repo, adapters::operation_receipt, adapters::postgres, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::remember, domain::attribution, domain::continuity, domain::coordination, domain::error, domain::evidence, domain::identity, domain::ids, domain::source, projection::stream]
+//!   r=[control.private_reasoning_domains, ops.outbox, private.evidence_sources, projection.stream_log]];
+//!   env=[]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::evidence_repo, adapters::ingest_ticket_repo, adapters::memory_repo, adapters::note_repo, adapters::operation_receipt, adapters::postgres, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::remember, domain::continuity, domain::coordination, domain::error, domain::evidence, domain::identity, domain::ids, domain::source, projection::stream]
 //! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::projection_worker, gateway::bootstrap, tests]
 //! Invariants: [role_gateway's single Evidence write path, one transaction in §60 order; ingest tickets are only
 //!   UPDATEd (no INSERT grant); the stream ticket and its outbox row come only from stream_repo::issue_ticket_in_txn
 //!   (M09 D1), after the Evidence and note writes; an exhausted batch or non-future token expiry is a RememberError
-//!   and nothing commits; private.evidence_task_runs is written only here, from a VerifiedTaskRun consumed by value;
-//!   private.evidence_projects is written only here, from a DeclaredProject consumed by value;
-//!   private.evidence_sources is written only here, by remember_sourced_in_txn after the unchanged remember_in_txn, so a
+//!   and nothing commits; evidence_repo consumes a VerifiedTaskRun by value for the task-run carrier;
+//!   attribution_repo consumes a DeclaredProject by value for the project carrier;
+//!   evidence_repo writes the source identity after remember_in_txn, so a
 //!   sourced write is the unsourced write plus one row (ADR-0098); the dedupe read [`find_source_in_txn`] runs only under
 //!   the identity's advisory lock, taken by operation_receipt (M06-1b)]
 //! Spec: Baseline §34.2; §60.1; §60; §34.1; §30.2; §6.1.4
@@ -18,8 +17,7 @@
 //! [`RuntimeDbPool`] — never [`crate::batch::begin_batch`]'s [`crate::postgres::BatchIssuerDbPool`]
 //! (§34.2 point 1: `RememberService`/this module holds no `BatchIssuerPort`). `role_gateway` has
 //! no `INSERT` on `private.ingest_tickets` (`migrations/0011_roles_and_grants.sql`, §60.1's
-//! authorization table) — every SQL statement below against that table is an `UPDATE`, never an
-//! `INSERT`; that omission is not a style choice, it is the one property `crates/adapters/tests/
+//! authorization table) — its ticket write door only redeems existing rows. This separation is the property `crates/adapters/tests/
 //! outbox_batch_remember.rs`'s G23-1c fault injection exists to prove is load-bearing.
 //!
 //! Steps, in one transaction, verbatim to §60's pseudocode:
@@ -32,7 +30,6 @@ use sqlx::Row;
 use sqlx::types::Uuid;
 use sqlx::types::time::OffsetDateTime;
 
-use humaux_domain::attribution::SourceKind;
 use humaux_domain::continuity::ProjectId;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::evidence::EvidencePayloadSha256;
@@ -42,8 +39,12 @@ use humaux_domain::source::{SourceIdentity, classify_source};
 use humaux_projection::stream::StreamKey;
 
 use crate::affect_repo::{self, AffectParent};
-use crate::coord_repo::VerifiedTaskRun;
+pub(crate) use crate::attribution_repo::{
+    insert_evidence_project_in_txn, resolve_declared_project_in_txn,
+};
+pub(crate) use crate::evidence_repo::insert_evidence_task_run_in_txn;
 use crate::evidence_repo::{self, NewEvidence, OccurredAt};
+use crate::ingest_ticket_repo;
 use crate::memory_repo::MemoryAttribution;
 use crate::note_repo::{self, NoteIntake, NoteLineage};
 use crate::postgres::RuntimeDbPool;
@@ -244,63 +245,9 @@ pub(crate) async fn insert_event_subtype(
     evidence_id: Uuid,
     cmd: &RememberCommand,
 ) -> Result<(), RememberError> {
-    sqlx::query("INSERT INTO private.events (event_id, event_kind, payload) VALUES ($1, $2, $3)")
-        .bind(evidence_id)
-        .bind(&cmd.event_kind)
-        .bind(&cmd.event_payload)
-        .execute(&mut **txn)
+    evidence_repo::insert_event_subtype(txn, evidence_id, &cmd.event_kind, &cmd.event_payload)
         .await?;
     Ok(())
-}
-
-/// One redeemed ticket's observable result (§34 `ticket_ordinal` / `batch_remaining`).
-struct RedeemedTicket {
-    ordinal: i32,
-    remaining: i64,
-}
-
-/// `redeem_ticket` — §60's merged `maybe_issue_ingest_ticket`+`redeem_ticket_if_any` replacement,
-/// "纯 UPDATE" (§60 "这个事务里没有任何一条 SQL 能增加票数"). Claims the minimum-`ordinal`
-/// still-`ISSUED` ticket in `batch_id` (`FOR UPDATE SKIP LOCKED` so two concurrent `remember`
-/// calls against the same batch never redeem the same ticket twice, mirroring
-/// `jobs::claim`'s SKIP LOCKED reasoning) and flips it to `REDEEMED`. Zero rows updated —
-/// no `ISSUED` ticket left, exhausted or the batch never existed — is [`RememberError::BatchExhausted`]
-/// (§34.1), never a silent no-op and never a fallback `INSERT` of a fresh ticket ("绝不补票").
-async fn redeem_ticket(
-    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    batch_id: Uuid,
-    event_id: Uuid,
-) -> Result<RedeemedTicket, RememberError> {
-    let updated = sqlx::query(
-        "UPDATE private.ingest_tickets \
-            SET redeemed_event_id = $2, state = 'REDEEMED' \
-          WHERE ticket_id = ( \
-                  SELECT ticket_id FROM private.ingest_tickets \
-                   WHERE batch_id = $1 AND state = 'ISSUED' \
-                   ORDER BY ordinal ASC \
-                   FOR UPDATE SKIP LOCKED \
-                   LIMIT 1 \
-                ) \
-          RETURNING ordinal",
-    )
-    .bind(batch_id)
-    .bind(event_id)
-    .fetch_optional(&mut **txn)
-    .await?;
-
-    let Some(row) = updated else {
-        return Err(RememberError::BatchExhausted);
-    };
-    let ordinal: i32 = row.try_get("ordinal")?;
-
-    let remaining: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM private.ingest_tickets WHERE batch_id = $1 AND state = 'ISSUED'",
-    )
-    .bind(batch_id)
-    .fetch_one(&mut **txn)
-    .await?;
-
-    Ok(RedeemedTicket { ordinal, remaining })
 }
 
 /// §14/§15.1: `role_consolidation_worker`'s own private-Evidence-shaped outbox event for a
@@ -369,87 +316,6 @@ pub async fn remember_in_txn(
     cmd: RememberCommand,
 ) -> Result<RememberPending, RememberError> {
     remember_in_txn_with(txn, cmd, None).await
-}
-
-/// Design v0.2 §15 T04c: the one `INSERT INTO private.evidence_task_runs` statement (xtask G-T04c-3); `pub(crate)`
-/// keeps its callers inside this crate, and 0251 grants INSERT to `role_gateway` only. `verified` is taken by value: it is the proof that
-/// [`crate::coord_repo::verify_task_run`] passed in this same transaction, which still holds the
-/// task row FOR SHARE, so the row records a lease that was live at this write (§30.2) and one
-/// verification backs one row. `evidence_id` is the Evidence this transaction just wrote; the
-/// tenant-leg FKs and the FORCE RLS policy refuse a run or an Evidence outside `tenant_id`.
-pub(crate) async fn insert_evidence_task_run_in_txn(
-    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    tenant_id: TenantId,
-    verified: VerifiedTaskRun,
-    evidence_id: Uuid,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO private.evidence_task_runs (tenant_id, evidence_id, task_run_id, fencing_token) \
-         VALUES ($1, $2, $3, $4)",
-    )
-    .bind(tenant_id.0)
-    .bind(evidence_id)
-    .bind(verified.task_run_id().0)
-    .bind(verified.fencing_token().0)
-    .execute(&mut **txn)
-    .await
-    .map(|_| ())
-}
-
-/// Proof that [`resolve_declared_project_in_txn`] found the project visible inside the caller's transaction (ADR-0078
-/// D-D rung A1). The field is private, so that function is the only constructor; neither `Copy` nor `Clone`, so one
-/// resolution backs at most one [`insert_evidence_project_in_txn`] row, as [`VerifiedTaskRun`] does for the carrier.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct DeclaredProject(ProjectId);
-
-/// ADR-0078 D-D rung A1 (§6.1.4): resolves a `remember.put` `project_id` before the first write, as §6.1.3 resolves
-/// subject ids. `Ok(None)` is every refusal: 0254's `private.declared_project_visible` answers one `false` for an
-/// unknown, another tenant's, archived or not-visible project, so the caller returns one `INVALID_INPUT` and the
-/// response is no existence oracle. `auth` is the receipt transaction's route-narrowed scope (ADR-0078 D-D route
-/// narrowing): a workspace-routed put passes that one workspace, so a project in another workspace the caller is
-/// authorized for is refused too. The transaction's `humaux.tenant_id` must already be `auth`'s tenant
-/// (the reader raises 42501 otherwise).
-pub(crate) async fn resolve_declared_project_in_txn(
-    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    auth: &AuthorizationScope,
-    project: ProjectId,
-) -> Result<Option<DeclaredProject>, sqlx::Error> {
-    let workspaces: Vec<Uuid> = auth
-        .allowed_workspace_ids()
-        .iter()
-        .map(|workspace| workspace.0)
-        .collect();
-    let visible: bool = sqlx::query_scalar("SELECT private.declared_project_visible($1, $2, $3)")
-        .bind(auth.tenant_id().0)
-        .bind(project.0)
-        .bind(workspaces)
-        .fetch_one(&mut **txn)
-        .await?;
-    Ok(visible.then_some(DeclaredProject(project)))
-}
-
-/// ADR-0078 D-D rung A1: the one `INSERT INTO private.evidence_projects` statement (xtask G-T06c-3); `pub(crate)` keeps
-/// its callers inside this crate, and 0254 grants INSERT to `role_gateway` only. `declared` is taken by value: it is
-/// the proof that [`resolve_declared_project_in_txn`] passed in this same transaction. `evidence_id` is the Evidence
-/// this transaction just wrote; the tenant-leg FKs and the FORCE RLS policy refuse a project or an Evidence outside
-/// `tenant_id`.
-pub(crate) async fn insert_evidence_project_in_txn(
-    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    tenant_id: TenantId,
-    declared: DeclaredProject,
-    evidence_id: Uuid,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO private.evidence_projects (tenant_id, evidence_id, project_id, source_kind) \
-         VALUES ($1, $2, $3, $4)",
-    )
-    .bind(tenant_id.0)
-    .bind(evidence_id)
-    .bind(declared.0.0)
-    .bind(SourceKind::Declared.as_str())
-    .execute(&mut **txn)
-    .await
-    .map(|_| ())
 }
 
 /// [`remember_in_txn`] with an optional ADR-0067 identity note. With `Some((note, lineage, attribution))` the same transaction also writes
@@ -526,7 +392,11 @@ pub async fn remember_in_txn_with(
     // never partially — see this function's doc); absent -> ticket untouched, both output
     // fields stay None (expected_source = "none").
     let ticket = match cmd.batch_id {
-        Some(batch_id) => Some(redeem_ticket(txn, batch_id, evidence_id).await?),
+        Some(batch_id) => Some(
+            ingest_ticket_repo::redeem_ticket(txn, batch_id, evidence_id)
+                .await?
+                .ok_or(RememberError::BatchExhausted)?,
+        ),
         None => None,
     };
 
@@ -586,35 +456,6 @@ pub async fn remember_in_txn_with(
         stream_seq,
         memory_id,
     })
-}
-
-/// ADR-0098 D1: the one `INSERT INTO private.evidence_sources` statement. `owner` is the `humaux.user_id` GUC
-/// [`remember_in_txn_with`] installed, which the table's FORCE RLS owner clause checks.
-async fn insert_evidence_source_in_txn(
-    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    tenant_id: Uuid,
-    owner: Uuid,
-    source: &SourceIdentity,
-    evidence_id: Uuid,
-    payload: &EvidencePayloadSha256,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO private.evidence_sources \
-           (tenant_id, owner_user_id, source_kind, object_key_d16, source_version, thread_key_d16, \
-            evidence_id, payload_sha256) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-    )
-    .bind(tenant_id)
-    .bind(owner)
-    .bind(source.kind().db_code())
-    .bind(source.object_key_d16().as_bytes().as_slice())
-    .bind(source.version())
-    .bind(source.thread_key_d16().map(|d| d.as_bytes().as_slice()))
-    .bind(evidence_id)
-    .bind(payload.as_bytes().as_slice())
-    .execute(&mut **txn)
-    .await
-    .map(|_| ())
 }
 
 /// What a source identity already holds (ADR-0098 D1): the Evidence, the digest it was stored under and the stream
@@ -694,9 +535,9 @@ pub(crate) async fn write_sourced_in_txn(
     owner: Uuid,
 ) -> Result<RememberPending, RememberError> {
     let tenant_id = cmd.tenant_id;
-    let payload = cmd.payload_sha256;
+    let payload: EvidencePayloadSha256 = cmd.payload_sha256;
     let pending = remember_in_txn(txn, cmd).await?;
-    insert_evidence_source_in_txn(
+    evidence_repo::insert_evidence_source_in_txn(
         txn,
         tenant_id,
         owner,
