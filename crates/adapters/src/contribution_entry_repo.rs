@@ -4,10 +4,10 @@
 //!   services=[PostgreSQL(any) r=[control.contribution_policies, control.memberships,
 //!   control.private_reasoning_domains, control.tenants, control.users, ops.model_call_ledger,
 //!   private.evidence_objects, private.memory_evidence, private.memory_records] w=[control.anonymous_source_lineage,
-//!   control.contribution_confirmations, ops.outbox, staging.contribution_candidate_phase9_assessments,
+//!   control.contribution_confirmations, staging.contribution_candidate_phase9_assessments,
 //!   staging.contribution_candidate_sources, staging.contribution_candidates, staging.contribution_release_sources,
 //!   staging.contribution_releases, staging.sanitized_public_candidates] x=[ops.lock_contribution_inputs,
-//!   public.phase9_public_coverage_for_probe]]; env=[]; modules=[adapters::contribution_scan, adapters::postgres, adapters::read_gate, adapters::stream_repo, adapters::structured_reasoning, application::consolidate, application::contribute, domain::authority, domain::error, domain::evidence, domain::identity, domain::ids, domain::public]
+//!   public.phase9_public_coverage_for_probe]]; env=[]; modules=[adapters::contribution_scan, adapters::postgres, adapters::public_outbox_port, adapters::read_gate, adapters::stream_repo, adapters::structured_reasoning, application::consolidate, application::contribute, domain::authority, domain::error, domain::evidence, domain::identity, domain::ids, domain::public]
 //! Called-by: [adapters::contribution_execution_ingress, adapters::contribution_reasoner, tests]
 //! Invariants: [provider/scanner work runs outside the short input lock; every durable step re-checks policy,
 //!   membership, profile and source hashes; no public pool can read candidates; a failed re-check is
@@ -47,6 +47,7 @@ use sqlx::{Row, types::Uuid};
 use crate::{
     contribution_scan::ContributionScanReceipt,
     postgres::{PrivateWorkerDbPool, RuntimeDbPool},
+    public_outbox_port::PublicOutboxPort,
     read_gate::visibility_readable,
     stream_repo,
     structured_reasoning::{
@@ -840,30 +841,15 @@ impl ContributionCandidatePort for ContributionEntryRepo<'_> {
         let seq = stream_repo::next_commit_seq(&mut txn)
             .await
             .map_err(|_| ErrorCode::DependencyUnavailable)?;
-        if let Some((anonymous_source_id, envelope_sha256)) = anonymous_dispatch {
-            sqlx::query(
-                "INSERT INTO ops.outbox(tenant_id,commit_seq,event_type,anonymous_source_id,candidate_envelope_sha256,anonymous_source_revision) \
-                 VALUES($1,$2,'PUBLIC_ANONYMOUS_RELEASE',$3,$4,1)",
-            )
-            .bind(auth.tenant_id().0)
-            .bind(seq)
-            .bind(anonymous_source_id)
-            .bind(envelope_sha256)
-            .execute(&mut *txn)
-            .await
-            .map_err(db_error)?;
-        } else {
-            sqlx::query(
-                "INSERT INTO ops.outbox(tenant_id,commit_seq,event_type,contribution_release_id) \
-                 VALUES($1,$2,'PUBLIC_RELEASE',$3)",
-            )
-            .bind(auth.tenant_id().0)
-            .bind(seq)
-            .bind(id)
-            .execute(&mut *txn)
-            .await
-            .map_err(db_error)?;
-        }
+        PrivateWorkerDbPool::enqueue_confirmed_release(
+            &mut txn,
+            auth.tenant_id().0,
+            seq,
+            id,
+            anonymous_dispatch,
+        )
+        .await
+        .map_err(db_error)?;
         txn.commit().await.map_err(db_error)?;
         Ok(ContributionReleaseId(id))
     }

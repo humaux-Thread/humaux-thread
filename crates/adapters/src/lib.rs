@@ -75,6 +75,8 @@ pub mod oauth_repo;
 pub mod object_store;
 pub mod openbao;
 pub mod operation_receipt;
+/// M09 caller-transaction commands for the public and Distill outbox.
+mod outbox_repo;
 pub mod placement_repo;
 pub mod plan_repo;
 pub mod postgres;
@@ -86,6 +88,8 @@ pub mod project_rollup;
 pub mod projection_worker;
 pub mod provider_budget;
 pub mod provisioning;
+/// M20 port for enqueueing public dispatch events in the producer transaction.
+mod public_outbox_port;
 pub mod qdrant;
 pub mod quota_repo;
 /// Same-transaction BMO port for knowledge lifecycle writes (ADR-0130 D5).
