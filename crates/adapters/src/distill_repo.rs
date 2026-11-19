@@ -1,7 +1,7 @@
 //! `adapters::distill_repo` — SQL half of the Distill hop (ADR-0016), through [`PrivateWorkerDbPool`] only: take the
 //!   one `EVIDENCE_ACCEPTED` outbox row of a claimed `DERIVED_DISTILL` job (ADR-0058), load that Evidence, record the
 //!   §16.1.1 processing run, insert the authorized memories, settle the job and its outbox row together.
-//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-projection, serde_json, sha2, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, ops.outbox, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations, projection.stream_log] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding, private.lock_publish_source]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::distill_reasoner, adapters::jobs, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::confirm, application::consolidate, application::distill, application::distill_execution, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::policy, domain::subject, humaux-adapters, projection::fingerprint, projection::stream]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-projection, serde_json, sha2, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, ops.outbox, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations, projection.stream_log] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding, private.lock_publish_source]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::derived_job_lease, adapters::distill_reasoner, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::confirm, application::consolidate, application::distill, application::distill_execution, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::policy, domain::subject, humaux-adapters, projection::fingerprint, projection::stream]
 //! Called-by: [adapters::context_repo, adapters::distill_reasoner, adapters::jobs, gateway::bootstrap, private-worker::bootstrap, private-worker::main, private-worker::route_providers, tests]
 //! Invariants: [memories, run completion, the job settle and the outbox flip commit in ONE transaction whose first
 //!   statement is the job's generation-fenced finish (ADR-0058 D-E), so a superseded worker's inserts roll back; a job
@@ -171,7 +171,7 @@ pub use humaux_application::distill_execution::TakenOutbox;
 /// expiry any more, the job's generation does.
 pub async fn take_outbox_row(
     pool: &PrivateWorkerDbPool,
-    lease: &crate::jobs::DistillLease<'_>,
+    lease: &DistillLease<'_>,
     evidence_id: Uuid,
     hold_until: OffsetDateTime,
 ) -> Result<TakenOutbox, sqlx::Error> {
@@ -549,27 +549,27 @@ pub async fn settle_outbox_in_txn(
 /// ADR-0058 T3 as the FIRST statement of a settle transaction (it locks and fences the job row
 /// on its generation and frees the claim's slot). `false` = superseded: the caller rolls back
 /// every business write of the transaction.
-pub async fn finish_job_in_txn(
+async fn finish_job_in_txn<'a>(
+    settlement: &impl DerivedJobLeaseSettlementPort<DistillLeaseSettlement<'a>>,
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    lease: &crate::jobs::DistillLease<'_>,
-    finish: impl Into<crate::jobs::DistillFinish>,
-    error_class: Option<&str>,
+    lease: &'a DistillLease<'a>,
+    finish: execution::Finish,
+    error_class: Option<&'a str>,
     backoff_seconds: f64,
     park_seconds: f64,
 ) -> Result<bool, sqlx::Error> {
-    crate::jobs::finish_distill_in_txn(
-        txn,
-        lease,
-        finish.into(),
-        error_class,
-        backoff_seconds,
-        park_seconds,
-    )
-    .await
-    .map_err(|e| match e {
-        crate::jobs::JobsError::Db(e) => e,
-        other => sqlx::Error::Protocol(other.to_string()),
-    })
+    settlement
+        .settle_in_txn(
+            txn,
+            DistillLeaseSettlement {
+                lease,
+                finish,
+                error_class,
+                backoff_seconds,
+                park_seconds,
+            },
+        )
+        .await
 }
 
 // ============================================================================
@@ -1786,6 +1786,7 @@ async fn write_txn<A: memory_repo::MemoryAttribution + Copy>(
     // ADR-0058 D-E: the finish is the FIRST statement — it locks the job row under its
     // generation, so a superseded worker writes nothing.
     if !distill_repo::finish_job_in_txn(
+        dispatcher.pool,
         &mut txn,
         lease,
         DistillFinish::Done,
@@ -1910,8 +1911,9 @@ async fn write_txn<A: memory_repo::MemoryAttribution + Copy>(
     Ok(Some((inserted, rejected)))
 }
 
+use crate::derived_job_lease::{DerivedJobLeaseSettlementPort, DistillLeaseSettlement};
 use crate::distill_reasoner::DistillAdmission;
-use crate::jobs::DistillLease;
+use execution::DistillLease;
 const DOMAIN_MISMATCH: &str = "DOMAIN_MISMATCH";
 const NO_DISTILL_BINDING: &str = "no admitted PRIVATE_DISTILL_TEXT route binding";
 
@@ -1978,12 +1980,19 @@ impl<A: memory_repo::MemoryAttribution + Copy> execution::DistillWorkStore
                         Box::new(e) as Box<dyn std::error::Error + Send + Sync>
                     )
                 })?;
-        if !distill_repo::finish_job_in_txn(&mut txn, lease, finish, class, backoff, park)
-            .await
-            .map_err(|e| {
-                execution::DistillError::Db(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-            })?
-        {
+        if !distill_repo::finish_job_in_txn(
+            dispatcher.pool,
+            &mut txn,
+            lease,
+            finish,
+            class,
+            backoff,
+            park,
+        )
+        .await
+        .map_err(|e| {
+            execution::DistillError::Db(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        })? {
             txn.rollback().await.map_err(|e| {
                 execution::DistillError::Db(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
             })?;

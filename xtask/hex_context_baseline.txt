@@ -19,10 +19,6 @@ crates/adapters/src/applicability_repo.rs:project_continuity->identity_access:hu
 crates/adapters/src/attribution_repo.rs:work_attribution->knowledge_lifecycle:humaux_adapters::memory_repo::MemoryAttribution
 crates/adapters/src/byok.rs:provider_execution->knowledge_lifecycle:humaux_domain::evidence::payload_sha256
 crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::AuditEvent
-crates/adapters/src/consolidate_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::DerivedLease
-crates/adapters/src/consolidate_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::JobsError
-crates/adapters/src/consolidate_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::JobsError::Db
-crates/adapters/src/consolidate_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::settle_derived_done_in_txn
 crates/adapters/src/consolidation_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::authorize_structured_egress
 crates/adapters/src/consolidation_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::complete_structured_timed
 crates/adapters/src/continuity_read.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
@@ -36,9 +32,6 @@ crates/adapters/src/contribution_repo.rs:public_knowledge->retrieval_read_model:
 crates/adapters/src/contribution_repo.rs:public_knowledge->retrieval_read_model:humaux_adapters::stream_repo::next_commit_seq
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::authorize_structured_egress
 crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::complete_structured_timed
-crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::DistillFinish
-crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::JobsError::Db
-crates/adapters/src/distill_repo.rs:knowledge_curation->job_execution:humaux_adapters::jobs::finish_distill_in_txn
 crates/adapters/src/mechanism_observation.rs:operations_platform->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::ReservationStatus
