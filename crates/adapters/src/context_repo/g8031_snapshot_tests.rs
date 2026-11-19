@@ -3,6 +3,7 @@
 //! Called-by: [adapters::context_repo]
 //! Invariants: [exporter stays alive; import precedes every read; complete token and bytes are checked]
 //! Spec: ADR-0047; ADR-0050; Baseline §57.1
+use super::ClosedFrozenReads;
 use super::g8031_snapshot_fixture::{authorization_for, budget, scope_for, seed_many, setup};
 use crate::postgres::RuntimeDbPool;
 use humaux_retrieval::handoff::{Handoff, assemble};
@@ -41,7 +42,7 @@ async fn imported_read(dsn: &str, tenant: Uuid, snapshot: &str, import: bool) ->
         row.0, row.1, row.2, row.3, frozen.snapshot_token_sha256
     );
     tx.commit().await.expect("reader commit acknowledgement");
-    let handoff = assemble(frozen, budget());
+    let handoff = assemble(ClosedFrozenReads(frozen), budget());
     pool.pool().close().await;
     handoff
 }

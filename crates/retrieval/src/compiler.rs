@@ -1,6 +1,6 @@
 //! `retrieval::compiler` — §25.4 冻结装配的步骤 6+7。
-//! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[domain::authority, domain::context, retrieval::candidate]
-//! Called-by: [adapters::context_repo, application::recall_read, gateway::context, retrieval::envelope, retrieval::handoff, tests]
+//! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[domain::authority, domain::context, retrieval::candidate, retrieval::envelope]
+//! Called-by: [adapters::context_repo, application::continuity, application::recall_read, gateway::context, retrieval::envelope, retrieval::handoff, tests]
 //! Invariants: []
 //! Spec: §25.4
 //!
@@ -10,17 +10,32 @@
 //!
 //! 步骤 2–5 已在 domain 侧完成，本模块**结构上拿不到**绕过它们的路径：
 //! - 拿不到未经 reserve 的预算——[`SupplementalBudget`] 没有第二构造点；
-//! - 拿不到 Mandatory 行的分数——[`MandatoryRow`] 没有那个字段，而
+//! - 拿不到 Mandatory 行的分数——[`FrozenLaneRow`] 没有那个字段，而
 //!   `Candidate::new` 要一个 `f32`，`MandatoryRow` 交不出来。
 //!
 //! 所以「把 mandatory 混进排序」不是一条要靠评审拦住的写法，是写不出来的表达式。
 
-use humaux_domain::authority::MemoryId;
-use humaux_domain::context::{
-    MandatoryLane, MandatoryOverflow, MandatoryRow, PinnedLane, SupplementalBudget,
-};
+use humaux_domain::authority::{AuthorityClass, MemoryId};
+use humaux_domain::context::{MandatoryOverflow, SelectorId, SupplementalBudget};
 
 use crate::candidate::Candidate;
+use crate::envelope::FrozenGrounding;
+
+/// One admitted row projected by the lane owner. The registered name travels
+/// with the selector slot so assembling the handoff needs no registry access.
+#[derive(Debug)]
+pub struct FrozenLaneRow {
+    pub memory_id: MemoryId,
+    pub selector: SelectorId,
+    pub registered_name: &'static str,
+    pub authority: AuthorityClass,
+    pub source_authority: AuthorityClass,
+    pub est_tokens: u32,
+    pub grounding: FrozenGrounding,
+}
+
+/// The result of reserving space with the owner before compiling the frozen rows.
+pub type FrozenReservation = Result<SupplementalBudget, MandatoryOverflow>;
 
 /// 装配后的一项。三档来源在类型上分开，不是一个带 `kind` 字段的结构体——
 /// 分开之后「把 Supplemental 当成 Mandatory 上报」需要显式改一个变体名，
@@ -28,9 +43,9 @@ use crate::candidate::Candidate;
 #[derive(Debug)]
 pub enum ContextItem {
     /// §25.4 步骤 2：确定性 selector 选出的必带项。
-    Mandatory(MandatoryRow),
+    Mandatory(FrozenLaneRow),
     /// §25.4 步骤 5：用户/管理员显式钉住的。
-    Pinned(MandatoryRow),
+    Pinned(FrozenLaneRow),
     /// §25.4 步骤 6：补充位，已过 RRF/rerank。
     Supplemental(Candidate),
 }
@@ -58,7 +73,7 @@ impl CompiledContext {
         self.ordered
             .iter()
             .filter_map(|i| match i {
-                ContextItem::Mandatory(r) => Some(r.memory_id()),
+                ContextItem::Mandatory(r) => Some(r.memory_id),
                 _ => None,
             })
             .collect()
@@ -76,7 +91,7 @@ impl CompiledContext {
         self.ordered
             .iter()
             .filter_map(|i| match i {
-                ContextItem::Pinned(r) => Some(r.memory_id()),
+                ContextItem::Pinned(r) => Some(r.memory_id),
                 _ => None,
             })
             .collect()
@@ -94,23 +109,21 @@ impl CompiledContext {
 
 /// §25.4 步骤 6+7。
 ///
-/// 两条 lane 按值消费（[`MandatoryRow`] 不实现 `Clone`），所以装完之后调用方手里没有第二份
+/// 两条 lane 按值消费（[`FrozenLaneRow`] 不实现 `Clone`），所以装完之后调用方手里没有第二份
 /// 可以再塞进别处。`ranked` 是**已经过 RRF/rerank 的**候选池——本函数不排序、不打分，
 /// 它只按冻结顺序拼接并按预算截补充位。
+///
+/// Inputs are in the owner’s frozen order with Mandatory/Pinned overlap already removed.
 ///
 /// 步骤 2–5 不经过 rerank：Mandatory 与 Pinned 在这里是**原样拼进去**的，中间没有任何
 /// 依赖 `ranked` 的判断。
 #[must_use]
 pub fn compile(
-    mandatory: MandatoryLane,
-    pinned: PinnedLane,
+    mandatory_rows: Vec<FrozenLaneRow>,
+    pinned_rows: Vec<FrozenLaneRow>,
     budget: SupplementalBudget,
     ranked: Vec<Candidate>,
 ) -> CompiledContext {
-    let pinned = pinned.excluding_mandatory(&mandatory);
-    let (_expected, mandatory_rows) = mandatory.into_parts();
-    let pinned_rows = pinned.into_rows();
-
     let mut ordered: Vec<ContextItem> =
         Vec::with_capacity(mandatory_rows.len() + pinned_rows.len() + ranked.len());
     ordered.extend(mandatory_rows.into_iter().map(ContextItem::Mandatory));
@@ -152,7 +165,41 @@ pub enum ContextOutcome {
 mod tests {
     use super::*;
     use crate::candidate::Facet;
-    use humaux_domain::context::{ContextBudget, SelectorId, SelectorOutcome, spec};
+    use humaux_domain::context::{
+        ContextBudget, MandatoryLane, MandatoryRow, PinnedLane, SelectorOutcome, spec,
+    };
+
+    fn freeze_row(row: MandatoryRow) -> FrozenLaneRow {
+        FrozenLaneRow {
+            memory_id: row.memory_id(),
+            selector: row.selector(),
+            registered_name: spec(row.selector()).registered_name,
+            authority: row.authority(),
+            source_authority: row.source_authority(),
+            est_tokens: row.est_tokens(),
+            grounding: FrozenGrounding::from_snapshot(row.grounding_state()),
+        }
+    }
+
+    fn compile_fixture(
+        mandatory: MandatoryLane,
+        pinned: PinnedLane,
+        budget: SupplementalBudget,
+        ranked: Vec<Candidate>,
+    ) -> CompiledContext {
+        let pinned = pinned.excluding_mandatory(&mandatory);
+        compile(
+            mandatory
+                .into_parts()
+                .1
+                .into_iter()
+                .map(freeze_row)
+                .collect(),
+            pinned.into_rows().into_iter().map(freeze_row).collect(),
+            budget,
+            ranked,
+        )
+    }
 
     fn m_row(tokens: u32) -> MandatoryRow {
         m_row_with_id(MemoryId::new(), tokens)
@@ -240,7 +287,7 @@ mod tests {
             .reserve(&m, &p)
             .expect("10 <= 50，不该溢出");
 
-        let compiled = compile(m, p, budget, noise);
+        let compiled = compile_fixture(m, p, budget, noise);
         assert!(
             compiled.mandatory_ids().contains(&target),
             "无论补充位怎么排，Mandatory 必须出现在 Context（§25.4 步骤 2-5 不经淘汰）"
@@ -264,7 +311,7 @@ mod tests {
         ranked: Vec<Candidate>,
     ) -> CompiledContext {
         let (_expected, _dropped_on_purpose) = mandatory.into_parts();
-        let pinned_rows = pinned.into_rows();
+        let pinned_rows = pinned.into_rows().into_iter().map(freeze_row);
         let mut ordered: Vec<ContextItem> = Vec::new();
         ordered.extend(pinned_rows.into_iter().map(ContextItem::Pinned));
         let mut remaining = budget.tokens();
@@ -306,7 +353,7 @@ mod tests {
             .expect("budget")
             .reserve(&m_good, &p)
             .expect("no overflow");
-        let good = compile(m_good, p, b, vec![]);
+        let good = compile_fixture(m_good, p, b, vec![]);
 
         let (m_bad, _) = make();
         let p2 = PinnedLane::new(0, vec![], vec![]);
@@ -328,32 +375,6 @@ mod tests {
         );
     }
 
-    /// The public compiler also accepts raw lanes, so mandatory precedence must hold even
-    /// when no handoff assembly normalized the Pinned lane first.
-    #[test]
-    fn compile_keeps_a_raw_cross_lane_memory_id_once() {
-        let memory_id = MemoryId::new();
-        let m = lane(vec![m_row_with_id(memory_id, 5)]);
-        let p = PinnedLane::new(1, vec![m_row_with_id(memory_id, 5)], vec![]);
-        let budget = ContextBudget::new(20, 10)
-            .expect("budget")
-            .reserve(&m, &p)
-            .expect("raw overlap must not overflow");
-
-        let compiled = compile(m, p, budget, vec![]);
-        let mut ids = compiled
-            .mandatory_ids()
-            .into_iter()
-            .chain(compiled.pinned_ids())
-            .collect::<Vec<_>>();
-        let before = ids.len();
-        ids.sort_unstable();
-        ids.dedup();
-
-        assert_eq!(before, 1);
-        assert_eq!(ids, vec![memory_id]);
-    }
-
     /// 冻结顺序：Mandatory 在 Pinned 之前，Pinned 在 Supplemental 之前。
     #[test]
     fn frozen_assembly_order_is_mandatory_then_pinned_then_supplemental() {
@@ -363,7 +384,7 @@ mod tests {
             .expect("budget")
             .reserve(&m, &p)
             .expect("no overflow");
-        let compiled = compile(
+        let compiled = compile_fixture(
             m,
             p,
             budget,
@@ -390,7 +411,7 @@ mod tests {
             .expect("budget")
             .reserve(&m, &p)
             .expect("no overflow");
-        let compiled = compile(
+        let compiled = compile_fixture(
             m,
             p,
             budget,
