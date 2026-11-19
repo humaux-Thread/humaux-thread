@@ -89,15 +89,6 @@ crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycl
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding::Judged
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding::NotJudged
-crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo
-crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo::QuotaReservation
-crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo::ReservationStatus
-crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo::ReservationStatus::Consumed
-crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo::ReserveResult
-crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo::ReserveResult::Created
-crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo::ReserveResult::Existing
-crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo::finish_reservation_in_txn
-crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo::reserve_bmo_in_txn
 crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::AuditEvent
 crates/adapters/src/retrieve.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
 crates/application/src/auth.rs:identity_access->provider_execution:humaux_domain::audit::AuditMetadata
