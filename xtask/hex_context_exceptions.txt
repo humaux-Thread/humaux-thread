@@ -1,2 +1,18 @@
 # ADR-0132 exact context exceptions. Each data row ends with " # ADR-0132 X-<n>".
 # Shrink with HEX_CONTEXT_EXCEPTION_CEILING when an exception is removed.
+crates/adapters/src/attribution_repo.rs:work_attribution->knowledge_lifecycle:humaux_adapters::memory_repo::MemoryAttribution # ADR-0132 X-1
+crates/adapters/src/byok.rs:provider_execution->knowledge_lifecycle:humaux_domain::evidence::payload_sha256 # ADR-0132 X-2
+crates/adapters/src/consolidation_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::authorize_structured_egress # ADR-0132 X-3
+crates/adapters/src/consolidation_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::complete_structured_timed # ADR-0132 X-4
+crates/adapters/src/contribution_entry_repo.rs:public_knowledge->retrieval_read_model:humaux_adapters::read_gate::visibility_readable # ADR-0132 X-5
+crates/adapters/src/contribution_entry_repo.rs:public_knowledge->retrieval_read_model:humaux_adapters::stream_repo # ADR-0132 X-6
+crates/adapters/src/contribution_entry_repo.rs:public_knowledge->retrieval_read_model:humaux_adapters::stream_repo::next_commit_seq # ADR-0132 X-7
+crates/adapters/src/contribution_repo.rs:public_knowledge->retrieval_read_model:humaux_adapters::stream_repo # ADR-0132 X-8
+crates/adapters/src/contribution_repo.rs:public_knowledge->retrieval_read_model:humaux_adapters::stream_repo::next_commit_seq # ADR-0132 X-9
+crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::authorize_structured_egress # ADR-0132 X-10
+crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::complete_structured_timed # ADR-0132 X-11
+crates/local-secret-scan/src/lib.rs:provider_execution->knowledge_lifecycle:humaux_domain::evidence::EvidencePayloadSha256 # ADR-0132 X-12
+crates/local-secret-scan/src/lib.rs:provider_execution->knowledge_lifecycle:humaux_domain::evidence::payload_sha256 # ADR-0132 X-13
+crates/local-secret-scan/src/lib.rs:provider_execution->retrieval_read_model:humaux_retrieval::request::ProfileFingerprint # ADR-0132 X-14
+crates/local-secret-scan/src/lib.rs:provider_execution->retrieval_read_model:humaux_retrieval::request::TrustedRetrievalQuery # ADR-0132 X-15
+crates/local-secret-scan/src/lib.rs:provider_execution->retrieval_read_model:humaux_projection::card::RetrievalCard # ADR-0132 X-16
