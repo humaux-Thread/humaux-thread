@@ -1,7 +1,7 @@
 //! `retrieval::request` — Retrieval request construction (§55.1): one typed path shared by every future lane.
 //! Depends-on: crates=[humaux-contracts, humaux-domain, serde]; services=[];
-//!   env=[]; modules=[contracts::config_registry, contracts::retrieval_config, domain::authority, domain::selection, retrieval::planner, retrieval::predicate_registry]
-//! Called-by: [application::recall_read, application::retrieve, gateway::context, gateway::memory, humaux-local-secret-scan, retrieval-worker::rpc, retrieval::completeness, retrieval::envelope, tests]
+//!   env=[]; modules=[contracts::config_registry, contracts::retrieval_config, domain::authority, domain::selection, domain::vocab, retrieval::planner, retrieval::predicate_registry]
+//! Called-by: [application::recall_read, application::retrieve, gateway::context, gateway::memory, humaux-local-secret-scan, retrieval-worker::rpc, retrieval::envelope, tests]
 //! Invariants: [build_request records which RetrievalIntent constructor ran as a closed IntentKind; nothing else
 //!   sets it]
 //! Spec: §55.1; §41.2; ADR-0061 D-C
@@ -17,6 +17,7 @@ pub use humaux_contracts::retrieval_config::{
     resolve_registered_retrieval_profile,
 };
 use humaux_domain::authority::MemoryId;
+pub(crate) use humaux_domain::vocab::IntentKind;
 
 use crate::planner::{self, PlannerDecision};
 use crate::predicate_registry::PredicateEntry;
@@ -48,36 +49,6 @@ impl ProfileFingerprint {
 #[derive(Debug, Clone)]
 pub struct RetrievalIntent {
     input: RetrievalInput,
-}
-
-/// §41.2 `humaux_retrieval_requests_total.intent`: which [`RetrievalIntent`] constructor built the
-/// request. A closed set, one value per `RetrievalInput` variant (ADR-0061 D-C).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IntentKind {
-    Text,
-    Context,
-    DirectGet,
-    MemoryEnumerate,
-}
-
-impl IntentKind {
-    /// Every value, in render order; the label's cardinality bound (ADR-0061 D-A).
-    pub(crate) const ALL: [Self; 4] = [
-        Self::Text,
-        Self::Context,
-        Self::DirectGet,
-        Self::MemoryEnumerate,
-    ];
-
-    /// The `intent` label value.
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Text => "text",
-            Self::Context => "context",
-            Self::DirectGet => "direct_get",
-            Self::MemoryEnumerate => "memory_enumerate",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

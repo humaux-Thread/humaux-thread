@@ -1,6 +1,6 @@
 //! `telemetry::degrade` — `DegradeCode`, `Outcome<T>`, and `abstain()`: the single fail-open topology for the whole
 //!   workspace (§53).
-//! Depends-on: crates=[humaux-domain, smallvec, tracing]; services=[]; env=[]; modules=[domain::error, telemetry::metrics]
+//! Depends-on: crates=[humaux-domain, smallvec, tracing]; services=[]; env=[]; modules=[domain::error]
 //! Called-by: [admin::ops_status, gateway::status, maintenance::resident, retrieval::envelope, retrieval::rerank, telemetry::metrics, tests]
 //! Invariants: [abstain() is the only writer of a non-empty degradations; Outcome::also joins codes through it;
 //!   abstain() holds the one `degrade_total` increment and the last-fired store]
@@ -10,7 +10,6 @@
 //! / degrade / abstain path goes through `abstain()`; a caller that returns
 //! a fallback value any other way is what §53.3 rule 1 exists to catch.
 
-use crate::metrics::{Counters, families, write_single_label};
 use humaux_domain::error::ErrorCode;
 use smallvec::{SmallVec, smallvec};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -192,8 +191,16 @@ impl<T> Outcome<T> {
 /// halves are actually assembled.
 pub type Response<T> = Result<Outcome<T>, ErrorCode>;
 
-// §41.2 `degrade_total{code}`: one slot per `DegradeCode::ALL` position, rendered by [`render`].
-static DEGRADE_TOTAL: Counters<{ DegradeCode::ALL.len() }> = Counters::new();
+struct DegradeTotal([AtomicU64; DegradeCode::ALL.len()]);
+
+impl DegradeTotal {
+    fn inc(&self, code: DegradeCode) {
+        self.0[slot(code)].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+static DEGRADE_TOTAL: DegradeTotal =
+    DegradeTotal([const { AtomicU64::new(0) }; DegradeCode::ALL.len()]);
 
 // ADR-0061 D-A: unix seconds of the last abstain() per code (0 = never since start). Written with
 // `store`, not as a gauge: it feeds `/status` and §4.4 `degrade.counters`, not a §41.2 family.
@@ -210,7 +217,7 @@ fn slot(code: DegradeCode) -> usize {
 /// current count for `code` — read-only accessor for注错测试 assertions
 /// ("① `degrade_total{code}` 恰 +1", §53.4), without exposing the counter itself.
 pub fn degrade_total_count(code: DegradeCode) -> u64 {
-    DEGRADE_TOTAL.get(slot(code))
+    DEGRADE_TOTAL.0[slot(code)].load(Ordering::Relaxed)
 }
 
 /// Unix seconds of the last `abstain(code)` in this process, `None` if it never fired since
@@ -222,17 +229,6 @@ pub fn degrade_last_fired_unix(code: DegradeCode) -> Option<u64> {
     }
 }
 
-/// Renders `degrade_total{code}` seeded over all 12 codes (ADR-0061 D-A), so INV-1's
-/// `absent_over_time` branch can only mean "process down", never "never incremented".
-pub fn render(out: &mut String) {
-    write_single_label(
-        out,
-        &families::DEGRADE_TOTAL,
-        &DegradeCode::ALL.map(DegradeCode::as_str),
-        |i| DEGRADE_TOTAL.get(i) as f64,
-    );
-}
-
 /// §53.1 single exit point for every fail-open / degrade / abstain path in
 /// the workspace. Warns loudly, bumps the named counter, and returns
 /// `fallback` wrapped so the caller's response envelope carries the reason
@@ -242,7 +238,7 @@ pub fn render(out: &mut String) {
 /// `Outcome`'s doc comment for why this module cannot enforce that itself.
 pub fn abstain<T>(code: DegradeCode, fallback: T) -> Outcome<T> {
     tracing::warn!(target: "degrade", code = code.as_str(), "abstain");
-    DEGRADE_TOTAL.inc(slot(code), 1);
+    DEGRADE_TOTAL.inc(code);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -400,7 +396,7 @@ mod tests {
     #[test]
     fn render_seeds_all_twelve_codes() {
         let mut out = String::new();
-        render(&mut out);
+        crate::metrics::render_degrade(&mut out);
         assert!(out.starts_with("# HELP degrade_total "), "{out}");
         assert!(out.contains("\n# TYPE degrade_total counter\n"));
         let series: Vec<&str> = out.lines().filter(|l| !l.starts_with('#')).collect();

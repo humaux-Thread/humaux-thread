@@ -2,7 +2,7 @@
 //! `testkit::tests::metrics::retrieval_completeness_total` — Metric Witness for
 //!   `retrieval_completeness_total{class,reason}` (§80.2 W-side; registry row §41.2; §22.5 sole-constructor gate,
 //!   §80.1 G80-6).
-//! Depends-on: crates=[humaux-retrieval]; services=[PostgreSQL(owner) r=[private.memory_records]]; env=[]; modules=[retrieval::completeness, retrieval::envelope, retrieval::planner, retrieval::predicate_registry, retrieval::request]
+//! Depends-on: crates=[humaux-retrieval, humaux-telemetry]; services=[PostgreSQL(owner) r=[private.memory_records]]; env=[]; modules=[retrieval::completeness, retrieval::envelope, retrieval::planner, retrieval::predicate_registry, retrieval::request, telemetry::metrics]
 //! Called-by: []
 //! Invariants: [reads private.memory_records to synthesize completeness fixtures; no fail-closed behaviour, test-only fixture]
 //! Spec: none
@@ -14,10 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use humaux_retrieval::completeness::{
-    CensusResult, ExactEnumeration, classify_for_witness, ledger,
-    retrieval_completeness_total_count,
-};
+use humaux_retrieval::completeness::{CensusResult, ExactEnumeration, classify_for_witness, ledger};
 use humaux_retrieval::envelope::{
     CannotEstablishReasonWire, CompletenessClassWire, CompletenessInputs, CountScope,
     EvidenceBlock, KnowledgeBlock, LaneStatus, PipelineBlock, ProfileBlock, ProvenanceBlock,
@@ -28,6 +25,7 @@ use humaux_retrieval::predicate_registry::{PredicateRow, load_registry};
 use humaux_retrieval::request::{
     RetrievalIntent, RetrievalRequest, build_request, resolve_registered_retrieval_profile,
 };
+use humaux_telemetry::metrics::retrieval_completeness_total_count;
 
 const SCOPE: &str = "private.memory_records WHERE tenant_id = $1 AND visibility_workspace_id = $2";
 const COLUMNS: [&str; 3] = ["memory_type", "superseded_at", "visibility_workspace_id"];
@@ -151,7 +149,7 @@ fn final_labels(
         |outcome| Ok(outcome),
     )
     .expect("full final witness outcome")
-    .finish();
+    .finish(humaux_telemetry::metrics::record_final_classification);
     let class = match outcome.class {
         CompletenessClassWire::Exact => "exact",
         CompletenessClassWire::FacetComplete => "facet_complete",
