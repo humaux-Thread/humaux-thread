@@ -82,3 +82,4 @@ pub mod ticket_family;
 
 /// Pure §73 credential/network vocabulary.
 pub mod network;
+pub mod vocab;
