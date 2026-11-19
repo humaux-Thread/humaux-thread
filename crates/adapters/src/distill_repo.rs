@@ -1,7 +1,7 @@
 //! `adapters::distill_repo` — SQL half of the Distill hop (ADR-0016), through [`PrivateWorkerDbPool`] only: take the
 //!   one `EVIDENCE_ACCEPTED` outbox row of a claimed `DERIVED_DISTILL` job (ADR-0058), load that Evidence, record the
 //!   §16.1.1 processing run, insert the authorized memories, settle the job and its outbox row together.
-//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-projection, serde_json, sha2, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, ops.outbox, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations, projection.stream_log] w=[ops.outbox, private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding, private.lock_publish_source]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::derived_job_lease, adapters::distill_reasoner, adapters::memory_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::confirm, application::consolidate, application::distill, application::distill_execution, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::policy, domain::subject, humaux-adapters, projection::fingerprint, projection::stream]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-projection, serde_json, sha2, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, ops.jobs, ops.outbox, private.events, private.evidence_affects, private.evidence_objects, private.identity_note_materializations, projection.stream_log] w=[private.distill_candidates, private.processing_runs] x=[control.current_reasoning_route_binding, private.lock_publish_source]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::derived_job_lease, adapters::distill_reasoner, adapters::memory_repo, adapters::outbox_repo, adapters::postgres, adapters::quota_repo, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::confirm, application::consolidate, application::distill, application::distill_execution, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::policy, domain::subject, humaux-adapters, projection::fingerprint, projection::stream]
 //! Called-by: [adapters::context_repo, adapters::distill_reasoner, adapters::jobs, gateway::bootstrap, private-worker::bootstrap, private-worker::main, private-worker::route_providers, tests]
 //! Invariants: [memories, run completion, the job settle and the outbox flip commit in ONE transaction whose first
 //!   statement is the job's generation-fenced finish (ADR-0058 D-E), so a superseded worker's inserts roll back; a job
@@ -50,6 +50,7 @@ use crate::{
     Counter,
     confirm_token_repo::{self, ConfirmationClaim},
     memory_repo::{self, authority_class_to_db_str, memory_type_db_str},
+    outbox_repo::{self, DistillOutboxOutcome},
     quota_repo::{self, ReservationStatus, ReserveResult},
     remember::{self, RememberCommand},
     request_guard_repo::{self, AuditTenant},
@@ -97,9 +98,8 @@ pub async fn begin_write_context(
     Ok(txn)
 }
 
-/// `ops.outbox.event_type` remember writes for an accepted Evidence (§14; the literal lives in
-/// `remember::remember_in_txn`'s call site, pinned here for the claim predicate).
-pub const EVIDENCE_ACCEPTED: &str = "EVIDENCE_ACCEPTED";
+/// `ops.outbox.event_type` remember writes for an accepted Evidence (§14).
+pub const EVIDENCE_ACCEPTED: &str = outbox_repo::EVIDENCE_ACCEPTED;
 
 /// Read-side inverse of `evidence_repo::origin_class_db_str` (the CHECK list of
 /// `migrations/0004_private_evidence_memory.sql`, pinned by the contract test below).
@@ -194,20 +194,13 @@ pub async fn take_outbox_row(
         txn.rollback().await?;
         return Ok(TakenOutbox::LeaseLost);
     }
-    // Served by outbox_tenant_evidence_idx (tenant_id, evidence_id).
-    let row = sqlx::query(
-        "UPDATE ops.outbox \
-         SET status = 'PROCESSING', lease_owner = $4, lease_expires_at = $5 \
-         WHERE tenant_id = $1 AND event_type = $2 AND evidence_id = $3 \
-           AND status IN ('PENDING', 'PROCESSING') \
-         RETURNING outbox_id, evidence_id, commit_seq, stream_seq",
+    let row = outbox_repo::take_distill_outbox(
+        &mut txn,
+        lease.tenant_id,
+        evidence_id,
+        lease.lease_owner,
+        hold_until,
     )
-    .bind(lease.tenant_id)
-    .bind(EVIDENCE_ACCEPTED)
-    .bind(evidence_id)
-    .bind(lease.lease_owner)
-    .bind(hold_until)
-    .fetch_optional(&mut *txn)
     .await?;
     txn.commit().await?;
     let Some(row) = row else {
@@ -526,24 +519,12 @@ pub async fn settle_outbox_in_txn(
     lease_owner: &str,
     settle: OutboxSettle,
 ) -> Result<bool, sqlx::Error> {
-    let (status, processed) = match settle {
-        OutboxSettle::Done => ("DONE", true),
-        OutboxSettle::Failed => ("FAILED", true),
-        OutboxSettle::Pending => ("PENDING", false),
+    let outcome = match settle {
+        OutboxSettle::Done => DistillOutboxOutcome::Done,
+        OutboxSettle::Failed => DistillOutboxOutcome::Failed,
+        OutboxSettle::Pending => DistillOutboxOutcome::Pending,
     };
-    let result = sqlx::query(
-        "UPDATE ops.outbox \
-         SET status = $2, processed_at = CASE WHEN $4 THEN now() ELSE processed_at END, \
-             lease_owner = NULL, lease_expires_at = NULL \
-         WHERE outbox_id = $1 AND status = 'PROCESSING' AND lease_owner = $3",
-    )
-    .bind(outbox_id)
-    .bind(status)
-    .bind(lease_owner)
-    .bind(processed)
-    .execute(&mut **txn)
-    .await?;
-    Ok(result.rows_affected() == 1)
+    outbox_repo::settle_distill_outbox(txn, outbox_id, lease_owner, outcome).await
 }
 
 /// ADR-0058 T3 as the FIRST statement of a settle transaction (it locks and fences the job row
