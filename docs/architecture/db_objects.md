@@ -8190,7 +8190,6 @@ read by:
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 
 written by:
-- (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
@@ -8229,24 +8228,22 @@ written by:
 - (no process): `maintenance::tests::onboarding`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
-- process(cargo-xtask): `adapters::contribution_entry_repo`
-- process(cargo-xtask): `adapters::distill_repo`
+- process(cargo-xtask): `adapters::outbox_repo`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::contribution_entry_repo`
-- process(humaux-gateway): `adapters::distill_repo`
+- process(humaux-admin): `adapters::outbox_repo`
+- process(humaux-consolidation-worker): `adapters::outbox_repo`
+- process(humaux-gateway): `adapters::outbox_repo`
 - process(humaux-gateway): `adapters::projection_worker`
 - process(humaux-gateway): `adapters::stream_repo`
-- process(humaux-maintenance): `adapters::contribution_entry_repo`
-- process(humaux-maintenance): `adapters::distill_repo`
+- process(humaux-maintenance): `adapters::outbox_repo`
 - process(humaux-maintenance): `adapters::projection_worker`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
-- process(humaux-private-worker): `adapters::contribution_entry_repo`
-- process(humaux-private-worker): `adapters::distill_repo`
+- process(humaux-private-worker): `adapters::outbox_repo`
 - process(humaux-private-worker): `adapters::stream_repo`
-- process(humaux-retrieval-worker): `adapters::contribution_entry_repo`
-- process(humaux-retrieval-worker): `adapters::distill_repo`
+- process(humaux-public-worker): `adapters::outbox_repo`
+- process(humaux-retrieval-worker): `adapters::outbox_repo`
 - process(humaux-retrieval-worker): `adapters::projection_worker`
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 

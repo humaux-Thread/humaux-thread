@@ -2,14 +2,14 @@
 //! `testkit::tests::metrics::humaux_retrieval_requests_total` — Metric Witness for
 //!   `humaux_retrieval_requests_total{intent,completeness_class}` (§80.2 W-side; registry row §41.2: §20 envelope
 //!   returns; §53.5 INV-1 denominator).
-//! Depends-on: crates=[humaux-domain, humaux-retrieval]; services=[]; env=[]; modules=[domain::authority, retrieval::completeness, retrieval::envelope, retrieval::request]
+//! Depends-on: crates=[humaux-domain, humaux-retrieval, humaux-telemetry]; services=[]; env=[]; modules=[domain::authority, retrieval::completeness, retrieval::envelope, retrieval::request, telemetry::metrics]
 //! Called-by: []
 //! Invariants: []
 //! Spec: Baseline §41.2; §53.5; §80.2; ADR-0061 D-C
 //!
 //! Builds one request per `RetrievalIntent` constructor, takes it through the only final path
 //! (`envelope_outcome_block` then `PendingEnvelope::finish`) and reads the family back from
-//! `completeness::render_metrics`, the exposition the gateway serves. One test function, so no
+//! `telemetry::metrics::render_retrieval`, the exposition the gateway serves. One test function, so no
 //! other test in this binary moves the process-wide counter between the before and after reads.
 //! Compiled and run standalone by `cargo xtask metrics-registry` (`run_witness_probe`).
 
@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use humaux_domain::authority::MemoryId;
-use humaux_retrieval::completeness::{CensusResult, ExactEnumeration, ledger, render_metrics};
+use humaux_retrieval::completeness::{CensusResult, ExactEnumeration, ledger};
 use humaux_retrieval::envelope::{
     CompletenessInputs, CountScope, EvidenceBlock, KnowledgeBlock, LaneStatus, PipelineBlock,
     ProfileBlock, ProvenanceBlock, ProvenanceValue, build_projection_block, envelope_outcome_block,
@@ -32,7 +32,7 @@ const LAG: Duration = Duration::from_secs(60);
 /// `(label pairs, value)` of every sample of the family in one render.
 fn samples() -> BTreeMap<Vec<(String, String)>, f64> {
     let mut out = String::new();
-    render_metrics(&mut out);
+    humaux_telemetry::metrics::render_retrieval(&mut out);
     assert!(out.contains(&format!("# TYPE {FAMILY} counter\n")), "{out}");
     out.lines()
         .filter_map(|l| l.strip_prefix(&format!("{FAMILY}{{")))
@@ -171,7 +171,7 @@ fn finish_moves_exactly_the_series_of_its_intent_by_one() {
             "{want_intent}: a dropped pending recorded"
         );
 
-        pending(&request).finish();
+        pending(&request).finish(humaux_telemetry::metrics::record_final_classification);
         let after = samples();
         let mut expected = before.clone();
         *expected

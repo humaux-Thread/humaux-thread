@@ -462,6 +462,7 @@ files = [
   "crates/adapters/src/contribution_reasoner.rs",
   "crates/adapters/src/contribution_repo.rs",
   "crates/adapters/src/contribution_scan.rs",
+  "crates/adapters/src/public_outbox_port.rs",
   "crates/application/src/contribute.rs",
   "crates/application/src/contribution_execution.rs",
   "crates/domain/src/public.rs",
@@ -567,8 +568,10 @@ may_depend_on = [
 id = "retrieval_read_model"
 # ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
 files = [
+  "crates/domain/src/context/budget_views.rs",
   "crates/adapters/src/exact_census.rs",
   "crates/adapters/src/grep_repo.rs",
+  "crates/adapters/src/outbox_repo.rs",
   "crates/adapters/src/placement_repo.rs",
   "crates/adapters/src/private_projection_registry.rs",
   "crates/adapters/src/projection_worker.rs",
@@ -596,6 +599,7 @@ files = [
   "crates/cache/tests/failure.rs",
   "crates/cache/tests/isolation.rs",
   "crates/cache/tests/singleflight.rs",
+  "crates/domain/src/grounding_read.rs",
   "crates/domain/src/selection.rs",
   "crates/projection/src/card.rs",
   "crates/projection/src/code.rs",

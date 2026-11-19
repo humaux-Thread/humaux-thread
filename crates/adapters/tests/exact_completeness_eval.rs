@@ -1,6 +1,6 @@
 //! `adapters::tests::exact_completeness_eval` — exact_completeness eval harness (§55.3 benchset declaration for the
 //!   `exact_completeness` set; owner=Retrieval, Phase 6+).
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-retrieval, humaux-testkit, postgres,
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-retrieval, humaux-telemetry, humaux-testkit, postgres,
 //!   serde_json, sha2, tokio, uuid]; services=[PostgreSQL(any) r=[control.retrieval_predicates, ops.commit_seq_seq, public.pool]
 //!   w=[control.memberships, control.private_reasoning_domains, control.tenants, control.users,
 //!   control.workspace_memberships, control.workspaces, ops.jobs, ops.outbox, private.events,
@@ -9,7 +9,7 @@
 //!   PostgreSQL(role_maintenance)]; env=[CARGO_MANIFEST_DIR, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::exact_census, adapters::forget_repo, adapters::postgres, domain::error, domain::identity,
 //!   domain::ids, humaux-testkit, projection::stream, retrieval::completeness, retrieval::envelope,
-//!   retrieval::planner, retrieval::predicate_registry]
+//!   retrieval::planner, retrieval::predicate_registry, telemetry::metrics]
 //! Called-by: [cargo-test]
 //! Invariants: [runs the real probe -> decide -> census -> classify chain per fixture case with exact-equality
 //!   readouts and the §55.3 spread/resolution measurements; a missing dependency goes through skip_or_fail]
@@ -51,11 +51,11 @@ use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use humaux_projection::stream::StreamKey;
 use humaux_retrieval::completeness::{
     CensusResult, ExactEnumeration, LedgerClosure, classify_for_witness, ledger,
-    retrieval_completeness_total_count,
 };
 use humaux_retrieval::envelope::LaneStatus;
 use humaux_retrieval::planner::{PlannerDecision, decide};
 use humaux_retrieval::predicate_registry::{PredicateEntry, PredicateRow, load_registry};
+use humaux_telemetry::metrics::retrieval_completeness_total_count;
 use humaux_testkit::{ExternalDep, skip_or_fail};
 use postgres::{Client, NoTls};
 use uuid::Uuid;

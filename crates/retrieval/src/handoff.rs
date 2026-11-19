@@ -1,5 +1,5 @@
 //! `retrieval::handoff` — §25.3 continuity handoff 的**字节域**（G80-31）。
-//! Depends-on: crates=[humaux-domain, serde, serde_json, sha2]; services=[]; env=[]; modules=[domain::context, domain::grounding, retrieval::compiler]
+//! Depends-on: crates=[humaux-domain, serde, serde_json, sha2]; services=[]; env=[]; modules=[domain::context, retrieval::compiler]
 //! Called-by: [adapters::context_repo, adapters::continuity_read, application::continuity, application::recall_read, gateway::context, tests]
 //! Invariants: []
 //! Spec: §25.3; §57.1
@@ -17,8 +17,7 @@
 //! 序列化唯一入口是 [`Handoff::canonical_bytes`]；快照身份的语义（seq 必要非充分、
 //! token 充分）见 [`FrozenSnapshot`] 的字段说明。
 
-use humaux_domain::context::{ContextBudget, MandatoryOverflow, NeedsVerification};
-use humaux_domain::grounding::GroundingStateKind;
+use humaux_domain::context::MandatoryOverflow;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -103,32 +102,15 @@ pub struct FrozenSnapshot {
     pub mandatory_expected: u64,
     pub pinned_expected: u64,
     pub pinned_excluded: u64,
-    pub needs_verification: Vec<(NeedsVerification, &'static str)>,
+    pub needs_verification: Vec<NeedsVerificationWire>,
     pub unavailable_selectors: Vec<(String, String)>,
     pub reservation: FrozenReservation,
 }
 
 /// Pure projection of a closed snapshot. Implementations keep lane admission,
 /// overlap removal, budget reservation, and selector registration with the owner.
-pub trait FrozenHandoffRead {
-    fn prepare(self, budget: ContextBudget) -> FrozenSnapshot;
-}
-
-fn state_wire(k: GroundingStateKind) -> &'static str {
-    match k {
-        GroundingStateKind::Current => "current",
-        GroundingStateKind::RecheckRequired => "recheck_required",
-        GroundingStateKind::Unresolved => "unresolved",
-        GroundingStateKind::CannotEstablish => "cannot_establish",
-    }
-}
-
-fn nv_wire((nv, registered_name): (NeedsVerification, &str)) -> NeedsVerificationWire {
-    NeedsVerificationWire {
-        memory_id: nv.memory_id.0.to_string(),
-        selector: registered_name.to_string(),
-        state: state_wire(nv.state).to_string(),
-    }
+pub trait FrozenHandoffRead<B> {
+    fn prepare(self, budget: B) -> FrozenSnapshot;
 }
 
 /// §25.4 步骤 4–7 → handoff。**单一 compile 真源**：mandatory/pinned 的最终集合来自
@@ -137,9 +119,9 @@ fn nv_wire((nv, registered_name): (NeedsVerification, &str)) -> NeedsVerificatio
 /// 溢出（§25.5）不产出条目：`counts.overflow = true`、`overflow_manifest` 全量具名、
 /// mandatory/pinned 为空——`MandatoryOverflow` 里没有 Context 可返回，这里也没有。
 #[must_use]
-pub fn assemble_with_context(
-    frozen: impl FrozenHandoffRead,
-    budget: ContextBudget,
+pub fn assemble_with_context<B>(
+    frozen: impl FrozenHandoffRead<B>,
+    budget: B,
 ) -> (Handoff, crate::compiler::ContextOutcome) {
     let FrozenSnapshot {
         mandatory,
@@ -153,7 +135,6 @@ pub fn assemble_with_context(
         unavailable_selectors,
         reservation,
     } = frozen.prepare(budget);
-    let needs_verification = needs_verification.into_iter().map(nv_wire).collect();
     let not_judged = not_judged_ids(&mandatory, &pinned);
     let outcome = match reservation {
         Err(overflow) => crate::compiler::ContextOutcome::Overflow(overflow),
@@ -234,7 +215,7 @@ pub fn assemble_with_context(
     (handoff, outcome)
 }
 #[must_use]
-pub fn assemble(frozen: impl FrozenHandoffRead, budget: ContextBudget) -> Handoff {
+pub fn assemble<B>(frozen: impl FrozenHandoffRead<B>, budget: B) -> Handoff {
     assemble_with_context(frozen, budget).0
 }
 

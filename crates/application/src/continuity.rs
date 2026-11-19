@@ -1,5 +1,5 @@
 //! `application::continuity` — §25.3 continuity 产品的装配入口（G80-31 的被测调用路径）。
-//! Depends-on: crates=[async-trait, hex, humaux-domain, humaux-retrieval, serde, serde_json, sha2, uuid]; services=[]; env=[]; modules=[domain::context, domain::continuity, domain::error, domain::ids, retrieval::compiler, retrieval::envelope, retrieval::handoff]
+//! Depends-on: crates=[async-trait, hex, humaux-domain, humaux-retrieval, serde, serde_json, sha2, uuid]; services=[]; env=[]; modules=[domain::context, domain::continuity, domain::error, domain::grounding, domain::ids, retrieval::compiler, retrieval::envelope, retrieval::handoff]
 //! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, gateway::bootstrap, gateway::continuity, gateway::mcp_application, tests]
 //! Invariants: [facet_completeness is the one FACET_COMPLETE predicate: only ContinuityStatus::Current covers a
 //!   required facet, and an empty required profile fails closed (§22.0, ADR-0110 D-D)]
@@ -18,10 +18,13 @@ use humaux_domain::continuity::{
     ContinuityFacetKind, ContinuityPublishResult, ContinuityPublishState, ProjectId,
 };
 use humaux_domain::error::{ConflictReason, ErrorCode};
+use humaux_domain::grounding::GroundingState;
 use humaux_domain::ids::{Scope, WorkspaceId};
 use humaux_retrieval::compiler::FrozenLaneRow;
 use humaux_retrieval::envelope::FrozenGrounding;
-use humaux_retrieval::handoff::{FrozenHandoffRead, FrozenSnapshot, Handoff, assemble};
+use humaux_retrieval::handoff::{
+    FrozenHandoffRead, FrozenSnapshot, Handoff, NeedsVerificationWire, assemble,
+};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -30,7 +33,7 @@ use uuid::Uuid;
 /// Projects the owner's admitted lanes without reopening the captured snapshot.
 pub struct ClosedFrozenReads(pub FrozenReads);
 
-impl FrozenHandoffRead for ClosedFrozenReads {
+impl FrozenHandoffRead<ContextBudget> for ClosedFrozenReads {
     fn prepare(self, budget: ContextBudget) -> FrozenSnapshot {
         let FrozenReads {
             mandatory,
@@ -39,7 +42,7 @@ impl FrozenHandoffRead for ClosedFrozenReads {
             snapshot_token_sha256,
         } = self.0;
         let pinned = pinned.excluding_mandatory(&mandatory);
-        let reservation = budget.reserve(&mandatory, &pinned);
+        let reservation = budget.reserve(&mandatory, &pinned).map(Into::into);
         FrozenSnapshot {
             context_snapshot_seq,
             snapshot_token_sha256,
@@ -49,7 +52,11 @@ impl FrozenHandoffRead for ClosedFrozenReads {
             needs_verification: mandatory
                 .needs_verification()
                 .iter()
-                .map(|nv| (*nv, selector_wire(nv.selector)))
+                .map(|nv| NeedsVerificationWire {
+                    memory_id: nv.memory_id.0.to_string(),
+                    selector: selector_wire(nv.selector).to_string(),
+                    state: nv.state.handoff_name().to_string(),
+                })
                 .collect(),
             unavailable_selectors: mandatory
                 .unavailable()
@@ -82,7 +89,9 @@ fn freeze_row(row: MandatoryRow) -> FrozenLaneRow {
         authority: row.authority(),
         source_authority: row.source_authority(),
         est_tokens: row.est_tokens(),
-        grounding: FrozenGrounding::from_snapshot(row.grounding_state()),
+        grounding: FrozenGrounding::from_snapshot(
+            row.grounding_state().map(GroundingState::read_view),
+        ),
     }
 }
 

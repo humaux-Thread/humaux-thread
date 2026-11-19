@@ -92,7 +92,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - writes `control.anonymous_source_lineage`
 - writes `control.contribution_confirmations`
-- writes `ops.outbox`
 - writes `staging.contribution_candidate_phase9_assessments`
 - writes `staging.contribution_candidate_sources`
 - writes `staging.contribution_candidates`
@@ -166,7 +165,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_objects`
 - reads `private.identity_note_materializations`
 - reads `projection.stream_log`
-- writes `ops.outbox`
 - writes `private.distill_candidates`
 - writes `private.processing_runs`
 - executes `control.current_reasoning_route_binding`
@@ -267,6 +265,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `control.operation_receipts`
 - service `PostgreSQL(any)`
 
+#### `adapters::outbox_repo`
+- writes `ops.outbox`
+- service `PostgreSQL(any)`
+
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
 - writes `projection.tenant_placements`
@@ -326,6 +328,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `projection.ensure_tenant_placement`
 - service `PostgreSQL(role_maintenance)`
 - service `PostgreSQL(owner)`
+
+#### `adapters::public_outbox_port`
 
 #### `adapters::qdrant`
 - service `Qdrant(*)`
@@ -553,6 +557,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - service `PostgreSQL(any)`
 
+#### `domain::context::budget_views`
+
 #### `domain::continuity`
 
 #### `domain::coordination`
@@ -566,6 +572,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::evidence`
 
 #### `domain::grounding`
+
+#### `domain::grounding_read`
 
 #### `domain::identity`
 
@@ -596,6 +604,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::subject`
 
 #### `domain::ticket_family`
+
+#### `domain::vocab`
 
 #### `humaux-adapters`
 
@@ -1492,6 +1502,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 ### process(humaux-admin)
 
+#### `adapters::outbox_repo`
+- writes `ops.outbox`
+- service `PostgreSQL(any)`
+
 #### `adapters::postgres`
 - reads `private.events`
 - reads `private.ingest_tickets`
@@ -1510,6 +1524,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_public_worker)`
 - service `PostgreSQL(role_retrieval_worker)`
 - service `PostgreSQL(owner)`
+
+#### `adapters::public_outbox_port`
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
@@ -1585,6 +1601,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::ticket_family`
 
+#### `domain::vocab`
+
 #### `humaux-infra-network`
 
 #### `humaux-telemetry`
@@ -1615,6 +1633,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 ### process(humaux-consolidation-worker)
 
+#### `adapters::outbox_repo`
+- writes `ops.outbox`
+- service `PostgreSQL(any)`
+
 #### `adapters::postgres`
 - reads `private.events`
 - reads `private.ingest_tickets`
@@ -1637,6 +1659,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `adapters::private_inference_rpc`
 - writes `ops.private_inference_rpc_calls`
 - service `PostgreSQL(any)`
+
+#### `adapters::public_outbox_port`
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
@@ -1700,6 +1724,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::ids`
 
 #### `domain::memory`
+
+#### `domain::vocab`
 
 #### `humaux-telemetry`
 - service `HTTP(loopback)`
@@ -1816,7 +1842,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - writes `control.anonymous_source_lineage`
 - writes `control.contribution_confirmations`
-- writes `ops.outbox`
 - writes `staging.contribution_candidate_phase9_assessments`
 - writes `staging.contribution_candidate_sources`
 - writes `staging.contribution_candidates`
@@ -1897,7 +1922,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_objects`
 - reads `private.identity_note_materializations`
 - reads `projection.stream_log`
-- writes `ops.outbox`
 - writes `private.distill_candidates`
 - writes `private.processing_runs`
 - executes `control.current_reasoning_route_binding`
@@ -2012,6 +2036,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `control.operation_receipts`
 - service `PostgreSQL(any)`
 
+#### `adapters::outbox_repo`
+- writes `ops.outbox`
+- service `PostgreSQL(any)`
+
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
 - writes `projection.tenant_placements`
@@ -2061,6 +2089,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `projection.stream_log`
 - service `PostgreSQL(any)`
 - service `PostgreSQL(role_retrieval_worker)`
+
+#### `adapters::public_outbox_port`
 
 #### `adapters::qdrant`
 - service `Qdrant(*)`
@@ -2308,6 +2338,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - service `PostgreSQL(any)`
 
+#### `domain::context::budget_views`
+
 #### `domain::continuity`
 
 #### `domain::coordination`
@@ -2321,6 +2353,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::evidence`
 
 #### `domain::grounding`
+
+#### `domain::grounding_read`
 
 #### `domain::identity`
 
@@ -2353,6 +2387,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::subject`
 
 #### `domain::ticket_family`
+
+#### `domain::vocab`
 
 #### `gateway::admission`
 - service `HTTP(loopback)`
@@ -2715,7 +2751,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - writes `control.anonymous_source_lineage`
 - writes `control.contribution_confirmations`
-- writes `ops.outbox`
 - writes `staging.contribution_candidate_phase9_assessments`
 - writes `staging.contribution_candidate_sources`
 - writes `staging.contribution_candidates`
@@ -2789,7 +2824,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_objects`
 - reads `private.identity_note_materializations`
 - reads `projection.stream_log`
-- writes `ops.outbox`
 - writes `private.distill_candidates`
 - writes `private.processing_runs`
 - executes `control.current_reasoning_route_binding`
@@ -2919,6 +2953,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `control.operation_receipts`
 - service `PostgreSQL(any)`
 
+#### `adapters::outbox_repo`
+- writes `ops.outbox`
+- service `PostgreSQL(any)`
+
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
 - writes `projection.tenant_placements`
@@ -3000,6 +3038,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `projection.ensure_tenant_placement`
 - service `PostgreSQL(role_maintenance)`
 - service `PostgreSQL(owner)`
+
+#### `adapters::public_outbox_port`
 
 #### `adapters::qdrant`
 - service `Qdrant(*)`
@@ -3269,6 +3309,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - service `PostgreSQL(any)`
 
+#### `domain::context::budget_views`
+
 #### `domain::continuity`
 
 #### `domain::coordination`
@@ -3282,6 +3324,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::evidence`
 
 #### `domain::grounding`
+
+#### `domain::grounding_read`
 
 #### `domain::identity`
 
@@ -3312,6 +3356,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::subject`
 
 #### `domain::ticket_family`
+
+#### `domain::vocab`
 
 #### `humaux-adapters`
 
@@ -4011,7 +4057,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - writes `control.anonymous_source_lineage`
 - writes `control.contribution_confirmations`
-- writes `ops.outbox`
 - writes `staging.contribution_candidate_phase9_assessments`
 - writes `staging.contribution_candidate_sources`
 - writes `staging.contribution_candidates`
@@ -4085,7 +4130,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_objects`
 - reads `private.identity_note_materializations`
 - reads `projection.stream_log`
-- writes `ops.outbox`
 - writes `private.distill_candidates`
 - writes `private.processing_runs`
 - executes `control.current_reasoning_route_binding`
@@ -4176,6 +4220,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `control.operation_receipts`
 - service `PostgreSQL(any)`
 
+#### `adapters::outbox_repo`
+- writes `ops.outbox`
+- service `PostgreSQL(any)`
+
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
 - writes `projection.tenant_placements`
@@ -4213,6 +4261,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(any)`
 - service `PostgreSQL(role_gateway)`
 - service `PostgreSQL(role_retrieval_worker)`
+
+#### `adapters::public_outbox_port`
 
 #### `adapters::qdrant`
 - service `Qdrant(*)`
@@ -4421,6 +4471,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - service `PostgreSQL(any)`
 
+#### `domain::context::budget_views`
+
 #### `domain::continuity`
 
 #### `domain::coordination`
@@ -4434,6 +4486,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::evidence`
 
 #### `domain::grounding`
+
+#### `domain::grounding_read`
 
 #### `domain::identity`
 
@@ -4462,6 +4516,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::subject`
 
 #### `domain::ticket_family`
+
+#### `domain::vocab`
 
 #### `humaux-adapters`
 
@@ -4596,6 +4652,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 ### process(humaux-public-worker)
 
+#### `adapters::outbox_repo`
+- writes `ops.outbox`
+- service `PostgreSQL(any)`
+
 #### `adapters::postgres`
 - reads `private.events`
 - reads `private.ingest_tickets`
@@ -4614,6 +4674,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_public_worker)`
 - service `PostgreSQL(role_retrieval_worker)`
 - service `PostgreSQL(owner)`
+
+#### `adapters::public_outbox_port`
 
 #### `adapters::quota_repo`
 - writes `control.quota_windows`
@@ -4808,7 +4870,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - writes `control.anonymous_source_lineage`
 - writes `control.contribution_confirmations`
-- writes `ops.outbox`
 - writes `staging.contribution_candidate_phase9_assessments`
 - writes `staging.contribution_candidate_sources`
 - writes `staging.contribution_candidates`
@@ -4882,7 +4943,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_objects`
 - reads `private.identity_note_materializations`
 - reads `projection.stream_log`
-- writes `ops.outbox`
 - writes `private.distill_candidates`
 - writes `private.processing_runs`
 - executes `control.current_reasoning_route_binding`
@@ -4964,6 +5024,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `control.operation_receipts`
 - service `PostgreSQL(any)`
 
+#### `adapters::outbox_repo`
+- writes `ops.outbox`
+- service `PostgreSQL(any)`
+
 #### `adapters::placement_repo`
 - reads `projection.tenant_placements`
 - writes `projection.tenant_placements`
@@ -5023,6 +5087,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(any)`
 - service `PostgreSQL(role_maintenance)`
 - service `PostgreSQL(role_retrieval_worker)`
+
+#### `adapters::public_outbox_port`
 
 #### `adapters::qdrant`
 - service `Qdrant(*)`
@@ -5242,6 +5308,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.memory_records`
 - service `PostgreSQL(any)`
 
+#### `domain::context::budget_views`
+
 #### `domain::continuity`
 
 #### `domain::coordination`
@@ -5255,6 +5323,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::evidence`
 
 #### `domain::grounding`
+
+#### `domain::grounding_read`
 
 #### `domain::identity`
 
@@ -5283,6 +5353,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::subject`
 
 #### `domain::ticket_family`
+
+#### `domain::vocab`
 
 #### `humaux-adapters`
 
@@ -8920,7 +8992,6 @@ read by:
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 
 written by:
-- (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::a2_point_identity`
 - (no process): `adapters::tests::consolidate_snapshot`
 - (no process): `adapters::tests::continuity_publish`
@@ -8959,24 +9030,22 @@ written by:
 - (no process): `maintenance::tests::onboarding`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
-- process(cargo-xtask): `adapters::contribution_entry_repo`
-- process(cargo-xtask): `adapters::distill_repo`
+- process(cargo-xtask): `adapters::outbox_repo`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::contribution_entry_repo`
-- process(humaux-gateway): `adapters::distill_repo`
+- process(humaux-admin): `adapters::outbox_repo`
+- process(humaux-consolidation-worker): `adapters::outbox_repo`
+- process(humaux-gateway): `adapters::outbox_repo`
 - process(humaux-gateway): `adapters::projection_worker`
 - process(humaux-gateway): `adapters::stream_repo`
-- process(humaux-maintenance): `adapters::contribution_entry_repo`
-- process(humaux-maintenance): `adapters::distill_repo`
+- process(humaux-maintenance): `adapters::outbox_repo`
 - process(humaux-maintenance): `adapters::projection_worker`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
-- process(humaux-private-worker): `adapters::contribution_entry_repo`
-- process(humaux-private-worker): `adapters::distill_repo`
+- process(humaux-private-worker): `adapters::outbox_repo`
 - process(humaux-private-worker): `adapters::stream_repo`
-- process(humaux-retrieval-worker): `adapters::contribution_entry_repo`
-- process(humaux-retrieval-worker): `adapters::distill_repo`
+- process(humaux-public-worker): `adapters::outbox_repo`
+- process(humaux-retrieval-worker): `adapters::outbox_repo`
 - process(humaux-retrieval-worker): `adapters::projection_worker`
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 
@@ -13231,6 +13300,7 @@ executed by:
 - `adapters::note_repo`
 - `adapters::oauth_repo`
 - `adapters::operation_receipt`
+- `adapters::outbox_repo`
 - `adapters::placement_repo`
 - `adapters::postgres`
 - `adapters::private_inference_rpc`
@@ -14083,6 +14153,7 @@ modules naming it:
 - `adapters::note_repo`
 - `adapters::oauth_repo`
 - `adapters::operation_receipt`
+- `adapters::outbox_repo`
 - `adapters::placement_repo`
 - `adapters::plan_repo`
 - `adapters::postgres`
@@ -14093,6 +14164,7 @@ modules naming it:
 - `adapters::projection_worker`
 - `adapters::provider_budget`
 - `adapters::provisioning`
+- `adapters::public_outbox_port`
 - `adapters::qdrant`
 - `adapters::quota_repo`
 - `adapters::quota_reservation_port`
@@ -15160,6 +15232,7 @@ why: DegradeCode assertions in tests
 
 modules naming it:
 - `adapters::tests::a2_point_identity`
+- `adapters::tests::exact_completeness_eval`
 - `adapters::tests::projection_lag`
 - `adapters::tests::recall_envelope_g23`
 - `adapters::tests::support::a2_fixture`
@@ -16590,6 +16663,7 @@ modules naming it:
 - `retrieval::completeness`
 - `retrieval::envelope`
 - `retrieval::rerank`
+- `retrieval::tests::freshness`
 - `tests`
 
 ### humaux-retrieval → `humaux-domain` (normal)
@@ -16905,6 +16979,7 @@ modules naming it:
 - `testkit::tests::metrics::host_cpu_busy_ratio`
 - `testkit::tests::metrics::host_memory_available_bytes`
 - `testkit::tests::metrics::host_pressure_ratio`
+- `testkit::tests::metrics::humaux_retrieval_requests_total`
 - `testkit::tests::metrics::jobs_dead`
 - `testkit::tests::metrics::jobs_pending`
 - `testkit::tests::metrics::jobs_processing`
@@ -16913,6 +16988,7 @@ modules naming it:
 - `testkit::tests::metrics::processing_gap_count`
 - `testkit::tests::metrics::projection_lag_events`
 - `testkit::tests::metrics::restore_drill_last_success_timestamp_seconds`
+- `testkit::tests::metrics::retrieval_completeness_total`
 - `testkit::tests::metrics::stage_last_error_class`
 - `testkit::tests::metrics::stage_last_output_timestamp_seconds`
 - `testkit::tests::metrics::stage_last_run_timestamp_seconds`
@@ -17519,7 +17595,6 @@ modules naming it:
 - `gateway::memory`
 - `gateway::recall`
 - `gateway::rerank_client`
-- `gateway::status`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::semantic_recall_wiring`
 - `tests`
@@ -17561,6 +17636,7 @@ modules naming it:
 - `gateway::context`
 - `gateway::guard`
 - `gateway::main`
+- `gateway::mcp_application`
 - `gateway::status`
 - `gateway::tests::exit_codes`
 - `gateway::tests::mcp_gateway`
@@ -21129,7 +21205,7 @@ default run:
 - `crates/adapters/tests/contribution_execution_repo.rs:42` [table-undeclared] (line) — static source-text guard; no DB connection
 - `crates/application/Cargo.toml:43` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
-- `crates/application/src/continuity.rs:1415` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
+- `crates/application/src/continuity.rs:1424` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
 - `crates/protocol/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/public-pool/src/completeness.rs:379` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
 - `crates/retrieval/src/envelope.rs:2160` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access

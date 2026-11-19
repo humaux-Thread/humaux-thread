@@ -1,11 +1,10 @@
 //! `retrieval::completeness` — `LedgerCounts` / `CompletenessClass` / `FreshnessClass` / the `ledger::close` and
 //!   `classify()` sole constructors (§22.4 / §22.5 / §59).
-//! Depends-on: crates=[humaux-domain, humaux-telemetry, serde]; services=[]; env=[]; modules=[domain::context, domain::ledger, retrieval::envelope, retrieval::planner, retrieval::request, telemetry::metrics]
-//! Called-by: [adapters::context_repo, adapters::exact_census, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, adapters::stream_repo, application::recall_read, gateway::context, gateway::memory, gateway::recall, gateway::status, retrieval::envelope, retrieval::signals, tests]
+//! Depends-on: crates=[humaux-domain, humaux-telemetry, serde]; services=[]; env=[]; modules=[domain::context, domain::ledger, retrieval::envelope, retrieval::planner]
+//! Called-by: [adapters::context_repo, adapters::exact_census, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, adapters::stream_repo, application::recall_read, gateway::context, gateway::memory, gateway::recall, retrieval::envelope, retrieval::signals, tests]
 //! Invariants: [ledger::close is the sole LedgerClosure constructor; A1 counts tickets, A2's PostgreSQL side
 //!   (ProjectionReads) counts memory points (ADR-0057 D-A); classify has six inputs and LedgerClosure::lagging
-//!   is the only projection-lag comparison (ADR-0057 D-D/D-E); record_final_classification holds the one increment of
-//!   retrieval_completeness_total and of humaux_retrieval_requests_total; render_metrics seeds both over closed sets]
+//!   is the only projection-lag comparison (ADR-0057 D-D/D-E); wire_labels supplies the final observer's closed labels]
 //! Spec: §22.4; §22.5; §59; §41.2; §25.3; §78.2; ADR-0057; ADR-0061 D-A; ADR-0061 D-C
 //!
 //! `classify()` is the sole constructor of [`CompletenessClass`]; final outcome emission is
@@ -52,12 +51,7 @@
 // give `PlannerDecision::Class(QueryClass::State)` its own arm once that lands.
 
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-
-use humaux_telemetry::metrics::{families, write_family};
-
-use crate::request::IntentKind;
 
 /// Ledger's six fields (§22.5): produced by `ledger::close(repo, stream_key)` taking three
 /// independent reads (`stream_log_agg` / `count_open_gaps` / `contiguous_done_prefix`) and
@@ -645,185 +639,22 @@ pub mod ledger {
     }
 }
 
-// ============================================================================
-// §41.2 `retrieval_completeness_total{class,reason}` and `humaux_retrieval_requests_total
-// {intent,completeness_class}` — process-local counters, exported by [`render_metrics`].
-// ============================================================================
-
-/// Process-local `AtomicU64` grid, one cell per (class, reason) label pair; rendered through
-/// `telemetry::metrics` (ADR-0061 D-A: no metrics crate, the family table lives there).
-struct CompletenessTotal([AtomicU64; CompletenessTotal::CELLS]);
-
-impl CompletenessTotal {
-    const CLASSES: [&'static str; 4] = [
-        "exact",
-        "facet_complete",
-        "semantic_bounded",
-        "cannot_establish",
-    ];
-    const REASONS: [&'static str; 14] = [
-        "none",
-        "ledger_not_closed",
-        "predicate_not_enumerable",
-        "census_failed",
-        "lane_failed",
-        "index_count_unavailable",
-        "a2_overshoot_beyond_pending",
-        "mandatory_context_overflow",
-        "count_unknown",
-        "count_scope_mismatch",
-        "pipeline_count_mismatch",
-        "mandatory_not_satisfied",
-        "no_serving_projection",
-        "projection_lag",
-    ];
-    const CELLS: usize = Self::CLASSES.len() * Self::REASONS.len();
-
-    // One cell per (class, reason) pair. Written as an inline-`const` repeat expression so
-    // `CELLS` is the only place the length lives: the previous hand-written expansion had to
-    // be grown by hand every time `REASONS` gained a variant, and the comment saying so was
-    // the only thing enforcing it. `const { ... }` sidesteps the `AtomicU64: !Copy` problem
-    // that forced the expansion, and — unlike a `const ZERO` item — does not trip
-    // `clippy::declare_interior_mutable_const`.
-    const fn new() -> Self {
-        Self([const { AtomicU64::new(0) }; Self::CELLS])
-    }
-
-    fn idx(class_label: &str, reason_label: &str) -> usize {
-        let c = Self::CLASSES
-            .iter()
-            .position(|&s| s == class_label)
-            .expect("class_label must be one of CompletenessClass::wire_labels' outputs");
-        let r = Self::REASONS
-            .iter()
-            .position(|&s| s == reason_label)
-            .expect(
-                "reason_label must be one of CannotEstablishReason::label's outputs, or \"none\"",
-            );
-        c * Self::REASONS.len() + r
-    }
-
-    fn inc(&self, class_label: &str, reason_label: &str) {
-        self.0[Self::idx(class_label, reason_label)].fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn count(&self, class_label: &str, reason_label: &str) -> u64 {
-        self.0[Self::idx(class_label, reason_label)].load(Ordering::Relaxed)
-    }
-}
-
-static RETRIEVAL_COMPLETENESS_TOTAL: CompletenessTotal = CompletenessTotal::new();
-
-/// current count for `{class,reason}` — read-only accessor for witness/test assertions,
-/// without exposing the counter itself (mirrors `degrade::degrade_total_count`). `class`/
-/// `reason` are the wire label strings [`CompletenessClass::wire_labels`] produces (e.g.
-/// `"cannot_establish"` / `"ledger_not_closed"`, or `"none"` for a non-`CannotEstablish`
-/// class's reason).
-pub fn retrieval_completeness_total_count(class: &str, reason: &str) -> u64 {
-    RETRIEVAL_COMPLETENESS_TOTAL.count(class, reason)
-}
-
-/// §41.2 `humaux_retrieval_requests_total{intent,completeness_class}`: one cell per
-/// (`IntentKind`, wire class) pair, 4 × 4 (ADR-0061 D-C).
-struct RequestsTotal([AtomicU64; RequestsTotal::CELLS]);
-
-impl RequestsTotal {
-    const CELLS: usize = IntentKind::ALL.len() * CompletenessTotal::CLASSES.len();
-
-    const fn new() -> Self {
-        Self([const { AtomicU64::new(0) }; Self::CELLS])
-    }
-
-    fn idx(intent: IntentKind, class_label: &str) -> usize {
-        let i = IntentKind::ALL
-            .iter()
-            .position(|k| *k == intent)
-            .expect("IntentKind::ALL is exhaustive");
-        let c = CompletenessTotal::CLASSES
-            .iter()
-            .position(|&s| s == class_label)
-            .expect("class_label must be one of CompletenessClass::wire_labels' outputs");
-        i * CompletenessTotal::CLASSES.len() + c
-    }
-
-    // The test trace lives inside the increment, so an increment moved ahead of `finish()` shows
-    // up in the trace too (ADR-0061 D-C: a dropped PendingEnvelope records neither family).
-    fn inc(&self, intent: IntentKind, class_label: &'static str) {
-        self.0[Self::idx(intent, class_label)].fetch_add(1, Ordering::Relaxed);
-        #[cfg(test)]
-        REQUESTS_TRACE.with(|trace| trace.borrow_mut().push((intent.as_str(), class_label)));
-    }
-
-    fn count(&self, intent: IntentKind, class_label: &str) -> u64 {
-        self.0[Self::idx(intent, class_label)].load(Ordering::Relaxed)
-    }
-}
-
-static HUMAUX_RETRIEVAL_REQUESTS_TOTAL: RequestsTotal = RequestsTotal::new();
-
-/// Sole final-outcome metric emission. Call only after the envelope outcome's invariants have
-/// been checked; provisional classifier answers must never be observed as result statistics.
-/// The same point counts the returned envelope by intent (§41.2 "envelope 返回时 · 1", the §53.5
-/// INV-1 denominator), so both families move together or not at all (ADR-0061 D-C).
-pub(crate) fn record_final_classification(class: CompletenessClass, intent: IntentKind) {
-    let (class_label, reason_label) = class.wire_labels();
-    // labels: class,reason
-    RETRIEVAL_COMPLETENESS_TOTAL.inc(class_label, reason_label);
-    // labels: intent,completeness_class
-    HUMAUX_RETRIEVAL_REQUESTS_TOTAL.inc(intent, class_label);
-    #[cfg(test)]
-    FINAL_RECORD_TRACE.with(|trace| trace.borrow_mut().push((class_label, reason_label)));
-}
-
-/// Renders `humaux_retrieval_requests_total` (4 intents × 4 classes) and
-/// `retrieval_completeness_total` (the 16 (class, reason) pairs `wire_labels` can produce), every
-/// series seeded at 0 so the first scrape already carries INV-1's denominator (ADR-0061 D-A).
-pub fn render_metrics(out: &mut String) {
-    let classes = CompletenessTotal::CLASSES;
-    let requests: Vec<([&'static str; 2], f64)> = IntentKind::ALL
-        .iter()
-        .flat_map(|&intent| {
-            classes.iter().map(move |&class| {
-                (
-                    [intent.as_str(), class],
-                    HUMAUX_RETRIEVAL_REQUESTS_TOTAL.count(intent, class) as f64,
-                )
-            })
-        })
-        .collect();
-    let samples: Vec<(&[&'static str], f64)> =
-        requests.iter().map(|(l, v)| (l.as_slice(), *v)).collect();
-    write_family(out, &families::HUMAUX_RETRIEVAL_REQUESTS_TOTAL, &samples);
-
-    // `reason` is "none" exactly when the class is not cannot_establish (`wire_labels`), so the
-    // other 40 grid cells can never be incremented and are not rendered.
-    let completeness: Vec<([&'static str; 2], f64)> = classes
-        .iter()
-        .flat_map(|&class| {
-            CompletenessTotal::REASONS
-                .iter()
-                .filter(move |&&reason| (class == "cannot_establish") != (reason == "none"))
-                .map(move |&reason| {
-                    (
-                        [class, reason],
-                        RETRIEVAL_COMPLETENESS_TOTAL.count(class, reason) as f64,
-                    )
-                })
-        })
-        .collect();
-    let samples: Vec<(&[&'static str], f64)> = completeness
-        .iter()
-        .map(|(l, v)| (l.as_slice(), *v))
-        .collect();
-    write_family(out, &families::RETRIEVAL_COMPLETENESS_TOTAL, &samples);
-}
-
 #[cfg(test)]
 thread_local! {
     static FINAL_RECORD_TRACE: std::cell::RefCell<Vec<(&'static str, &'static str)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     static REQUESTS_TRACE: std::cell::RefCell<Vec<(&'static str, &'static str)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn trace_final_classification(
+    intent: crate::request::IntentKind,
+    class_label: &'static str,
+    reason_label: &'static str,
+) {
+    FINAL_RECORD_TRACE.with(|trace| trace.borrow_mut().push((class_label, reason_label)));
+    REQUESTS_TRACE.with(|trace| trace.borrow_mut().push((intent.as_str(), class_label)));
 }
 
 #[cfg(test)]
@@ -932,36 +763,30 @@ pub fn classify_for_witness(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::request::IntentKind;
+    use humaux_telemetry::metrics::{render_retrieval, retrieval_completeness_total_count};
 
-    /// **每个 reason label 都必须在指标格子里有位置。**
-    ///
-    /// `CompletenessTotal` 的 `AtomicU64` 数组是**手写展开**的（`AtomicU64` 不是 `Copy`，
-    /// `[X; N]` 重复表达式要一个 `const ZERO`，那会触 clippy 的
-    /// `declare_interior_mutable_const`）。所以 `REASONS` 加一个变体而数组没跟着加一格时，
-    /// `idx()` 的 `expect` 会在**运行时**炸——而且只在那个 reason 真被记一次的时候才炸，
-    /// 也就是最不该炸的时候。本条把它提前到编译-测试期。
-    ///
-    /// 顺带钉住 label 的唯一来源：格子的键取自 `wire_labels()`，与 JSON 同源，
-    /// 所以「指标 label 与 JSON 漂移」也在这里被拦。
+    /// Each label pair returned by the classifier has its own seeded cell in the operations recorder.
     #[test]
     fn every_class_reason_pair_has_a_metric_cell() {
         let mut seen = std::collections::BTreeSet::new();
+        let mut out = String::new();
+        render_retrieval(&mut out);
+        let mut check_cell = |class: CompletenessClass| {
+            let (label, reason) = class.wire_labels();
+            let _ = retrieval_completeness_total_count(label, reason);
+            assert!(out.contains(&format!(
+                "retrieval_completeness_total{{class=\"{label}\",reason=\"{reason}\"}} "
+            )));
+            assert!(seen.insert((label, reason)));
+        };
         for class in [
             CompletenessClass::Exact,
             CompletenessClass::FacetComplete,
             CompletenessClass::SemanticBounded,
         ] {
-            let (c, r) = class.wire_labels();
-            let idx = CompletenessTotal::idx(c, r);
-            assert!(
-                idx < CompletenessTotal::CELLS,
-                "{c}/{r} 的下标 {idx} 越界（CELLS={})",
-                CompletenessTotal::CELLS
-            );
-            seen.insert(idx);
+            check_cell(class);
         }
-        // 十三个 CannotEstablish reason 逐个走一遍。少一个变体这里就少一个 idx，
-        // 而 REASONS 与数组长度对不上时 `idx()` 会直接 panic。
         for reason in [
             CannotEstablishReason::LedgerNotClosed,
             CannotEstablishReason::PredicateNotEnumerable,
@@ -977,14 +802,7 @@ mod tests {
             CannotEstablishReason::NoServingProjection,
             CannotEstablishReason::ProjectionLag,
         ] {
-            let (c, r) = CompletenessClass::CannotEstablish { reason }.wire_labels();
-            let idx = CompletenessTotal::idx(c, r);
-            assert!(
-                idx < CompletenessTotal::CELLS,
-                "{c}/{r} 的下标 {idx} 越界（CELLS={}）——REASONS 加了变体但手写数组没跟着加格",
-                CompletenessTotal::CELLS
-            );
-            seen.insert(idx);
+            check_cell(CompletenessClass::CannotEstablish { reason });
         }
         assert_eq!(
             seen.len(),
@@ -993,17 +811,6 @@ mod tests {
         );
     }
 
-    /// 数组长度必须等于 `CELLS`。手写展开漏加一格时，上面那条要等到那个 reason 真被用到
-    /// 才炸；这条在任何一次 `cargo test` 里都炸。
-    #[test]
-    fn the_hand_written_cell_array_matches_cells() {
-        let t = CompletenessTotal::new();
-        assert_eq!(
-            t.0.len(),
-            CompletenessTotal::CELLS,
-            "手写的 AtomicU64 数组长度与 CLASSES × REASONS 对不上"
-        );
-    }
     use crate::envelope::LaneStatus;
     use crate::planner::{DirectGetLocator, PlannerDecision, QueryClass};
 
@@ -1455,7 +1262,7 @@ mod tests {
     #[test]
     fn render_metrics_parses_with_the_registry_label_keys_and_seeds_every_cell() {
         let mut out = String::new();
-        render_metrics(&mut out);
+        render_retrieval(&mut out);
         // §41.2 rows, verbatim.
         let rows: [(&str, [&str; 2], usize); 2] = [
             (
@@ -1500,7 +1307,12 @@ mod tests {
             assert_eq!(series.len(), cells, "{family}\n{out}");
         }
         for intent in IntentKind::ALL {
-            for class in CompletenessTotal::CLASSES {
+            for class in [
+                "exact",
+                "facet_complete",
+                "semantic_bounded",
+                "cannot_establish",
+            ] {
                 assert!(out.contains(&format!(
                     "humaux_retrieval_requests_total{{intent=\"{}\",completeness_class=\"{class}\"}} ",
                     intent.as_str()

@@ -1,6 +1,6 @@
 //! `adapters::postgres` — role-checked pools and shared PostgreSQL composition (§6.2.3; ADR-0130 D5).
-//! Depends-on: crates=[async-trait, humaux-domain, humaux-testkit, postgres, sqlx, time, tokio, uuid]; services=[PostgreSQL(any) r=[private.events, private.ingest_tickets, private.memory_consolidation_inputs, private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_batch_issuer), PostgreSQL(role_consolidation_worker), PostgreSQL(role_gateway), PostgreSQL(role_maintenance), PostgreSQL(role_private_worker), PostgreSQL(role_public_worker), PostgreSQL(role_retrieval_worker), PostgreSQL(owner)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::quota_repo, adapters::quota_reservation_port, domain::error, domain::identity]
-//! Called-by: [adapters::affect_repo, adapters::applicability_repo, adapters::audited_read_quota, adapters::billing_processor_repo, adapters::billing_repo, adapters::candidate_repo, adapters::confirm_token_repo, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, adapters::contribution_entry_repo, adapters::contribution_execution_ingress, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::contribution_repo, adapters::coord_repo, adapters::credential_repo, adapters::disclosure, adapters::distill_reasoner, adapters::distill_repo, adapters::egress_policy, adapters::email::outbox, adapters::entitlement_repo, adapters::exact_census, adapters::forget_repo, adapters::grep_repo, adapters::health, adapters::independent_audit, adapters::ingest_ticket_repo, adapters::jobs, adapters::login_repo, adapters::maintenance_repo, adapters::mechanism_observation, adapters::membership_repo, adapters::memory_governance_repo, adapters::model_call_ledger, adapters::oauth_repo, adapters::operation_receipt, adapters::placement_repo, adapters::plan_repo, adapters::private_inference_rpc, adapters::private_projection_registry, adapters::processing_status, adapters::projection_worker, adapters::provider_budget, adapters::provisioning, adapters::quota_repo, adapters::read_materialize, adapters::reasoning_route_admission, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::remember, adapters::request_guard_repo, adapters::retrieval_embedding_rpc, adapters::retrieval_provisioning, adapters::retrieval_query_source, adapters::retrieve, adapters::role_hygiene, adapters::scheduler, adapters::selection_repo, adapters::serving_repo, adapters::session_repo, adapters::stream_repo, adapters::subject_repo, admin::mechanism, billing-worker::process, consolidation-worker::bootstrap, consolidation-worker::inference_client, gateway::auth, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::oauth_http, gateway::recall, gateway::retrieval_embedding_client, gateway::status, maintenance::backup, maintenance::bootstrap, maintenance::drill, maintenance::health_serve, maintenance::main, maintenance::member, maintenance::projection_serve, maintenance::rebuild_cli, maintenance::retention, maintenance::roles, maintenance::serve, private-worker::bootstrap, private-worker::main, private-worker::route_providers, public-pool::bootstrap, public-pool::public_projection, public-pool::public_provenance, public-pool::public_repo, public-pool::vocab, public-worker::main, retrieval-provider::adapters, retrieval-worker::main, retrieval-worker::rpc, tests, xtask::e2e_seed, xtask::mechanism_registry]
+//! Depends-on: crates=[async-trait, humaux-domain, humaux-testkit, postgres, sqlx, time, tokio, uuid]; services=[PostgreSQL(any) r=[private.events, private.ingest_tickets, private.memory_consolidation_inputs, private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log], PostgreSQL(role_batch_issuer), PostgreSQL(role_consolidation_worker), PostgreSQL(role_gateway), PostgreSQL(role_maintenance), PostgreSQL(role_private_worker), PostgreSQL(role_public_worker), PostgreSQL(role_retrieval_worker), PostgreSQL(owner)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::outbox_repo, adapters::public_outbox_port, adapters::quota_repo, adapters::quota_reservation_port, domain::error, domain::identity]
+//! Called-by: [adapters::affect_repo, adapters::applicability_repo, adapters::audited_read_quota, adapters::billing_processor_repo, adapters::billing_repo, adapters::candidate_repo, adapters::confirm_token_repo, adapters::consolidate_repo, adapters::consolidation_reasoner, adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, adapters::contribution_entry_repo, adapters::contribution_execution_ingress, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::contribution_repo, adapters::coord_repo, adapters::credential_repo, adapters::disclosure, adapters::distill_reasoner, adapters::distill_repo, adapters::egress_policy, adapters::email::outbox, adapters::entitlement_repo, adapters::exact_census, adapters::forget_repo, adapters::grep_repo, adapters::health, adapters::independent_audit, adapters::ingest_ticket_repo, adapters::jobs, adapters::login_repo, adapters::maintenance_repo, adapters::mechanism_observation, adapters::membership_repo, adapters::memory_governance_repo, adapters::model_call_ledger, adapters::oauth_repo, adapters::operation_receipt, adapters::placement_repo, adapters::plan_repo, adapters::private_inference_rpc, adapters::private_projection_registry, adapters::processing_status, adapters::projection_worker, adapters::provider_budget, adapters::provisioning, adapters::quota_repo, adapters::read_materialize, adapters::reasoning_route_admission, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::remember, adapters::request_guard_repo, adapters::retrieval_embedding_rpc, adapters::retrieval_provisioning, adapters::retrieval_query_source, adapters::retrieve, adapters::role_hygiene, adapters::scheduler, adapters::selection_repo, adapters::serving_repo, adapters::session_repo, adapters::stream_repo, adapters::subject_repo, admin::mechanism, billing-worker::process, consolidation-worker::inference_client, consolidation-worker::bootstrap, gateway::auth, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::oauth_http, gateway::recall, gateway::retrieval_embedding_client, gateway::status, maintenance::backup, maintenance::bootstrap, maintenance::drill, maintenance::health_serve, maintenance::main, maintenance::member, maintenance::projection_serve, maintenance::rebuild_cli, maintenance::retention, maintenance::roles, maintenance::serve, private-worker::bootstrap, private-worker::main, private-worker::route_providers, public-pool::bootstrap, public-pool::public_projection, public-pool::public_provenance, public-pool::public_repo, public-pool::vocab, public-worker::main, retrieval-provider::adapters, retrieval-worker::main, retrieval-worker::rpc, tests, xtask::e2e_seed, xtask::mechanism_registry]
 //! Invariants: [the only file that names sqlx::PgPool: eight typed pools, one per role (§6.2.3), each connect checks
 //!   current_user and fails with PoolInitError::RoleMismatch on a wrong role; `raw_pool()` leaves the crate only behind `cloud-raw-pool`, which only humaux-public-pool may enable, pinned by G-M01-9;
 //!   the ninth, MigratorDbPool, refuses every §6.2.0 role and any principal without CREATEROLE (ADR-0059 D-E);
@@ -46,6 +46,8 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::{
+    outbox_repo::{self, PublicTarget},
+    public_outbox_port::PublicOutboxPort,
     quota_repo::{self, QuotaReservation, ReservationStatus, ReserveResult},
     quota_reservation_port::{QuotaReservationPort, QuotaTransaction, ReservedQuota},
 };
@@ -404,6 +406,62 @@ impl PrivateWorkerDbPool {
     /// `pub(crate)` keeps G6-DB1's closed set intact.
     pub(crate) fn pool(&self) -> &PgPool {
         &self.0
+    }
+}
+
+// Compose the callers' same-transaction ports here. Only M09 writes the outbox.
+type OutboxTxn<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
+
+impl PublicOutboxPort for PrivateWorkerDbPool {
+    async fn enqueue_explicit_release(
+        txn: &mut OutboxTxn<'_>,
+        tenant: Uuid,
+        seq: i64,
+        release: Uuid,
+    ) -> Result<(), sqlx::Error> {
+        outbox_repo::enqueue_explicit_release(txn, tenant, seq, release).await
+    }
+
+    async fn enqueue_confirmed_release(
+        txn: &mut OutboxTxn<'_>,
+        tenant: Uuid,
+        seq: i64,
+        release: Uuid,
+        anonymous: Option<(Uuid, Vec<u8>)>,
+    ) -> Result<(), sqlx::Error> {
+        outbox_repo::enqueue_confirmed_release(
+            txn,
+            tenant,
+            seq,
+            public_outbox_target(release, anonymous),
+        )
+        .await
+    }
+
+    async fn enqueue_public_revoke(
+        txn: &mut OutboxTxn<'_>,
+        tenant: Uuid,
+        seq: i64,
+        release: Uuid,
+        anonymous: Option<(Uuid, Vec<u8>)>,
+    ) -> Result<(), sqlx::Error> {
+        outbox_repo::enqueue_public_revoke(
+            txn,
+            tenant,
+            seq,
+            public_outbox_target(release, anonymous),
+        )
+        .await
+    }
+}
+
+fn public_outbox_target(release: Uuid, anonymous: Option<(Uuid, Vec<u8>)>) -> PublicTarget {
+    match anonymous {
+        Some((source_id, envelope_sha256)) => PublicTarget::Anonymous {
+            source_id,
+            envelope_sha256,
+        },
+        None => PublicTarget::Release(release),
     }
 }
 

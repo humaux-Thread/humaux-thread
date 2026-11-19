@@ -1,10 +1,10 @@
 //! `adapters::contribution_repo` — §12/§13 physical IO for public contributions.
 //! Depends-on: crates=[humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any)
 //!   r=[control.anonymous_source_lineage, private.evidence_objects, private.memory_records, public.sources,
-//!   public.syntheses, public.synthesis_inputs, staging.sanitized_public_candidates] w=[ops.outbox, public.claims,
+//!   public.syntheses, public.synthesis_inputs, staging.sanitized_public_candidates] w=[public.claims,
 //!   public.provenance_edges, public.source_closure, staging.contribution_release_sources,
 //!   staging.contribution_releases] x=[staging.assert_active_release_rights, staging.lock_contribution_release]];
-//!   env=[]; modules=[adapters::postgres, adapters::stream_repo, domain::error, domain::ids, domain::public]
+//!   env=[]; modules=[adapters::postgres, adapters::public_outbox_port, adapters::stream_repo, domain::error, domain::ids, domain::public]
 //! Called-by: [tests]
 //! Invariants: [private releases are written only on role_private_worker and public promotion only on
 //!   role_public_worker (§12/§13); there is no raw-pool entry point; tenant or visibility failures are
@@ -27,6 +27,7 @@ use sqlx::{Row, types::Uuid};
 
 use crate::{
     postgres::{PrivateWorkerDbPool, PublicWorkerDbPool},
+    public_outbox_port::PublicOutboxPort,
     stream_repo,
 };
 
@@ -149,17 +150,9 @@ pub async fn create_release(
     let commit_seq = stream_repo::next_commit_seq(&mut txn)
         .await
         .map_err(|_| ErrorCode::Internal)?;
-    sqlx::query(
-        "INSERT INTO ops.outbox (tenant_id, commit_seq, event_type, contribution_release_id) \
-         VALUES ($1, $2, 'PUBLIC_RELEASE', $3)",
-    )
-    .bind(tenant_id.0)
-    .bind(commit_seq)
-    .bind(release_id)
-    .execute(&mut *txn)
-    .await
-    .map_err(db_error)?;
-
+    PrivateWorkerDbPool::enqueue_explicit_release(&mut txn, tenant_id.0, commit_seq, release_id)
+        .await
+        .map_err(db_error)?;
     txn.commit().await.map_err(db_error)?;
     Ok(release_id)
 }
@@ -224,32 +217,22 @@ pub async fn revoke_release(
     .fetch_optional(&mut *txn)
     .await
     .map_err(db_error)?;
-    if let Some(binding) = anonymous {
+    let anonymous = if let Some(binding) = anonymous {
         let anonymous_source_id: Uuid = binding.try_get("anonymous_source_id").map_err(db_error)?;
         let envelope_sha256: Vec<u8> = binding.try_get("envelope_sha256").map_err(db_error)?;
-        sqlx::query(
-            "INSERT INTO ops.outbox(tenant_id,commit_seq,event_type,anonymous_source_id,candidate_envelope_sha256,anonymous_source_revision) \
-             VALUES($1,$2,'PUBLIC_ANONYMOUS_REVOKE',$3,$4,2)",
-        )
-        .bind(tenant_id.0)
-        .bind(commit_seq)
-        .bind(anonymous_source_id)
-        .bind(envelope_sha256)
-        .execute(&mut *txn)
-        .await
-        .map_err(db_error)?;
+        Some((anonymous_source_id, envelope_sha256))
     } else {
-        sqlx::query(
-            "INSERT INTO ops.outbox(tenant_id,commit_seq,event_type,contribution_release_id) \
-             VALUES($1,$2,'PUBLIC_REVOKE',$3)",
-        )
-        .bind(tenant_id.0)
-        .bind(commit_seq)
-        .bind(release_id)
-        .execute(&mut *txn)
-        .await
-        .map_err(db_error)?;
-    }
+        None
+    };
+    PrivateWorkerDbPool::enqueue_public_revoke(
+        &mut txn,
+        tenant_id.0,
+        commit_seq,
+        release_id,
+        anonymous,
+    )
+    .await
+    .map_err(db_error)?;
     txn.commit().await.map_err(db_error)?;
     Ok(true)
 }

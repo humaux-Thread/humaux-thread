@@ -1,5 +1,5 @@
 //! `retrieval::compiler` — §25.4 冻结装配的步骤 6+7。
-//! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[domain::authority, domain::context, retrieval::candidate, retrieval::envelope]
+//! Depends-on: crates=[humaux-domain]; services=[]; env=[]; modules=[domain::authority, domain::context, domain::context::budget_views, retrieval::candidate, retrieval::envelope]
 //! Called-by: [adapters::context_repo, application::continuity, application::recall_read, gateway::context, retrieval::envelope, retrieval::handoff, tests]
 //! Invariants: []
 //! Spec: §25.4
@@ -9,14 +9,14 @@
 //! 地方。断言写在只握一条 lane 的函数上会是同义反复。
 //!
 //! 步骤 2–5 已在 domain 侧完成，本模块**结构上拿不到**绕过它们的路径：
-//! - 拿不到未经 reserve 的预算——[`SupplementalBudget`] 没有第二构造点；
+//! - 拿不到未经 reserve 的预算——[`SupplementalBudgetView`] 只来自拥有者的预留结果；
 //! - 拿不到 Mandatory 行的分数——[`FrozenLaneRow`] 没有那个字段，而
 //!   `Candidate::new` 要一个 `f32`，`MandatoryRow` 交不出来。
 //!
 //! 所以「把 mandatory 混进排序」不是一条要靠评审拦住的写法，是写不出来的表达式。
 
 use humaux_domain::authority::{AuthorityClass, MemoryId};
-use humaux_domain::context::{MandatoryOverflow, SelectorId, SupplementalBudget};
+use humaux_domain::context::{MandatoryOverflow, SelectorId, budget_views::SupplementalBudgetView};
 
 use crate::candidate::Candidate;
 use crate::envelope::FrozenGrounding;
@@ -35,7 +35,7 @@ pub struct FrozenLaneRow {
 }
 
 /// The result of reserving space with the owner before compiling the frozen rows.
-pub type FrozenReservation = Result<SupplementalBudget, MandatoryOverflow>;
+pub type FrozenReservation = Result<SupplementalBudgetView, MandatoryOverflow>;
 
 /// 装配后的一项。三档来源在类型上分开，不是一个带 `kind` 字段的结构体——
 /// 分开之后「把 Supplemental 当成 Mandatory 上报」需要显式改一个变体名，
@@ -121,7 +121,7 @@ impl CompiledContext {
 pub fn compile(
     mandatory_rows: Vec<FrozenLaneRow>,
     pinned_rows: Vec<FrozenLaneRow>,
-    budget: SupplementalBudget,
+    budget: impl Into<SupplementalBudgetView>,
     ranked: Vec<Candidate>,
 ) -> CompiledContext {
     let mut ordered: Vec<ContextItem> =
@@ -130,7 +130,7 @@ pub fn compile(
     ordered.extend(pinned_rows.into_iter().map(ContextItem::Pinned));
 
     // 补充位按预算贪心装，装不下的记名丢弃。
-    let mut remaining = budget.tokens();
+    let mut remaining = budget.into().tokens();
     let mut dropped = Vec::new();
     for c in ranked {
         let cost = c.estimated_rerank_tokens();
@@ -166,8 +166,10 @@ mod tests {
     use super::*;
     use crate::candidate::Facet;
     use humaux_domain::context::{
-        ContextBudget, MandatoryLane, MandatoryRow, PinnedLane, SelectorOutcome, spec,
+        ContextBudget, MandatoryLane, MandatoryRow, PinnedLane, SelectorOutcome,
+        SupplementalBudget, spec,
     };
+    use humaux_domain::grounding::GroundingState;
 
     fn freeze_row(row: MandatoryRow) -> FrozenLaneRow {
         FrozenLaneRow {
@@ -177,7 +179,9 @@ mod tests {
             authority: row.authority(),
             source_authority: row.source_authority(),
             est_tokens: row.est_tokens(),
-            grounding: FrozenGrounding::from_snapshot(row.grounding_state()),
+            grounding: FrozenGrounding::from_snapshot(
+                row.grounding_state().map(GroundingState::read_view),
+            ),
         }
     }
 
