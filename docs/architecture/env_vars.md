@@ -994,7 +994,6 @@ processes:
 - process(humaux-gateway)
 - process(humaux-maintenance)
 - process(humaux-private-worker)
-- process(humaux-public-worker)
 - process(humaux-retrieval-worker)
 
 modules:
