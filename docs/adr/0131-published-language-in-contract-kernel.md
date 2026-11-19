@@ -1,0 +1,28 @@
+# ADR-0131 — contract_kernel 发布语言的准入判据（M01-CTX-1）
+
+- 状态：Accepted (2026-11-18)
+- 日期：2026-11-18
+- 关联：ADR-0130 D1、D2、D7；Baseline §6.1.1、§59.1、§78.2、§78.3、§78.6
+- 决定者：CTX-1 主控工程裁决
+
+## 背景
+
+ADR-0130 D1 将跨模块契约归入 M01。多个上下文读取同一个标签时可以共享其定义，判断标签所允许的业务动作仍归拥有该规则的上下文。
+
+## 决策
+
+类型须同时满足以下条件，方可迁入 `contract_kernel`：
+
+1. 它是纯值类型、标识符或闭集枚举，至少两个限界上下文只读引用它。
+2. 类型只表达数据及其稳定表示。其实现无领域行为、无 I/O。
+3. 类型及其字段可在内核内定义。内核对其他上下文的依赖必须为零。
+
+ADR-0130 D2 的分层及既有唯一构造约束一并适用。具有唯一领域构造点的类型保留在拥有该构造点的上下文。`GroundingState`、`Authority`（Baseline §59.1）等类型的字段和构造权限仍由原模块控制。
+
+迁移时从原模块通过 `pub use` 重导出。调用方保留原路径。保留派生、变体、序列化表示及数据库标签，按 Baseline §78.2 用现有契约测试对账。
+
+## 不合格示例
+
+`AuthorizationScope` 的 `narrow` 执行 §6.1.1 的授权收窄，`identity::can_read` 基于其私有字段作读取判定。其字段还依赖 `identity_access` 的 `PrincipalId` 和 `BoundedSet`。跨上下文消费这个作用域时，由身份上下文提供只读视图或端口，保留收窄与读取判定的归属。
+
+`EvidencePayloadSha256` 虽然只封装 32 字节摘要，其唯一哈希构造点是 `evidence::payload_sha256`。`EvidencePayloadSha256::from_stored_digest` 只读回已持久化的摘要。ADR-0130 D7 第 3 项沿用 G80-22（Baseline §48.0①）：`xtask/src/architecture_check.rs` 要求这两处构造都位于 `crates/domain/src/evidence.rs`，并检查读回路径不重新计算哈希。因此该类型与构造点一同保留在 `knowledge_lifecycle`。
