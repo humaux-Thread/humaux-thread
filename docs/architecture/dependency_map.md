@@ -15,6 +15,18 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `private.memory_affects`
 - service `PostgreSQL(any)`
 
+#### `adapters::attribution_repo`
+- reads `coord.task_runs`
+- reads `private.evidence_objects`
+- reads `private.evidence_projects`
+- reads `private.evidence_task_runs`
+- reads `private.memory_projects_live`
+- reads `private.project_task_relations`
+- writes `private.evidence_projects`
+- writes `private.memory_projects`
+- executes `private.declared_project_visible`
+- service `PostgreSQL(any)`
+
 #### `adapters::byok`
 - env `CARGO_MANIFEST_DIR`
 
@@ -167,7 +179,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_maintenance)`
 
 #### `adapters::evidence_repo`
+- writes `private.events`
 - writes `private.evidence_objects`
+- writes `private.evidence_sources`
+- writes `private.evidence_task_runs`
 - env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
 
@@ -180,6 +195,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `projection.stream_log`
 - reads `public.pool`
 - executes `private.memory_in_project`
+- service `PostgreSQL(any)`
+
+#### `adapters::ingest_ticket_repo`
+- writes `private.ingest_tickets`
 - service `PostgreSQL(any)`
 
 #### `adapters::jobs`
@@ -374,12 +393,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.outbox`
 - reads `private.evidence_sources`
 - reads `projection.stream_log`
-- writes `private.events`
-- writes `private.evidence_projects`
-- writes `private.evidence_sources`
-- writes `private.evidence_task_runs`
-- writes `private.ingest_tickets`
-- executes `private.declared_project_visible`
 - service `PostgreSQL(role_gateway)`
 
 #### `adapters::request_guard_repo`
@@ -1693,7 +1706,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_task_runs`
 - reads `private.memory_projects_live`
 - reads `private.project_task_relations`
+- writes `private.evidence_projects`
 - writes `private.memory_projects`
+- executes `private.declared_project_visible`
 - service `PostgreSQL(any)`
 
 #### `adapters::audited_read_quota`
@@ -1873,7 +1888,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(any)`
 
 #### `adapters::evidence_repo`
+- writes `private.events`
 - writes `private.evidence_objects`
+- writes `private.evidence_sources`
+- writes `private.evidence_task_runs`
 - env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
 
@@ -1909,6 +1927,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_gateway)`
 
 #### `adapters::independent_audit`
+
+#### `adapters::ingest_ticket_repo`
+- writes `private.ingest_tickets`
+- service `PostgreSQL(any)`
 
 #### `adapters::jobs`
 - reads `ops.claim_derived_work`
@@ -2082,12 +2104,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.outbox`
 - reads `private.evidence_sources`
 - reads `projection.stream_log`
-- writes `private.events`
-- writes `private.evidence_projects`
-- writes `private.evidence_sources`
-- writes `private.evidence_task_runs`
-- writes `private.ingest_tickets`
-- executes `private.declared_project_visible`
 - service `PostgreSQL(role_gateway)`
 
 #### `adapters::request_guard_repo`
@@ -2606,6 +2622,18 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `private.memory_affects`
 - service `PostgreSQL(any)`
 
+#### `adapters::attribution_repo`
+- reads `coord.task_runs`
+- reads `private.evidence_objects`
+- reads `private.evidence_projects`
+- reads `private.evidence_task_runs`
+- reads `private.memory_projects_live`
+- reads `private.project_task_relations`
+- writes `private.evidence_projects`
+- writes `private.memory_projects`
+- executes `private.declared_project_visible`
+- service `PostgreSQL(any)`
+
 #### `adapters::byok`
 - env `CARGO_MANIFEST_DIR`
 
@@ -2758,7 +2786,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_maintenance)`
 
 #### `adapters::evidence_repo`
+- writes `private.events`
 - writes `private.evidence_objects`
+- writes `private.evidence_sources`
+- writes `private.evidence_task_runs`
 - env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
 
@@ -2771,6 +2802,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `projection.stream_log`
 - reads `public.pool`
 - executes `private.memory_in_project`
+- service `PostgreSQL(any)`
+
+#### `adapters::ingest_ticket_repo`
+- writes `private.ingest_tickets`
 - service `PostgreSQL(any)`
 
 #### `adapters::jobs`
@@ -3043,12 +3078,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.outbox`
 - reads `private.evidence_sources`
 - reads `projection.stream_log`
-- writes `private.events`
-- writes `private.evidence_projects`
-- writes `private.evidence_sources`
-- writes `private.evidence_task_runs`
-- writes `private.ingest_tickets`
-- executes `private.declared_project_visible`
 - service `PostgreSQL(role_gateway)`
 
 #### `adapters::request_guard_repo`
@@ -3904,7 +3933,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `private.evidence_task_runs`
 - reads `private.memory_projects_live`
 - reads `private.project_task_relations`
+- writes `private.evidence_projects`
 - writes `private.memory_projects`
+- executes `private.declared_project_visible`
 - service `PostgreSQL(any)`
 
 #### `adapters::byok`
@@ -4053,7 +4084,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(any)`
 
 #### `adapters::evidence_repo`
+- writes `private.events`
 - writes `private.evidence_objects`
+- writes `private.evidence_sources`
+- writes `private.evidence_task_runs`
 - env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
 
@@ -4066,6 +4100,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `projection.stream_log`
 - reads `public.pool`
 - executes `private.memory_in_project`
+- service `PostgreSQL(any)`
+
+#### `adapters::ingest_ticket_repo`
+- writes `private.ingest_tickets`
 - service `PostgreSQL(any)`
 
 #### `adapters::jobs`
@@ -4222,12 +4260,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.outbox`
 - reads `private.evidence_sources`
 - reads `projection.stream_log`
-- writes `private.events`
-- writes `private.evidence_projects`
-- writes `private.evidence_sources`
-- writes `private.evidence_task_runs`
-- writes `private.ingest_tickets`
-- executes `private.declared_project_visible`
 - service `PostgreSQL(role_gateway)`
 
 #### `adapters::request_guard_repo`
@@ -4691,6 +4723,18 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `private.memory_affects`
 - service `PostgreSQL(any)`
 
+#### `adapters::attribution_repo`
+- reads `coord.task_runs`
+- reads `private.evidence_objects`
+- reads `private.evidence_projects`
+- reads `private.evidence_task_runs`
+- reads `private.memory_projects_live`
+- reads `private.project_task_relations`
+- writes `private.evidence_projects`
+- writes `private.memory_projects`
+- executes `private.declared_project_visible`
+- service `PostgreSQL(any)`
+
 #### `adapters::byok`
 - env `CARGO_MANIFEST_DIR`
 
@@ -4841,7 +4885,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_retrieval_worker)`
 
 #### `adapters::evidence_repo`
+- writes `private.events`
 - writes `private.evidence_objects`
+- writes `private.evidence_sources`
+- writes `private.evidence_task_runs`
 - env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
 
@@ -4854,6 +4901,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `projection.stream_log`
 - reads `public.pool`
 - executes `private.memory_in_project`
+- service `PostgreSQL(any)`
+
+#### `adapters::ingest_ticket_repo`
+- writes `private.ingest_tickets`
 - service `PostgreSQL(any)`
 
 #### `adapters::jobs`
@@ -5032,12 +5083,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `ops.outbox`
 - reads `private.evidence_sources`
 - reads `projection.stream_log`
-- writes `private.events`
-- writes `private.evidence_projects`
-- writes `private.evidence_sources`
-- writes `private.evidence_task_runs`
-- writes `private.ingest_tickets`
-- executes `private.declared_project_visible`
 - service `PostgreSQL(role_gateway)`
 
 #### `adapters::request_guard_repo`
@@ -7877,8 +7922,11 @@ executed by:
 ### `coord.task_runs`
 read by:
 - (no process): `gateway::tests::coordinate_task`
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(humaux-gateway): `adapters::attribution_repo`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-private-worker): `adapters::attribution_repo`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 
 written by:
 - (no process): `adapters::tests::coord_task_run`
@@ -9879,18 +9927,18 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::memory_attribution`
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `adapters::coord_task_repo`
-- process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::attribution_repo`
 - process(humaux-gateway): `adapters::coord_task_repo`
-- process(humaux-gateway): `adapters::remember`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-maintenance): `adapters::coord_task_repo`
-- process(humaux-maintenance): `adapters::remember`
 - process(humaux-maintenance): `maintenance::rls_check`
+- process(humaux-private-worker): `adapters::attribution_repo`
 - process(humaux-private-worker): `adapters::coord_task_repo`
-- process(humaux-private-worker): `adapters::remember`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 - process(humaux-retrieval-worker): `adapters::coord_task_repo`
-- process(humaux-retrieval-worker): `adapters::remember`
 
 ### `private.distill_candidates`
 read by:
@@ -10035,18 +10083,18 @@ written by:
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::consolidate_repo`
-- process(cargo-xtask): `adapters::remember`
+- process(cargo-xtask): `adapters::evidence_repo`
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::e2e_seed`
 - process(humaux-gateway): `adapters::consolidate_repo`
-- process(humaux-gateway): `adapters::remember`
+- process(humaux-gateway): `adapters::evidence_repo`
 - process(humaux-maintenance): `adapters::consolidate_repo`
-- process(humaux-maintenance): `adapters::remember`
+- process(humaux-maintenance): `adapters::evidence_repo`
 - process(humaux-maintenance): `maintenance::switch_visible`
 - process(humaux-private-worker): `adapters::consolidate_repo`
-- process(humaux-private-worker): `adapters::remember`
+- process(humaux-private-worker): `adapters::evidence_repo`
 - process(humaux-retrieval-worker): `adapters::consolidate_repo`
-- process(humaux-retrieval-worker): `adapters::remember`
+- process(humaux-retrieval-worker): `adapters::evidence_repo`
 - process(humaux-retrieval-worker): `retrieval-provider::adapters`
 
 executed by:
@@ -10103,6 +10151,7 @@ read by:
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `private-worker::tests::m29_attribution_e2e`
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `adapters::consolidation_reasoner`
 - process(cargo-xtask): `adapters::context_repo`
 - process(cargo-xtask): `adapters::contribution_entry_repo`
@@ -10133,6 +10182,7 @@ read by:
 - process(humaux-gateway): `adapters::read_gate`
 - process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::retrieve`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-maintenance): `adapters::consolidation_reasoner`
 - process(humaux-maintenance): `adapters::context_repo`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
@@ -10162,6 +10212,7 @@ read by:
 - process(humaux-private-worker): `adapters::read_gate`
 - process(humaux-private-worker): `adapters::read_materialize`
 - process(humaux-private-worker): `adapters::retrieve`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 - process(humaux-retrieval-worker): `adapters::consolidation_reasoner`
 - process(humaux-retrieval-worker): `adapters::context_repo`
 - process(humaux-retrieval-worker): `adapters::contribution_entry_repo`
@@ -10271,20 +10322,23 @@ executed by:
 ### `private.evidence_projects`
 read by:
 - (no process): `private-worker::tests::m29_attribution_e2e`
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-gateway): `adapters::attribution_repo`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::attribution_repo`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 
 written by:
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `gateway::tests::mcp_gateway`
-- process(cargo-xtask): `adapters::remember`
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-gateway): `adapters::remember`
-- process(humaux-maintenance): `adapters::remember`
-- process(humaux-private-worker): `adapters::remember`
-- process(humaux-retrieval-worker): `adapters::remember`
+- process(humaux-gateway): `adapters::attribution_repo`
+- process(humaux-maintenance): `adapters::attribution_repo`
+- process(humaux-private-worker): `adapters::attribution_repo`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 
 executed by:
 
@@ -10304,11 +10358,11 @@ read by:
 written by:
 - (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::evidence_sources`
-- process(cargo-xtask): `adapters::remember`
-- process(humaux-gateway): `adapters::remember`
-- process(humaux-maintenance): `adapters::remember`
-- process(humaux-private-worker): `adapters::remember`
-- process(humaux-retrieval-worker): `adapters::remember`
+- process(cargo-xtask): `adapters::evidence_repo`
+- process(humaux-gateway): `adapters::evidence_repo`
+- process(humaux-maintenance): `adapters::evidence_repo`
+- process(humaux-private-worker): `adapters::evidence_repo`
+- process(humaux-retrieval-worker): `adapters::evidence_repo`
 
 executed by:
 
@@ -10339,22 +10393,25 @@ executed by:
 
 ### `private.evidence_task_runs`
 read by:
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-gateway): `adapters::attribution_repo`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::attribution_repo`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 
 written by:
 - (no process): `adapters::tests::coord_task_project`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `gateway::tests::mcp_gateway`
-- process(cargo-xtask): `adapters::remember`
+- process(cargo-xtask): `adapters::evidence_repo`
 - process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-gateway): `adapters::remember`
-- process(humaux-maintenance): `adapters::remember`
-- process(humaux-private-worker): `adapters::remember`
-- process(humaux-retrieval-worker): `adapters::remember`
+- process(humaux-gateway): `adapters::evidence_repo`
+- process(humaux-maintenance): `adapters::evidence_repo`
+- process(humaux-private-worker): `adapters::evidence_repo`
+- process(humaux-retrieval-worker): `adapters::evidence_repo`
 
 executed by:
 
@@ -10426,22 +10483,21 @@ read by:
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 
 written by:
-- (no process): `adapters::batch`
 - (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::serve`
-- process(cargo-xtask): `adapters::remember`
+- process(cargo-xtask): `adapters::ingest_ticket_repo`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::remember`
+- process(humaux-gateway): `adapters::ingest_ticket_repo`
 - process(humaux-gateway): `adapters::stream_repo`
-- process(humaux-maintenance): `adapters::remember`
+- process(humaux-maintenance): `adapters::ingest_ticket_repo`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
-- process(humaux-private-worker): `adapters::remember`
+- process(humaux-private-worker): `adapters::ingest_ticket_repo`
 - process(humaux-private-worker): `adapters::stream_repo`
-- process(humaux-retrieval-worker): `adapters::remember`
+- process(humaux-retrieval-worker): `adapters::ingest_ticket_repo`
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 
 executed by:
@@ -10826,19 +10882,25 @@ written by:
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_in_project`
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-gateway): `adapters::attribution_repo`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-private-worker): `adapters::attribution_repo`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 
 executed by:
 
 ### `private.memory_projects_live`
 read by:
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-gateway): `adapters::attribution_repo`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::attribution_repo`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 
 written by:
 
@@ -11343,18 +11405,21 @@ read by:
 - (no process): `adapters::tests::coord_task_project`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `private-worker::tests::m29_attribution_e2e`
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `adapters::coord_task_repo`
 - process(cargo-xtask): `adapters::relation_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-gateway): `adapters::attribution_repo`
 - process(humaux-gateway): `adapters::coord_task_repo`
 - process(humaux-gateway): `adapters::relation_repo`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-maintenance): `adapters::coord_task_repo`
 - process(humaux-maintenance): `adapters::relation_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::attribution_repo`
 - process(humaux-private-worker): `adapters::coord_task_repo`
 - process(humaux-private-worker): `adapters::relation_repo`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 - process(humaux-retrieval-worker): `adapters::coord_task_repo`
 - process(humaux-retrieval-worker): `adapters::relation_repo`
 
@@ -13152,7 +13217,6 @@ executed by:
 - `adapters::affect_repo`
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
-- `adapters::batch`
 - `adapters::candidate_repo`
 - `adapters::confirm_token_repo`
 - `adapters::consolidate_repo`
@@ -13176,6 +13240,7 @@ executed by:
 - `adapters::evidence_repo`
 - `adapters::exact_census`
 - `adapters::forget_repo`
+- `adapters::ingest_ticket_repo`
 - `adapters::jobs`
 - `adapters::login_repo`
 - `adapters::mechanism_observation`
@@ -13988,7 +14053,6 @@ modules naming it:
 - `adapters::affect_repo`
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
-- `adapters::batch`
 - `adapters::billing_processor_repo`
 - `adapters::billing_repo`
 - `adapters::candidate_repo`
@@ -14022,6 +14086,7 @@ modules naming it:
 - `adapters::forget_repo`
 - `adapters::grep_repo`
 - `adapters::health`
+- `adapters::ingest_ticket_repo`
 - `adapters::jobs`
 - `adapters::login_repo`
 - `adapters::maintenance_repo`
@@ -14662,6 +14727,7 @@ modules naming it:
 - `adapters::distill_repo`
 - `adapters::email::outbox`
 - `adapters::entitlement_repo`
+- `adapters::evidence_repo`
 - `adapters::jobs`
 - `adapters::login_repo`
 - `adapters::maintenance_repo`

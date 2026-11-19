@@ -1980,7 +1980,7 @@ fn hex_context_cycles(root: &Path, actual: &BTreeSet<String>, baseline: &str) ->
 
 fn hex_boundary_gate(root: &Path, writer: bool) -> Verdict {
     let (file, ceiling, label) = if writer {
-        ("xtask/hex_writer_baseline.txt", 40, "HEX-WRITER")
+        ("xtask/hex_writer_baseline.txt", 34, "HEX-WRITER")
     } else {
         ("xtask/hex_context_baseline.txt", 181, "HEX-CONTEXT")
     };
@@ -5586,15 +5586,15 @@ fn m04_1_plans_are_data(root: &Path) -> Verdict {
 }
 
 /// Door statement of M29 T04c (design v0.2 §15, gate G-T04c-3): the §30.2 Evidence → task-run carrier INSERT is one
-/// statement in non-test code, in `remember::insert_evidence_task_run_in_txn`. This arm pins only that statement;
+/// statement in non-test code, in `evidence_repo::insert_evidence_task_run_in_txn`. This arm pins only that statement;
 /// `pub(crate)` pins the function's callers to the adapters crate, and the §6.2.2 grants (rls_check: INSERT for
 /// `role_gateway` only) are the DB backstop.
 const T04C_CARRIER_DOOR: [DoorStatement; 1] = [(
     "INSERT INTO private.evidence_task_runs",
-    "crates/adapters/src/remember.rs",
+    "crates/adapters/src/evidence_repo.rs",
 )];
 
-/// M29 T04c / G-T04c-3: exactly one `INSERT INTO private.evidence_task_runs` in non-test code, in `remember.rs`
+/// M29 T04c / G-T04c-3: exactly one `INSERT INTO private.evidence_task_runs` in non-test code, in `evidence_repo.rs`
 /// ([`T04C_CARRIER_DOOR`]); the 注错 is a second copy in another module (`found 2`).
 fn t04c_3_carrier_door(root: &Path) -> Verdict {
     sole_door_statements(
@@ -5607,16 +5607,16 @@ fn t04c_3_carrier_door(root: &Path) -> Verdict {
 }
 
 /// Door statement of M29 T06c (ADR-0078 D-D rung A1, gate G-T06c-3): the declared-project carrier INSERT is one
-/// statement in non-test code, in `remember::insert_evidence_project_in_txn`. This arm pins only that statement;
+/// statement in non-test code, in `attribution_repo::insert_evidence_project_in_txn`. This arm pins only that statement;
 /// `pub(crate)` pins the function's callers to the adapters crate, its `DeclaredProject` argument (constructed only by
-/// `remember::resolve_declared_project_in_txn`) pins the resolution before it, and the §6.2.2 grants (rls_check:
+/// `attribution_repo::resolve_declared_project_in_txn`) pins the resolution before it, and the §6.2.2 grants (rls_check:
 /// INSERT for `role_gateway` only) are the DB backstop.
 const T06C_DECLARED_DOOR: [DoorStatement; 1] = [(
     "INSERT INTO private.evidence_projects",
-    "crates/adapters/src/remember.rs",
+    "crates/adapters/src/attribution_repo.rs",
 )];
 
-/// M29 T06c / G-T06c-3: exactly one `INSERT INTO private.evidence_projects` in non-test code, in `remember.rs`
+/// M29 T06c / G-T06c-3: exactly one `INSERT INTO private.evidence_projects` in non-test code, in `attribution_repo.rs`
 /// ([`T06C_DECLARED_DOOR`]); the 注错 is a second copy in another module (`found 2`).
 fn t06c_door(root: &Path) -> Verdict {
     sole_door_statements(
@@ -13708,11 +13708,11 @@ pub fn run(_args: &[String]) -> i32 {
             m04_1_plans_are_data(&root),
         ),
         (
-            "M29 T04c / G-T04c-3 (private.evidence_task_runs INSERT: one statement, in remember.rs, non-test code)",
+            "M29 T04c / G-T04c-3 (private.evidence_task_runs INSERT: one statement, in evidence_repo.rs, non-test code)",
             t04c_3_carrier_door(&root),
         ),
         (
-            "M29 T06c / G-T06c-3 (private.evidence_projects INSERT: one statement, in remember.rs, non-test code)",
+            "M29 T06c / G-T06c-3 (private.evidence_projects INSERT: one statement, in attribution_repo.rs, non-test code)",
             t06c_door(&root),
         ),
         (
@@ -22070,12 +22070,12 @@ async fn serving_version_in_txn() {}
         assert!(hits[0].starts_with("line 3:"), "{hits:?}");
     }
 
-    // -- M29 T04c / G-T04c-3: one INSERT INTO private.evidence_task_runs, in remember.rs ----------------
+    // -- M29 T04c / G-T04c-3: one INSERT INTO private.evidence_task_runs, in evidence_repo.rs ----------------
 
-    const T04C_HOME: &str = "crates/adapters/src/remember.rs";
+    const T04C_HOME: &str = "crates/adapters/src/evidence_repo.rs";
     const T04C_DOOR: &str = "fn door() { let _ = \"INSERT INTO private.evidence_task_runs (tenant_id) VALUES ($1)\"; }\n";
 
-    /// The tree as T04c leaves it: one carrier INSERT, in `remember.rs`.
+    /// The tree as T04c leaves it: one carrier INSERT, in `evidence_repo.rs`.
     #[test]
     fn t04c_3_real_repo_passes() {
         assert_eq!(t04c_3_carrier_door(&real_root()), Verdict::Pass);
@@ -22116,15 +22116,24 @@ async fn serving_version_in_txn() {}
         fs::remove_dir_all(&tmp).ok();
     }
 
-    // -- M29 T06c / G-T06c-3: one INSERT INTO private.evidence_projects, in remember.rs ---------------------------------
+    // -- M29 T06c / G-T06c-3: one INSERT INTO private.evidence_projects, in attribution_repo.rs ---------------------------------
 
-    const T06C_HOME: &str = "crates/adapters/src/remember.rs";
+    const T06C_HOME: &str = "crates/adapters/src/attribution_repo.rs";
     const T06C_DOOR: &str = "fn door() { let _ = \"INSERT INTO private.evidence_projects (tenant_id) VALUES ($1)\"; }\n";
 
-    /// The tree as T06c leaves it: one declared-project INSERT, in `remember.rs`.
+    /// The tree as T06c leaves it: one declared-project INSERT, in `attribution_repo.rs`.
     #[test]
     fn t06c_door_real_repo_passes() {
         assert_eq!(t06c_door(&real_root()), Verdict::Pass);
+    }
+
+    #[test]
+    fn declared_project_has_one_constructor_call() {
+        let files = door_production_sources(&real_root());
+        let sites = door_statement_sites(&files, "DeclaredProject(");
+        let declarations = door_statement_sites(&files, "struct DeclaredProject(");
+        assert_eq!(declarations, [(T06C_HOME.to_owned(), 1)]);
+        assert_eq!(sites, [(T06C_HOME.to_owned(), 2)], "one type and one call");
     }
 
     /// `not_applicable` names the missing home file (§57.1 第2条).

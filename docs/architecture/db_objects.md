@@ -5939,8 +5939,11 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `gateway::tests::coordinate_task`
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(humaux-gateway): `adapters::attribution_repo`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-private-worker): `adapters::attribution_repo`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 
 written by:
 - (no process): `adapters::tests::coord_task_run`
@@ -10522,18 +10525,18 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::memory_attribution`
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `adapters::coord_task_repo`
-- process(cargo-xtask): `adapters::remember`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::attribution_repo`
 - process(humaux-gateway): `adapters::coord_task_repo`
-- process(humaux-gateway): `adapters::remember`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-maintenance): `adapters::coord_task_repo`
-- process(humaux-maintenance): `adapters::remember`
 - process(humaux-maintenance): `maintenance::rls_check`
+- process(humaux-private-worker): `adapters::attribution_repo`
 - process(humaux-private-worker): `adapters::coord_task_repo`
-- process(humaux-private-worker): `adapters::remember`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 - process(humaux-retrieval-worker): `adapters::coord_task_repo`
-- process(humaux-retrieval-worker): `adapters::remember`
 
 ### `private.distill_candidates`
 - kind: table
@@ -10810,18 +10813,18 @@ written by:
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
 - process(cargo-xtask): `adapters::consolidate_repo`
-- process(cargo-xtask): `adapters::remember`
+- process(cargo-xtask): `adapters::evidence_repo`
 - process(cargo-xtask): `maintenance::switch_visible`
 - process(cargo-xtask): `xtask::e2e_seed`
 - process(humaux-gateway): `adapters::consolidate_repo`
-- process(humaux-gateway): `adapters::remember`
+- process(humaux-gateway): `adapters::evidence_repo`
 - process(humaux-maintenance): `adapters::consolidate_repo`
-- process(humaux-maintenance): `adapters::remember`
+- process(humaux-maintenance): `adapters::evidence_repo`
 - process(humaux-maintenance): `maintenance::switch_visible`
 - process(humaux-private-worker): `adapters::consolidate_repo`
-- process(humaux-private-worker): `adapters::remember`
+- process(humaux-private-worker): `adapters::evidence_repo`
 - process(humaux-retrieval-worker): `adapters::consolidate_repo`
-- process(humaux-retrieval-worker): `adapters::remember`
+- process(humaux-retrieval-worker): `adapters::evidence_repo`
 - process(humaux-retrieval-worker): `retrieval-provider::adapters`
 
 executed by:
@@ -10953,6 +10956,7 @@ read by:
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `private-worker::tests::m29_attribution_e2e`
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `adapters::consolidation_reasoner`
 - process(cargo-xtask): `adapters::context_repo`
 - process(cargo-xtask): `adapters::contribution_entry_repo`
@@ -10983,6 +10987,7 @@ read by:
 - process(humaux-gateway): `adapters::read_gate`
 - process(humaux-gateway): `adapters::read_materialize`
 - process(humaux-gateway): `adapters::retrieve`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-maintenance): `adapters::consolidation_reasoner`
 - process(humaux-maintenance): `adapters::context_repo`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
@@ -11012,6 +11017,7 @@ read by:
 - process(humaux-private-worker): `adapters::read_gate`
 - process(humaux-private-worker): `adapters::read_materialize`
 - process(humaux-private-worker): `adapters::retrieve`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 - process(humaux-retrieval-worker): `adapters::consolidation_reasoner`
 - process(humaux-retrieval-worker): `adapters::context_repo`
 - process(humaux-retrieval-worker): `adapters::contribution_entry_repo`
@@ -11144,20 +11150,23 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `private-worker::tests::m29_attribution_e2e`
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-gateway): `adapters::attribution_repo`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::attribution_repo`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 
 written by:
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `gateway::tests::mcp_gateway`
-- process(cargo-xtask): `adapters::remember`
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-gateway): `adapters::remember`
-- process(humaux-maintenance): `adapters::remember`
-- process(humaux-private-worker): `adapters::remember`
-- process(humaux-retrieval-worker): `adapters::remember`
+- process(humaux-gateway): `adapters::attribution_repo`
+- process(humaux-maintenance): `adapters::attribution_repo`
+- process(humaux-private-worker): `adapters::attribution_repo`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 
 executed by:
 
@@ -11199,11 +11208,11 @@ read by:
 written by:
 - (no process): `adapters::tests::dedup`
 - (no process): `adapters::tests::evidence_sources`
-- process(cargo-xtask): `adapters::remember`
-- process(humaux-gateway): `adapters::remember`
-- process(humaux-maintenance): `adapters::remember`
-- process(humaux-private-worker): `adapters::remember`
-- process(humaux-retrieval-worker): `adapters::remember`
+- process(cargo-xtask): `adapters::evidence_repo`
+- process(humaux-gateway): `adapters::evidence_repo`
+- process(humaux-maintenance): `adapters::evidence_repo`
+- process(humaux-private-worker): `adapters::evidence_repo`
+- process(humaux-retrieval-worker): `adapters::evidence_repo`
 
 executed by:
 
@@ -11283,22 +11292,25 @@ foreign keys (outgoing):
 - fk: tenant_id, task_run_id -> coord.task_runs (NOT NULL)
 
 read by:
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-gateway): `adapters::attribution_repo`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::attribution_repo`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 
 written by:
 - (no process): `adapters::tests::coord_task_project`
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `gateway::tests::mcp_gateway`
-- process(cargo-xtask): `adapters::remember`
+- process(cargo-xtask): `adapters::evidence_repo`
 - process(cargo-xtask): `xtask::architecture_check`
-- process(humaux-gateway): `adapters::remember`
-- process(humaux-maintenance): `adapters::remember`
-- process(humaux-private-worker): `adapters::remember`
-- process(humaux-retrieval-worker): `adapters::remember`
+- process(humaux-gateway): `adapters::evidence_repo`
+- process(humaux-maintenance): `adapters::evidence_repo`
+- process(humaux-private-worker): `adapters::evidence_repo`
+- process(humaux-retrieval-worker): `adapters::evidence_repo`
 
 executed by:
 
@@ -11450,22 +11462,21 @@ read by:
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 
 written by:
-- (no process): `adapters::batch`
 - (no process): `adapters::tests::ingest_ticket_expiry`
 - (no process): `adapters::tests::outbox_batch_remember`
 - (no process): `maintenance::tests::partitions`
 - (no process): `maintenance::tests::serve`
-- process(cargo-xtask): `adapters::remember`
+- process(cargo-xtask): `adapters::ingest_ticket_repo`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::remember`
+- process(humaux-gateway): `adapters::ingest_ticket_repo`
 - process(humaux-gateway): `adapters::stream_repo`
-- process(humaux-maintenance): `adapters::remember`
+- process(humaux-maintenance): `adapters::ingest_ticket_repo`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
-- process(humaux-private-worker): `adapters::remember`
+- process(humaux-private-worker): `adapters::ingest_ticket_repo`
 - process(humaux-private-worker): `adapters::stream_repo`
-- process(humaux-retrieval-worker): `adapters::remember`
+- process(humaux-retrieval-worker): `adapters::ingest_ticket_repo`
 - process(humaux-retrieval-worker): `adapters::stream_repo`
 
 executed by:
@@ -12093,9 +12104,12 @@ written by:
 - (no process): `adapters::tests::exact_census_project`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_in_project`
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-gateway): `adapters::attribution_repo`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-private-worker): `adapters::attribution_repo`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 
 executed by:
 
@@ -12118,11 +12132,14 @@ grants (runtime roles):
 - role_migration_owner: UPDATE
 
 read by:
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::architecture_check`
 - process(humaux-gateway): `adapters::attribution_repo`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::attribution_repo`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 
 written by:
 
@@ -13086,18 +13103,21 @@ read by:
 - (no process): `adapters::tests::coord_task_project`
 - (no process): `adapters::tests::relation_kernel`
 - (no process): `private-worker::tests::m29_attribution_e2e`
+- process(cargo-xtask): `adapters::attribution_repo`
 - process(cargo-xtask): `adapters::coord_task_repo`
 - process(cargo-xtask): `adapters::relation_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-gateway): `adapters::attribution_repo`
 - process(humaux-gateway): `adapters::coord_task_repo`
 - process(humaux-gateway): `adapters::relation_repo`
+- process(humaux-maintenance): `adapters::attribution_repo`
 - process(humaux-maintenance): `adapters::coord_task_repo`
 - process(humaux-maintenance): `adapters::relation_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::attribution_repo`
 - process(humaux-private-worker): `adapters::coord_task_repo`
 - process(humaux-private-worker): `adapters::relation_repo`
+- process(humaux-retrieval-worker): `adapters::attribution_repo`
 - process(humaux-retrieval-worker): `adapters::coord_task_repo`
 - process(humaux-retrieval-worker): `adapters::relation_repo`
 
