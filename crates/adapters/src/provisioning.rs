@@ -261,7 +261,9 @@ pub async fn audit_maintenance_redrive(
     .await
 }
 
-/// Record a retention effect under the system tenant in the transaction that made the change.
+/// ADR-0063 D-I: the §77 row of one executor effect, under the system tenant, in the effect's own transaction right
+/// before COMMIT. The client never sets `row_security`, so the owner definer's FORCE-RLS insert runs with it on
+/// (review finding 5).
 pub async fn audit_retention_effect(
     txn: &mut Txn<'_>,
     action: &str,
