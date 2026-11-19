@@ -5,21 +5,6 @@
 # read_gate.rs:NoteKind -> application/recall_read.rs:NoteKind.
 # retrieval/handoff.rs:ContextBudget -> application/recall_read.rs:ContextBudget; old handoff row remains.
 # Net +1: the existing handoff ContextBudget dependency now has a second consumer in the inbound request.
-bins/billing-worker/src/creem.rs:commercial->provider_execution:humaux_domain::egress
-bins/billing-worker/src/creem.rs:commercial->provider_execution:humaux_domain::egress::AuthorizedEgressPayload
-bins/billing-worker/src/creem.rs:commercial->provider_execution:humaux_domain::egress::AuthorizedEgressPayload::new
-bins/billing-worker/src/creem.rs:commercial->provider_execution:humaux_domain::egress::ExternalCall
-bins/billing-worker/src/creem.rs:commercial->provider_execution:humaux_domain::egress::PrivateDataPurpose
-bins/billing-worker/src/creem.rs:commercial->provider_execution:humaux_domain::egress::PrivateDataPurpose::BillingProvider
-bins/billing-worker/src/creem.rs:commercial->provider_execution:humaux_domain::egress::ProcessorId
-bins/billing-worker/src/creem.rs:commercial->provider_execution:humaux_domain::egress::authorize
-bins/billing-worker/src/creem.rs:commercial->provider_execution:humaux_infra_egress::http::HttpEgressConfig
-bins/billing-worker/src/creem.rs:commercial->provider_execution:humaux_infra_egress::http::HttpExternalCall
-bins/billing-worker/src/creem.rs:commercial->provider_execution:humaux_infra_egress::http::HttpExternalCall::new
-bins/billing-worker/src/creem.rs:commercial->provider_execution:humaux_infra_egress::http::RetrievalCredentialSource
-bins/billing-worker/src/fake_creem.rs:commercial->provider_execution:humaux_infra_egress::http::EgressSecret
-bins/billing-worker/src/fake_creem.rs:commercial->provider_execution:humaux_infra_egress::http::EgressSecret::new
-bins/billing-worker/src/fake_creem.rs:commercial->provider_execution:humaux_infra_egress::http::RetrievalCredentialSource
 bins/consolidation-worker/src/dsn.rs:knowledge_curation->operations_platform:humaux_telemetry::renamed_key
 bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::ModeFailure
 bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::ModeFailure::runtime
