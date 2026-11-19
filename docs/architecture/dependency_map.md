@@ -15874,6 +15874,7 @@ modules naming it:
 - `domain::ids`
 - `domain::lifecycle`
 - `domain::note`
+- `domain::reasoning_types`
 - `domain::relation`
 - `domain::selection`
 - `domain::subject`
