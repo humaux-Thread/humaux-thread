@@ -139,10 +139,6 @@ crates/projection/src/dense.rs:retrieval_read_model->knowledge_lifecycle:humaux_
 crates/projection/src/dense.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::BasisPoints::MAX
 crates/projection/src/fingerprint.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::evidence::EvidencePayloadSha256
 crates/projection/src/fingerprint.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::evidence::EvidencePayloadSha256::to_hex
-crates/public-pool/src/public_projection.rs:public_knowledge->retrieval_read_model:humaux_adapters::qdrant::QdrantTransportError
-crates/public-pool/src/public_projection.rs:public_knowledge->retrieval_read_model:humaux_adapters::qdrant::QdrantTransportError::InvalidCollectionName
-crates/public-pool/src/public_projection.rs:public_knowledge->retrieval_read_model:humaux_adapters::qdrant::QdrantTransportError::NonSuccessStatus
-crates/public-pool/src/public_projection.rs:public_knowledge->retrieval_read_model:humaux_adapters::qdrant::QdrantTransportError::UnexpectedResponseShape
 crates/public-pool/src/public_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
 crates/public-pool/src/public_repo.rs:public_knowledge->operations_platform:humaux_adapters::mechanism_observation::EvaluateClaim
 crates/public-pool/src/public_repo.rs:public_knowledge->operations_platform:humaux_adapters::mechanism_observation::EvaluationResult
