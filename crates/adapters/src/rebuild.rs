@@ -9,7 +9,7 @@
 //!   PostgreSQL(role_retrieval_worker) r=[ops.outbox, private.evidence_objects, private.memory_evidence,
 //!   private.memory_records, projection.memory_vectors, projection.private_memory_points,
 //!   projection.rebuild_tickets, projection.stream_checkpoints, projection.stream_log], Qdrant(*)]; env=[];
-//!   modules=[adapters::maintenance_repo, adapters::postgres, adapters::projection_worker, adapters::provisioning, adapters::qdrant, adapters::stream_repo,
+//!   modules=[adapters::postgres, adapters::projection_worker, adapters::provisioning, adapters::qdrant, adapters::stream_repo,
 //!   application::projection_maintenance, domain::egress, domain::error, domain::ids, domain::ticket_family, humaux-local-secret-scan, infra-cell::permit,
 //!   infra-cell::resource, infra-cell::transport, projection::dense, projection::note_chunks, projection::serving, projection::stream]
 //! Called-by: [maintenance::bootstrap, maintenance::rebuild_cli, tests]
@@ -68,7 +68,6 @@ use sha2::{Digest, Sha256};
 use sqlx::Row;
 use sqlx::types::Uuid;
 
-use crate::maintenance_repo;
 use crate::postgres::{MaintenanceDbPool, RetrievalWorkerDbPool};
 use crate::projection_worker::{
     self, CardEmbedder, ExpectedPoint, SharedProjectionDeps, Sleep, begin_projector_read,
@@ -257,9 +256,20 @@ pub async fn streams(
 /// `--all`: every tenant id, through card 35's tenant page definer (ADR-0062 D-D).
 // ponytail: one page holding every tenant id; walk the definer's `p_after` cursor if the tenant list outgrows one
 // result set.
-pub async fn all_tenants(pool: &MaintenanceDbPool) -> Result<Vec<Uuid>> {
-    Ok(maintenance_repo::tenant_page(pool, None, i32::MAX).await?)
+pub async fn all_tenants(
+    pool: &MaintenanceDbPool,
+    read_page: TenantPageReadPort,
+) -> Result<Vec<Uuid>> {
+    read_page(pool, None, i32::MAX).await
 }
+
+/// Tenant catalog read supplied by maintenance assembly, in the catalog's original page order.
+pub type TenantPageReadPort =
+    for<'a> fn(
+        &'a MaintenanceDbPool,
+        Option<Uuid>,
+        i32,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Uuid>>> + Send + 'a>>;
 
 // ============================================================================
 // D-G precheck
@@ -1735,6 +1745,7 @@ pub fn drill_closed_deps(
 pub async fn maintenance_port(
     maintenance: MaintenanceDbPool,
     reader: RetrievalWorkerDbPool,
+    read_tenant_page: TenantPageReadPort,
     host: &str,
     port: u16,
     cidr: &str,
@@ -1749,6 +1760,7 @@ pub async fn maintenance_port(
     Ok(MaintenanceProjection {
         maintenance,
         reader,
+        read_tenant_page,
         face,
         worker,
     })
@@ -1757,6 +1769,7 @@ pub async fn maintenance_port(
 struct MaintenanceProjection {
     maintenance: MaintenanceDbPool,
     reader: RetrievalWorkerDbPool,
+    read_tenant_page: TenantPageReadPort,
     face: QdrantFace,
     worker: WorkerLabel,
 }
@@ -1813,7 +1826,7 @@ impl humaux_application::projection_maintenance::ProjectionMaintenancePort
             }
             app::Scope::All => {
                 let mut selected = Vec::new();
-                for tenant in all_tenants(&self.maintenance).await? {
+                for tenant in all_tenants(&self.maintenance, self.read_tenant_page).await? {
                     selected.extend(streams(&self.maintenance, tenant, None).await?);
                 }
                 selected

@@ -112,16 +112,10 @@ crates/adapters/src/qdrant.rs:retrieval_read_model->knowledge_lifecycle:humaux_d
 crates/adapters/src/qdrant.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
 crates/adapters/src/qdrant.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::BasisPoints
 crates/adapters/src/qdrant.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::EmotionLabel
-crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_adapters::affect_repo
-crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_adapters::affect_repo::affects_for_memories_in_txn
-crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_adapters::affect_repo::observed
-crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_application::affect::memories_matching
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding::Judged
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding::NotJudged
-crates/adapters/src/rebuild.rs:retrieval_read_model->job_execution:humaux_adapters::maintenance_repo
-crates/adapters/src/rebuild.rs:retrieval_read_model->job_execution:humaux_adapters::maintenance_repo::tenant_page
 crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo
 crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo::QuotaReservation
 crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo::ReservationStatus
@@ -132,7 +126,6 @@ crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_ada
 crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo::finish_reservation_in_txn
 crates/adapters/src/request_guard_repo.rs:identity_access->commercial:humaux_adapters::quota_repo::reserve_bmo_in_txn
 crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::AuditEvent
-crates/adapters/src/retrieve.rs:retrieval_read_model->knowledge_lifecycle:humaux_adapters::memory_repo::memory_texts_in_txn
 crates/adapters/src/retrieve.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
 crates/application/src/auth.rs:identity_access->provider_execution:humaux_domain::audit::AuditMetadata
 crates/application/src/continuity.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
