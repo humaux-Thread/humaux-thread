@@ -3,9 +3,9 @@
 //!   reader of a memory's live attribution (M29 T07).
 //! Depends-on: crates=[async-trait, humaux-domain, sqlx]; services=[PostgreSQL(any) r=[coord.task_runs,
 //!   private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_projects_live,
-//!   private.project_task_relations] w=[private.memory_projects]]; env=[]; modules=[adapters::memory_repo,
-//!   domain::attribution, domain::authority, domain::continuity, domain::relation]
-//! Called-by: [gateway::bootstrap, private-worker::bootstrap, private-worker::route_providers, tests]
+//!   private.project_task_relations] w=[private.evidence_projects, private.memory_projects] x=[private.declared_project_visible]]; env=[]; modules=[adapters::memory_repo,
+//!   domain::attribution, domain::authority, domain::continuity, domain::identity, domain::ids, domain::relation]
+//! Called-by: [adapters::remember, gateway::bootstrap, private-worker::bootstrap, private-worker::route_providers, tests]
 //! Invariants: [runs only through the door's single port call, in the caller's transaction, under the caller's role
 //!   and RLS; every row is deterministic (N09 R1) and carries its rule and decision Evidence (N09 R6); no rung holding
 //!   writes nothing, never a default or a most-recent guess (N09 R3); imports no provider, inference, embedding or
@@ -24,10 +24,68 @@
 use humaux_domain::attribution::{self, ProjectLink, RuleId, SourceKind};
 use humaux_domain::authority::{EvidenceId, MemoryId};
 use humaux_domain::continuity::ProjectId;
+use humaux_domain::identity::AuthorizationScope;
+use humaux_domain::ids::TenantId;
 use humaux_domain::relation::RelationKind;
 use sqlx::types::Uuid;
 
 use crate::memory_repo::MemoryAttribution;
+
+/// Proof that [`resolve_declared_project_in_txn`] found the project visible inside the caller's transaction (ADR-0078
+/// D-D rung A1). The field is private, so that function is the only constructor; neither `Copy` nor `Clone`, so one
+/// resolution backs at most one [`insert_evidence_project_in_txn`] row, as [`crate::coord_repo::VerifiedTaskRun`] does for the carrier.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct DeclaredProject(ProjectId);
+
+/// ADR-0078 D-D rung A1 (§6.1.4): resolves a `remember.put` `project_id` before the first write, as §6.1.3 resolves
+/// subject ids. `Ok(None)` is every refusal: 0254's `private.declared_project_visible` answers one `false` for an
+/// unknown, another tenant's, archived or not-visible project, so the caller returns one `INVALID_INPUT` and the
+/// response is no existence oracle. `auth` is the receipt transaction's route-narrowed scope (ADR-0078 D-D route
+/// narrowing): a workspace-routed put passes that one workspace, so a project in another workspace the caller is
+/// authorized for is refused too. The transaction's `humaux.tenant_id` must already be `auth`'s tenant
+/// (the reader raises 42501 otherwise).
+pub(crate) async fn resolve_declared_project_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    auth: &AuthorizationScope,
+    project: ProjectId,
+) -> Result<Option<DeclaredProject>, sqlx::Error> {
+    let workspaces: Vec<Uuid> = auth
+        .allowed_workspace_ids()
+        .iter()
+        .map(|workspace| workspace.0)
+        .collect();
+    let visible: bool = sqlx::query_scalar("SELECT private.declared_project_visible($1, $2, $3)")
+        .bind(auth.tenant_id().0)
+        .bind(project.0)
+        .bind(workspaces)
+        .fetch_one(&mut **txn)
+        .await?;
+    Ok(visible.then_some(DeclaredProject(project)))
+}
+
+/// ADR-0078 D-D rung A1: the one `INSERT INTO private.evidence_projects` statement (xtask G-T06c-3); `pub(crate)` keeps
+/// its callers inside this crate, and 0254 grants INSERT to `role_gateway` only. `declared` is taken by value: it is
+/// the proof that [`resolve_declared_project_in_txn`] passed in this same transaction. `evidence_id` is the Evidence
+/// this transaction just wrote; the tenant-leg FKs and the FORCE RLS policy refuse a project or an Evidence outside
+/// `tenant_id`.
+pub(crate) async fn insert_evidence_project_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: TenantId,
+    declared: DeclaredProject,
+    evidence_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO private.evidence_projects (tenant_id, evidence_id, project_id, source_kind) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(tenant_id.0)
+    .bind(evidence_id)
+    .bind(declared.0.0)
+    .bind(SourceKind::Declared.as_str())
+    .execute(&mut **txn)
+    .await
+    .map(|_| ())
+}
 
 /// The M29 attribution ladder (A1, then A3). Stateless: each composition root holds one and lends it to the door.
 #[derive(Debug, Clone, Copy)]

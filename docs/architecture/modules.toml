@@ -22,8 +22,10 @@ id = "knowledge_lifecycle"
 files = [
   "bins/worker/src/main.rs",
   "crates/adapters/src/affect_repo.rs",
+  "crates/adapters/src/batch.rs",
   "crates/adapters/src/confirm_token_repo.rs",
   "crates/adapters/src/evidence_repo.rs",
+  "crates/adapters/src/ingest_ticket_repo.rs",
   "crates/adapters/src/memory_governance_repo.rs",
   "crates/adapters/src/memory_repo.rs",
   "crates/adapters/src/note_repo.rs",
@@ -561,7 +563,6 @@ may_depend_on = [
 id = "retrieval_read_model"
 # ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
 files = [
-  "crates/adapters/src/batch.rs",
   "crates/adapters/src/exact_census.rs",
   "crates/adapters/src/grep_repo.rs",
   "crates/adapters/src/placement_repo.rs",

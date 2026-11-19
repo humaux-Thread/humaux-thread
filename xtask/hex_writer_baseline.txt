@@ -1,5 +1,4 @@
 # ponytail: syntax-only legacy debt; upgrade to compiler/SQL AST when macros/dynamic SQL own contracts.
-crates/adapters/src/batch.rs:insert into private.ingest_tickets:1
 crates/adapters/src/context_repo.rs:insert into private.context_bindings:1
 crates/adapters/src/context_repo.rs:insert into private.task_binding_grants:1
 crates/adapters/src/context_repo.rs:update ops.selection_snapshots:1
@@ -18,11 +17,6 @@ crates/adapters/src/maintenance_repo.rs:insert into ops.restore_witnesses:1
 crates/adapters/src/maintenance_repo.rs:insert into ops.wal_archive_failures:1
 crates/adapters/src/maintenance_repo.rs:update control.partition_registry:1
 crates/adapters/src/model_call_ledger.rs:insert into ops.tenant_cost_events:1
-crates/adapters/src/remember.rs:insert into private.events:1
-crates/adapters/src/remember.rs:insert into private.evidence_projects:1
-crates/adapters/src/remember.rs:insert into private.evidence_sources:1
-crates/adapters/src/remember.rs:insert into private.evidence_task_runs:1
-crates/adapters/src/remember.rs:update private.ingest_tickets:1
 crates/adapters/src/retrieval_query_source.rs:insert into private.retrieval_query_sources:1
 crates/adapters/src/retrieval_query_source.rs:update private.retrieval_query_sources:1
 crates/adapters/src/scheduler.rs:insert into ops.jobs:1
