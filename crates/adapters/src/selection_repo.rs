@@ -450,6 +450,33 @@ pub(crate) async fn begin_authorized_snapshot_in_txn(
     authorized_page_in_txn(txn, tenant_id, &meta, -1, page_size, mac_key).await
 }
 
+/// Freezes this manifest's census readout onto its own `ops.selection_snapshots` row
+/// (migration 0165) inside the minting transaction, so every later page reads the denominator
+/// that was counted in the manifest's snapshot instead of re-counting in a younger one.
+pub(crate) async fn store_frozen_census_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: Uuid,
+    snapshot_id: Uuid,
+    predicate_id: &str,
+    total: u64,
+    excluded_secret: u64,
+) -> Result<(), humaux_domain::error::ErrorCode> {
+    sqlx::query(
+        "UPDATE ops.selection_snapshots \
+            SET census_predicate_id = $3, census_total = $4, census_excluded_secret = $5 \
+          WHERE selection_snapshot_id = $1 AND tenant_id = $2",
+    )
+    .bind(snapshot_id)
+    .bind(tenant_id)
+    .bind(predicate_id)
+    .bind(i64::try_from(total).map_err(|_| humaux_domain::error::ErrorCode::Internal)?)
+    .bind(i64::try_from(excluded_secret).map_err(|_| humaux_domain::error::ErrorCode::Internal)?)
+    .execute(&mut **txn)
+    .await
+    .map_err(|_| humaux_domain::error::ErrorCode::DependencyUnavailable)?;
+    Ok(())
+}
+
 /// The §20.4 cursor checks of the gateway path, in order: MAC/tenant/expiry on the host clock (an expired cursor is
 /// `NotFound`, anything forged is `InvalidInput`), then the caller's own enumeration fingerprint.
 fn validate_trusted_cursor(

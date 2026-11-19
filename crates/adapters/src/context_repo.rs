@@ -1,5 +1,5 @@
 //! `adapters::context_repo` — §25.4 Mandatory Context Lane 的 SQL 侧。
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sha2, sqlx]; services=[PostgreSQL(any) r=[coord.tasks, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log] w=[ops.selection_snapshots, private.context_bindings, private.task_binding_grants]]; env=[]; modules=[adapters::confirm_token_repo, adapters::distill_repo, adapters::evidence_repo, adapters::exact_census, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::request_guard_repo, adapters::selection_repo, adapters::stream_repo, application::continuity, application::lifecycle_execution, application::pin, application::recall_read, domain::audit, domain::authority, domain::confirm, domain::context, domain::dataclass, domain::error, domain::evidence, domain::grounding, domain::identity, domain::ids, domain::memory, domain::policy, domain::selection, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, sha2, sqlx]; services=[PostgreSQL(any) r=[coord.tasks, ops.selection_snapshots, private.evidence_objects, private.memory_evidence, private.memory_records, private.memory_subjects, projection.stream_log] w=[private.context_bindings, private.task_binding_grants]]; env=[]; modules=[adapters::confirm_token_repo, adapters::distill_repo, adapters::evidence_repo, adapters::exact_census, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::request_guard_repo, adapters::selection_repo, adapters::stream_repo, application::continuity, application::lifecycle_execution, application::pin, application::recall_read, domain::audit, domain::authority, domain::confirm, domain::context, domain::dataclass, domain::error, domain::evidence, domain::grounding, domain::identity, domain::ids, domain::memory, domain::policy, domain::selection, projection::serving, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff]
 //! Called-by: [adapters::continuity_read, adapters::coord_repo, adapters::exact_census, adapters::forget_repo, adapters::grep_repo, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, gateway::bootstrap, tests]
 //! Invariants: [pure reads on role_gateway; each selector enumerates twice without LIMIT so expected is never derived
 //!   from returned rows; both passes re-check readability through `read_gate::readable_memory_ids` (the read gate and
@@ -65,6 +65,7 @@ use crate::read_materialize::{
 use crate::request_guard_repo::{self, AuditTenant};
 use crate::selection_repo::{
     ManifestSpec, SnapshotPage, begin_authorized_snapshot_in_txn, continuation_bound_in_txn,
+    store_frozen_census_in_txn,
 };
 use crate::stream_repo::close_ledger_in_txn;
 
@@ -1204,31 +1205,6 @@ impl FrozenCensus {
     }
 }
 
-/// Freezes this manifest's census readout onto its own `ops.selection_snapshots` row
-/// (migration 0165) inside the minting transaction, so every later page reads the denominator
-/// that was counted in the manifest's snapshot instead of re-counting in a younger one.
-async fn store_frozen_census_in_txn(
-    txn: &mut Txn<'_>,
-    tenant_id: Uuid,
-    snapshot_id: Uuid,
-    census: &FrozenCensus,
-) -> Result<(), ErrorCode> {
-    sqlx::query(
-        "UPDATE ops.selection_snapshots \
-            SET census_predicate_id = $3, census_total = $4, census_excluded_secret = $5 \
-          WHERE selection_snapshot_id = $1 AND tenant_id = $2",
-    )
-    .bind(snapshot_id)
-    .bind(tenant_id)
-    .bind(census.predicate_id.as_str())
-    .bind(i64::try_from(census.total).map_err(|_| ErrorCode::Internal)?)
-    .bind(i64::try_from(census.excluded_secret).map_err(|_| ErrorCode::Internal)?)
-    .execute(&mut **txn)
-    .await
-    .map_err(|_| ErrorCode::DependencyUnavailable)?;
-    Ok(())
-}
-
 /// Reads back [`store_frozen_census_in_txn`]'s readout. `None` = this manifest carries no
 /// census (three NULLs — a pre-0165 snapshot, or a mint whose census failed); the caller turns
 /// that into [`CensusResult::failed`], never into a total of `0` (§23.3④).
@@ -1487,8 +1463,15 @@ pub(crate) async fn mint_segment_in_txn(
     )
     .await?;
     if let Some(census) = census.as_ref() {
-        store_frozen_census_in_txn(txn, authorization.tenant_id().0, page.snapshot_id, census)
-            .await?;
+        store_frozen_census_in_txn(
+            txn,
+            authorization.tenant_id().0,
+            page.snapshot_id,
+            census.predicate_id.as_str(),
+            census.total,
+            census.excluded_secret,
+        )
+        .await?;
     }
     Ok((page, census))
 }

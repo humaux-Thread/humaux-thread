@@ -1,7 +1,6 @@
 # ponytail: syntax-only legacy debt; upgrade to compiler/SQL AST when macros/dynamic SQL own contracts.
 crates/adapters/src/context_repo.rs:insert into private.context_bindings:1
 crates/adapters/src/context_repo.rs:insert into private.task_binding_grants:1
-crates/adapters/src/context_repo.rs:update ops.selection_snapshots:1
 crates/adapters/src/context_repo.rs:update private.context_bindings:2
 crates/adapters/src/context_repo.rs:update private.task_binding_grants:1
 crates/adapters/src/contribution_entry_repo.rs:insert into ops.outbox:2
