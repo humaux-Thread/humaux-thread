@@ -81,14 +81,17 @@ pub type Txn<'a> = sqlx::Transaction<'a, Postgres>;
 
 /// Owner guard operations on a maintenance transaction.
 pub trait MaintenanceGuardPort: Send + Sync {
+    /// Set the tenant for this transaction before running the re-drive door.
     fn install_tenant(
         &self,
         txn: &mut Txn<'_>,
         tenant: Uuid,
     ) -> impl Future<Output = Result<(), MaintenanceError>> + Send;
 
+    /// Require complete §77 evidence before opening the executor transaction.
     fn require_retention_admin(&self, admin: &RetentionAdmin<'_>) -> Result<(), MaintenanceError>;
 
+    /// Write the §77 row for a nonempty re-drive in the door transaction.
     fn audit_redrive(
         &self,
         txn: &mut Txn<'_>,
@@ -98,6 +101,7 @@ pub trait MaintenanceGuardPort: Send + Sync {
         metadata: serde_json::Value,
     ) -> impl Future<Output = Result<(), MaintenanceError>> + Send;
 
+    /// Write the §77 system-tenant row before the executor commits the effect.
     fn audit_retention(
         &self,
         txn: &mut Txn<'_>,
@@ -108,11 +112,16 @@ pub trait MaintenanceGuardPort: Send + Sync {
     ) -> impl Future<Output = Result<Uuid, MaintenanceError>> + Send;
 }
 
+/// Operation failures mapped to the maintenance CLI and service error contracts.
 #[derive(Debug)]
 pub enum MaintenanceError {
+    /// The owner door refused the operation with a named reason.
     Refused(String),
+    /// The request or required administrator evidence is malformed.
     InvalidInput(String),
+    /// PostgreSQL could not complete the operation.
     Db(sqlx::Error),
+    /// The guard returned an infrastructure failure.
     Dependency(String),
 }
 
@@ -152,23 +161,27 @@ impl From<sqlx::Error> for MaintenanceError {
     }
 }
 
+/// Daemon adapter holding the role-checked maintenance pool and the re-drive guard.
 pub struct MaintenanceServe<'a, G> {
     pool: &'a MaintenanceDbPool,
     guard: G,
 }
 
 impl<'a, G: MaintenanceGuardPort> MaintenanceServe<'a, G> {
+    /// Link the daemon operations to their §77 guard.
     pub fn new(pool: &'a MaintenanceDbPool, guard: G) -> Self {
         Self { pool, guard }
     }
 }
 
+/// One-shot retention adapter holding the checked superuser executor and its guard.
 pub struct PartitionRetention<G> {
     executor: RetentionExecutor,
     guard: G,
 }
 
 impl<G: MaintenanceGuardPort> PartitionRetention<G> {
+    /// Link the retention operations to their §77 guard.
     pub fn new(executor: RetentionExecutor, guard: G) -> Self {
         Self { executor, guard }
     }
