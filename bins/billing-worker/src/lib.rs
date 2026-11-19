@@ -13,6 +13,8 @@ pub mod signature;
 
 /// §71.2: Creem port implementation and authoritative reads.
 pub mod creem;
+/// §71.2: assembly adapter for the guarded Creem transport.
+pub mod creem_egress;
 /// §79.4: fake provider never enters a production binary.
 #[cfg(test)]
 pub mod fake_creem;
