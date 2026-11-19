@@ -1,6 +1,6 @@
 //! `adapters::tests::support::governance_ops` — the five confirm-gated governance writes driven through the real
 //!   `memory_governance_repo` ops (ADR-0057 D-J), for projection / completeness integration tests.
-//! Depends-on: crates=[async-trait, humaux-adapters, humaux-domain, humaux-projection, postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(owner)
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-domain, humaux-projection, postgres, serde_json, sqlx, time, tokio]; services=[PostgreSQL(owner)
 //!   w=[control.api_keys, control.confirm_tokens, control.memberships, control.quota_windows, control.tenants,
 //!   control.usage_reservations, control.users, control.workspace_memberships], PostgreSQL(role_gateway)]; env=[]; modules=[adapters::attribution_repo, adapters::confirm_token_repo,
 //!   adapters::memory_governance_repo, adapters::postgres, adapters::quota_repo, adapters::quota_reservation_port, adapters::tests::support::token_keys, domain::audit, domain::authority,

@@ -1,12 +1,12 @@
 //! `adapters::tests::note_replace` — ADR-0067 D-J card 40c-1 acceptance for `memory.note_put` replacement (G19, G20,
 //!   G21, G26, G27, G28 and the note identity of the create path), against a real PostgreSQL and real `role_gateway` logins.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sqlx,
-//!   tokio]; services=[PostgreSQL(role_gateway) r=[control.confirm_tokens, control.operation_receipts,
+//! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sqlx,
+//!   tokio]; services=[PostgreSQL(role_gateway) r=[control.audit_events, control.confirm_tokens, control.operation_receipts, control.quota_windows,
 //!   control.usage_reservations, ops.jobs, ops.memory_lifecycle_events, ops.outbox,
 //!   private.identity_note_materializations, private.note_heads, projection.stream_log] w=[private.evidence_objects,
 //!   private.memory_evidence, private.memory_records]]; env=[];
 //!   modules=[adapters::attribution_repo, adapters::confirm_token_repo, adapters::forget_repo, adapters::memory_governance_repo, adapters::note_repo,
-//!   adapters::operation_receipt, adapters::postgres, adapters::remember, adapters::tests::support::governance_ops,
+//!   adapters::operation_receipt, adapters::postgres, adapters::quota_reservation_port, adapters::remember, adapters::request_guard_repo, adapters::tests::support::governance_ops,
 //!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::authority, domain::confirm,
 //!   domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, humaux-testkit,
 //!   projection::stream]
@@ -37,6 +37,7 @@ use humaux_adapters::{
         NoteReplaceRequest,
     },
     postgres::RuntimeDbPool,
+    quota_reservation_port::{QuotaReservationPort, QuotaTransaction, ReservedQuota},
     remember::RememberCommand,
 };
 use humaux_domain::{
@@ -1256,11 +1257,7 @@ fn g27_a_tombstoned_head_cannot_be_replaced() {
 // The real settlement succeeds before the database lease expires. Delay its return to
 // exercise the final lease check after settlement and before the business commit.
 struct ExpireSettledQuota;
-struct ExpiringLease(Box<dyn humaux_adapters::quota_reservation_port::ReservedQuota>);
-
-use humaux_adapters::quota_reservation_port::{
-    QuotaReservationPort, QuotaTransaction, ReservedQuota,
-};
+struct ExpiringLease(Box<dyn ReservedQuota>);
 
 #[async_trait::async_trait]
 impl QuotaReservationPort for ExpireSettledQuota {
