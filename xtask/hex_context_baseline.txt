@@ -85,7 +85,6 @@ crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_tel
 crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::count_cache_request
 crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::set_cache_bytes
 crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::set_cache_singleflight_waiters
-crates/local-secret-scan/src/lib.rs:provider_execution->knowledge_lifecycle:humaux_domain::note
 crates/projection/src/dense.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
 crates/projection/src/dense.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::BasisPointRange
 crates/projection/src/dense.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::BasisPoints

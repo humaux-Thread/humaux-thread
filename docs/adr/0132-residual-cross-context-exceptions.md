@@ -52,6 +52,8 @@ Exact key: `crates/adapters/src/attribution_repo.rs:work_attribution->knowledge_
 
 The mandatory port and sole ladder implementation keep memory, evidence links and project attribution in the same transaction (`attribution_repo.rs:128`, `memory_repo.rs:190–239`, G-M29-5(a) at `architecture_check.rs:6100–6120`). Wrapping or relocating this port has no independent boundary to serve and risks changing insertion order. Re-review if the implementation or insert order changes. A second implementation, optional port or premature call must fail.
 
+Alternatives rejected: Inverting or moving the attribution port would introduce another layer at the sole memory insert door and require re-proving the mandatory in-transaction call and its ordering.
+
 ### ADR-0132 X-2
 
 **BYOK fingerprint hash.**
@@ -59,6 +61,8 @@ The mandatory port and sole ladder implementation keep memory, evidence links an
 Exact key: `crates/adapters/src/byok.rs:provider_execution->knowledge_lifecycle:humaux_domain::evidence::payload_sha256`
 
 BYOK derives its truncated fingerprint from the canonical hash (`byok.rs:163`). The private digest representation, controlled persisted-digest read-back and canonical hash share one owner (`crates/domain/src/evidence.rs:79,116,127`, G80-22). A second encoding or a primitive digest passed at the trust boundary would lose that proof. Re-review when an owner-provided digest interface preserves the private representation, byte equality, read-back and the existing BYOK fingerprint, or when a new symbol uses this edge. The accepted actual edge is `provider_execution -> knowledge_lifecycle`. Its declared return path is `knowledge_lifecycle -> retrieval_read_model -> provider_execution`.
+
+Alternatives rejected: A digest port used only to compute this fingerprint would forward to the existing canonical hash, and a new `may_depend_on` edge would formalize the declared return cycle.
 
 ### ADR-0132 X-3
 
@@ -68,6 +72,8 @@ Exact key: `crates/adapters/src/consolidation_reasoner.rs:knowledge_curation->pu
 
 `consolidation_reasoner.rs:637` calls the single authorization helper (`contribution_reasoner.rs:798`). Centralizing processor resolution and permit creation in the R3-pinned helper preserves the binding between admitted processor and egress. A second helper would duplicate that decision and its location proof. Re-review when a new owner can preserve resolver binding, one provider call and settlement, with negative controls for the wrong processor and a duplicate call.
 
+Alternatives rejected: Moving the egress helper would invalidate the R3 location proof for processor-derived permits, and an authorization port here would forward the same operation without a separate boundary.
+
 ### ADR-0132 X-4
 
 **Consolidation timed completion.**
@@ -75,6 +81,8 @@ Exact key: `crates/adapters/src/consolidation_reasoner.rs:knowledge_curation->pu
 Exact key: `crates/adapters/src/consolidation_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::complete_structured_timed`
 
 `consolidation_reasoner.rs:674` calls the shared completion helper (`contribution_reasoner.rs:864`). The R3-pinned helper issues one provider call and captures its outcome for settlement. A separate timing wrapper around another provider call would duplicate that path and its proof. Re-review when a shared owner can retain resolver binding and settlement and reject a duplicate call.
+
+Alternatives rejected: Moving the completion helper would require a replacement R3 proof for the single provider call, and an injected completion port would add a forwarding layer around the same call.
 
 ### ADR-0132 X-5
 
@@ -84,6 +92,8 @@ Exact key: `crates/adapters/src/contribution_entry_repo.rs:public_knowledge->ret
 
 `contribution_entry_repo.rs:182,325,340` routes the memory and its backing evidence through the shared visibility gate (Baseline §8.6). Local visibility logic would duplicate complete mediation and risk dropping an evidence check. Re-review if the caller can use `readable_memory_ids` and prove that any invisible backing evidence denies contribution, with the G-M08-2 token pin rechecked.
 
+Alternatives rejected: Moving the pinned visibility call or copying the check into contribution code would require a new complete-mediation proof for both the Memory row and every backing Evidence row.
+
 ### ADR-0132 X-6
 
 **Contribution entry stream module.**
@@ -91,6 +101,8 @@ Exact key: `crates/adapters/src/contribution_entry_repo.rs:public_knowledge->ret
 Exact key: `crates/adapters/src/contribution_entry_repo.rs:public_knowledge->retrieval_read_model:humaux_adapters::stream_repo`
 
 `contribution_entry_repo.rs:51,840` resolves the stream module for confirmation in the original transaction. Keep release/revoke and their outbox events in the same transaction, using G-M09-1's sequence allocator (`stream_repo.rs:150–155`). An independent allocator or a second transaction would break the allocator or atomicity contract. Re-review when M09 can serve ordinary and anonymous outbox events through a narrow caller-transaction command. A second `nextval` must fail the gate and rollback must leave no outbox row (sequence gaps are valid).
+
+Alternatives rejected: A stream module port would expose broader internals than confirmation needs, and moving the sequence SQL would invalidate G-M09-1’s single-door check.
 
 ### ADR-0132 X-7
 
@@ -100,6 +112,8 @@ Exact key: `crates/adapters/src/contribution_entry_repo.rs:public_knowledge->ret
 
 `contribution_entry_repo.rs:840` calls the shared allocator for the confirmation outbox write. Keep release/revoke and their outbox events in the same transaction, using G-M09-1's sequence allocator (`stream_repo.rs:150–155`). An independent allocator or a second transaction would break the allocator or atomicity contract. Re-review when M09 can serve ordinary and anonymous outbox events through a narrow caller-transaction command. A second `nextval` must fail the gate and rollback must leave no outbox row (sequence gaps are valid).
 
+Alternatives rejected: Inverting the allocator behind a port would only forward the caller transaction to the existing sequence door, while moving or duplicating `nextval` would break G-M09-1.
+
 ### ADR-0132 X-8
 
 **Contribution release stream module.**
@@ -107,6 +121,8 @@ Exact key: `crates/adapters/src/contribution_entry_repo.rs:public_knowledge->ret
 Exact key: `crates/adapters/src/contribution_repo.rs:public_knowledge->retrieval_read_model:humaux_adapters::stream_repo`
 
 `contribution_repo.rs:30,149,213` resolves the stream module for release and revoke. Keep release/revoke and their outbox events in the same transaction, using G-M09-1's sequence allocator (`stream_repo.rs:150–155`). An independent allocator or a second transaction would break the allocator or atomicity contract. Re-review when M09 can serve ordinary and anonymous outbox events through a narrow caller-transaction command. A second `nextval` must fail the gate and rollback must leave no outbox row (sequence gaps are valid).
+
+Alternatives rejected: An outbox port with an independent transaction would break atomicity for release and revoke, and a new `may_depend_on` edge would grant wider access than this shared sequence call requires.
 
 ### ADR-0132 X-9
 
@@ -116,6 +132,8 @@ Exact key: `crates/adapters/src/contribution_repo.rs:public_knowledge->retrieval
 
 `contribution_repo.rs:149–163,213–253` allocates then writes the outbox before each commit. Keep release/revoke and their outbox events in the same transaction, using G-M09-1's sequence allocator (`stream_repo.rs:150–155`). An independent allocator or a second transaction would break the allocator or atomicity contract. Re-review when M09 can serve ordinary and anonymous outbox events through a narrow caller-transaction command. A second `nextval` must fail the gate and rollback must leave no outbox row (sequence gaps are valid).
 
+Alternatives rejected: Moving the allocator into the release repository would break G-M09-1, and a forwarding allocator port would leave the ordinary and anonymous outbox writes in the same caller.
+
 ### ADR-0132 X-10
 
 **Distill egress authorization.**
@@ -123,6 +141,8 @@ Exact key: `crates/adapters/src/contribution_repo.rs:public_knowledge->retrieval
 Exact key: `crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_knowledge:humaux_adapters::contribution_reasoner::authorize_structured_egress`
 
 `distill_reasoner.rs:750` calls the single authorization helper (`contribution_reasoner.rs:798`). Centralizing processor resolution and permit creation in the R3-pinned helper preserves the binding between admitted processor and egress. A second helper would duplicate that decision and its location proof. Re-review when a new owner can preserve resolver binding, one provider call and settlement, with negative controls for the wrong processor and a duplicate call.
+
+Alternatives rejected: Moving authorization into Distill would duplicate the R3-pinned permit construction and require a second proof that egress uses the admitted processor.
 
 ### ADR-0132 X-11
 
@@ -132,6 +152,8 @@ Exact key: `crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_k
 
 `distill_reasoner.rs:813` pins the shared completion future (`contribution_reasoner.rs:864`). The R3-pinned helper issues one provider call and captures its outcome for settlement. A separate timing wrapper around another provider call would duplicate that path and its proof. Re-review when a shared owner can retain resolver binding and settlement and reject a duplicate call.
 
+Alternatives rejected: Moving completion into Distill would duplicate the R3-pinned provider invocation and require another proof that its outcome reaches settlement without a second call.
+
 ### ADR-0132 X-12
 
 **Scanner evidence digest type.**
@@ -139,6 +161,8 @@ Exact key: `crates/adapters/src/distill_reasoner.rs:knowledge_curation->public_k
 Exact key: `crates/local-secret-scan/src/lib.rs:provider_execution->knowledge_lifecycle:humaux_domain::evidence::EvidencePayloadSha256`
 
 `crates/local-secret-scan/src/lib.rs:111,136,399` carries the typed evidence digest through sealing. The private digest representation, controlled persisted-digest read-back and canonical hash share one owner (`crates/domain/src/evidence.rs:79,116,127`, G80-22). A second encoding or a primitive digest passed at the trust boundary would lose that proof. Re-review when an owner-provided digest interface preserves the private representation, byte equality, read-back and the existing BYOK fingerprint, or when a new symbol uses this edge. The accepted actual edge is `provider_execution -> knowledge_lifecycle`. Its declared return path is `knowledge_lifecycle -> retrieval_read_model -> provider_execution`.
+
+Alternatives rejected: Port inversion with a raw digest would discard the owner-minted evidence type, and a new `may_depend_on` edge would formalize the declared return cycle.
 
 ### ADR-0132 X-13
 
@@ -148,6 +172,8 @@ Exact key: `crates/local-secret-scan/src/lib.rs:provider_execution->knowledge_li
 
 `crates/local-secret-scan/src/lib.rs:361` hashes exactly the evidence bytes passed to the scanner. The private digest representation, controlled persisted-digest read-back and canonical hash share one owner (`crates/domain/src/evidence.rs:79,116,127`, G80-22). A second encoding or a primitive digest passed at the trust boundary would lose that proof. Re-review when an owner-provided digest interface preserves the private representation, byte equality, read-back and the existing BYOK fingerprint, or when a new symbol uses this edge. The accepted actual edge is `provider_execution -> knowledge_lifecycle`. Its declared return path is `knowledge_lifecycle -> retrieval_read_model -> provider_execution`.
 
+Alternatives rejected: Moving or wrapping the canonical hash would either duplicate the G80-22 encoding or forward to the same owner, and a new `may_depend_on` edge would formalize the declared return cycle.
+
 ### ADR-0132 X-14
 
 **Scanner profile fingerprint.**
@@ -155,6 +181,8 @@ Exact key: `crates/local-secret-scan/src/lib.rs:provider_execution->knowledge_li
 Exact key: `crates/local-secret-scan/src/lib.rs:provider_execution->retrieval_read_model:humaux_retrieval::request::ProfileFingerprint`
 
 `crates/local-secret-scan/src/lib.rs:378,415,477` carries the fingerprint into the seal. The private request types bind query bytes, the real profile and seal provenance (`crates/retrieval/src/request.rs:36,150,190,255,304`). A raw string or copied fingerprint would allow an untrusted profile to acquire a seal. Re-review if an owner-provided interface can carry the same unforgeable identity and still rejects wrong-profile and free-string inputs, or when a new symbol uses this edge. The accepted actual edge is `provider_execution -> retrieval_read_model`. Its declared return path is `retrieval_read_model -> provider_execution`.
+
+Alternatives rejected: Passing a caller-supplied string through a port would lose the owner-minted profile identity, and a new `may_depend_on` edge would formalize the declared return cycle.
 
 ### ADR-0132 X-15
 
@@ -164,6 +192,8 @@ Exact key: `crates/local-secret-scan/src/lib.rs:provider_execution->retrieval_re
 
 `crates/local-secret-scan/src/lib.rs:461–478` takes text and profile from the same trusted query. The private request types bind query bytes, the real profile and seal provenance (`crates/retrieval/src/request.rs:36,150,190,255,304`). A raw string or copied fingerprint would allow an untrusted profile to acquire a seal. Re-review if an owner-provided interface can carry the same unforgeable identity and still rejects wrong-profile and free-string inputs, or when a new symbol uses this edge. The accepted actual edge is `provider_execution -> retrieval_read_model`. Its declared return path is `retrieval_read_model -> provider_execution`.
 
+Alternatives rejected: A port carrying text and profile separately would lose their binding to the same trusted request, and a new `may_depend_on` edge would formalize the declared return cycle.
+
 ### ADR-0132 X-16
 
 **Scanner projection card provenance.**
@@ -171,6 +201,8 @@ Exact key: `crates/local-secret-scan/src/lib.rs:provider_execution->retrieval_re
 Exact key: `crates/local-secret-scan/src/lib.rs:provider_execution->retrieval_read_model:humaux_projection::card::RetrievalCard`
 
 Classification row 370 moved from H after #608. The card's source fields are `pub(super)` (`crates/projection/src/card.rs:321–343`) and populated by `build_card` (`card.rs:420–500`) or `chunk_card` (`crates/projection/src/note_chunks.rs:277–305`). The scanner seals the builder-produced view and checks chunk/source identity and class (`crates/local-secret-scan/src/lib.rs:484–541`). A mutable DTO or duplicated builder would permit a mismatch between scanned text, source Memory and classification. Re-review on a new card constructor, changes to seal-bound fields or a new symbol on this edge. Test valid ordinary and chunk cards, wrong-source denial and external mutation rejection. The accepted actual edge is `provider_execution -> retrieval_read_model`. Its declared return path is `retrieval_read_model -> provider_execution`.
+
+Alternatives rejected: A mutable transfer object or scanner-side builder would reopen the provenance defect fixed by #608, and a new `may_depend_on` edge would formalize the declared return cycle.
 
 ## Consequences
 
