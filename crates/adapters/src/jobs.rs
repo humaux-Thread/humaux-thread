@@ -1,6 +1,6 @@
 //! `adapters::jobs` — `ops.jobs` SKIP LOCKED claim, lease heartbeat, and terminal-state transitions (§31 Durable Jobs
 //!   / §61 SKIP LOCKED Claim SQL).
-//! Depends-on: crates=[async-trait, humaux-application, serde_json, sqlx]; services=[PostgreSQL(any) r=[ops.claim_derived_work] w=[ops.jobs] x=[ops.admit_distill_budget, ops.begin_call, ops.claim_derived_work, ops.claim_derived_work_v2, ops.distill_slots_all_bound, ops.finish_derived_work_v2, ops.renew_lease]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::distill_repo, adapters::postgres, application::consolidate, application::consolidation_execution, application::distill_execution]
+//! Depends-on: crates=[async-trait, humaux-application, serde_json, sqlx]; services=[PostgreSQL(any) r=[ops.claim_derived_work] w=[ops.jobs] x=[ops.admit_distill_budget, ops.begin_call, ops.claim_derived_work, ops.claim_derived_work_v2, ops.distill_slots_all_bound, ops.finish_derived_work_v2, ops.renew_lease]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::distill_repo, adapters::postgres, application::consolidation_execution, application::distill_execution]
 //! Called-by: [adapters::consolidate_repo, adapters::distill_repo, private-worker::bootstrap, tests]
 //! Invariants: [one tenant per call: each table-level function opens a transaction and sets humaux.tenant_id before
 //!   touching FORCE-RLS ops.jobs; claims use SKIP LOCKED with a lease; a PG error returns to the caller with no job
@@ -1049,10 +1049,10 @@ impl From<humaux_application::distill_execution::Finish> for DistillFinish {
     }
 }
 fn distill_job_error(error: JobsError) -> humaux_application::distill_execution::DistillError {
-    use humaux_application::{consolidate::PrivateReasoningError, distill_execution::DistillError};
+    use humaux_application::distill_execution::DistillError;
     match error {
         JobsError::Db(e) => DistillError::Db(Box::new(e)),
-        other => DistillError::Reasoning(PrivateReasoningError::new(other.to_string())),
+        other => DistillError::job_reasoning_failure(other.to_string()),
     }
 }
 #[async_trait::async_trait(?Send)]
@@ -1124,6 +1124,21 @@ fn distill_claim_from_row(row: &sqlx::postgres::PgRow) -> Result<DistillClaim, J
 #[cfg(test)]
 mod contract_tests {
     use super::*;
+
+    #[test]
+    fn distill_job_errors_keep_db_and_unclassified_reasoning_routes() {
+        use humaux_application::distill_execution::DistillError;
+        let db = distill_job_error(JobsError::Db(sqlx::Error::RowNotFound));
+        assert_eq!(db.class(), "WORKER_DB_ERROR");
+        assert!(matches!(db, DistillError::Db(_)));
+        let other = distill_job_error(JobsError::UnknownStatus("unknown".into()));
+        assert_eq!(other.class(), "UNCLASSIFIED_REASONING_ERROR");
+        let DistillError::Reasoning(error) = other else {
+            panic!("reasoning failure expected")
+        };
+        assert_eq!(error.class(), None);
+        assert_eq!(error.existing_model_call_id(), None);
+    }
 
     const MIGRATION_SQL: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

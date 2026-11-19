@@ -3,8 +3,8 @@
 //!   x=[control.observe_reasoning_route_health, control.reasoning_credential_accounts,
 //!   control.reasoning_profile_capabilities, control.reasoning_profile_request_extras,
 //!   control.reasoning_route_health_state, control.resolve_user_reasoning_admission]];
-//!   env=[]; modules=[adapters::byok, adapters::postgres, application::consolidate, application::reasoning_route_admin, domain::egress]
-//! Called-by: [adapters::consolidation_reasoner, adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::model_call_ledger, adapters::reasoning_route_onboarding, private-worker::bootstrap, private-worker::route_providers, tests]
+//!   env=[]; modules=[adapters::byok, adapters::postgres, adapters::structured_reasoning, application::consolidate, application::reasoning_route_admin, domain::egress]
+//! Called-by: [adapters::consolidation_reasoner, adapters::contribution_execution_repo, adapters::distill_reasoner, adapters::model_call_ledger, adapters::reasoning_route_onboarding, private-worker::bootstrap, private-worker::route_providers, tests]
 //! Invariants: [the private worker never reads route/health/credential tables directly; it calls the frozen SECURITY
 //!   DEFINER resolver with one binding and gets one typed locator or none; a malformed locator is InvalidLocator;
 //!   the locator's capabilities and request extras are the admitted Profile@version's own, read in the same
@@ -23,92 +23,34 @@ use humaux_application::consolidate::{
 };
 use humaux_domain::egress::ProcessorId;
 
-use std::sync::Arc;
-
-use crate::byok::{ReasoningCapability, UserReasoningProvider};
+use crate::byok::ReasoningCapability;
 use crate::postgres::PrivateWorkerDbPool;
-use sqlx::{Row, types::time::OffsetDateTime};
+use sqlx::Row;
 use uuid::Uuid;
 
-/// ADR-0060 D-B: the seam from one admitted route to the provider instance that serves it. The
-/// reasoners call it only after the resolver admitted the locator (D-G), then compare the
-/// instance with the route (`contribution_reasoner::provider_matches_admission`, D-C). The
-/// private worker passes one closure over its per-Profile@version instances; tests pass closures
-/// over stub providers. An `Err` is a static NOT_READY class (ADR-0058 D-H), never provider text.
-pub type ProviderFor = dyn Fn(&ReasoningAdmissionLocator) -> Result<Arc<dyn UserReasoningProvider>, &'static str>
-    + Send
-    + Sync;
+use crate::structured_reasoning::ReasoningAdmissionPort;
+pub use crate::structured_reasoning::{
+    ProviderFor, ReasoningAdmissionError, ReasoningAdmissionLocator,
+};
 
-/// One fully admitted route. Every field comes from one resolver statement snapshot.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReasoningAdmissionLocator {
-    pub tenant_id: Uuid,
-    pub binding_id: ReasoningRouteBindingId,
-    pub binding_version: ReasoningRouteBindingVersion,
-    pub reasoning_domain_id: PrivateReasoningDomainId,
-    pub purpose: PrivateReasoningPurpose,
-    pub route_policy_id: Uuid,
-    pub route_policy_version: i64,
-    pub profile_id: Uuid,
-    pub profile_version: i64,
-    pub provider_account_id: Uuid,
-    pub processor_id: String,
-    pub processor_model_id: Uuid,
-    pub provider_model_id: String,
-    pub model_revision: Option<String>,
-    pub provider_endpoint_id: Uuid,
-    pub egress_processor_id: ProcessorId,
-    pub endpoint_ref: String,
-    pub region: String,
-    pub service_tier: String,
-    pub credential_ref: Uuid,
-    pub billing_account_id: Option<Uuid>,
-    pub billing_instrument_id: Option<Uuid>,
-    pub provider_health_observation_id: i64,
-    pub account_health_observation_id: i64,
-    pub admitted_at: OffsetDateTime,
-    /// §11.2 / ADR-0060 D-A: the capabilities the admitted Profile@version declares (never the
-    /// catalog upper bound, never process configuration). Immutable per Profile@version (0128).
-    pub capabilities: Vec<ReasoningCapability>,
-    /// ADR-0060 research amendment 1: the admitted Profile@version's `request_extras` (vendor
-    /// request fields as profile data, 0206 CHECK). Immutable per Profile@version (0128).
-    pub request_extras: serde_json::Map<String, serde_json::Value>,
-}
-
-impl ReasoningAdmissionLocator {
-    /// ADR-0060 D-M: the route fields every operator line about one call carries — provider and
-    /// model as registered, Profile@version and Binding@version. Never `endpoint_ref`, never a
-    /// key, never provider or user text.
-    #[must_use]
-    pub fn route_fields(&self) -> String {
-        format!(
-            "provider={} model={} profile={}@{} binding={}@{}",
-            self.processor_id,
-            self.provider_model_id,
-            self.profile_id,
-            self.profile_version,
-            self.binding_id.0,
-            self.binding_version.0
+impl ReasoningAdmissionPort for sqlx::Transaction<'_, sqlx::Postgres> {
+    async fn resolve_user_reasoning_admission(
+        &mut self,
+        binding_id: ReasoningRouteBindingId,
+        binding_version: ReasoningRouteBindingVersion,
+        expected_reasoning_domain_id: PrivateReasoningDomainId,
+        expected_purpose: PrivateReasoningPurpose,
+    ) -> Result<Option<ReasoningAdmissionLocator>, ReasoningAdmissionError> {
+        resolve_user_reasoning_admission(
+            self,
+            binding_id,
+            binding_version,
+            expected_reasoning_domain_id,
+            expected_purpose,
         )
+        .await
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReasoningAdmissionError {
-    Database,
-    InvalidLocator,
-}
-
-impl std::fmt::Display for ReasoningAdmissionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Database => f.write_str("reasoning admission resolver unavailable"),
-            Self::InvalidLocator => f.write_str("reasoning admission locator invalid"),
-        }
-    }
-}
-
-impl std::error::Error for ReasoningAdmissionError {}
 
 pub(crate) use humaux_application::reasoning_route_admin::purpose_db_value;
 

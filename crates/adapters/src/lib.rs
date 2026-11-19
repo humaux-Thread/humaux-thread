@@ -105,6 +105,7 @@ pub mod selection_repo;
 pub mod serving_repo;
 pub mod session_repo;
 pub mod stream_repo;
+pub mod structured_reasoning;
 pub mod subject_repo;
 pub mod valkey;
 
