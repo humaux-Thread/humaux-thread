@@ -322,7 +322,10 @@ fn assert_receipt_lock_deadline_rollback(
                     .block_on(RuntimeDbPool::connect(&actor_dsn))
                     .map_err(|error| error.to_string())?;
                 Ok(rt.block_on(operation_receipt::remember_atomically(
-                    &pool, &auth, request,
+                    &pool,
+                    humaux_adapters::postgres::commercial_write_quota(),
+                    &auth,
+                    request,
                 )))
             })();
             let _ = done_tx.send(outcome);
@@ -369,6 +372,7 @@ fn successful_write_receipt_quota_audits_and_commit_response_loss_replay() {
                 .rt
                 .block_on(operation_receipt::remember_atomically(
                     &handle.runtime,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &handle.auth,
                     workspace_request(
                         &handle,
@@ -401,6 +405,7 @@ fn successful_write_receipt_quota_audits_and_commit_response_loss_replay() {
                 .rt
                 .block_on(operation_receipt::remember_atomically(
                     &handle.runtime,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &handle.auth,
                     workspace_request(
                         &handle,
@@ -440,6 +445,7 @@ fn changed_fingerprint_and_bad_visibility_or_workspace_do_not_mutate() {
                 .rt
                 .block_on(operation_receipt::remember_atomically(
                     &handle.runtime,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &handle.auth,
                     workspace_request(
                         &handle,
@@ -456,6 +462,7 @@ fn changed_fingerprint_and_bad_visibility_or_workspace_do_not_mutate() {
             assert!(matches!(
                 handle.rt.block_on(operation_receipt::remember_atomically(
                     &handle.runtime,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &handle.auth,
                     workspace_request(
                         &handle,
@@ -491,6 +498,7 @@ fn changed_fingerprint_and_bad_visibility_or_workspace_do_not_mutate() {
             assert!(matches!(
                 handle.rt.block_on(operation_receipt::remember_atomically(
                     &handle.runtime,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &handle.auth,
                     private_mismatch,
                 )),
@@ -520,6 +528,7 @@ fn changed_fingerprint_and_bad_visibility_or_workspace_do_not_mutate() {
             assert!(matches!(
                 handle.rt.block_on(operation_receipt::remember_atomically(
                     &handle.runtime,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &handle.auth,
                     unauthorized,
                 )),
@@ -570,6 +579,7 @@ fn receipt_trigger_and_finished_audit_failures_rollback_every_lane() {
                     .rt
                     .block_on(operation_receipt::remember_atomically(
                         &handle.runtime,
+                        humaux_adapters::postgres::commercial_write_quota(),
                         &ghost_auth,
                         ghost_workspace_request,
                     ))
@@ -589,6 +599,7 @@ fn receipt_trigger_and_finished_audit_failures_rollback_every_lane() {
             assert!(matches!(
                 handle.rt.block_on(operation_receipt::remember_atomically(
                     &handle.runtime,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &handle.auth,
                     workspace_request(
                         &handle,
@@ -622,6 +633,7 @@ fn receipt_trigger_and_finished_audit_failures_rollback_every_lane() {
             assert!(matches!(
                 handle.rt.block_on(operation_receipt::remember_atomically(
                     &handle.runtime,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &handle.auth,
                     audit_failure,
                 )),
@@ -649,6 +661,7 @@ fn physical_evidence_deletion_keeps_nonreplayable_receipt_tombstone() {
                 .rt
                 .block_on(operation_receipt::remember_atomically(
                     &handle.runtime,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &handle.auth,
                     workspace_request(
                         &handle,
@@ -704,6 +717,7 @@ fn physical_evidence_deletion_keeps_nonreplayable_receipt_tombstone() {
             assert!(matches!(
                 handle.rt.block_on(operation_receipt::remember_atomically(
                     &handle.runtime,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &handle.auth,
                     workspace_request(
                         &handle,
@@ -810,7 +824,10 @@ fn concurrent_same_key_never_commits_two_business_or_bmo_rows() {
                             .recv_timeout(Duration::from_secs(5))
                             .map_err(|_| "concurrent actor start timed out".to_owned())?;
                         Ok(rt.block_on(operation_receipt::remember_atomically(
-                            &pool, &auth, request,
+                            &pool,
+                            humaux_adapters::postgres::commercial_write_quota(),
+                            &auth,
+                            request,
                         )))
                     })();
                     let _ = done_tx.send(outcome);

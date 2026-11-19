@@ -1,6 +1,6 @@
 //! `adapters::operation_receipt` — §34.0.1 local `remember.put`: one transaction for business, BMO, audit, and
 //!   receipt.
-//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres, adapters::quota_repo, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, application::lifecycle_execution, application::remember, domain::audit, domain::authority, domain::confirm, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, sqlx, time, uuid]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users, private.evidence_objects, private.memory_evidence, private.memory_records, private.note_heads, projection.stream_log] w=[control.operation_receipts]]; env=[]; modules=[adapters::confirm_token_repo, adapters::coord_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::postgres, adapters::quota_reservation_port, adapters::read_gate, adapters::read_materialize, adapters::remember, adapters::request_guard_repo, adapters::retrieve, application::lifecycle_execution, application::remember, domain::audit, domain::authority, domain::confirm, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source]
 //! Called-by: [adapters::remember, gateway::bootstrap, tests]
 //! Invariants: [receipts are written in the operation's own transaction; a failed COMMIT response is an unknown
 //!   outcome, never permission to repeat the write; tenant/visibility failures are TenantBoundary/NotFound; a note
@@ -43,7 +43,7 @@ use crate::{
     memory_repo::MemoryAttribution,
     note_repo::{self, NoteIntake, NoteLineage},
     postgres::RuntimeDbPool,
-    quota_repo::{self, ReservationStatus, ReserveResult},
+    quota_reservation_port::QuotaReservationPort,
     read_gate::visibility_readable,
     read_materialize,
     remember::{self, RememberAccepted, RememberError},
@@ -234,12 +234,14 @@ fn validate(
 
 /// The same logical key must be supplied after an HTTP/COMMIT outcome is unknown.
 /// Replays still need a fresh authorized scope from RequestGuard before entering here.
+/// The composition root supplies the trusted [quota port](QuotaReservationPort).
 pub async fn remember_atomically(
     pool: &RuntimeDbPool,
+    quota: &dyn QuotaReservationPort,
     auth: &AuthorizationScope,
     request: AtomicRememberRequest,
 ) -> Result<AtomicRememberResult, ErrorCode> {
-    remember_for_task_run_atomically(pool, auth, request, None, None).await
+    remember_for_task_run_atomically(pool, quota, auth, request, None, None).await
 }
 
 /// [`remember_atomically`] for a put that names the §30.2 task run it was written under (design v0.2 §15 T04c)
@@ -261,26 +263,38 @@ pub async fn remember_atomically(
 /// `None, None` is [`remember_atomically`]. A replay is never re-verified nor re-resolved (§34.0.1), so the caller's
 /// `request_fingerprint` must cover `task_run` and `project` (the gateway's SHA-256 of the raw arguments does);
 /// otherwise a replay naming another run or project returns the stored success.
+/// The composition root supplies the trusted [quota port](QuotaReservationPort).
 pub async fn remember_for_task_run_atomically(
     pool: &RuntimeDbPool,
+    quota: &dyn QuotaReservationPort,
     auth: &AuthorizationScope,
     request: AtomicRememberRequest,
     task_run: Option<(TaskRunId, FencingToken)>,
     project: Option<ProjectId>,
 ) -> Result<AtomicRememberResult, ErrorCode> {
-    stored(atomically(pool, auth, request, None, None, task_run, project).await?)
+    stored(atomically((pool, quota), auth, request, None, None, task_run, project).await?)
 }
 
 /// The PG note-create port binds the same attribution ladder as note replacement (ADR-0067).
 pub struct PostgresNoteStore<'a> {
     pool: &'a RuntimeDbPool,
+    quota: &'a dyn QuotaReservationPort,
     attribution: &'a dyn MemoryAttribution,
 }
 
 impl<'a> PostgresNoteStore<'a> {
     /// Bind the runtime role and the configured attribution ladder.
-    pub fn new(pool: &'a RuntimeDbPool, attribution: &'a dyn MemoryAttribution) -> Self {
-        Self { pool, attribution }
+    /// The composition root binds the trusted [quota port](QuotaReservationPort).
+    pub fn new(
+        pool: &'a RuntimeDbPool,
+        quota: &'a dyn QuotaReservationPort,
+        attribution: &'a dyn MemoryAttribution,
+    ) -> Self {
+        Self {
+            pool,
+            quota,
+            attribution,
+        }
     }
 }
 
@@ -292,7 +306,15 @@ impl humaux_application::remember::NoteStore for PostgresNoteStore<'_> {
         request: AtomicRememberRequest,
         note: NoteIntake,
     ) -> Result<AtomicRememberResult, ErrorCode> {
-        note_put_atomically(self.pool, authorization, request, note, self.attribution).await
+        note_put_atomically(
+            self.pool,
+            self.quota,
+            authorization,
+            request,
+            note,
+            self.attribution,
+        )
+        .await
     }
 
     async fn replace(
@@ -313,6 +335,7 @@ impl humaux_application::remember::NoteStore for PostgresNoteStore<'_> {
         });
         note_replace_atomically(
             self.pool,
+            self.quota,
             authorization,
             request,
             note,
@@ -330,8 +353,10 @@ impl humaux_application::remember::NoteStore for PostgresNoteStore<'_> {
 /// ADR-0067 D-A: `memory.note_put` — [`remember_atomically`]'s receipt / replay / BMO / audit machinery, plus the identity
 /// contract and the authorised Memory in the same transaction. The `request.command` must be a `MANUAL_NOTE` event
 /// (the gateway builds it); the receipt operation is [`NOTE_OPERATION`] and the audit's `resource_id` must equal it.
+/// The composition root supplies the trusted [quota port](QuotaReservationPort).
 pub async fn note_put_atomically(
     pool: &RuntimeDbPool,
+    quota: &dyn QuotaReservationPort,
     auth: &AuthorizationScope,
     request: AtomicRememberRequest,
     note: NoteIntake,
@@ -339,7 +364,7 @@ pub async fn note_put_atomically(
 ) -> Result<AtomicRememberResult, ErrorCode> {
     stored(
         atomically(
-            pool,
+            (pool, quota),
             auth,
             request,
             Some((note, attribution)),
@@ -358,8 +383,10 @@ pub async fn note_put_atomically(
 /// version's retire ticket, `SUPERSEDE` lifecycle event and head stamp
 /// (`memory_governance_repo::retire_superseded_note_in_txn`) -> receipt -> COMMIT. `request.request_fingerprint` must
 /// be hex of the intent digest `H`.
+/// The composition root supplies the trusted [quota port](QuotaReservationPort).
 pub async fn note_replace_atomically(
     pool: &RuntimeDbPool,
+    quota: &dyn QuotaReservationPort,
     auth: &AuthorizationScope,
     request: AtomicRememberRequest,
     note: NoteIntake,
@@ -367,7 +394,7 @@ pub async fn note_replace_atomically(
     attribution: &dyn MemoryAttribution,
 ) -> Result<NoteReplaceOutcome, ErrorCode> {
     atomically(
-        pool,
+        (pool, quota),
         auth,
         request,
         Some((note, attribution)),
@@ -392,13 +419,26 @@ pub async fn note_replace_atomically(
 /// ticket's stream scope; a put naming another scope is `CONFLICT`.
 // ponytail: a cross-scope dedupe hit is refused because the receipt repeats the Evidence's own stream coordinates
 // (0265 keeps that clause); upgrade path is a receipt shape that carries the caller's scope separately.
+/// The composition root supplies the trusted [quota port](QuotaReservationPort).
 pub async fn remember_sourced_atomically(
     pool: &RuntimeDbPool,
+    quota: &dyn QuotaReservationPort,
     auth: &AuthorizationScope,
     request: AtomicRememberRequest,
     source: &SourceIdentity,
 ) -> Result<AtomicRememberResult, SourcedPutError> {
-    match atomically_with_source(pool, auth, request, None, None, None, None, Some(source)).await? {
+    match atomically_with_source(
+        (pool, quota),
+        auth,
+        request,
+        None,
+        None,
+        None,
+        None,
+        Some(source),
+    )
+    .await?
+    {
         Settled::Outcome(outcome) => Ok(stored(outcome)?),
         Settled::SourceVersionConflict => Err(SourcedPutError {
             code: ErrorCode::Conflict,
@@ -526,7 +566,7 @@ async fn lock_note_head(
 
 /// The unsourced transaction: [`atomically_with_source`] with no source identity, which cannot end in a conflict.
 async fn atomically(
-    pool: &RuntimeDbPool,
+    ports: (&RuntimeDbPool, &dyn QuotaReservationPort),
     auth: &AuthorizationScope,
     request: AtomicRememberRequest,
     note: Option<(NoteIntake, &dyn MemoryAttribution)>,
@@ -534,7 +574,7 @@ async fn atomically(
     task_run: Option<(TaskRunId, FencingToken)>,
     project: Option<ProjectId>,
 ) -> Result<NoteReplaceOutcome, ErrorCode> {
-    match atomically_with_source(pool, auth, request, note, replace, task_run, project, None)
+    match atomically_with_source(ports, auth, request, note, replace, task_run, project, None)
         .await?
     {
         Settled::Outcome(outcome) => Ok(outcome),
@@ -544,7 +584,7 @@ async fn atomically(
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // one receipt transaction, in §34.0.1 order
 async fn atomically_with_source(
-    pool: &RuntimeDbPool,
+    (pool, quota): (&RuntimeDbPool, &dyn QuotaReservationPort),
     auth: &AuthorizationScope,
     mut request: AtomicRememberRequest,
     note: Option<(NoteIntake, &dyn MemoryAttribution)>,
@@ -731,19 +771,17 @@ async fn atomically_with_source(
     {
         return Ok(Settled::Outcome(NoteReplaceOutcome::Confirmable));
     }
-    let reservation = match quota_repo::reserve_bmo_in_txn(
-        &mut txn,
-        &auth,
-        request.request_id,
-        operation,
-        &request.request_fingerprint,
-        request.reservation_ttl,
-    )
-    .await?
-    {
-        ReserveResult::Created(reservation) => reservation,
-        ReserveResult::Existing(_) => return Err(ErrorCode::Conflict),
-    };
+    let reservation = quota
+        .reserve(
+            &mut txn,
+            &auth,
+            request.request_id,
+            operation,
+            &request.request_fingerprint,
+            request.reservation_ttl,
+        )
+        .await?
+        .ok_or(ErrorCode::Conflict)?;
     let mut quota_audit = request.finished_audit.clone();
     quota_audit.event_id = AuditEventId::new();
     quota_audit.action = McpAuditAction::McpQuotaReserved.as_str().to_owned();
@@ -857,9 +895,7 @@ async fn atomically_with_source(
         )
         .await?;
     }
-    if quota_repo::finish_reservation_in_txn(&mut txn, &auth, &reservation, true).await?
-        != ReservationStatus::Consumed
-    {
+    if !reservation.consume(&mut txn, &auth).await? {
         return Err(ErrorCode::Conflict); // Drops the transaction, including Evidence/outbox.
     }
     quota_audit.event_id = AuditEventId::new();

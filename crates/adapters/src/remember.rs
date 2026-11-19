@@ -1,7 +1,7 @@
 //! `adapters::remember` — T3.2 `remember` (§34 / §34.1 / §60 transaction B).
 //! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, sqlx]; services=[PostgreSQL(role_gateway)
 //!   r=[control.private_reasoning_domains, ops.outbox, private.evidence_sources, projection.stream_log]];
-//!   env=[]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::evidence_repo, adapters::ingest_ticket_repo, adapters::memory_repo, adapters::note_repo, adapters::operation_receipt, adapters::postgres, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::remember, domain::continuity, domain::coordination, domain::error, domain::evidence, domain::identity, domain::ids, domain::source, projection::stream]
+//!   env=[]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::evidence_repo, adapters::ingest_ticket_repo, adapters::memory_repo, adapters::note_repo, adapters::operation_receipt, adapters::postgres, adapters::quota_reservation_port, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::remember, domain::continuity, domain::coordination, domain::error, domain::evidence, domain::identity, domain::ids, domain::source, projection::stream]
 //! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::note_repo, adapters::operation_receipt, adapters::projection_worker, gateway::bootstrap, tests]
 //! Invariants: [role_gateway's single Evidence write path, one transaction in §60 order; ingest tickets are only
 //!   UPDATEd (no INSERT grant); the stream ticket and its outbox row come only from stream_repo::issue_ticket_in_txn
@@ -48,6 +48,7 @@ use crate::ingest_ticket_repo;
 use crate::memory_repo::MemoryAttribution;
 use crate::note_repo::{self, NoteIntake, NoteLineage};
 use crate::postgres::RuntimeDbPool;
+use crate::quota_reservation_port::QuotaReservationPort;
 use crate::retrieve::{self, TokenClaims};
 use crate::stream_repo;
 
@@ -593,12 +594,14 @@ pub fn classify_sourced_command(
 /// PostgreSQL composition for the whole remember operation (§34.0.1 / §60).
 pub struct PostgresRememberStore<'a> {
     pool: &'a RuntimeDbPool,
+    quota: &'a dyn QuotaReservationPort,
 }
 
 impl<'a> PostgresRememberStore<'a> {
     /// Bind the runtime role; transaction ownership remains inside operation_receipt (§60).
-    pub fn new(pool: &'a RuntimeDbPool) -> Self {
-        Self { pool }
+    /// The composition root binds the trusted [quota port](QuotaReservationPort).
+    pub fn new(pool: &'a RuntimeDbPool, quota: &'a dyn QuotaReservationPort) -> Self {
+        Self { pool, quota }
     }
 }
 
@@ -622,6 +625,7 @@ impl humaux_application::remember::RememberStore for PostgresRememberStore<'_> {
             Some(source) => {
                 crate::operation_receipt::remember_sourced_atomically(
                     self.pool,
+                    self.quota,
                     authorization,
                     request,
                     &source,
@@ -630,6 +634,7 @@ impl humaux_application::remember::RememberStore for PostgresRememberStore<'_> {
             }
             None => crate::operation_receipt::remember_for_task_run_atomically(
                 self.pool,
+                self.quota,
                 authorization,
                 request,
                 task_run,

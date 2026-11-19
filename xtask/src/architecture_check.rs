@@ -2136,7 +2136,7 @@ fn hex_context_gate(root: &Path) -> Result<(Verdict, Verdict), Vec<String>> {
         ),
         Err(errors) => (actual, Verdict::Fail(errors)),
     };
-    errors.extend(hex_exact(&remaining, &baseline, 107, "HEX-CONTEXT"));
+    errors.extend(hex_exact(&remaining, &baseline, 99, "HEX-CONTEXT"));
     Ok((hex_verdict(errors), verdict))
 }
 
@@ -14431,7 +14431,7 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             assert!(
                 matches!(verdict, Verdict::Fail(errors) if
                     errors.iter().any(|e| e == "HEX-CONTEXT-CYCLES: new violation commercial->knowledge_lifecycle")
-                    && errors.iter().any(|e| e == "HEX-CONTEXT CycleError: commercial -> knowledge_lifecycle -> commercial")),
+                    && errors.iter().any(|e| e == "HEX-CONTEXT CycleError: commercial -> knowledge_lifecycle -> provider_execution -> commercial")),
                 "{label}: {verdict:?}"
             );
         }

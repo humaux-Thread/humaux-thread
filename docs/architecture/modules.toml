@@ -33,6 +33,8 @@ files = [
   "crates/adapters/src/quota_reservation_port.rs",
   "crates/adapters/src/processing_status.rs",
   "crates/adapters/src/subject_repo.rs",
+  "crates/adapters/tests/governance_quota.rs",
+  "crates/adapters/tests/support/quota_expiry.rs",
   "crates/application/src/lifecycle_execution.rs",
   "crates/application/src/affect.rs",
   "crates/application/src/archive.rs",

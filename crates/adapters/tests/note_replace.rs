@@ -1,13 +1,12 @@
 //! `adapters::tests::note_replace` — ADR-0067 D-J card 40c-1 acceptance for `memory.note_put` replacement (G19, G20,
 //!   G21, G26, G27, G28 and the note identity of the create path), against a real PostgreSQL and real `role_gateway` logins.
-//! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sqlx,
-//!   tokio]; services=[PostgreSQL(role_gateway) r=[control.audit_events, control.confirm_tokens, control.operation_receipts, control.quota_windows,
-//!   control.usage_reservations, ops.jobs, ops.memory_lifecycle_events, ops.outbox,
-//!   private.identity_note_materializations, private.note_heads, projection.stream_log] w=[private.evidence_objects,
-//!   private.memory_evidence, private.memory_records]]; env=[];
+//! Depends-on: crates=[hex, humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sqlx,
+//!   tokio]; services=[PostgreSQL(role_gateway) r=[control.confirm_tokens, control.operation_receipts, control.usage_reservations,
+//!   ops.memory_lifecycle_events, ops.outbox, private.memory_records, private.note_heads, projection.stream_log]
+//!   w=[private.memory_records]]; env=[];
 //!   modules=[adapters::attribution_repo, adapters::confirm_token_repo, adapters::forget_repo, adapters::memory_governance_repo, adapters::note_repo,
 //!   adapters::operation_receipt, adapters::postgres, adapters::quota_reservation_port, adapters::remember, adapters::request_guard_repo, adapters::tests::support::governance_ops,
-//!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::authority, domain::confirm,
+//!   adapters::tests::support::operation_receipt_fixture, adapters::tests::support::quota_expiry, domain::audit, domain::authority, domain::confirm,
 //!   domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, humaux-testkit,
 //!   projection::stream]
 //! Called-by: [cargo-test]
@@ -20,8 +19,8 @@
 //! The editor is a governance principal (`governance_ops::Governor`): a real credential, because consuming a confirm
 //! token rechecks the write scope against `control.api_keys` (ADR-0054 D-B).
 
-// Both fixtures (`operation_receipt_fixture`, `governance_ops`) carry their own `#[path] mod token_keys`; this is the one
-// test that loads both, and `token_keys::install` is idempotent per process, so the second copy is inert.
+// Both fixtures (`operation_receipt_fixture`, `governance_ops`) carry their own `#[path] mod token_keys`; and
+// `token_keys::install` is idempotent per process.
 #![allow(clippy::duplicate_mod)]
 
 use std::sync::{Arc, Barrier};
@@ -30,23 +29,20 @@ use std::time::{Duration, Instant, SystemTime};
 use humaux_adapters::{
     confirm_token_repo::{self, ConfirmationClaim},
     forget_repo,
-    memory_governance_repo::{
-        self as governance, ArchiveRequest, ArchiveResult, CorrectRequest, RestoreRequest,
-        RestoreResult, SupersedeRequest,
-    },
+    memory_governance_repo::ArchiveResult,
     note_repo::NoteIntake,
     operation_receipt::{
         self, AtomicRememberRequest, AtomicRememberResult, NOTE_OPERATION, NoteReplaceOutcome,
         NoteReplaceRequest,
     },
-    postgres::RuntimeDbPool,
-    quota_reservation_port::{QuotaReservationPort, QuotaTransaction, ReservedQuota},
+    postgres::{RuntimeDbPool, commercial_write_quota},
+    quota_reservation_port::QuotaReservationPort,
     remember::RememberCommand,
     request_guard_repo::{self, AuditTenant},
 };
 use humaux_domain::{
     audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction},
-    authority::{AuthorityClass, MemoryId},
+    authority::AuthorityClass,
     confirm::{DestructiveOp, RISK_TAG_CONFIRMATION_MINTED},
     error::ErrorCode,
     evidence::{EvidenceOriginClass, payload_sha256},
@@ -67,8 +63,14 @@ mod operation_receipt_fixture;
 #[path = "support/governance_ops.rs"]
 mod governance_ops;
 
+#[path = "support/quota_expiry.rs"]
+mod quota_expiry;
+
 use governance_ops::Governor;
-use operation_receipt_fixture::{DOMAIN, Fixture, Handle, PROJECTION_KIND, PROJECTION_VERSION};
+use operation_receipt_fixture::{
+    DOMAIN, Fixture, Handle, PROJECTION_KIND, PROJECTION_VERSION, Residue, plain_memory, residue,
+};
+use quota_expiry::ExpireSettledQuota;
 
 const TOKEN_TTL: Duration = Duration::from_secs(600);
 
@@ -181,6 +183,7 @@ fn create(handle: &Handle, editor: &Editor, body: &str, kind: NoteKind) -> Atomi
         .rt
         .block_on(operation_receipt::note_put_atomically(
             &handle.runtime,
+            humaux_adapters::postgres::commercial_write_quota(),
             &editor.auth,
             atomic_request(handle, editor, &key, "c".repeat(64), body),
             note,
@@ -314,6 +317,7 @@ fn replace(
         .rt
         .block_on(operation_receipt::note_replace_atomically(
             &handle.runtime,
+            humaux_adapters::postgres::commercial_write_quota(),
             &editor.auth,
             request,
             note,
@@ -379,6 +383,7 @@ fn spawn_replace(
         let (request, note, replace) = parts;
         rt.block_on(operation_receipt::note_replace_atomically(
             &pool,
+            humaux_adapters::postgres::commercial_write_quota(),
             &auth,
             request,
             note,
@@ -386,52 +391,6 @@ fn spawn_replace(
             &humaux_adapters::attribution_repo::AttributionLadder,
         ))
     })
-}
-
-/// Every row family a replacement may add, for this tenant.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-struct Residue {
-    evidence: i64,
-    memories: i64,
-    primary_links: i64,
-    contracts: i64,
-    receipts: i64,
-    consumed_bmo: i64,
-    consumed_tokens: i64,
-    llm_jobs: i64,
-    lifecycle_events: i64,
-}
-
-fn residue(handle: &mut Handle) -> Residue {
-    let row = handle
-        .admin
-        .query_one(
-            "SELECT \
-               (SELECT count(*) FROM private.evidence_objects WHERE tenant_id=$1), \
-               (SELECT count(*) FROM private.memory_records WHERE tenant_id=$1), \
-               (SELECT count(*) FROM private.memory_evidence me JOIN private.memory_records m \
-                  ON m.memory_id=me.memory_id WHERE m.tenant_id=$1 AND me.role='PRIMARY'), \
-               (SELECT count(*) FROM private.identity_note_materializations WHERE tenant_id=$1), \
-               (SELECT count(*) FROM control.operation_receipts WHERE tenant_id=$1), \
-               (SELECT count(*) FROM control.usage_reservations WHERE tenant_id=$1 AND status='CONSUMED'), \
-               (SELECT count(*) FROM control.confirm_tokens WHERE tenant_id=$1 AND consumed_at IS NOT NULL), \
-               (SELECT count(*) FROM ops.jobs WHERE tenant_id=$1 \
-                  AND job_type IN ('DERIVED_DISTILL','DERIVED_CONSOLIDATE')), \
-               (SELECT count(*) FROM ops.memory_lifecycle_events WHERE tenant_id=$1)",
-            &[&handle.tenant_id],
-        )
-        .expect("owner reads this tenant's rows");
-    Residue {
-        evidence: row.get(0),
-        memories: row.get(1),
-        primary_links: row.get(2),
-        contracts: row.get(3),
-        receipts: row.get(4),
-        consumed_bmo: row.get(5),
-        consumed_tokens: row.get(6),
-        llm_jobs: row.get(7),
-        lifecycle_events: row.get(8),
-    }
 }
 
 /// A stored version: (status, superseded_by, note_id, note_kind).
@@ -501,49 +460,6 @@ fn token_consumed(handle: &mut Handle, claim: &ConfirmationClaim) -> bool {
         )
         .expect("token row")
         .get(0)
-}
-
-/// An ordinary (non-note) WORKSPACE_SHARED Memory with its PRIMARY Evidence, seeded by the owner — the control operand
-/// for the governance gates.
-fn plain_memory(handle: &mut Handle) -> Uuid {
-    let tenant_id = handle.tenant_id;
-    let workspace_id = handle.workspace_id;
-    let reasoning_domain_id = handle.reasoning_domain_id;
-    let mut txn = handle.admin.transaction().expect("begin plain memory seed");
-    let evidence_id: Uuid = txn
-        .query_one(
-            "INSERT INTO private.evidence_objects \
-               (tenant_id, evidence_kind, payload_sha256, data_class, origin_class, visibility_class, \
-                visibility_workspace_id, reasoning_domain_id) \
-             VALUES ($1, 'EVENT', $2, 'INTERNAL', 'DirectUserInput', 'WORKSPACE_SHARED', $3, $4) \
-             RETURNING evidence_id",
-            &[&tenant_id, &vec![5_u8; 32], &workspace_id, &reasoning_domain_id],
-        )
-        .expect("owner seeds plain evidence")
-        .get(0);
-    let memory_id: Uuid = txn
-        .query_one(
-            "INSERT INTO private.memory_records \
-               (tenant_id, memory_type, content, visibility_class, visibility_workspace_id, authority_class, \
-                confidence, status, asserted_at) \
-             VALUES ($1, 'FACT', $2, 'WORKSPACE_SHARED', $3, 'PrivateKnowledge', 1.0, 'active', clock_timestamp()) \
-             RETURNING memory_id",
-            &[
-                &tenant_id,
-                &serde_json::json!({"title": "plain", "key_claim": "an ordinary memory"}),
-                &workspace_id,
-            ],
-        )
-        .expect("owner seeds plain memory")
-        .get(0);
-    txn.execute(
-        "INSERT INTO private.memory_evidence (memory_id, evidence_id, role, grounding_mode) \
-         VALUES ($1, $2, 'PRIMARY', 'SNAPSHOT')",
-        &[&memory_id, &evidence_id],
-    )
-    .expect("owner links plain memory");
-    txn.commit().expect("commit plain memory seed");
-    memory_id
 }
 
 fn memory_of(result: &AtomicRememberResult) -> Uuid {
@@ -620,6 +536,7 @@ fn g28_one_replacement_adds_exactly_one_version_and_moves_the_head() {
                 .rt
                 .block_on(operation_receipt::note_replace_atomically(
                     &handle.runtime,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &editor.auth,
                     request,
                     note,
@@ -1061,7 +978,7 @@ fn g21_no_replacement_without_a_confirmation_of_exactly_this_intent() {
                 .rt
                 .block_on(humaux_adapters::memory_governance_repo::correct_atomically(
                     &handle.runtime,
-                    &governance_ops::TestWriteQuota,
+                    commercial_write_quota(),
                     &editor.auth,
                     humaux_adapters::memory_governance_repo::CorrectRequest {
                         request_id,
@@ -1258,322 +1175,95 @@ fn g27_a_tombstoned_head_cannot_be_replaced() {
     });
 }
 
-// The real settlement succeeds before the database lease expires. Delay its return to
-// exercise the final lease check after settlement and before the business commit.
-struct ExpireSettledQuota;
-struct ExpiringLease(Box<dyn ReservedQuota>);
-
-#[async_trait::async_trait]
-impl QuotaReservationPort for ExpireSettledQuota {
-    async fn reserve(
-        &self,
-        txn: &mut QuotaTransaction<'_>,
-        auth: &AuthorizationScope,
-        request_id: Uuid,
-        operation: &str,
-        fingerprint: &str,
-        ttl: Duration,
-    ) -> Result<Option<Box<dyn ReservedQuota>>, ErrorCode> {
-        let lease = governance_ops::TestWriteQuota
-            .reserve(txn, auth, request_id, operation, fingerprint, ttl)
-            .await?;
-        Ok(lease.map(|lease| Box::new(ExpiringLease(lease)) as Box<dyn ReservedQuota>))
-    }
-}
-
-#[async_trait::async_trait]
-impl ReservedQuota for ExpiringLease {
-    fn id(&self) -> Uuid {
-        self.0.id()
-    }
-
-    fn expires_at(&self) -> OffsetDateTime {
-        self.0.expires_at()
-    }
-
-    async fn consume(
-        &self,
-        txn: &mut QuotaTransaction<'_>,
-        auth: &AuthorizationScope,
-    ) -> Result<bool, ErrorCode> {
-        assert!(
-            self.0.consume(txn, auth).await?,
-            "native settlement before expiry"
-        );
-        sqlx::query(
-            "SELECT pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM $1::timestamptz - clock_timestamp())))",
-        )
-        .bind(self.expires_at())
-        .execute(&mut **txn)
-        .await
-        .expect("wait for the actual database reservation deadline");
-        Ok(true)
-    }
-}
-
-type GovernanceQuotaState = (Residue, Vec<i64>, String, bool);
-
-fn governance_quota_state(handle: &mut Handle, target: Uuid) -> GovernanceQuotaState {
-    let facts = residue(handle);
-    let row = handle
-        .admin
-        .query_one(
-            "SELECT ARRAY[
-             (SELECT count(*) FROM control.usage_reservations WHERE tenant_id=$1),
-             (SELECT reserved FROM control.quota_windows WHERE tenant_id=$1),
-             (SELECT consumed FROM control.quota_windows WHERE tenant_id=$1),
-             (SELECT count(*) FROM control.audit_events WHERE tenant_id=$1)
-         ], status, archived_at IS NOT NULL
-         FROM private.memory_records WHERE tenant_id=$1 AND memory_id=$2",
-            &[&handle.tenant_id, &target],
-        )
-        .expect("read the fixture's business, quota and audit state");
-    (facts, row.get(0), row.get(1), row.get(2))
-}
-
-async fn execute_confirmed_governance(
-    pool: &RuntimeDbPool,
-    quota: &dyn QuotaReservationPort,
-    auth: &AuthorizationScope,
-    stream: &StreamKey,
-    claim: &ConfirmationClaim,
-    (request_id, fingerprint): (Uuid, &str),
-    finished_audit: AuditEvent,
-) -> Result<(i64, i64), ErrorCode> {
-    let request_fingerprint = fingerprint.to_owned();
-    let target = MemoryId(claim.target_id);
-    let op = claim.op;
-    let claim = claim.clone();
-    let stream = stream.clone();
-    let reservation_ttl = Duration::from_secs(2);
-    let undo_window = Duration::from_secs(600);
-    let consistency_token_ttl = Duration::from_secs(600);
-    match op {
-        DestructiveOp::MemorySupersede => {
-            let successor = MemoryId(claim.successor_id.expect("supersede binds a successor"));
-            let request = SupersedeRequest {
-                request_id,
-                request_fingerprint,
-                reservation_ttl,
-                target,
-                successor,
-                stream,
-                claim,
-                finished_audit,
-                undo_window,
-            };
-            let result = governance::supersede_atomically(pool, quota, auth, request).await?;
-            Ok((result.stream_seq, result.commit_seq))
-        }
-        DestructiveOp::MemoryRestore => {
-            let request = RestoreRequest {
-                request_id,
-                request_fingerprint,
-                reservation_ttl,
-                target,
-                stream,
-                claim,
-                finished_audit,
-                consistency_token_ttl,
-            };
-            let RestoreResult::Restored(result) =
-                governance::restore_atomically(pool, quota, auth, request).await?
-            else {
-                panic!("restore refused a valid request")
-            };
-            Ok((result.stream_seq, result.commit_seq))
-        }
-        DestructiveOp::MemoryArchive | DestructiveOp::MemoryUnarchive => {
-            let request = ArchiveRequest {
-                request_id,
-                request_fingerprint,
-                reservation_ttl,
-                target,
-                stream,
-                claim,
-                finished_audit,
-                op,
-            };
-            let ArchiveResult::Done(result) =
-                governance::archive_or_unarchive_atomically(pool, quota, auth, request).await?
-            else {
-                panic!("archive/unarchive refused a valid request")
-            };
-            Ok((result.stream_seq, result.commit_seq))
-        }
-        DestructiveOp::MemoryCorrect => {
-            let content = serde_json::Value::String("governance correction".into());
-            let request = CorrectRequest {
-                request_id,
-                request_fingerprint,
-                reservation_ttl,
-                target,
-                payload_sha256: payload_sha256(&serde_json::to_vec(&content).unwrap()),
-                content,
-                stream,
-                claim,
-                finished_audit,
-                undo_window,
-                consistency_token_ttl,
-                subjects: Default::default(),
-                affects: Vec::new(),
-                mood_half_life: None,
-            };
-            let result = governance::correct_atomically(
-                pool,
-                quota,
-                auth,
-                request,
-                &humaux_adapters::attribution_repo::AttributionLadder,
-            )
-            .await?;
-            Ok((result.stream_seq, result.commit_seq))
-        }
-        _ => unreachable!("this test drives the four governance transactions"),
-    }
-}
-
-fn assert_single_governance_commit(
-    op: DestructiveOp,
-    before: &GovernanceQuotaState,
-    after: &GovernanceQuotaState,
-) {
-    assert_eq!(
-        after.0.lifecycle_events,
-        before.0.lifecycle_events + 1,
-        "{op:?}"
-    );
-    assert_eq!(
-        after.0.consumed_tokens,
-        before.0.consumed_tokens + 1,
-        "{op:?}"
-    );
-    assert_eq!(after.0.consumed_bmo, before.0.consumed_bmo + 1, "{op:?}");
-    assert_eq!(
-        after.0.receipts, before.0.receipts,
-        "{op:?} has no operation receipt"
-    );
-    assert_eq!(
-        after.1,
-        [
-            before.1[0] + 1,
-            before.1[1],
-            before.1[2] + 1,
-            before.1[3] + 3
-        ],
-        "{op:?}"
-    );
-}
-
-fn assert_governance_quota_case(
-    handle: &mut Handle,
-    auth: &AuthorizationScope,
-    stream: &StreamKey,
-    op: DestructiveOp,
-    target: Uuid,
-    successor: Uuid,
-) {
-    let claim = governance_ops::confirm(
-        &handle.rt,
-        &handle.runtime,
-        auth,
-        op,
-        target,
-        (op == DestructiveOp::MemorySupersede).then_some(successor),
-    );
-    let request_id = Uuid::now_v7();
-    let finished_audit = governance_ops::audit(auth, op, request_id, false);
-    let duplicate_id = governance_ops::audit(auth, op, Uuid::now_v7(), false);
-    handle
-        .rt
-        .block_on(request_guard_repo::audit_event_insert(
-            &handle.runtime,
-            AuditTenant::Authenticated(auth),
-            &duplicate_id,
-        ))
-        .expect("seed an audit ID that the final audit cannot insert a second time");
-    let fingerprint = governance_ops::fingerprint();
-    let execute = |handle: &Handle, quota: &dyn QuotaReservationPort, finished_audit| {
-        handle.rt.block_on(execute_confirmed_governance(
-            &handle.runtime,
-            quota,
-            auth,
-            stream,
-            &claim,
-            (request_id, &fingerprint),
-            finished_audit,
-        ))
-    };
-
-    let before = governance_quota_state(handle, target);
-    let mut fault = finished_audit.clone();
-    fault.event_id = duplicate_id.event_id;
-    for (label, quota, audit) in [
-        (
-            "final audit",
-            &governance_ops::TestWriteQuota as &dyn QuotaReservationPort,
-            fault,
-        ),
-        (
-            "expiry after settlement",
-            &ExpireSettledQuota,
-            finished_audit.clone(),
-        ),
-    ] {
-        assert_eq!(
-            execute(handle, quota, audit),
-            Err(ErrorCode::Conflict),
-            "{op:?} {label}"
-        );
-        assert_eq!(
-            governance_quota_state(handle, target),
-            before,
-            "{op:?} {label} must roll back all writes"
-        );
-    }
-
-    let success = execute(
-        handle,
-        &governance_ops::TestWriteQuota,
-        finished_audit.clone(),
-    )
-    .expect("the same confirmation and reservation can succeed after rollback");
-    let after = governance_quota_state(handle, target);
-    assert_single_governance_commit(op, &before, &after);
-
-    let replay = execute(handle, &governance_ops::TestWriteQuota, finished_audit);
-    assert_eq!(
-        replay,
-        if op == DestructiveOp::MemorySupersede {
-            Err(ErrorCode::Conflict)
-        } else {
-            Ok(success)
-        },
-        "{op:?}"
-    );
-    assert_eq!(
-        governance_quota_state(handle, target),
-        after,
-        "{op:?} replay writes nothing"
-    );
-}
-
 #[test]
-fn governance_quota_rolls_back_audit_failure_and_expired_lease_and_replays_once() {
-    run_db_fixture::<Fixture, _>("governance_quota_atomicity", |mut handle| {
+fn note_receipt_rolls_back_audit_and_expiry_and_replays_once() {
+    run_db_fixture::<Fixture, _>("note_receipt_quota_atomicity", |mut handle| {
         let editor = editor(&mut handle);
-        let auth = &editor.auth;
-        let target = plain_memory(&mut handle);
-        let successor = plain_memory(&mut handle);
-        let stream = governance_ops::stream(handle.tenant_id, handle.workspace_id);
-        for op in [
-            DestructiveOp::MemorySupersede,
-            DestructiveOp::MemoryRestore,
-            DestructiveOp::MemoryArchive,
-            DestructiveOp::MemoryUnarchive,
-            DestructiveOp::MemoryCorrect,
+        let body = "a note with an atomic quota receipt";
+        let key = format!("note-quota-{}", Uuid::new_v4());
+        let request_id = Uuid::new_v4();
+        let finished = audit(&handle, &editor, request_id, false);
+        let duplicate = audit(&handle, &editor, Uuid::new_v4(), false);
+        handle
+            .rt
+            .block_on(request_guard_repo::audit_event_insert(
+                &handle.runtime,
+                AuditTenant::Authenticated(&editor.auth),
+                &duplicate,
+            ))
+            .expect("preexisting audit ID provokes failure on the final audit only");
+
+        let execute = |handle: &Handle, quota: &dyn QuotaReservationPort, audit| {
+            let mut request = atomic_request(handle, &editor, &key, "f".repeat(64), body);
+            request.request_id = request_id;
+            request.finished_audit = audit;
+            request.reservation_ttl = Duration::from_secs(2);
+            let body = NoteBody::new(body).expect("valid note body");
+            let note = NoteIntake {
+                kind: NoteKind::Note,
+                title: note_title(None, &body).expect("derived title"),
+                body,
+                requested: DEFAULT_AUTHORITY,
+            };
+            handle.rt.block_on(operation_receipt::note_put_atomically(
+                &handle.runtime,
+                quota,
+                &editor.auth,
+                request,
+                note,
+                &humaux_adapters::attribution_repo::AttributionLadder,
+            ))
+        };
+        let reserved_rows = |handle: &mut Handle| -> i64 {
+            handle
+                .admin
+                .query_one(
+                    "SELECT count(*) FROM control.usage_reservations WHERE tenant_id=$1 AND request_id=$2",
+                    &[&handle.tenant_id, &request_id],
+                )
+                .expect("owner reads the fixture reservation")
+                .get(0)
+        };
+
+        let mut bad_audit = finished.clone();
+        bad_audit.event_id = duplicate.event_id;
+        let before = residue(&mut handle);
+        for (label, quota, event) in [
+            ("final audit", commercial_write_quota(), bad_audit),
+            (
+                "expiry after settlement",
+                &ExpireSettledQuota,
+                finished.clone(),
+            ),
         ] {
-            assert_governance_quota_case(&mut handle, auth, &stream, op, target, successor);
+            assert!(
+                matches!(execute(&handle, quota, event), Err(ErrorCode::Conflict)),
+                "{label}"
+            );
+            assert_eq!(
+                residue(&mut handle),
+                before,
+                "{label} rolls back the note and receipt"
+            );
+            assert_eq!(
+                reserved_rows(&mut handle),
+                0,
+                "{label} leaves no reservation"
+            );
         }
+
+        let accepted = execute(&handle, commercial_write_quota(), finished.clone())
+            .expect("the original write can succeed after rollback");
+        let after = residue(&mut handle);
+        assert_eq!(after.memories, before.memories + 1);
+        assert_eq!(after.receipts, before.receipts + 1);
+        assert_eq!(after.consumed_bmo, before.consumed_bmo + 1);
+        assert_eq!(reserved_rows(&mut handle), 1);
+
+        let replay = execute(&handle, commercial_write_quota(), finished).expect("receipt replay");
+        assert!(replay.replayed);
+        assert_eq!(memory_of(&replay), memory_of(&accepted));
+        assert_eq!(residue(&mut handle), after);
+        assert_eq!(reserved_rows(&mut handle), 1);
     });
 }

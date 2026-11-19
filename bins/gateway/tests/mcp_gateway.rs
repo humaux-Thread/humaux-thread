@@ -13582,11 +13582,13 @@ fn native_mcp_remember_put_per_call_visibility_and_per_request_stream() {
                 let (first_a, first_b) = tokio::join!(
                     operation_receipt::remember_atomically(
                         &direct_pool,
+                        humaux_adapters::postgres::commercial_write_quota(),
                         &two_pairs,
                         direct_receipt_request(&handle, principal, workspace_a, &key, content_a),
                     ),
                     operation_receipt::remember_atomically(
                         &direct_pool,
+                        humaux_adapters::postgres::commercial_write_quota(),
                         &two_pairs,
                         direct_receipt_request(&handle, principal, workspace_b, &key, content_b),
                     ),
@@ -13599,6 +13601,7 @@ fn native_mcp_remember_put_per_call_visibility_and_per_request_stream() {
                 // Each stream replays its own receipt.
                 let replay_a = operation_receipt::remember_atomically(
                     &direct_pool,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &two_pairs,
                     direct_receipt_request(&handle, principal, workspace_a, &key, content_a),
                 )
@@ -13606,6 +13609,7 @@ fn native_mcp_remember_put_per_call_visibility_and_per_request_stream() {
                 .expect("stream A replays");
                 let replay_b = operation_receipt::remember_atomically(
                     &direct_pool,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &two_pairs,
                     direct_receipt_request(&handle, principal, workspace_b, &key, content_b),
                 )
