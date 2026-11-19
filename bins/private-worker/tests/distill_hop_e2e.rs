@@ -1823,6 +1823,11 @@ fn d5c_a_rolled_back_write_counts_nothing_and_a_finalized_call_counts_its_tokens
         D5C_USAGE.0 + D5C_USAGE.1,
         "input + output tokens, counted once"
     );
+    assert_eq!(
+        job_state(&mut f, evidence_id).0,
+        "PROCESSING",
+        "the outbox refusal also rolls back the job's DONE settlement"
+    );
 }
 
 /// D5b (card TH-3, ADR-0058 D-E/D-J) — a late worker. W1 is blocked inside its provider call;

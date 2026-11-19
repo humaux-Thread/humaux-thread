@@ -1,5 +1,5 @@
 //! `adapters::consolidate_repo` — §11.6/§11.7 Private Memory Consolidation SQL, through [`ConsolidationDbPool`] only.
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sha2, sqlx]; services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.jobs, private.context_bindings, private.events, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_rollup_sources, private.memory_rollups] x=[control.current_reasoning_route_binding, private.lock_publish_source]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::consolidation_reasoner, adapters::jobs, adapters::memory_governance_repo, adapters::memory_repo, adapters::postgres, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::consolidate, application::consolidation_execution, domain::authority, domain::consolidate, domain::error, domain::ids, domain::ticket_family, projection::stream]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sha2, sqlx]; services=[PostgreSQL(any) w=[control.private_reasoning_domains, control.tenants, ops.jobs, private.context_bindings, private.events, private.evidence_objects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_rollup_sources, private.memory_rollups] x=[control.current_reasoning_route_binding, private.lock_publish_source]]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::consolidation_reasoner, adapters::derived_job_lease, adapters::memory_governance_repo, adapters::memory_repo, adapters::postgres, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::consolidate, application::consolidation_execution, domain::authority, domain::consolidate, domain::error, domain::ids, domain::ticket_family, projection::stream]
 //! Called-by: [adapters::consolidation_reasoner, adapters::distill_reasoner, tests]
 //! Invariants: [input selection and materialization happen in ONE REPEATABLE READ READ WRITE transaction (§11.7), so
 //!   no concurrent insert can leak into a run; a lost lease is LostRace and an unknown source UnknownSource, never a
@@ -51,6 +51,7 @@ use humaux_domain::ids::TenantId;
 use humaux_domain::ticket_family::TicketFamily;
 use humaux_projection::stream::StreamKey;
 
+use crate::derived_job_lease::{DerivedJobLeaseSettlementPort, DerivedLease};
 use crate::memory_repo::authority_class_to_db_str;
 use crate::postgres::ConsolidationDbPool;
 use crate::remember;
@@ -99,7 +100,7 @@ pub enum ConsolidateRepoError {
     /// The `ops.jobs` lease fence [`publish_rollup`] settles inside its own transaction
     /// (ADR-0036) failed at the database level. A LOST fence is not this error — that is
     /// [`PublishOutcome::LostLease`], a normal outcome.
-    Jobs(crate::jobs::JobsError),
+    Jobs(sqlx::Error),
     /// The rollup ticket's home stream (ADR-0057 D-M) could not be resolved: the lookup failed,
     /// or the source memory's home differs from the run's scope and is not provisioned
     /// (`DependencyUnavailable`). Nothing is published; the run stays retryable.
@@ -109,12 +110,6 @@ pub enum ConsolidateRepoError {
 impl From<sqlx::Error> for ConsolidateRepoError {
     fn from(e: sqlx::Error) -> Self {
         Self::Db(e)
-    }
-}
-
-impl From<crate::jobs::JobsError> for ConsolidateRepoError {
-    fn from(e: crate::jobs::JobsError) -> Self {
-        Self::Jobs(e)
     }
 }
 
@@ -142,7 +137,10 @@ impl std::fmt::Display for ConsolidateRepoError {
                     "consolidate_repo: §11.9 authority ceiling violated: {violation:?}"
                 )
             }
-            Self::Jobs(e) => write!(f, "consolidate_repo job lease settle failed: {e}"),
+            Self::Jobs(e) => write!(
+                f,
+                "consolidate_repo job lease settle failed: ops.jobs DB error: {e}"
+            ),
             Self::HomeStream(code) => write!(
                 f,
                 "consolidate_repo: the rollup ticket's home stream is unavailable: {code:?}"
@@ -639,7 +637,7 @@ pub async fn publish_rollup(
     rollup_class: AuthorityClass,
     manifest_hash: Option<&[u8]>,
     sources: &[(AutoMutableMemoryId, EvidenceId)],
-    fence: Option<&crate::jobs::DerivedLease<'_>>,
+    fence: Option<&DerivedLease<'_>>,
 ) -> Result<PublishOutcome, ConsolidateRepoError> {
     let result = async {
     // dep: PostgreSQL(any) — opens a PostgreSQL transaction
@@ -790,7 +788,7 @@ pub async fn publish_rollup(
 
     // Last statement before COMMIT: everything above is discarded if the lease is gone.
     if let Some(lease) = fence
-        && !crate::jobs::settle_derived_done_in_txn(&mut txn, lease).await?
+        && !pool.settle_in_txn(&mut txn, lease).await.map_err(ConsolidateRepoError::Jobs)?
     {
         txn.rollback().await?;
         return Ok(PublishOutcome::LostLease);
@@ -813,7 +811,7 @@ pub async fn retry_stale_input(
         Ok(PublishOutcome::StaleInput) => {}
         Err(
             ConsolidateRepoError::Db(sqlx::Error::Database(ref e))
-            | ConsolidateRepoError::Jobs(crate::jobs::JobsError::Db(sqlx::Error::Database(ref e))),
+            | ConsolidateRepoError::Jobs(sqlx::Error::Database(ref e)),
         ) if stale_publish_sqlstate(e.code().as_deref()) => {}
         other => return other,
     }
@@ -853,7 +851,7 @@ pub fn build_rollup(
 #[async_trait::async_trait]
 impl ConsolidationStore for ConsolidationDbPool {
     type Error = ConsolidateRepoError;
-    type Lease<'a> = crate::jobs::DerivedLease<'a>;
+    type Lease<'a> = DerivedLease<'a>;
 
     async fn create_run(
         &self,

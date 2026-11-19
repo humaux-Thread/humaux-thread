@@ -1982,7 +1982,7 @@ fn hex_boundary_gate(root: &Path, writer: bool) -> Verdict {
     let (file, ceiling, label) = if writer {
         ("xtask/hex_writer_baseline.txt", 34, "HEX-WRITER")
     } else {
-        ("xtask/hex_context_baseline.txt", 150, "HEX-CONTEXT")
+        ("xtask/hex_context_baseline.txt", 143, "HEX-CONTEXT")
     };
     let actual = if writer {
         hex_writer_actual(root)
