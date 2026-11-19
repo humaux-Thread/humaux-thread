@@ -455,6 +455,8 @@ async fn close_slot(
 
 #[async_trait::async_trait]
 impl ContinuityReadPort for PostgresContinuityReadPort {
+    type Authorization = AuthorizationScope;
+
     async fn read_snapshot(
         &self,
         authorization: &AuthorizationScope,
