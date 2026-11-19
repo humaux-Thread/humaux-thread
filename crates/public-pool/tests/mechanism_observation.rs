@@ -58,6 +58,8 @@ struct CountingEvaluator {
 
 #[async_trait::async_trait]
 impl PublicClaimEvaluator for CountingEvaluator {
+    type Authorization = AuthorizationScope;
+
     async fn evaluate_claim(
         &self,
         pool: &PublicWorkerDbPool,

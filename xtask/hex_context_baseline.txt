@@ -11,7 +11,6 @@ crates/adapters/src/continuity_read.rs:project_continuity->identity_access:humau
 crates/adapters/src/continuity_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::VisibilityDescriptor
-crates/adapters/src/mechanism_observation.rs:operations_platform->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::AuditEvent
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind
 crates/adapters/src/project_rollup.rs:knowledge_curation->project_continuity:humaux_domain::continuity::ContinuityFacetKind::ALL
@@ -29,7 +28,6 @@ crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycl
 crates/adapters/src/request_guard_repo.rs:identity_access->provider_execution:humaux_domain::audit::AuditEvent
 crates/adapters/src/retrieve.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
 crates/application/src/auth.rs:identity_access->provider_execution:humaux_domain::audit::AuditMetadata
-crates/application/src/continuity.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/application/src/contribute.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
 crates/application/src/recall_read.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
 crates/application/src/recall_read.rs:retrieval_read_model->project_continuity:humaux_domain::context::ContextBudget
