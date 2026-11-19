@@ -30,7 +30,7 @@
 //!   control.retention_policy_approve], PostgreSQL(role_gateway) r=[private.evidence_objects, private.memory_records,
 //!   projection.private_memory_points], PostgreSQL(role_retrieval_worker) r=[projection.memory_vectors]]; env=[];
 //!   modules=[application::knowledge_backup, application::partition_retention, adapters::membership_repo, adapters::postgres, adapters::provisioning, domain::audit, domain::error, humaux-adapters]
-//! Called-by: [adapters::rebuild, maintenance::backup, maintenance::serve, tests]
+//! Called-by: [maintenance::backup, maintenance::bootstrap, maintenance::serve, tests]
 //! Invariants: [the page returns tenant ids only, strictly after the cursor in tenant_id order, at most `limit`;
 //!   the definer refuses limit <= 0 (22023), so no call can read every tenant at once; every door call is one
 //!   transaction holding the tenant GUC and exactly one statement, so the delete and its receipt (or a reissued
