@@ -98,8 +98,9 @@ use humaux_adapters::byok::ReasoningCapability;
 use humaux_adapters::membership_repo::AdminAction;
 use humaux_adapters::plan_repo;
 use humaux_adapters::postgres::MaintenanceDbPool;
-use humaux_adapters::provisioning::{self, NewApiKey, QdrantFace, TenantReceipt, TenantRequest};
+use humaux_adapters::provisioning::{self, NewApiKey, TenantReceipt, TenantRequest};
 use humaux_adapters::quota_repo;
+use humaux_adapters::retrieval_provisioning::{self, QdrantFace};
 use humaux_domain::identity::MembershipRole;
 use humaux_domain::ids::TenantId;
 use humaux_domain::ticket_family::TicketFamily;
@@ -758,14 +759,14 @@ async fn provision(
 
     let face = QdrantFace::new(&qdrant.host, qdrant.port, &format!("{}/32", qdrant.host))
         .map_err(|e| format!("qdrant face: {e}"))?;
-    provisioning::ensure_collection(&face, &qdrant.collection, qdrant.dimension)
+    retrieval_provisioning::ensure_collection(&face, &qdrant.collection, qdrant.dimension)
         .await
         .map_err(|e| format!("qdrant collection: {e}"))?;
     let workspace_ids = std::iter::once(tenant.workspace_id)
         .chain(extra_workspaces.iter().map(|(id, _)| *id))
         .collect::<Vec<_>>();
     for workspace_id in workspace_ids {
-        let activation = provisioning::activate_workspace(
+        let activation = retrieval_provisioning::activate_workspace(
             maintenance,
             &face,
             tenant.tenant_id,

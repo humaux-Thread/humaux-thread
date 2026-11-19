@@ -73,8 +73,9 @@ use crate::postgres::{MaintenanceDbPool, RetrievalWorkerDbPool};
 use crate::projection_worker::{
     self, CardEmbedder, ExpectedPoint, SharedProjectionDeps, Sleep, begin_projector_read,
 };
-use crate::provisioning::{self, ProvisioningError, QdrantFace};
+use crate::provisioning::{self, ProvisioningError};
 use crate::qdrant::{self, PointId, QdrantOperation, RetrievalFamily, ScrolledPoint};
+use crate::retrieval_provisioning::{self, QdrantFace};
 
 type Result<T> = std::result::Result<T, ProvisioningError>;
 type Txn = sqlx::Transaction<'static, sqlx::Postgres>;
@@ -944,7 +945,7 @@ fn first_ids(ids: impl IntoIterator<Item = Uuid>) -> Vec<Uuid> {
 /// and status `green`. Returns the failed terms.
 async fn judge_collection(deps: &RebuildDeps<'_>, stream: &Stream) -> Result<Vec<String>> {
     let mut reasons = Vec::new();
-    match provisioning::collection_generation(
+    match retrieval_provisioning::collection_generation(
         deps.qdrant,
         &stream.collection,
         deps.worker.dimension,
@@ -1519,7 +1520,12 @@ pub async fn rebuild_stream(
         }
         Err(other) => return Err(other),
     };
-    provisioning::ensure_collection(deps.qdrant, &stream.collection, deps.worker.dimension).await?;
+    retrieval_provisioning::ensure_collection(
+        deps.qdrant,
+        &stream.collection,
+        deps.worker.dimension,
+    )
+    .await?;
     let issued = issue_tickets(deps, stream, &run, opts.batch, opts.require_stored_vector).await?;
     let settled = wait_generation(deps, stream, &run, opts.wait, opts.pump).await?;
     let (mut report, orphans_deleted) = if settled {

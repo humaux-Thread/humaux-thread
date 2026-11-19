@@ -26,10 +26,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use humaux_adapters::provisioning::{
-    QdrantFace, collection_generation, collection_setup_puts, collection_setup_puts_for,
-    ensure_collection_for,
-};
 use humaux_adapters::qdrant::{
     CollectionSpec, DenseQuery, DenseQueryVersions, Distance, PlacementClass, PointId,
     PromotionState, QdrantOperation, QdrantPointPayload, QdrantTransportError, ReadConsistency,
@@ -37,6 +33,10 @@ use humaux_adapters::qdrant::{
     condition_to_filter, count_body, create_collection_body, dense_query_body, ha_profile_for,
     may_advance_checkpoint, query_dense, shard_key_body, subject_index_body, tenant_index_body,
     upsert, upsert_point_body, verify_visible, visible_count,
+};
+use humaux_adapters::retrieval_provisioning::{
+    QdrantFace, collection_generation, collection_setup_puts, collection_setup_puts_for,
+    ensure_collection_for,
 };
 use humaux_contracts::config_registry::{CollectionConfigError, CollectionDatatype};
 use humaux_domain::authority::{AuthorityClass, AuthorityStatus};

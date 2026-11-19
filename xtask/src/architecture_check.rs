@@ -1982,7 +1982,7 @@ fn hex_boundary_gate(root: &Path, writer: bool) -> Verdict {
     let (file, ceiling, label) = if writer {
         ("xtask/hex_writer_baseline.txt", 40, "HEX-WRITER")
     } else {
-        ("xtask/hex_context_baseline.txt", 212, "HEX-CONTEXT")
+        ("xtask/hex_context_baseline.txt", 192, "HEX-CONTEXT")
     };
     let actual = if writer {
         hex_writer_actual(root)
@@ -14261,7 +14261,7 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             "humaux_adapters::projection_worker::PassConfig",
             "humaux_adapters::projection_worker::SharedProjectionDeps",
             "humaux_adapters::provisioning::ProvisioningError",
-            "humaux_adapters::provisioning::QdrantFace",
+            "humaux_adapters::retrieval_provisioning::QdrantFace",
             "humaux_adapters::qdrant::RetrievalFamily",
             "humaux_adapters::rebuild::RebuildDeps",
             "humaux_adapters::rebuild::ScannerPin",

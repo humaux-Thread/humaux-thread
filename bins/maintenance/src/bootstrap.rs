@@ -1,6 +1,6 @@
 //! `maintenance::bootstrap` — Wires maintenance operator adapters from process configuration (ADR-0130 D2).
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json, tokio, uuid]; services=[]; env=[HUMAUX_MAINTENANCE_EMBEDDING_DIMENSION, HUMAUX_MAINTENANCE_PRIVATE_MEMORY_COLLECTION, HUMAUX_MAINTENANCE_QDRANT_CIDR,
-//!   HUMAUX_MAINTENANCE_QDRANT_HOST, HUMAUX_MAINTENANCE_QDRANT_PORT]; modules=[adapters::postgres, adapters::projection_worker, adapters::provisioning, adapters::qdrant, adapters::reasoning_route_onboarding, adapters::rebuild,
+//!   HUMAUX_MAINTENANCE_QDRANT_HOST, HUMAUX_MAINTENANCE_QDRANT_PORT]; modules=[adapters::postgres, adapters::projection_worker, adapters::provisioning, adapters::qdrant, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::retrieval_provisioning,
 //!   adapters::stream_repo, application::knowledge_backup::drill_projection, application::operator_provisioning, application::reasoning_route_admin,
 //!   domain::egress, maintenance::main]
 //! Called-by: [maintenance::drill, maintenance::main]
@@ -9,13 +9,13 @@
 
 use humaux_adapters::postgres::{MaintenanceDbPool, RetrievalWorkerDbPool};
 use humaux_adapters::projection_worker::{PassConfig, SharedProjectionDeps};
-use humaux_adapters::provisioning::{self, ProvisioningError};
-use humaux_adapters::provisioning::{QdrantFace, WorkspaceActivationAdapter};
+use humaux_adapters::provisioning::ProvisioningError;
 use humaux_adapters::qdrant::RetrievalFamily;
 use humaux_adapters::reasoning_route_onboarding::ReasoningRouteAdapter;
 use humaux_adapters::rebuild::{
     self, NoProviderEmbedder, RebuildDeps, ScannerPin, Stream, Verdict, WorkerLabel,
 };
+use humaux_adapters::retrieval_provisioning::{self, QdrantFace, WorkspaceActivationAdapter};
 use humaux_adapters::stream_repo::{Backoff, ClaimFamily};
 use humaux_application::knowledge_backup::drill_projection::DrillProjectionPort;
 use humaux_application::operator_provisioning::{
@@ -207,7 +207,7 @@ impl DrillProjectionPort for Projection<'_> {
         rebuild::open_run(&self.deps, stream).await
     }
     async fn ensure_collection(&self, stream: &Stream) -> std::result::Result<(), Self::Error> {
-        provisioning::ensure_collection(
+        retrieval_provisioning::ensure_collection(
             self.deps.qdrant,
             &stream.collection,
             self.deps.worker.dimension,

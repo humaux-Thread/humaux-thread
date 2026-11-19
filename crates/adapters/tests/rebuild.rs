@@ -1163,7 +1163,7 @@ use humaux_adapters::postgres::RetrievalWorkerDbPool;
 use humaux_adapters::projection_worker::{
     PassConfig, SharedProjectionDeps, run_claimed_pass, run_claimed_pass_for_run,
 };
-use humaux_adapters::provisioning::{self as provisioning_api, QdrantFace};
+use humaux_adapters::provisioning::ProvisioningError;
 use humaux_adapters::qdrant::{
     PointId, RetrievalFamily, bm25_document, memory_id_index_body, subject_index_body,
     tenant_index_body,
@@ -1172,6 +1172,7 @@ use humaux_adapters::rebuild::{
     self, ClosedDeps, NoProviderEmbedder, OrphanStep, RebuildDeps, RebuildOptions, Stream,
     StreamOutcome, Verdict, WorkerLabel,
 };
+use humaux_adapters::retrieval_provisioning::{self, QdrantFace};
 use humaux_adapters::retrieve;
 use humaux_adapters::stream_repo::{Backoff, ClaimFamily, OnlyRun};
 use humaux_domain::egress::ProcessorId;
@@ -1664,7 +1665,7 @@ fn a_rebuild_into_an_empty_collection_is_equivalent_without_a_provider_call() {
                 h.rt.block_on(rebuild::open_run(&deps, &stream_a))
                     .expect("open");
             assert_eq!(run.generation, 2);
-            h.rt.block_on(provisioning_api::ensure_collection(
+            h.rt.block_on(retrieval_provisioning::ensure_collection(
                 &rb.face,
                 &h.collection,
                 4,
@@ -2802,18 +2803,18 @@ fn ensure_adds_bm25_to_an_old_collection_once() {
             sparse_vectors_of(h)["bm25"].is_null(),
             "an old collection has no bm25"
         );
-        let read = h.rt.block_on(provisioning_api::collection_generation(
+        let read = h.rt.block_on(retrieval_provisioning::collection_generation(
             &qdrant,
             &h.collection,
             4,
         ));
         assert!(
-            matches!(&read, Err(provisioning_api::ProvisioningError::Refused(reason)) if reason == "collection_misconfigured"),
+            matches!(&read, Err(ProvisioningError::Refused(reason)) if reason == "collection_misconfigured"),
             "an old collection reads misconfigured: {read:?}"
         );
 
         let first =
-            h.rt.block_on(provisioning_api::ensure_collection(
+            h.rt.block_on(retrieval_provisioning::ensure_collection(
                 &qdrant,
                 &h.collection,
                 4,
@@ -2822,7 +2823,7 @@ fn ensure_adds_bm25_to_an_old_collection_once() {
         assert!(!first.created, "the collection existed");
         assert_eq!(sparse_vectors_of(h)["bm25"]["modifier"], idf);
         let second =
-            h.rt.block_on(provisioning_api::ensure_collection(
+            h.rt.block_on(retrieval_provisioning::ensure_collection(
                 &qdrant,
                 &h.collection,
                 4,
@@ -2837,7 +2838,7 @@ fn ensure_adds_bm25_to_an_old_collection_once() {
 
         drop_collection(h);
         let fresh =
-            h.rt.block_on(provisioning_api::ensure_collection(
+            h.rt.block_on(retrieval_provisioning::ensure_collection(
                 &qdrant,
                 &h.collection,
                 4,

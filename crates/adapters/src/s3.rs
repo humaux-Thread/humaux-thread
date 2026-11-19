@@ -2,5 +2,5 @@
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
 //! Called-by: []
 //! Invariants: [placeholder with no code: no object-store client exists yet; audit export goes through
-//!   the object_store::ObjectStore port (audit_sink::export_batch)]
+//!   the provider-owned AuditBlobSinkPort (audit_sink::export_batch)]
 //! Spec: none
