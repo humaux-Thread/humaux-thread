@@ -350,6 +350,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_gateway)`
 - service `PostgreSQL(role_maintenance)`
 
+#### `adapters::quota_reservation_port`
+
 #### `adapters::read_gate`
 - reads `private.evidence_objects`
 - reads `private.memory_evidence`
@@ -2062,6 +2064,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_gateway)`
 - service `PostgreSQL(role_maintenance)`
 
+#### `adapters::quota_reservation_port`
+
 #### `adapters::read_gate`
 - reads `private.evidence_objects`
 - reads `private.memory_evidence`
@@ -3008,6 +3012,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(any)`
 - service `PostgreSQL(role_gateway)`
 - service `PostgreSQL(role_maintenance)`
+
+#### `adapters::quota_reservation_port`
 
 #### `adapters::read_gate`
 - reads `private.evidence_objects`
@@ -4218,6 +4224,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_gateway)`
 - service `PostgreSQL(role_maintenance)`
 
+#### `adapters::quota_reservation_port`
+
 #### `adapters::read_gate`
 - reads `private.evidence_objects`
 - reads `private.memory_evidence`
@@ -5041,6 +5049,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_gateway)`
 - service `PostgreSQL(role_maintenance)`
 
+#### `adapters::quota_reservation_port`
+
 #### `adapters::read_gate`
 - reads `private.evidence_objects`
 - reads `private.memory_evidence`
@@ -5659,6 +5669,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::note_put`
+- (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `adapters::tests::project_tree`
 - (no process): `adapters::tests::request_guard`
@@ -6965,6 +6976,7 @@ executed by:
 ### `control.quota_windows`
 read by:
 - (no process): `adapters::tests::evidence_task_runs`
+- (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `gateway::tests::coordinate_task`
 - (no process): `gateway::tests::mcp_gateway`
@@ -14113,6 +14125,7 @@ modules naming it:
 - `adapters::provisioning`
 - `adapters::qdrant`
 - `adapters::quota_repo`
+- `adapters::quota_reservation_port`
 - `adapters::read_gate`
 - `adapters::read_materialize`
 - `adapters::reasoning_route_admission`
@@ -14275,6 +14288,7 @@ modules naming it:
 - `adapters::provisioning`
 - `adapters::qdrant`
 - `adapters::quota_repo`
+- `adapters::quota_reservation_port`
 - `adapters::read_gate`
 - `adapters::read_materialize`
 - `adapters::reasoning_route_admission`
@@ -14678,6 +14692,7 @@ modules naming it:
 - `adapters::private_inference_rpc`
 - `adapters::projection_worker`
 - `adapters::provisioning`
+- `adapters::quota_reservation_port`
 - `adapters::read_materialize`
 - `adapters::reasoning_route_onboarding`
 - `adapters::rebuild`
@@ -14693,6 +14708,7 @@ modules naming it:
 - `adapters::tests::contribution_reasoner`
 - `adapters::tests::email_outbox`
 - `adapters::tests::minimax_live_smoke`
+- `adapters::tests::note_replace`
 - `adapters::tests::phase9_exact_assessed_storage_binding`
 - `adapters::tests::phase9_independence_attestation`
 - `adapters::tests::projection_claim`
@@ -14701,6 +14717,7 @@ modules naming it:
 - `adapters::tests::rebuild`
 - `adapters::tests::support::a2_fixture`
 - `adapters::tests::support::contribution_fixture`
+- `adapters::tests::support::governance_ops`
 - `tests`
 
 ### humaux-adapters → `lettre` (normal)
@@ -14836,6 +14853,7 @@ modules naming it:
 - `adapters::operation_receipt`
 - `adapters::processing_status`
 - `adapters::quota_repo`
+- `adapters::quota_reservation_port`
 - `adapters::read_materialize`
 - `adapters::tests::billing_doors`
 - `adapters::tests::billing_slot_handover`
@@ -14845,6 +14863,7 @@ modules naming it:
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_worker`
 - `adapters::tests::support::a2_fixture`
+- `adapters::tests::support::governance_ops`
 - `adapters::tests::token_keys_unset`
 - `tests`
 
@@ -14954,6 +14973,7 @@ modules naming it:
 - `adapters::provisioning`
 - `adapters::qdrant`
 - `adapters::quota_repo`
+- `adapters::quota_reservation_port`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
 - `adapters::retrieval_provisioning`
@@ -15335,6 +15355,7 @@ modules naming it:
 - `adapters::provisioning`
 - `adapters::qdrant`
 - `adapters::quota_repo`
+- `adapters::quota_reservation_port`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
 - `adapters::retrieval_provisioning`
@@ -17563,6 +17584,7 @@ modules naming it:
 why: object-safe async traits for ports and transports
 
 modules naming it:
+- `gateway::bootstrap`
 - `gateway::cached_embedding`
 - `gateway::mcp_application`
 - `gateway::recall`
@@ -17682,6 +17704,7 @@ modules naming it:
 why: timestamps (OffsetDateTime, RFC3339)
 
 modules naming it:
+- `gateway::bootstrap`
 - `gateway::guard`
 - `gateway::mcp_application`
 - `gateway::memory`
@@ -21100,9 +21123,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3842` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3847` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3852` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3898` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3903` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3908` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
