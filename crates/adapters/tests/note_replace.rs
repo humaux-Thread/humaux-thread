@@ -42,6 +42,7 @@ use humaux_adapters::{
     postgres::RuntimeDbPool,
     quota_reservation_port::{QuotaReservationPort, QuotaTransaction, ReservedQuota},
     remember::RememberCommand,
+    request_guard_repo::{self, AuditTenant},
 };
 use humaux_domain::{
     audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction},
@@ -1310,7 +1311,9 @@ impl ReservedQuota for ExpiringLease {
     }
 }
 
-fn governance_quota_state(handle: &mut Handle, target: Uuid) -> (Residue, Vec<i64>, String, bool) {
+type GovernanceQuotaState = (Residue, Vec<i64>, String, bool);
+
+fn governance_quota_state(handle: &mut Handle, target: Uuid) -> GovernanceQuotaState {
     let facts = residue(handle);
     let row = handle
         .admin
@@ -1430,11 +1433,133 @@ async fn execute_confirmed_governance(
     }
 }
 
-#[test]
-#[allow(clippy::too_many_lines)] // One target follows the confirmed lifecycle in order.
-fn governance_quota_rolls_back_audit_failure_and_expired_lease_and_replays_once() {
-    use humaux_adapters::request_guard_repo::{self, AuditTenant};
+fn assert_single_governance_commit(
+    op: DestructiveOp,
+    before: &GovernanceQuotaState,
+    after: &GovernanceQuotaState,
+) {
+    assert_eq!(
+        after.0.lifecycle_events,
+        before.0.lifecycle_events + 1,
+        "{op:?}"
+    );
+    assert_eq!(
+        after.0.consumed_tokens,
+        before.0.consumed_tokens + 1,
+        "{op:?}"
+    );
+    assert_eq!(after.0.consumed_bmo, before.0.consumed_bmo + 1, "{op:?}");
+    assert_eq!(
+        after.0.receipts, before.0.receipts,
+        "{op:?} has no operation receipt"
+    );
+    assert_eq!(
+        after.1,
+        [
+            before.1[0] + 1,
+            before.1[1],
+            before.1[2] + 1,
+            before.1[3] + 3
+        ],
+        "{op:?}"
+    );
+}
 
+fn assert_governance_quota_case(
+    handle: &mut Handle,
+    auth: &AuthorizationScope,
+    stream: &StreamKey,
+    op: DestructiveOp,
+    target: Uuid,
+    successor: Uuid,
+) {
+    let claim = governance_ops::confirm(
+        &handle.rt,
+        &handle.runtime,
+        auth,
+        op,
+        target,
+        (op == DestructiveOp::MemorySupersede).then_some(successor),
+    );
+    let request_id = Uuid::now_v7();
+    let finished_audit = governance_ops::audit(auth, op, request_id, false);
+    let duplicate_id = governance_ops::audit(auth, op, Uuid::now_v7(), false);
+    handle
+        .rt
+        .block_on(request_guard_repo::audit_event_insert(
+            &handle.runtime,
+            AuditTenant::Authenticated(auth),
+            &duplicate_id,
+        ))
+        .expect("seed an audit ID that the final audit cannot insert a second time");
+    let fingerprint = governance_ops::fingerprint();
+    let execute = |handle: &Handle, quota: &dyn QuotaReservationPort, finished_audit| {
+        handle.rt.block_on(execute_confirmed_governance(
+            &handle.runtime,
+            quota,
+            auth,
+            stream,
+            &claim,
+            (request_id, &fingerprint),
+            finished_audit,
+        ))
+    };
+
+    let before = governance_quota_state(handle, target);
+    let mut fault = finished_audit.clone();
+    fault.event_id = duplicate_id.event_id;
+    for (label, quota, audit) in [
+        (
+            "final audit",
+            &governance_ops::TestWriteQuota as &dyn QuotaReservationPort,
+            fault,
+        ),
+        (
+            "expiry after settlement",
+            &ExpireSettledQuota,
+            finished_audit.clone(),
+        ),
+    ] {
+        assert_eq!(
+            execute(handle, quota, audit),
+            Err(ErrorCode::Conflict),
+            "{op:?} {label}"
+        );
+        assert_eq!(
+            governance_quota_state(handle, target),
+            before,
+            "{op:?} {label} must roll back all writes"
+        );
+    }
+
+    let success = execute(
+        handle,
+        &governance_ops::TestWriteQuota,
+        finished_audit.clone(),
+    )
+    .expect("the same confirmation and reservation can succeed after rollback");
+    let after = governance_quota_state(handle, target);
+    assert_single_governance_commit(op, &before, &after);
+
+    let replay = execute(handle, &governance_ops::TestWriteQuota, finished_audit);
+    assert_eq!(
+        replay,
+        if op == DestructiveOp::MemorySupersede {
+            Err(ErrorCode::Conflict)
+        } else {
+            Ok(success)
+        },
+        "{op:?}"
+    );
+    assert_eq!(
+        governance_quota_state(handle, target),
+        after,
+        "{op:?} replay writes nothing"
+    );
+}
+
+#[test]
+fn governance_quota_rolls_back_audit_failure_and_expired_lease_and_replays_once() {
     run_db_fixture::<Fixture, _>("governance_quota_atomicity", |mut handle| {
         let editor = editor(&mut handle);
         let auth = &editor.auth;
@@ -1448,111 +1573,7 @@ fn governance_quota_rolls_back_audit_failure_and_expired_lease_and_replays_once(
             DestructiveOp::MemoryUnarchive,
             DestructiveOp::MemoryCorrect,
         ] {
-            let claim = governance_ops::confirm(
-                &handle.rt,
-                &handle.runtime,
-                auth,
-                op,
-                target,
-                (op == DestructiveOp::MemorySupersede).then_some(successor),
-            );
-            let request_id = Uuid::now_v7();
-            let finished_audit = governance_ops::audit(auth, op, request_id, false);
-            let duplicate_id = governance_ops::audit(auth, op, Uuid::now_v7(), false);
-            handle
-                .rt
-                .block_on(request_guard_repo::audit_event_insert(
-                    &handle.runtime,
-                    AuditTenant::Authenticated(auth),
-                    &duplicate_id,
-                ))
-                .expect("seed an audit ID that the final audit cannot insert a second time");
-            let fingerprint = governance_ops::fingerprint();
-            let execute = |handle: &Handle, quota: &dyn QuotaReservationPort, finished_audit| {
-                handle.rt.block_on(execute_confirmed_governance(
-                    &handle.runtime,
-                    quota,
-                    auth,
-                    &stream,
-                    &claim,
-                    (request_id, &fingerprint),
-                    finished_audit,
-                ))
-            };
-
-            let before = governance_quota_state(&mut handle, target);
-            let mut fault = finished_audit.clone();
-            fault.event_id = duplicate_id.event_id;
-            assert_eq!(
-                execute(&handle, &governance_ops::TestWriteQuota, fault),
-                Err(ErrorCode::Conflict),
-                "{op:?} final audit duplicate"
-            );
-            assert_eq!(
-                governance_quota_state(&mut handle, target),
-                before,
-                "{op:?} final audit must roll back all writes"
-            );
-
-            assert_eq!(
-                execute(&handle, &ExpireSettledQuota, finished_audit.clone()),
-                Err(ErrorCode::Conflict),
-                "{op:?} expired after settlement"
-            );
-            assert_eq!(
-                governance_quota_state(&mut handle, target),
-                before,
-                "{op:?} expiry must roll back all writes"
-            );
-
-            let success = execute(
-                &handle,
-                &governance_ops::TestWriteQuota,
-                finished_audit.clone(),
-            )
-            .expect("the same confirmation and reservation can succeed after rollback");
-            let after = governance_quota_state(&mut handle, target);
-            assert_eq!(
-                after.0.lifecycle_events,
-                before.0.lifecycle_events + 1,
-                "{op:?}"
-            );
-            assert_eq!(
-                after.0.consumed_tokens,
-                before.0.consumed_tokens + 1,
-                "{op:?}"
-            );
-            assert_eq!(after.0.consumed_bmo, before.0.consumed_bmo + 1, "{op:?}");
-            assert_eq!(
-                after.0.receipts, before.0.receipts,
-                "{op:?} has no operation receipt"
-            );
-            assert_eq!(
-                after.1,
-                [
-                    before.1[0] + 1,
-                    before.1[1],
-                    before.1[2] + 1,
-                    before.1[3] + 3
-                ],
-                "{op:?}"
-            );
-
-            let replay = execute(&handle, &governance_ops::TestWriteQuota, finished_audit);
-            assert_eq!(
-                replay,
-                if op == DestructiveOp::MemorySupersede {
-                    Err(ErrorCode::Conflict)
-                } else {
-                    Ok(success)
-                },
-                "{op:?}"
-            );
-            assert_eq!(
-                governance_quota_state(&mut handle, target),
-                after,
-                "{op:?} replay writes nothing"
-            );
+            assert_governance_quota_case(&mut handle, auth, &stream, op, target, successor);
         }
     });
 }
