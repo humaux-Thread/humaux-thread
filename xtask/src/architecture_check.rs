@@ -1103,6 +1103,12 @@ const MODULE_ID_MAX: u8 = 29;
 const HEX_MODULES: &str = "docs/architecture/modules.toml";
 /// ADR-0130 step 1: exact legacy layer debt.
 const HEX_BASELINE: &str = "xtask/hex_layer_baseline.txt";
+const HEX_CONTEXT_BASELINE: &str = "xtask/hex_context_baseline.txt";
+const HEX_CONTEXT_CYCLE_BASELINE: &str = "xtask/hex_context_cycle_baseline.txt";
+const HEX_CONTEXT_CYCLE_CEILING: usize = 9;
+const HEX_CONTEXT_EXCEPTIONS: &str = "xtask/hex_context_exceptions.txt";
+const HEX_CONTEXT_EXCEPTION_CEILING: usize = 0;
+const HEX_CONTEXT_EXCEPTION_ADR: &str = "docs/adr/0132-*.md";
 
 struct HexModule {
     id: String,
@@ -1550,6 +1556,12 @@ fn hex_file_owners(
     )
 }
 
+fn hex_rows(text: &str) -> impl Iterator<Item = &str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+}
+
 /// ADR-0130: both directions are mandatory; a baseline edit cannot hide new debt.
 fn hex_exact(
     actual: &BTreeSet<String>,
@@ -1557,11 +1569,7 @@ fn hex_exact(
     ceiling: usize,
     label: &str,
 ) -> Vec<String> {
-    let rows: Vec<_> = baseline
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .collect();
+    let rows: Vec<_> = hex_rows(baseline).collect();
     let expected: BTreeSet<_> = rows.iter().map(|s| s.to_string()).collect();
     let mut errors = Vec::new();
     if rows.len() != ceiling {
@@ -1806,11 +1814,8 @@ fn hex_index(root: &Path, catalog: &HexCatalog) -> Result<HexIndex, Vec<String>>
     }
 }
 
-fn hex_context_actual(root: &Path) -> Result<BTreeSet<String>, Vec<String>> {
-    let text = fs::read_to_string(root.join(HEX_MODULES))
-        .map_err(|e| vec![format!("{HEX_MODULES}: {e}")])?;
-    let catalog = hex_parse_catalog(&text).map_err(|e| vec![format!("{HEX_MODULES}: {e}")])?;
-    let index = hex_index(root, &catalog)?;
+fn hex_context_actual(root: &Path, catalog: &HexCatalog) -> Result<BTreeSet<String>, Vec<String>> {
+    let index = hex_index(root, catalog)?;
     let mut actual = BTreeSet::new();
     for (file, paths) in &index.references {
         let from = &index.owners[file];
@@ -1946,62 +1951,203 @@ fn hex_writer_actual(root: &Path) -> Result<BTreeSet<String>, Vec<String>> {
     Ok(actual)
 }
 
-/// ADR-0130 D7a: legacy observations remain debt; new edges must also preserve the DAG.
-fn hex_context_cycles(root: &Path, actual: &BTreeSet<String>, baseline: &str) -> Vec<String> {
-    let Ok(catalog) = fs::read_to_string(root.join(HEX_MODULES))
-        .and_then(|s| hex_parse_catalog(&s).map_err(std::io::Error::other))
-    else {
-        return Vec::new();
-    };
-    let expected: BTreeSet<_> = baseline.lines().collect();
-    let mut graph: BTreeMap<String, Vec<String>> = catalog
-        .module
-        .into_iter()
-        .map(|m| (m.id, m.may_depend_on))
-        .collect();
-    for row in actual.iter().filter(|r| !expected.contains(r.as_str())) {
-        if let Some(edge) = row.split(':').nth(1)
-            && let Some((from, to)) = edge.split_once("->")
-        {
-            graph.entry(from.into()).or_default().push(to.into());
+fn hex_context_path<'a>(
+    graph: &BTreeMap<&'a str, BTreeSet<&'a str>>,
+    from: &'a str,
+    to: &str,
+    visited: &mut BTreeSet<&'a str>,
+) -> Option<Vec<&'a str>> {
+    if from == to {
+        return Some(vec![from]);
+    }
+    if !visited.insert(from) {
+        return None;
+    }
+    for next in graph.get(from).into_iter().flatten() {
+        if let Some(mut path) = hex_context_path(graph, next, to, visited) {
+            path.push(from);
+            return Some(path);
         }
     }
-    let refs = graph
+    None
+}
+
+/// ADR132-GATES: freeze only actual edges reversed by a declared dependency path.
+fn hex_context_cycles(
+    catalog: &HexCatalog,
+    actual: &BTreeSet<String>,
+    baseline: &str,
+    ceiling: usize,
+) -> Vec<String> {
+    let mut graph: BTreeMap<&str, BTreeSet<&str>> = catalog
+        .module
         .iter()
-        .map(|(k, v)| (k.as_str(), v.as_slice()))
+        .map(|m| {
+            (
+                m.id.as_str(),
+                m.may_depend_on.iter().map(String::as_str).collect(),
+            )
+        })
         .collect();
-    let mut done = BTreeSet::new();
-    let mut errors = Vec::new();
-    for id in graph.keys() {
-        hex_visit(id, &refs, &mut BTreeSet::new(), &mut done, &mut errors);
+    let actual_edges: BTreeMap<_, _> = actual
+        .iter()
+        .filter_map(|row| {
+            let edge = row.split(':').nth(1)?;
+            Some((edge, edge.split_once("->")?))
+        })
+        .collect();
+    let back_edges = actual_edges
+        .iter()
+        .filter(|(_, (from, to))| {
+            hex_context_path(&graph, to, from, &mut BTreeSet::new()).is_some()
+        })
+        .map(|(edge, _)| (*edge).to_owned())
+        .collect();
+    let mut errors = hex_exact(&back_edges, baseline, ceiling, "HEX-CONTEXT-CYCLES");
+    let frozen: BTreeSet<_> = hex_rows(baseline).collect();
+    for (edge, (from, to)) in actual_edges {
+        if !frozen.contains(edge) || !back_edges.contains(edge) {
+            graph.entry(from).or_default().insert(to);
+        }
+    }
+    for (&from, targets) in &graph {
+        for &to in targets {
+            if let Some(mut path) = hex_context_path(&graph, to, from, &mut BTreeSet::new()) {
+                path.push(from);
+                path.reverse();
+                errors.push(format!("HEX-CONTEXT CycleError: {}", path.join(" -> ")));
+                return errors;
+            }
+        }
     }
     errors
 }
 
-fn hex_boundary_gate(root: &Path, writer: bool) -> Verdict {
-    let (file, ceiling, label) = if writer {
-        ("xtask/hex_writer_baseline.txt", 34, "HEX-WRITER")
-    } else {
-        ("xtask/hex_context_baseline.txt", 165, "HEX-CONTEXT")
+fn hex_context_exception_adrs(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let entries = match fs::read_dir(root.join("docs/adr")) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
     };
-    let actual = if writer {
-        hex_writer_actual(root)
-    } else {
-        hex_context_actual(root)
-    };
-    match actual {
-        Err(errors) => hex_verdict(errors),
-        Ok(actual) => match fs::read_to_string(root.join(file)) {
-            Ok(text) => {
-                let mut errors = hex_exact(&actual, &text, ceiling, label);
-                if !writer && !errors.is_empty() {
-                    errors.extend(hex_context_cycles(root, &actual, &text));
-                }
-                hex_verdict(errors)
-            }
-            Err(e) => hex_verdict(vec![format!("{file}: {e}")]),
-        },
+    let mut adrs = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("0132-") && name.ends_with(".md") && entry.file_type()?.is_file() {
+            adrs.push(entry.path());
+        }
     }
+    Ok(adrs)
+}
+
+fn hex_context_exception_rows(
+    actual: &BTreeSet<String>,
+    baseline: &str,
+    exceptions: &str,
+    ceiling: usize,
+    adrs: &[String],
+) -> Result<Option<BTreeSet<String>>, Vec<String>> {
+    let label = "HEX-CONTEXT-EXCEPTIONS";
+    let has_rows = hex_rows(exceptions).next().is_some();
+    if adrs.is_empty() {
+        if has_rows || ceiling != 0 {
+            return Err(vec![format!(
+                "{label}: missing {HEX_CONTEXT_EXCEPTION_ADR} for exception store (ceiling {ceiling})"
+            )]);
+        }
+        return Ok(None);
+    }
+    let mut rows = Vec::new();
+    let mut errors = Vec::new();
+    let debt: BTreeSet<_> = hex_rows(baseline).collect();
+    for row in hex_rows(exceptions) {
+        let Some((key, anchor)) = row.rsplit_once(" # ").filter(|(key, anchor)| {
+            !key.is_empty()
+                && key.trim() == *key
+                && anchor.strip_prefix("ADR-0132 X-").is_some_and(|number| {
+                    !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
+                })
+        }) else {
+            errors.push(format!(
+                "{label}: expected trailing ADR-0132 X-<n> anchor: {row}"
+            ));
+            continue;
+        };
+        let is_anchor_char = |ch: char| ch.is_alphanumeric() || ch == '-' || ch == '_';
+        if !adrs.iter().any(|adr| {
+            adr.match_indices(anchor).any(|(start, _)| {
+                !adr[..start].ends_with(is_anchor_char)
+                    && !adr[start + anchor.len()..].starts_with(is_anchor_char)
+            })
+        }) {
+            errors.push(format!(
+                "{label}: anchor {anchor} missing from {HEX_CONTEXT_EXCEPTION_ADR}"
+            ));
+        }
+        if debt.contains(key) {
+            errors.push(format!("{label}: overlaps debt baseline: {key}"));
+        }
+        rows.push(key);
+    }
+    let keys: BTreeSet<_> = rows.iter().map(|key| (*key).to_owned()).collect();
+    let present = actual.intersection(&keys).cloned().collect();
+    errors.extend(hex_exact(&present, &rows.join("\n"), ceiling, label));
+    if errors.is_empty() {
+        Ok(Some(keys))
+    } else {
+        Err(errors)
+    }
+}
+
+fn hex_read(root: &Path, file: &str) -> Result<String, Vec<String>> {
+    fs::read_to_string(root.join(file)).map_err(|e| vec![format!("{file}: {e}")])
+}
+
+fn hex_context_gate(root: &Path) -> Result<(Verdict, Verdict), Vec<String>> {
+    let catalog = hex_parse_catalog(&hex_read(root, HEX_MODULES)?)
+        .map_err(|e| vec![format!("{HEX_MODULES}: {e}")])?;
+    let actual = hex_context_actual(root, &catalog)?;
+    let baseline = hex_read(root, HEX_CONTEXT_BASELINE)?;
+    let frozen = hex_read(root, HEX_CONTEXT_CYCLE_BASELINE)?;
+    let mut errors = hex_context_cycles(&catalog, &actual, &frozen, HEX_CONTEXT_CYCLE_CEILING);
+    let exceptions = hex_read(root, HEX_CONTEXT_EXCEPTIONS).and_then(|text| {
+        let adrs = hex_context_exception_adrs(root)
+            .and_then(|paths| {
+                paths
+                    .into_iter()
+                    .map(fs::read_to_string)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(|e| vec![format!("{HEX_CONTEXT_EXCEPTION_ADR}: {e}")])?;
+        hex_context_exception_rows(
+            &actual,
+            &baseline,
+            &text,
+            HEX_CONTEXT_EXCEPTION_CEILING,
+            &adrs,
+        )
+    });
+    let (remaining, verdict) = match exceptions {
+        Ok(Some(rows)) => (actual.difference(&rows).cloned().collect(), Verdict::Pass),
+        Ok(None) => (
+            actual,
+            Verdict::NotApplicable(HEX_CONTEXT_EXCEPTION_ADR.into()),
+        ),
+        Err(errors) => (actual, Verdict::Fail(errors)),
+    };
+    errors.extend(hex_exact(&remaining, &baseline, 165, "HEX-CONTEXT"));
+    Ok((hex_verdict(errors), verdict))
+}
+
+fn hex_writer_gate(root: &Path) -> Verdict {
+    hex_verdict(match hex_writer_actual(root) {
+        Ok(actual) => match hex_read(root, "xtask/hex_writer_baseline.txt") {
+            Ok(text) => hex_exact(&actual, &text, 34, "HEX-WRITER"),
+            Err(errors) => errors,
+        },
+        Err(errors) => errors,
+    })
 }
 
 /// `Mnn` with `nn` in `01..=MODULE_ID_MAX`.
@@ -13483,14 +13629,18 @@ fn backup_catalog_gate(root: &Path, closure: bool) -> Verdict {
 #[allow(clippy::too_many_lines)] // §57.1: one flat, closed registry of every gate in declaration order — splitting it would hide the list this file exists to make visible.
 pub fn run(_args: &[String]) -> i32 {
     let root = workspace_root();
+    let (hex_context, hex_exceptions) = match hex_context_gate(&root) {
+        Ok((context, exceptions)) => (context, Some(exceptions)),
+        Err(errors) => (Verdict::Fail(errors), None),
+    };
     let mut checks: Vec<(&str, Verdict)> = vec![
         (
             "HEX-COVERAGE (ADR-0130 D4/D6/D7a)",
             hex_coverage_gate(&root),
         ),
         ("HEX-LAYER (ADR-0130 step 1)", hex_layer_gate(&root)),
-        ("HEX-CONTEXT (ADR-0130 D5)", hex_boundary_gate(&root, false)),
-        ("HEX-WRITER (ADR-0130 D4)", hex_boundary_gate(&root, true)),
+        ("HEX-CONTEXT (ADR-0130 D5)", hex_context),
+        ("HEX-WRITER (ADR-0130 D4)", hex_writer_gate(&root)),
         (
             "M03 D1 / G-M03-2 (retired PostgreSQL rate names in non-migration code == 0)",
             m03_2_no_pg_rate_path(&root),
@@ -13770,6 +13920,9 @@ pub fn run(_args: &[String]) -> i32 {
     ];
     checks.extend(provider_plane_architecture_gate_checks(&root));
 
+    if let Some(exceptions) = hex_exceptions {
+        checks.push(("HEX-CONTEXT-EXCEPTIONS", exceptions));
+    }
     let mut had_fail = false;
     for (name, verdict) in &checks {
         if report(name, verdict) {
@@ -13791,6 +13944,16 @@ mod tests {
 
     use super::*;
     use std::collections::BTreeSet;
+
+    fn hex_boundary_gate(root: &Path, writer: bool) -> Verdict {
+        if writer {
+            return hex_writer_gate(root);
+        }
+        match hex_context_gate(root) {
+            Err(errors) | Ok((_, Verdict::Fail(errors))) => Verdict::Fail(errors),
+            Ok((context, _)) => context,
+        }
+    }
 
     fn real_root() -> PathBuf {
         workspace_root()
@@ -14060,6 +14223,158 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         }
     }
 
+    #[test]
+    fn hex_context_reverse_allowed_edge_regression() {
+        let catalog = r#"
+            [[module]]
+            id = "consumer"
+            files = []
+            legacy_m = []
+            owned_tables = []
+            may_depend_on = []
+            [[module]]
+            id = "provider"
+            files = []
+            legacy_m = []
+            owned_tables = []
+            may_depend_on = []
+        "#;
+        let row = "consumer.rs:consumer->provider:provider::Api";
+        let actual = BTreeSet::from([row.to_owned()]);
+        assert!(hex_exact(&actual, row, 1, "HEX-CONTEXT").is_empty());
+        let mut catalog = hex_parse_catalog(catalog).unwrap();
+        assert!(hex_context_cycles(&catalog, &actual, "", 0).is_empty());
+        catalog.module[1].may_depend_on.push("consumer".into());
+        let red = hex_context_cycles(&catalog, &actual, "", 0);
+        assert!(
+            red.iter()
+                .any(|e| e.contains("new violation consumer->provider")),
+            "{red:?}"
+        );
+        assert!(
+            red.iter()
+                .any(|e| e.contains("CycleError: consumer -> provider -> consumer")),
+            "{red:?}"
+        );
+        println!("G1 new may_depend_on closes debt cycle: RED {red:?}");
+        catalog.module[1].may_depend_on.clear();
+        assert!(hex_context_cycles(&catalog, &actual, "", 0).is_empty());
+        println!("G1 removed injected may_depend_on: GREEN");
+
+        let frozen = "consumer->provider";
+        catalog.module[1].may_depend_on.push("consumer".into());
+        assert!(hex_context_cycles(&catalog, &actual, frozen, 1).is_empty());
+        let red = hex_context_cycles(
+            &catalog,
+            &actual,
+            "consumer->provider\nprovider->consumer",
+            1,
+        );
+        assert!(
+            red.iter()
+                .any(|e| e.contains("stale baseline provider->consumer")),
+            "{red:?}"
+        );
+        println!("G1 extra frozen row: RED {red:?}");
+        assert!(hex_context_cycles(&catalog, &actual, frozen, 1).is_empty());
+        println!("G1 restored frozen row set: GREEN");
+
+        let red = hex_context_cycles(&catalog, &actual, "", 1);
+        assert!(
+            red.iter()
+                .any(|e| e.contains("new violation consumer->provider")),
+            "{red:?}"
+        );
+        assert!(red.iter().any(|e| e.contains("row count 0")), "{red:?}");
+        println!("G1 missing frozen row: RED {red:?}");
+        assert!(hex_context_cycles(&catalog, &actual, frozen, 1).is_empty());
+        println!("G1 put frozen row back: GREEN");
+
+        catalog.module[1].may_depend_on.clear();
+        let red = hex_context_cycles(&catalog, &actual, frozen, 1);
+        assert!(
+            red.iter()
+                .any(|e| e.contains("stale baseline consumer->provider")),
+            "{red:?}"
+        );
+        assert!(hex_context_cycles(&catalog, &actual, "", 0).is_empty());
+        println!("G1 reverse path removed: stale RED and shrink GREEN");
+
+        let mut actual = actual;
+        actual.insert("provider.rs:provider->consumer:consumer::Api".into());
+        let red = hex_context_cycles(&catalog, &actual, "", 0);
+        assert!(
+            red.iter()
+                .any(|e| e.contains("CycleError: consumer -> provider -> consumer")),
+            "{red:?}"
+        );
+        println!("G1 cycle built from two actual edges: RED {red:?}");
+    }
+
+    #[test]
+    fn hex_context_exception_faults() {
+        let row = "consumer.rs:consumer->provider:provider::Api";
+        let actual = BTreeSet::from([row.to_owned()]);
+        let adrs = ["## ADR-0132 X-10".into()];
+        let valid = format!("{row} # ADR-0132 X-10");
+        let check = |baseline: &str, exceptions: &str, ceiling| {
+            hex_context_exception_rows(&actual, baseline, exceptions, ceiling, &adrs)
+        };
+        for (label, baseline, exceptions, ceiling, reason) in [
+            ("missing anchor", "", row.to_owned(), 1, "expected trailing"),
+            (
+                "unknown anchor",
+                "",
+                format!("{row} # ADR-0132 X-1"),
+                1,
+                "anchor ADR-0132 X-1 missing",
+            ),
+            (
+                "baseline overlap",
+                row,
+                valid.clone(),
+                1,
+                "overlaps debt baseline",
+            ),
+            (
+                "ceiling mismatch",
+                "",
+                valid.clone(),
+                0,
+                "row count 1, expected exactly ceiling 0",
+            ),
+            (
+                "duplicate key",
+                "",
+                format!("{valid}\n{valid}"),
+                2,
+                "duplicate baseline row",
+            ),
+            (
+                "stale key",
+                "",
+                "other.rs:consumer->provider:provider::Api # ADR-0132 X-10".into(),
+                1,
+                "stale baseline",
+            ),
+        ] {
+            let red = check(baseline, &exceptions, ceiling).unwrap_err();
+            assert!(red.iter().any(|e| e.contains(reason)), "{label}: {red:?}");
+            println!("G2 {label}: RED {red:?}");
+            assert_eq!(check("", &valid, 1), Ok(Some(actual.clone())));
+            println!("G2 {label} restored: GREEN");
+        }
+        assert_eq!(
+            hex_context_exception_rows(&actual, "", "# empty", 0, &[]),
+            Ok(None)
+        );
+        let red = hex_context_exception_rows(&actual, "", &valid, 1, &[]).unwrap_err();
+        assert!(red.iter().any(|e| e.contains(HEX_CONTEXT_EXCEPTION_ADR)));
+        println!(
+            "G2 missing ADR: nonempty RED; empty NOT_APPLICABLE ({HEX_CONTEXT_EXCEPTION_ADR})"
+        );
+    }
+
     fn hex_disk_foreign_writer(root: &Path, mutate: &impl Fn(i32, &str, &str, &str)) {
         let path = root.join(HEX_MODULES);
         let original = fs::read_to_string(&path).unwrap();
@@ -14089,12 +14404,15 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
     fn hex_copy_boundary_fixture(source: &Path, root: &Path) {
         let mut inputs = walk_files(&source.join("crates"), &["rs", "toml"]);
         inputs.extend(walk_files(&source.join("bins"), &["rs", "toml"]));
+        inputs.extend(hex_context_exception_adrs(source).unwrap());
         inputs.extend(
             [
                 HEX_MODULES,
                 DB_OBJECTS,
                 HEX_BASELINE,
-                "xtask/hex_context_baseline.txt",
+                HEX_CONTEXT_BASELINE,
+                HEX_CONTEXT_CYCLE_BASELINE,
+                HEX_CONTEXT_EXCEPTIONS,
                 "xtask/hex_writer_baseline.txt",
             ]
             .map(|p| source.join(p)),
@@ -14135,11 +14453,6 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             fs::write(&path, format!("{original}\n{extra}\n")).unwrap();
             let verdict = gate(kind);
             assert!(matches!(verdict, Verdict::Fail(_)), "{label}: {verdict:?}");
-            if label.contains("CycleError") {
-                assert!(
-                    matches!(&verdict,Verdict::Fail(lines) if lines.iter().any(|l| l.contains("CycleError")))
-                );
-            }
             println!("{label}: RED {verdict:?}");
             fs::write(path, original).unwrap();
             check(kind);
@@ -14171,7 +14484,7 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             0,
             "crates/retrieval/src/lib.rs",
             "use humaux_domain::subject::Subject;",
-            "CONTEXT reverse edge CycleError",
+            "CONTEXT new violation on frozen reverse edge",
         );
         hex_disk_baseline_faults(&root, &gate, &mutate);
         mutate(
