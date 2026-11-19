@@ -317,6 +317,7 @@ fn put(
 ) -> Result<AtomicRememberResult, ErrorCode> {
     h.rt.block_on(operation_receipt::remember_for_task_run_atomically(
         &h.runtime,
+        humaux_adapters::postgres::commercial_write_quota(),
         auth,
         request(h, auth, msg),
         run.map(|r| (r.task_run_id, r.fencing_token)),

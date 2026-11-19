@@ -173,6 +173,7 @@ fn put(
     let (request, note) = note_request(handle, key, fingerprint, body, kind, requested);
     handle.rt.block_on(operation_receipt::note_put_atomically(
         &handle.runtime,
+        humaux_adapters::postgres::commercial_write_quota(),
         &handle.auth,
         request,
         note,
@@ -363,6 +364,7 @@ fn ordinary_remember(handle: &Handle, key: &str) -> operation_receipt::AtomicRem
         .rt
         .block_on(operation_receipt::remember_atomically(
             &handle.runtime,
+            humaux_adapters::postgres::commercial_write_quota(),
             &handle.auth,
             ordinary,
         ))
@@ -677,6 +679,7 @@ fn g03_a_replay_reports_the_stored_data_class_not_the_current_default() {
             request.command.data_class = data_class.into();
             handle.rt.block_on(operation_receipt::note_put_atomically(
                 &handle.runtime,
+                humaux_adapters::postgres::commercial_write_quota(),
                 &handle.auth,
                 request,
                 note,
@@ -975,6 +978,7 @@ fn g01_nothing_is_visible_or_stored_before_commit_and_the_memory_is_readable_aft
                     .map_err(|e| e.to_string())?;
                 Ok(rt.block_on(operation_receipt::note_put_atomically(
                     &pool,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &auth,
                     request,
                     note,
@@ -1124,6 +1128,7 @@ fn identical_note_two_agents() {
                 barrier.wait();
                 rt.block_on(operation_receipt::note_put_atomically(
                     &pool,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &auth,
                     request,
                     note,
@@ -1248,6 +1253,7 @@ fn note_put_waits_on_exact_dedupe_lock() {
                 .expect("agent connection");
             rt.block_on(operation_receipt::note_put_atomically(
                 &pool,
+                humaux_adapters::postgres::commercial_write_quota(),
                 &auth,
                 request,
                 note,

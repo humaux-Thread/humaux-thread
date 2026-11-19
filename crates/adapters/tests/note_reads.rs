@@ -144,6 +144,7 @@ fn put(handle: &Handle, body: &str, kind: NoteKind) -> AtomicRememberResult {
         .rt
         .block_on(operation_receipt::note_put_atomically(
             &handle.runtime,
+            humaux_adapters::postgres::commercial_write_quota(),
             &handle.auth,
             request,
             note,
@@ -750,6 +751,7 @@ fn g14_history_never_reaches_revoked_expired_or_secret_and_hides_an_unreadable_s
                 .rt
                 .block_on(operation_receipt::note_put_atomically(
                     &handle.runtime,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &handle.auth,
                     request,
                     note,

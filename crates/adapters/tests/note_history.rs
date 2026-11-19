@@ -189,6 +189,7 @@ fn put(
         .rt
         .block_on(operation_receipt::note_put_atomically(
             &handle.runtime,
+            humaux_adapters::postgres::commercial_write_quota(),
             &editor.auth,
             request,
             note,
@@ -289,6 +290,7 @@ fn replace_leg(
         .rt
         .block_on(operation_receipt::note_replace_atomically(
             &handle.runtime,
+            humaux_adapters::postgres::commercial_write_quota(),
             &editor.auth,
             atomic_request(
                 handle,

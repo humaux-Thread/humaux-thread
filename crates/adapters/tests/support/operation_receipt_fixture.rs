@@ -1,7 +1,7 @@
 //! `adapters::tests::support::operation_receipt_fixture` — Shared, isolated §34.0.1 PostgreSQL fixture for adapter
 //!   and gateway integration tests.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-testkit, postgres, serde_json, sqlx, tokio];
-//!   services=[PostgreSQL(owner) w=[control.api_keys, control.audit_events, control.entitlement_snapshots,
+//!   services=[PostgreSQL(owner) r=[control.confirm_tokens, control.operation_receipts, control.usage_reservations, ops.jobs, ops.memory_lifecycle_events, private.evidence_objects, private.identity_note_materializations, private.memory_evidence, private.memory_records] w=[control.api_keys, control.audit_events, control.entitlement_snapshots,
 //!   control.memberships, control.operation_receipts, control.private_reasoning_domains, control.quota_windows,
 //!   control.tenants, control.usage_reservations, control.users, control.workspace_memberships,
 //!   control.workspaces, coord.task_runs, coord.tasks, coord.workspace_unfiled_projects, ops.jobs, ops.outbox, ops.retrieval_query_log, ops.selection_snapshot_items,
@@ -13,7 +13,7 @@
 //!   x=[control.check_operation_receipt], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)];
 //!   env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres,
 //!   adapters::quota_repo, adapters::tests::support::token_keys, domain::identity, domain::ids, humaux-testkit]
-//! Called-by: [adapters::tests::applicability, adapters::tests::auth_scope_rls, adapters::tests::candidates, adapters::tests::coord_task_project, adapters::tests::dedup, adapters::tests::evidence_sources_dedupe, adapters::tests::evidence_task_runs, adapters::tests::forget_confirm, adapters::tests::forget_race, adapters::tests::freshness, adapters::tests::membership_lifecycle, adapters::tests::memory_attribution, adapters::tests::note_history, adapters::tests::note_put, adapters::tests::note_reads, adapters::tests::note_replace, adapters::tests::note_text_once, adapters::tests::operation_receipts, adapters::tests::read_gate_closure, gateway::mcp_application, gateway::tests::continuity_get, gateway::tests::coordinate_task, gateway::tests::cross_tenant_canary, gateway::tests::mcp_forget, gateway::tests::mcp_gateway, gateway::tests::memory_get_frontier, gateway::tests::read_decoupling, gateway::tests::semantic_recall_wiring, private-worker::tests::m29_attribution_e2e]
+//! Called-by: [adapters::tests::governance_quota, adapters::tests::applicability, adapters::tests::auth_scope_rls, adapters::tests::candidates, adapters::tests::coord_task_project, adapters::tests::dedup, adapters::tests::evidence_sources_dedupe, adapters::tests::evidence_task_runs, adapters::tests::forget_confirm, adapters::tests::forget_race, adapters::tests::freshness, adapters::tests::membership_lifecycle, adapters::tests::memory_attribution, adapters::tests::note_history, adapters::tests::note_put, adapters::tests::note_reads, adapters::tests::note_replace, adapters::tests::note_text_once, adapters::tests::operation_receipts, adapters::tests::read_gate_closure, gateway::mcp_application, gateway::tests::continuity_get, gateway::tests::coordinate_task, gateway::tests::cross_tenant_canary, gateway::tests::mcp_forget, gateway::tests::mcp_gateway, gateway::tests::memory_get_frontier, gateway::tests::read_decoupling, gateway::tests::semantic_recall_wiring, private-worker::tests::m29_attribution_e2e]
 //! Invariants: [test-only, included by #[path]; runtime writes are real role_gateway logins and the owner connection
 //!   only seeds/cleans the fixture tenant; an isolation setup failure is a fixture error]
 //! Spec: Baseline §25.4; §34.0.1; §79.2; ADR-0035
@@ -789,4 +789,93 @@ impl Handle {
         // dep: PostgreSQL(owner) — test opens a direct PG connection for setup/verification
         Client::connect(&self.admin_dsn, NoTls)
     }
+}
+
+/// Rows that receipt and governance operations may change, for this tenant.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct Residue {
+    pub evidence: i64,
+    pub memories: i64,
+    pub primary_links: i64,
+    pub contracts: i64,
+    pub receipts: i64,
+    pub consumed_bmo: i64,
+    pub consumed_tokens: i64,
+    pub llm_jobs: i64,
+    pub lifecycle_events: i64,
+}
+
+pub fn residue(handle: &mut Handle) -> Residue {
+    let row = handle
+        .admin
+        .query_one(
+            "SELECT \
+               (SELECT count(*) FROM private.evidence_objects WHERE tenant_id=$1), \
+               (SELECT count(*) FROM private.memory_records WHERE tenant_id=$1), \
+               (SELECT count(*) FROM private.memory_evidence me JOIN private.memory_records m \
+                  ON m.memory_id=me.memory_id WHERE m.tenant_id=$1 AND me.role='PRIMARY'), \
+               (SELECT count(*) FROM private.identity_note_materializations WHERE tenant_id=$1), \
+               (SELECT count(*) FROM control.operation_receipts WHERE tenant_id=$1), \
+               (SELECT count(*) FROM control.usage_reservations WHERE tenant_id=$1 AND status='CONSUMED'), \
+               (SELECT count(*) FROM control.confirm_tokens WHERE tenant_id=$1 AND consumed_at IS NOT NULL), \
+               (SELECT count(*) FROM ops.jobs WHERE tenant_id=$1 \
+                  AND job_type IN ('DERIVED_DISTILL','DERIVED_CONSOLIDATE')), \
+               (SELECT count(*) FROM ops.memory_lifecycle_events WHERE tenant_id=$1)",
+            &[&handle.tenant_id],
+        )
+        .expect("owner reads this tenant's rows");
+    Residue {
+        evidence: row.get(0),
+        memories: row.get(1),
+        primary_links: row.get(2),
+        contracts: row.get(3),
+        receipts: row.get(4),
+        consumed_bmo: row.get(5),
+        consumed_tokens: row.get(6),
+        llm_jobs: row.get(7),
+        lifecycle_events: row.get(8),
+    }
+}
+
+/// An ordinary (non-note) WORKSPACE_SHARED Memory with its PRIMARY Evidence, seeded by the owner — the control operand
+/// for the governance gates.
+pub fn plain_memory(handle: &mut Handle) -> Uuid {
+    let tenant_id = handle.tenant_id;
+    let workspace_id = handle.workspace_id;
+    let reasoning_domain_id = handle.reasoning_domain_id;
+    let mut txn = handle.admin.transaction().expect("begin plain memory seed");
+    let evidence_id: Uuid = txn
+        .query_one(
+            "INSERT INTO private.evidence_objects \
+               (tenant_id, evidence_kind, payload_sha256, data_class, origin_class, visibility_class, \
+                visibility_workspace_id, reasoning_domain_id) \
+             VALUES ($1, 'EVENT', $2, 'INTERNAL', 'DirectUserInput', 'WORKSPACE_SHARED', $3, $4) \
+             RETURNING evidence_id",
+            &[&tenant_id, &vec![5_u8; 32], &workspace_id, &reasoning_domain_id],
+        )
+        .expect("owner seeds plain evidence")
+        .get(0);
+    let memory_id: Uuid = txn
+        .query_one(
+            "INSERT INTO private.memory_records \
+               (tenant_id, memory_type, content, visibility_class, visibility_workspace_id, authority_class, \
+                confidence, status, asserted_at) \
+             VALUES ($1, 'FACT', $2, 'WORKSPACE_SHARED', $3, 'PrivateKnowledge', 1.0, 'active', clock_timestamp()) \
+             RETURNING memory_id",
+            &[
+                &tenant_id,
+                &serde_json::json!({"title": "plain", "key_claim": "an ordinary memory"}),
+                &workspace_id,
+            ],
+        )
+        .expect("owner seeds plain memory")
+        .get(0);
+    txn.execute(
+        "INSERT INTO private.memory_evidence (memory_id, evidence_id, role, grounding_mode) \
+         VALUES ($1, $2, 'PRIMARY', 'SNAPSHOT')",
+        &[&memory_id, &evidence_id],
+    )
+    .expect("owner links plain memory");
+    txn.commit().expect("commit plain memory seed");
+    memory_id
 }

@@ -187,6 +187,7 @@ fn put(
         .rt
         .block_on(operation_receipt::remember_sourced_atomically(
             &handle.runtime,
+            humaux_adapters::postgres::commercial_write_quota(),
             &auth_for(handle, principal),
             request(handle, principal, key, content),
             source,
@@ -228,7 +229,11 @@ fn put_concurrently(
                 barrier.wait();
                 let pool = pool.expect("agent connection");
                 rt.block_on(operation_receipt::remember_sourced_atomically(
-                    &pool, &auth, request, &source,
+                    &pool,
+                    &auth,
+                    request,
+                    &source,
+                    humaux_adapters::postgres::commercial_write_quota(),
                 ))
             })
         })
@@ -477,6 +482,7 @@ fn sourced_put_waits_on_identity_lock() {
                 .expect("agent connection");
             rt.block_on(operation_receipt::remember_sourced_atomically(
                 &pool,
+                humaux_adapters::postgres::commercial_write_quota(),
                 &auth,
                 put_request,
                 &source,

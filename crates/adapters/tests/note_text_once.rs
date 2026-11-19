@@ -160,6 +160,7 @@ fn put(handle: &Handle, body: &str, kind: NoteKind) -> Uuid {
         .rt
         .block_on(operation_receipt::note_put_atomically(
             &handle.runtime,
+            humaux_adapters::postgres::commercial_write_quota(),
             &handle.auth,
             request,
             note,

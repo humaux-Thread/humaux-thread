@@ -474,7 +474,9 @@ pub async fn refuse_note_targets(
 }
 
 /// D-C, atomically. See the module doc for the step order.
-#[allow(clippy::too_many_lines)] // one confirmed supersede transaction read top to bottom; ADR-0067 D-J's note refusal is its first step
+#[allow(clippy::too_many_lines)]
+// one confirmed supersede transaction read top to bottom; ADR-0067 D-J's note refusal is its first step
+/// Only the composition root supplies the trusted [quota port](QuotaReservationPort).
 pub async fn supersede_atomically(
     pool: &RuntimeDbPool,
     quota: &dyn QuotaReservationPort,
@@ -763,6 +765,7 @@ async fn head_state(
 // consume, arbiter UPDATE last). Splitting it into helpers would scatter that ordering across
 // functions and hide the rollback boundary the reviewer must read as one sequence.
 #[allow(clippy::too_many_lines)]
+/// Only the composition root supplies the trusted [quota port](QuotaReservationPort).
 pub async fn restore_atomically(
     pool: &RuntimeDbPool,
     quota: &dyn QuotaReservationPort,
@@ -1104,6 +1107,7 @@ async fn archive_state(
 // consume, arbiter UPDATE last). Splitting it would scatter that ordering and hide the rollback
 // boundary the reviewer must read as one sequence.
 #[allow(clippy::too_many_lines)]
+/// Only the composition root supplies the trusted [quota port](QuotaReservationPort).
 pub async fn archive_or_unarchive_atomically(
     pool: &RuntimeDbPool,
     quota: &dyn QuotaReservationPort,
@@ -1471,6 +1475,7 @@ async fn correction_source(
 /// A replay of the same confirmed call returns the original success (idempotent on the
 /// lifecycle table's UNIQUE(tenant, actor, idempotency_key), like restore).
 #[allow(clippy::too_many_lines)] // one confirmed correction transaction, read top to bottom like supersede/restore
+/// Only the composition root supplies the trusted [quota port](QuotaReservationPort).
 pub async fn correct_atomically(
     pool: &RuntimeDbPool,
     quota: &dyn QuotaReservationPort,
@@ -1847,7 +1852,7 @@ pub struct PostgresLifecycleStore<'a> {
     attribution: &'a dyn memory_repo::MemoryAttribution,
 }
 impl<'a> PostgresLifecycleStore<'a> {
-    /// Assemble existing PG lifecycle dependencies (§36).
+    /// The composition root binds the trusted [quota port](QuotaReservationPort) for §36.
     pub fn new(
         pool: &'a RuntimeDbPool,
         quota: &'a dyn QuotaReservationPort,

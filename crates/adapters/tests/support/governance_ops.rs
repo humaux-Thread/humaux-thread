@@ -6,7 +6,7 @@
 //!   adapters::memory_governance_repo, adapters::postgres, adapters::quota_repo, adapters::quota_reservation_port, adapters::tests::support::token_keys, domain::audit, domain::authority,
 //!   domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::subject,
 //!   projection::stream]
-//! Called-by: [adapters::tests::a2_point_identity, adapters::tests::memory_attribution, adapters::tests::note_history, adapters::tests::note_replace, adapters::tests::projection_lag,
+//! Called-by: [adapters::tests::a2_point_identity, adapters::tests::governance_quota, adapters::tests::memory_attribution, adapters::tests::note_history, adapters::tests::note_replace, adapters::tests::projection_lag,
 //!   adapters::tests::projection_worker, adapters::tests::rebuild, adapters::tests::support::a2_fixture,
 //!   adapters::tests::switch_user_private, maintenance::tests::drill, maintenance::tests::measure,
 //!   private-worker::tests::m29_attribution_e2e]
@@ -28,8 +28,8 @@ use humaux_adapters::memory_governance_repo::{
     self, ArchiveRequest, ArchiveResult, CorrectDone, CorrectRequest, RestoreRequest,
     RestoreResult, SupersedeOutcome, SupersedeRequest,
 };
-use humaux_adapters::postgres::RuntimeDbPool;
-use humaux_adapters::quota_repo::{self, QuotaReservation, ReservationStatus, ReserveResult};
+use humaux_adapters::postgres::{RuntimeDbPool, commercial_write_quota};
+use humaux_adapters::quota_repo;
 use humaux_adapters::quota_reservation_port::{
     QuotaReservationPort, QuotaTransaction, ReservedQuota,
 };
@@ -44,12 +44,13 @@ use humaux_projection::stream::StreamKey;
 use postgres::Client;
 use sqlx::types::Uuid;
 
-/// Binds the production commercial reservation operations to the governance PG tests.
-pub struct TestWriteQuota;
-struct TestWriteLease(QuotaReservation);
+// The real settlement succeeds before the database lease expires. Delay its return to
+// exercise the final lease check after settlement and before the business commit.
+pub struct ExpireSettledQuota;
+struct ExpiringLease(Box<dyn ReservedQuota>);
 
 #[async_trait::async_trait]
-impl QuotaReservationPort for TestWriteQuota {
+impl QuotaReservationPort for ExpireSettledQuota {
     async fn reserve(
         &self,
         txn: &mut QuotaTransaction<'_>,
@@ -59,19 +60,15 @@ impl QuotaReservationPort for TestWriteQuota {
         fingerprint: &str,
         ttl: Duration,
     ) -> Result<Option<Box<dyn ReservedQuota>>, ErrorCode> {
-        Ok(
-            match quota_repo::reserve_bmo_in_txn(txn, auth, request_id, operation, fingerprint, ttl)
-                .await?
-            {
-                ReserveResult::Created(lease) => Some(Box::new(TestWriteLease(lease))),
-                ReserveResult::Existing(_) => None,
-            },
-        )
+        let lease = commercial_write_quota()
+            .reserve(txn, auth, request_id, operation, fingerprint, ttl)
+            .await?;
+        Ok(lease.map(|lease| Box::new(ExpiringLease(lease)) as Box<dyn ReservedQuota>))
     }
 }
 
 #[async_trait::async_trait]
-impl ReservedQuota for TestWriteLease {
+impl ReservedQuota for ExpiringLease {
     fn id(&self) -> Uuid {
         self.0.id()
     }
@@ -85,8 +82,18 @@ impl ReservedQuota for TestWriteLease {
         txn: &mut QuotaTransaction<'_>,
         auth: &AuthorizationScope,
     ) -> Result<bool, ErrorCode> {
-        let status = quota_repo::finish_reservation_in_txn(txn, auth, &self.0, true).await?;
-        Ok(status == ReservationStatus::Consumed)
+        assert!(
+            self.0.consume(txn, auth).await?,
+            "native settlement before expiry"
+        );
+        sqlx::query(
+            "SELECT pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM $1::timestamptz - clock_timestamp())))",
+        )
+        .bind(self.expires_at())
+        .execute(&mut **txn)
+        .await
+        .expect("wait for the actual database reservation deadline");
+        Ok(true)
     }
 }
 
@@ -284,7 +291,7 @@ pub fn supersede(
     let request_id = Uuid::now_v7();
     rt.block_on(memory_governance_repo::supersede_atomically(
         pool,
-        &TestWriteQuota,
+        commercial_write_quota(),
         auth,
         SupersedeRequest {
             request_id,
@@ -313,7 +320,7 @@ pub fn restore(
     let request_id = Uuid::now_v7();
     rt.block_on(memory_governance_repo::restore_atomically(
         pool,
-        &TestWriteQuota,
+        commercial_write_quota(),
         auth,
         RestoreRequest {
             request_id,
@@ -341,7 +348,7 @@ pub fn archive(
     let request_id = Uuid::now_v7();
     rt.block_on(memory_governance_repo::archive_or_unarchive_atomically(
         pool,
-        &TestWriteQuota,
+        commercial_write_quota(),
         auth,
         ArchiveRequest {
             request_id,
@@ -374,7 +381,7 @@ pub fn correct(
     let bytes = serde_json::to_vec(&content).expect("json bytes");
     rt.block_on(memory_governance_repo::correct_atomically(
         pool,
-        &TestWriteQuota,
+        commercial_write_quota(),
         auth,
         CorrectRequest {
             request_id,

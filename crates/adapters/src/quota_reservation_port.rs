@@ -1,6 +1,6 @@
 //! `adapters::quota_reservation_port` — PostgreSQL quota port for lifecycle and receipt writes (§34.0.1, §36).
 //! Depends-on: crates=[async-trait, humaux-domain, sqlx, time, uuid]; services=[]; env=[]; modules=[domain::error, domain::identity]
-//! Called-by: [adapters::memory_governance_repo, gateway::bootstrap, tests]
+//! Called-by: [adapters::memory_governance_repo, adapters::operation_receipt, adapters::postgres, adapters::remember, tests]
 //! Invariants: [the business write owns the transaction; reserve and consume never commit it]
 //! Spec: Baseline §34.0.1; §36; ADR-0130 D5
 
@@ -14,6 +14,10 @@ use uuid::Uuid;
 pub type QuotaTransaction<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
 
 /// Reserves a BMO in the business write's transaction.
+///
+/// Only the composition root may inject an implementation into production write stores.
+/// It must use the real commercial reservation and settlement operations in the supplied
+/// transaction. These writes rely on the implementation's lease and settlement results.
 #[async_trait::async_trait]
 pub trait QuotaReservationPort: Send + Sync {
     /// Returns a lease only for a newly created reservation. An existing reservation

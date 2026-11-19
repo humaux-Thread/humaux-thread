@@ -130,6 +130,7 @@ fn put(
         .rt
         .block_on(operation_receipt::remember_for_task_run_atomically(
             &handle.runtime,
+            humaux_adapters::postgres::commercial_write_quota(),
             &handle.auth,
             put_request(handle, key),
             task_run,
@@ -398,6 +399,7 @@ fn put_across_quota_lock(
         let putter = s.spawn(|| {
             rt.block_on(operation_receipt::remember_for_task_run_atomically(
                 runtime,
+                humaux_adapters::postgres::commercial_write_quota(),
                 auth,
                 req,
                 Some((run, token)),

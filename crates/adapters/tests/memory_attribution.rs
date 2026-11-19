@@ -188,6 +188,7 @@ fn put_with(
         .rt
         .block_on(operation_receipt::remember_for_task_run_atomically(
             &handle.runtime,
+            humaux_adapters::postgres::commercial_write_quota(),
             &handle.auth,
             request(handle, key, occurred_at),
             run.map(|r| (r.task_run_id, r.fencing_token)),
@@ -209,6 +210,7 @@ fn put_private(handle: &Handle, key: &str, occurred_at: i64, run: &ClaimedTaskRu
         .rt
         .block_on(operation_receipt::remember_for_task_run_atomically(
             &handle.runtime,
+            humaux_adapters::postgres::commercial_write_quota(),
             &handle.auth,
             request,
             Some((run.task_run_id, run.fencing_token)),
