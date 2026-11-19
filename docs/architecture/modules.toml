@@ -572,6 +572,7 @@ files = [
   "crates/adapters/src/read_gate.rs",
   "crates/adapters/src/read_materialize.rs",
   "crates/adapters/src/rebuild.rs",
+  "crates/adapters/src/retrieval_provisioning.rs",
   "crates/adapters/src/retrieval_query_source.rs",
   "crates/adapters/src/retrieve.rs",
   "crates/adapters/src/selection_repo.rs",

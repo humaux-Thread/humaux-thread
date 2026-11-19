@@ -1,6 +1,6 @@
 //! `application::operator_provisioning` — Operator provisioning inputs, receipts and I/O ports (ADR-0130 D2, SLICE-15c).
 //! Depends-on: crates=[async-trait, hex, humaux-domain, serde, serde_json, sha2, time, uuid]; services=[]; env=[]; modules=[application::membership_admin, domain::identity, domain::ticket_family]
-//! Called-by: [adapters::provisioning, application::reasoning_route_admin, maintenance::bootstrap, maintenance::main]
+//! Called-by: [adapters::provisioning, adapters::retrieval_provisioning, application::reasoning_route_admin, maintenance::bootstrap, maintenance::main]
 //! Invariants: [the wire API key stays in the CLI; persistence and SQLSTATE handling stay in the adapter]
 //! Spec: ADR-0053; ADR-0058; ADR-0060; ADR-0130 D2
 

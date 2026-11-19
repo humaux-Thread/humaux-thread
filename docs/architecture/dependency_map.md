@@ -334,10 +334,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.revoke_api_key`
 - executes `control.set_workspace_membership`
 - executes `ops.requeue_dead_distill`
-- executes `projection.activate_empty_family`
 - executes `projection.ensure_tenant_placement`
 - service `PostgreSQL(role_maintenance)`
-- service `Qdrant(*)`
 
 #### `adapters::qdrant`
 - service `Qdrant(*)`
@@ -401,6 +399,13 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.entitlement_snapshots`
 - executes `control.audit_event_insert`
 - service `PostgreSQL(role_gateway)`
+
+#### `adapters::retrieval_provisioning`
+- reads `control.workspaces`
+- reads `projection.tenant_placements`
+- executes `projection.activate_empty_family`
+- service `PostgreSQL(role_maintenance)`
+- service `Qdrant(*)`
 
 #### `adapters::retrieval_query_log`
 - writes `ops.retrieval_query_log`
@@ -2987,10 +2992,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.revoke_api_key`
 - executes `control.set_workspace_membership`
 - executes `ops.requeue_dead_distill`
-- executes `projection.activate_empty_family`
 - executes `projection.ensure_tenant_placement`
 - service `PostgreSQL(role_maintenance)`
-- service `Qdrant(*)`
 
 #### `adapters::qdrant`
 - service `Qdrant(*)`
@@ -3081,6 +3084,13 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.entitlement_snapshots`
 - executes `control.audit_event_insert`
 - service `PostgreSQL(role_gateway)`
+
+#### `adapters::retrieval_provisioning`
+- reads `control.workspaces`
+- reads `projection.tenant_placements`
+- executes `projection.activate_empty_family`
+- service `PostgreSQL(role_maintenance)`
+- service `Qdrant(*)`
 
 #### `adapters::retrieval_query_log`
 - writes `ops.retrieval_query_log`
@@ -4603,27 +4613,17 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_retrieval_worker)`
 - service `PostgreSQL(owner)`
 
-#### `adapters::qdrant`
-- service `Qdrant(*)`
-
 #### `application::mechanism_observation`
 
 #### `application::public_dispatch`
-
-#### `contracts::config_registry`
-- env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
 
 #### `contracts::mechanism_registry`
 - reads `public.consensus_ready`
 - service `PostgreSQL(any)`
 
-#### `domain::affect`
-
 #### `domain::authority`
 
 #### `domain::boundary`
-
-#### `domain::dataclass`
 
 #### `domain::error`
 
@@ -4637,10 +4637,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::public`
 
-#### `domain::subject`
-
-#### `domain::ticket_family`
-
 #### `humaux-infra-network`
 
 #### `infra-cell::permit`
@@ -4652,10 +4648,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `infra-network::http`
 - service `HTTP(loopback)`
-
-#### `projection::card`
-
-#### `projection::dense`
 
 #### `public-pool::public_evolve`
 
@@ -7863,10 +7855,12 @@ executed by:
 read by:
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `adapters::provisioning`
+- process(cargo-xtask): `adapters::retrieval_provisioning`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::e2e_seed`
 - process(humaux-maintenance): `adapters::provisioning`
+- process(humaux-maintenance): `adapters::retrieval_provisioning`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
@@ -11832,9 +11826,9 @@ written by:
 
 executed by:
 - (no process): `maintenance::tests::onboarding`
-- process(cargo-xtask): `adapters::provisioning`
+- process(cargo-xtask): `adapters::retrieval_provisioning`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `adapters::provisioning`
+- process(humaux-maintenance): `adapters::retrieval_provisioning`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `projection.card_profile_policies`
@@ -12405,6 +12399,7 @@ read by:
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::placement_repo`
 - process(cargo-xtask): `adapters::provisioning`
+- process(cargo-xtask): `adapters::retrieval_provisioning`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `maintenance::switch_visible`
@@ -12413,6 +12408,7 @@ read by:
 - process(humaux-maintenance): `adapters::placement_repo`
 - process(humaux-maintenance): `adapters::provisioning`
 - process(humaux-maintenance): `adapters::rebuild`
+- process(humaux-maintenance): `adapters::retrieval_provisioning`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::switch_visible`
@@ -13644,6 +13640,7 @@ executed by:
 - `adapters::quota_repo`
 - `adapters::reasoning_route_onboarding`
 - `adapters::rebuild`
+- `adapters::retrieval_provisioning`
 - `adapters::retrieval_query_source`
 - `adapters::role_hygiene`
 - `adapters::serving_repo`
@@ -13826,9 +13823,9 @@ executed by:
 - `retrieval-worker::tests::rpc_readyz`
 
 ### `Qdrant(*)`
-- `adapters::provisioning`
 - `adapters::qdrant`
 - `adapters::rebuild`
+- `adapters::retrieval_provisioning`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::projection_worker`
@@ -14122,6 +14119,7 @@ modules naming it:
 - `adapters::remember`
 - `adapters::request_guard_repo`
 - `adapters::retrieval_embedding_rpc`
+- `adapters::retrieval_provisioning`
 - `adapters::retrieval_query_log`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
@@ -14281,6 +14279,7 @@ modules naming it:
 - `adapters::relation_repo`
 - `adapters::remember`
 - `adapters::request_guard_repo`
+- `adapters::retrieval_provisioning`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
 - `adapters::selection_repo`
@@ -14504,6 +14503,7 @@ modules naming it:
 - `adapters::rebuild`
 - `adapters::remember`
 - `adapters::retrieval_embedding_rpc`
+- `adapters::retrieval_provisioning`
 - `adapters::retrieve`
 - `adapters::role_hygiene`
 - `adapters::serving_repo`
@@ -14567,11 +14567,11 @@ modules naming it:
 - `adapters::private_projection_registry`
 - `adapters::processing_status`
 - `adapters::projection_worker`
-- `adapters::provisioning`
 - `adapters::qdrant`
 - `adapters::read_materialize`
 - `adapters::rebuild`
 - `adapters::remember`
+- `adapters::retrieval_provisioning`
 - `adapters::retrieve`
 - `adapters::serving_repo`
 - `adapters::stream_repo`
@@ -14618,9 +14618,9 @@ why: same-Cell HTTP transport (Qdrant/mechanism-observation)
 modules naming it:
 - `adapters::mechanism_observation`
 - `adapters::projection_worker`
-- `adapters::provisioning`
 - `adapters::qdrant`
 - `adapters::rebuild`
+- `adapters::retrieval_provisioning`
 - `adapters::retrieve`
 - `adapters::tests::private_projection_registry`
 - `adapters::tests::projection_claim`
@@ -14680,6 +14680,7 @@ modules naming it:
 - `adapters::rebuild`
 - `adapters::remember`
 - `adapters::retrieval_embedding_rpc`
+- `adapters::retrieval_provisioning`
 - `adapters::retrieve`
 - `adapters::role_hygiene`
 - `adapters::serving_repo`
@@ -14745,6 +14746,7 @@ modules naming it:
 - `adapters::reasoning_route_onboarding`
 - `adapters::rebuild`
 - `adapters::request_guard_repo`
+- `adapters::retrieval_provisioning`
 - `adapters::retrieval_query_log`
 - `adapters::retrieval_query_source`
 - `adapters::scheduler`
@@ -14868,10 +14870,10 @@ modules naming it:
 - `adapters::mechanism_observation`
 - `adapters::private_projection_registry`
 - `adapters::projection_worker`
-- `adapters::provisioning`
 - `adapters::read_materialize`
 - `adapters::reasoning_route_onboarding`
 - `adapters::rebuild`
+- `adapters::retrieval_provisioning`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
 - `adapters::role_hygiene`
@@ -14907,8 +14909,8 @@ modules naming it:
 - `adapters::memory_repo`
 - `adapters::note_repo`
 - `adapters::operation_receipt`
-- `adapters::provisioning`
 - `adapters::rebuild`
+- `adapters::retrieval_provisioning`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
 - `adapters::tests::console_session`
@@ -14951,6 +14953,7 @@ modules naming it:
 - `adapters::quota_repo`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
+- `adapters::retrieval_provisioning`
 - `adapters::structured_reasoning`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`
@@ -15331,6 +15334,7 @@ modules naming it:
 - `adapters::quota_repo`
 - `adapters::reasoning_route_admission`
 - `adapters::reasoning_route_onboarding`
+- `adapters::retrieval_provisioning`
 - `adapters::structured_reasoning`
 - `adapters::tests::applicability`
 - `adapters::tests::auth_scope_rls`

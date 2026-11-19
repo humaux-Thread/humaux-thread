@@ -5663,10 +5663,12 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - process(cargo-xtask): `adapters::provisioning`
+- process(cargo-xtask): `adapters::retrieval_provisioning`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `xtask::e2e_onboard`
 - process(cargo-xtask): `xtask::e2e_seed`
 - process(humaux-maintenance): `adapters::provisioning`
+- process(humaux-maintenance): `adapters::retrieval_provisioning`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
@@ -14003,9 +14005,9 @@ written by:
 
 executed by:
 - (no process): `maintenance::tests::onboarding`
-- process(cargo-xtask): `adapters::provisioning`
+- process(cargo-xtask): `adapters::retrieval_provisioning`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-maintenance): `adapters::provisioning`
+- process(humaux-maintenance): `adapters::retrieval_provisioning`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `projection.bytea_array_all_32_bytes`
@@ -15068,6 +15070,7 @@ read by:
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::placement_repo`
 - process(cargo-xtask): `adapters::provisioning`
+- process(cargo-xtask): `adapters::retrieval_provisioning`
 - process(cargo-xtask): `adapters::stream_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(cargo-xtask): `maintenance::switch_visible`
@@ -15076,6 +15079,7 @@ read by:
 - process(humaux-maintenance): `adapters::placement_repo`
 - process(humaux-maintenance): `adapters::provisioning`
 - process(humaux-maintenance): `adapters::rebuild`
+- process(humaux-maintenance): `adapters::retrieval_provisioning`
 - process(humaux-maintenance): `adapters::stream_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::switch_visible`

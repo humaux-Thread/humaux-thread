@@ -6,7 +6,7 @@
 //!   this crate (G-M01-2); the `public.*` writers run only on `PublicWorkerDbPool`]
 //! Spec: Baseline §12.6; §13; ADR-0073 D-B; ADR-0074
 //!
-//! Layer direction is cloud → core: this crate reaches the typed pools and `QdrantTransportError` through
+//! Layer direction is cloud → core: this crate reaches the typed pools through
 //! `humaux-adapters`. The reverse seam is `humaux_adapters::mechanism_observation::PublicClaimEvaluator`, implemented
 //! here by [`public_repo::PublicRepoEvaluator`].
 

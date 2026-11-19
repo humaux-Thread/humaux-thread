@@ -9,7 +9,7 @@
 //!   PostgreSQL(role_retrieval_worker) r=[ops.outbox, private.evidence_objects, private.memory_evidence,
 //!   private.memory_records, projection.memory_vectors, projection.private_memory_points,
 //!   projection.rebuild_tickets, projection.stream_checkpoints, projection.stream_log], Qdrant(*)]; env=[];
-//!   modules=[adapters::postgres, adapters::projection_worker, adapters::provisioning, adapters::qdrant, adapters::stream_repo,
+//!   modules=[adapters::postgres, adapters::projection_worker, adapters::provisioning, adapters::qdrant, adapters::retrieval_provisioning, adapters::stream_repo,
 //!   application::projection_maintenance, domain::egress, domain::error, domain::ids, domain::ticket_family, humaux-local-secret-scan, infra-cell::permit,
 //!   infra-cell::resource, infra-cell::transport, projection::dense, projection::note_chunks, projection::serving, projection::stream]
 //! Called-by: [maintenance::bootstrap, maintenance::rebuild_cli, tests]
@@ -72,8 +72,9 @@ use crate::postgres::{MaintenanceDbPool, RetrievalWorkerDbPool};
 use crate::projection_worker::{
     self, CardEmbedder, ExpectedPoint, SharedProjectionDeps, Sleep, begin_projector_read,
 };
-use crate::provisioning::{self, ProvisioningError, QdrantFace};
+use crate::provisioning::{self, ProvisioningError};
 use crate::qdrant::{self, PointId, QdrantOperation, RetrievalFamily, ScrolledPoint};
+use crate::retrieval_provisioning::{self, QdrantFace};
 
 type Result<T> = std::result::Result<T, ProvisioningError>;
 type Txn = sqlx::Transaction<'static, sqlx::Postgres>;
@@ -954,7 +955,7 @@ fn first_ids(ids: impl IntoIterator<Item = Uuid>) -> Vec<Uuid> {
 /// and status `green`. Returns the failed terms.
 async fn judge_collection(deps: &RebuildDeps<'_>, stream: &Stream) -> Result<Vec<String>> {
     let mut reasons = Vec::new();
-    match provisioning::collection_generation(
+    match retrieval_provisioning::collection_generation(
         deps.qdrant,
         &stream.collection,
         deps.worker.dimension,
@@ -1529,7 +1530,12 @@ pub async fn rebuild_stream(
         }
         Err(other) => return Err(other),
     };
-    provisioning::ensure_collection(deps.qdrant, &stream.collection, deps.worker.dimension).await?;
+    retrieval_provisioning::ensure_collection(
+        deps.qdrant,
+        &stream.collection,
+        deps.worker.dimension,
+    )
+    .await?;
     let issued = issue_tickets(deps, stream, &run, opts.batch, opts.require_stored_vector).await?;
     let settled = wait_generation(deps, stream, &run, opts.wait, opts.pump).await?;
     let (mut report, orphans_deleted) = if settled {

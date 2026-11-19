@@ -14,7 +14,7 @@
 //!   private.evidence_objects, private.memory_evidence, private.memory_records, private.messages]
 //!   x=[control.onboard_tenant, control.resolve_user_reasoning_admission], PostgreSQL(role_maintenance)];
 //!   env=[CARGO_MANIFEST_DIR, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN];
-//!   modules=[adapters::byok, adapters::byok::ssrf, adapters::membership_repo, adapters::plan_repo, adapters::postgres, adapters::provisioning, adapters::quota_repo,
+//!   modules=[adapters::byok, adapters::byok::ssrf, adapters::membership_repo, adapters::plan_repo, adapters::postgres, adapters::provisioning, adapters::quota_repo, adapters::retrieval_provisioning,
 //!   domain::identity, domain::ids, domain::ticket_family, protocol::edge, testkit::fixture_purge]
 //! Called-by: [xtask::e2e_onboard, xtask::main]
 //! Invariants: [a thin wrapper over adapters::provisioning (the same onboarding doors humaux-maintenance uses, no INSERT
@@ -51,7 +51,7 @@
 //! tenants and read each ticket's placement from the claim.
 //!
 //! Card 28 (ADR-0053 D-G): the tenant, workspaces, keys, tiers, placement, collection and the
-//! VerifiedEmpty first activation now come from `humaux_adapters::provisioning` — the doors
+//! VerifiedEmpty first activation use `humaux_adapters::provisioning` and `humaux_adapters::retrieval_provisioning` — the doors
 //! `humaux-maintenance` uses — so a seeded workspace is READY and serving before any write, and
 //! a later `xtask projection-serve` for the same version prints "already serving". Only the BYOK
 //! distill lane (`seed_lane`, TEST health rows) stays seed-only (card 52). Printed lines are
@@ -98,8 +98,9 @@ use humaux_adapters::byok::ReasoningCapability;
 use humaux_adapters::membership_repo::AdminAction;
 use humaux_adapters::plan_repo;
 use humaux_adapters::postgres::MaintenanceDbPool;
-use humaux_adapters::provisioning::{self, NewApiKey, QdrantFace, TenantReceipt, TenantRequest};
+use humaux_adapters::provisioning::{self, NewApiKey, TenantReceipt, TenantRequest};
 use humaux_adapters::quota_repo;
+use humaux_adapters::retrieval_provisioning::{self, QdrantFace};
 use humaux_domain::identity::MembershipRole;
 use humaux_domain::ids::TenantId;
 use humaux_domain::ticket_family::TicketFamily;
@@ -758,14 +759,14 @@ async fn provision(
 
     let face = QdrantFace::new(&qdrant.host, qdrant.port, &format!("{}/32", qdrant.host))
         .map_err(|e| format!("qdrant face: {e}"))?;
-    provisioning::ensure_collection(&face, &qdrant.collection, qdrant.dimension)
+    retrieval_provisioning::ensure_collection(&face, &qdrant.collection, qdrant.dimension)
         .await
         .map_err(|e| format!("qdrant collection: {e}"))?;
     let workspace_ids = std::iter::once(tenant.workspace_id)
         .chain(extra_workspaces.iter().map(|(id, _)| *id))
         .collect::<Vec<_>>();
     for workspace_id in workspace_ids {
-        let activation = provisioning::activate_workspace(
+        let activation = retrieval_provisioning::activate_workspace(
             maintenance,
             &face,
             tenant.tenant_id,
