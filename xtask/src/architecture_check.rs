@@ -14426,6 +14426,17 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         }
     }
 
+    fn hex_disk_assert_new_cycle(label: &str, verdict: &Verdict) {
+        if label == "CONTEXT undeclared use" {
+            assert!(
+                matches!(verdict, Verdict::Fail(errors) if
+                    errors.iter().any(|e| e == "HEX-CONTEXT-CYCLES: new violation commercial->knowledge_lifecycle")
+                    && errors.iter().any(|e| e == "HEX-CONTEXT CycleError: commercial -> knowledge_lifecycle -> commercial")),
+                "{label}: {verdict:?}"
+            );
+        }
+    }
+
     /// ADR-0130 / §80.1: mutations touch disk, enter the production gates and restore to green.
     #[test]
     fn hex_boundary_disk_red_green() {
@@ -14449,23 +14460,13 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         for kind in 0..4 {
             check(kind);
         }
-        let (_, exceptions) = hex_context_verdicts(&root);
-        assert!(!report("HEX-CONTEXT-EXCEPTIONS", &exceptions));
-        println!("P2 intact catalog: GREEN");
         let mutate = |kind, path: &str, extra: &str, label: &str| {
             let path = root.join(path);
             let original = fs::read_to_string(&path).unwrap();
             fs::write(&path, format!("{original}\n{extra}\n")).unwrap();
             let verdict = gate(kind);
             assert!(matches!(verdict, Verdict::Fail(_)), "{label}: {verdict:?}");
-            if label == "CONTEXT undeclared use" {
-                assert!(
-                    matches!(&verdict, Verdict::Fail(errors) if
-                        errors.iter().any(|e| e == "HEX-CONTEXT-CYCLES: new violation commercial->knowledge_lifecycle")
-                        && errors.iter().any(|e| e == "HEX-CONTEXT CycleError: commercial -> knowledge_lifecycle -> commercial")),
-                    "{label}: {verdict:?}"
-                );
-            }
+            hex_disk_assert_new_cycle(label, &verdict);
             println!("{label}: RED {verdict:?}");
             fs::write(path, original).unwrap();
             check(kind);
@@ -15304,6 +15305,10 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             "HEX-CONTEXT-EXCEPTIONS must name {HEX_MODULES}: {exceptions:?}"
         );
         assert!(report("HEX-CONTEXT-EXCEPTIONS", &exceptions));
+        let (context, exceptions) = hex_context_verdicts(&real_root());
+        assert_eq!(context, Verdict::Pass);
+        assert!(!report("HEX-CONTEXT-EXCEPTIONS", &exceptions));
+        println!("P2 intact catalog: GREEN");
     }
 
     #[test]
