@@ -1,6 +1,6 @@
 //! `domain::note` — the verbatim note lane's pure rules: `NoteKind`, the verbatim body and its digest, the title,
 //!   and the authority decision of `memory.note_put` (ADR-0067 D-C/D-D/D-E).
-//! Depends-on: crates=[sha2, uuid]; services=[]; env=[]; modules=[domain::authority, domain::error, domain::evidence, domain::memory, domain::policy]
+//! Depends-on: crates=[sha2, uuid]; services=[]; env=[]; modules=[domain::authority, domain::error, domain::evidence, domain::policy]
 //! Called-by: [adapters::memory_repo, adapters::note_repo, adapters::operation_receipt, adapters::read_materialize, application::recall_read, application::remember, gateway::mcp_application, humaux-local-secret-scan, tests]
 //! Invariants: [NoteKind is a closed 12-value set whose memory_type mapping is the DB CHECK of migration 0283 (nine kinds
 //!   of 0235 plus event, plan, episode; ADR-0124); the body is never trimmed, normalised or re-encoded; authority is
@@ -17,13 +17,11 @@ use uuid::Uuid;
 use crate::authority::{AuthorityClass, CandidateRejection, NonEmptyVec};
 use crate::error::ErrorCode;
 use crate::evidence::EvidenceOriginClass;
-use crate::memory::MemoryType;
 use crate::policy::StoredAuthority;
 
-/// ADR-0067 D-E: the decoded body limit, counted in UTF-8 bytes (the wire schema counts code points, which is weaker).
-pub const MAX_BODY_BYTES: usize = 65_536;
-/// ADR-0067 D-E: the explicit title limit, in UTF-8 bytes.
-pub const MAX_TITLE_BYTES: usize = 1024;
+/// Shared note kind and UTF-8 byte limits (ADR-0067 D-D/D-E).
+pub use crate::memory_vocab::{MAX_BODY_BYTES, MAX_TITLE_BYTES, NoteKind};
+
 /// ADR-0067 D-E: a derived title is cut to this many Unicode scalars.
 pub const DERIVED_TITLE_SCALARS: usize = 80;
 /// ADR-0067 D-E: the title of an all-blank body.
@@ -35,96 +33,6 @@ pub const STRATEGY_IDENTITY_NOTE_V1: &str = "identity_note_v1";
 /// ADR-0067 D-B: `policy_version` of the contract row — the authority rule that granted the stored class (the §10.1
 /// origin-ceiling table, read by [`authorize_note`]).
 pub const POLICY_VERSION: &str = "origin_ceiling_v1";
-
-/// ADR-0067 D-D, amended by ADR-0124: the author's classification of a note, a closed set of twelve. It certifies no
-/// truth and decides no authority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoteKind {
-    /// A rejected option (`REJECTION`).
-    Rejected,
-    /// A decision (`DECISION`).
-    Decision,
-    /// The record of an implemented fix, its result (`OUTCOME`).
-    Fix,
-    /// A known problem (`ISSUE`).
-    Problem,
-    /// A lesson (`LESSON`).
-    Lesson,
-    /// A research finding (`NOTE`; counted apart from `Note` by `note_kind`).
-    Research,
-    /// A preference (`PREFERENCE`).
-    Preference,
-    /// A state record (`STATE`).
-    State,
-    /// A free-form note (`NOTE`).
-    Note,
-    /// A fact about something that happened, such as an email, a chat message or a calendar entry (`NOTE`; ADR-0124 D-A).
-    Event,
-    /// A commitment (`NOTE`; ADR-0124 D-A). Reminders are not this kind's job (M14/M22).
-    Plan,
-    /// One attempt at something and how it went (`NOTE`; ADR-0124 D-A). Its tables land with M07-8.
-    Episode,
-}
-
-impl NoteKind {
-    /// Every kind: ADR-0067 D-D table order, then the three ADR-0124 kinds.
-    pub const ALL: [Self; 12] = [
-        Self::Rejected,
-        Self::Decision,
-        Self::Fix,
-        Self::Problem,
-        Self::Lesson,
-        Self::Research,
-        Self::Preference,
-        Self::State,
-        Self::Note,
-        Self::Event,
-        Self::Plan,
-        Self::Episode,
-    ];
-
-    /// Wire and DB label (`private.memory_records.note_kind`, migration 0283's CHECK set).
-    #[must_use]
-    pub const fn wire(self) -> &'static str {
-        match self {
-            Self::Rejected => "rejected",
-            Self::Decision => "decision",
-            Self::Fix => "fix",
-            Self::Problem => "problem",
-            Self::Lesson => "lesson",
-            Self::Research => "research",
-            Self::Preference => "preference",
-            Self::State => "state",
-            Self::Note => "note",
-            Self::Event => "event",
-            Self::Plan => "plan",
-            Self::Episode => "episode",
-        }
-    }
-
-    /// Inverse of [`NoteKind::wire`]; `None` outside the closed set.
-    #[must_use]
-    pub fn parse_wire(wire: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.wire() == wire)
-    }
-
-    /// The `memory_type` this kind is stored under (ADR-0067 D-D table, ADR-0124 D-A; the DB CHECK binds the same pairs).
-    #[must_use]
-    pub const fn memory_type(self) -> MemoryType {
-        match self {
-            Self::Rejected => MemoryType::Rejection,
-            Self::Decision => MemoryType::Decision,
-            Self::Fix => MemoryType::Outcome,
-            Self::Problem => MemoryType::Issue,
-            Self::Lesson => MemoryType::Lesson,
-            Self::Research | Self::Note | Self::Event | Self::Plan | Self::Episode => {
-                MemoryType::Note
-            }
-            Self::Preference => MemoryType::Preference,
-            Self::State => MemoryType::State,
-        }
-    }
-}
 
 /// `memory.note_put.requested_authority` wire forms, in `AuthorityClass` order. Verbatim `AuthorityClass` variant names,
 /// the same spelling as `private.memory_records.authority_class`.
@@ -274,12 +182,13 @@ pub fn note_title(explicit: Option<&str>, body: &NoteBody) -> Result<String, Err
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::MemoryType;
 
-    /// How many variants `pub enum NoteKind` declares, counted from this file's own source, so a variant added to the enum
+    /// How many variants `pub enum NoteKind` declares, counted from its defining source, so a variant added to the enum
     /// but not to `NoteKind::ALL` changes the count and fails the test that uses it.
     fn declared_note_kinds() -> usize {
         let head = "pub enum NoteKind {\n";
-        let src = include_str!("note.rs");
+        let src = include_str!("memory_vocab.rs");
         let body = &src[src.find(head).expect("enum declaration") + head.len()..];
         body[..body.find("\n}").expect("end of enum")]
             .lines()
