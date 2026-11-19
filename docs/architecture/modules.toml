@@ -319,6 +319,7 @@ files = [
   "crates/adapters/src/consolidate_repo.rs",
   "crates/adapters/src/consolidation_reasoner.rs",
   "crates/adapters/src/dedup_repo.rs",
+  "crates/adapters/src/derived_job_lease.rs",
   "crates/adapters/src/distill_reasoner.rs",
   "crates/adapters/src/distill_repo.rs",
   "crates/adapters/src/private_inference_rpc.rs",
