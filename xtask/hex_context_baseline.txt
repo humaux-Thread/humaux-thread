@@ -22,14 +22,6 @@ crates/adapters/src/continuity_repo.rs:project_continuity->identity_access:humau
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::VisibilityDescriptor
 crates/adapters/src/mechanism_observation.rs:operations_platform->identity_access:humaux_domain::identity::AuthorizationScope
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::ReservationStatus
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::ReservationStatus::Consumed
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::ReserveResult
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::ReserveResult::Created
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::ReserveResult::Existing
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::finish_reservation_in_txn
-crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::reserve_bmo_in_txn
 crates/adapters/src/memory_governance_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::AuditEvent
 crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo
 crates/adapters/src/operation_receipt.rs:knowledge_lifecycle->commercial:humaux_adapters::quota_repo::ReservationStatus

@@ -480,6 +480,7 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::evidence_sources_dedupe`
 - (no process): `adapters::tests::note_put`
+- (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `adapters::tests::project_tree`
 - (no process): `adapters::tests::request_guard`
@@ -3526,6 +3527,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::evidence_task_runs`
+- (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `gateway::tests::coordinate_task`
 - (no process): `gateway::tests::mcp_gateway`
