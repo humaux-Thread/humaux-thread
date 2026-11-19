@@ -4,7 +4,9 @@
 //! Invariants: [load/select precedes deletion; commit checks run as runtime roles; any ticket and any source role can invalidate a derivation; exact durable output sets]
 //! Spec: Baseline §37; §11.7; ADR-0092 D-C; ADR-0079 D-J; G-M19-4
 
-use consolidate::{create_run, publish_rollup, retry_stale_input, select_and_materialize_inputs};
+use consolidate::{
+    MaterializedInput, create_run, publish_rollup, retry_stale_input, select_and_materialize_inputs,
+};
 use humaux_adapters::read_materialize::materialize_final_bodies;
 use humaux_adapters::{
     attribution_repo::AttributionLadder,
@@ -137,6 +139,9 @@ fn role_dsn(role: &str) -> String {
     let sep = if dsn.contains('?') { '&' } else { '?' };
     format!("{dsn}{sep}options=-c%20role%3D{role}")
 }
+fn publisher_dsn(role: &str, tenant_id: Uuid) -> String {
+    format!("{}&application_name={tenant_id}", role_dsn(role))
+}
 fn seed_run(w: &mut World) -> Uuid {
     w.h.admin.query_one(
         "INSERT INTO private.processing_runs(tenant_id,evidence_id,processor_kind,processor_version,model_provider,model_id,model_revision,prompt_version,prompt_hash,parser_version,evidence_payload_sha256,source_hash,context_snapshot_seq) VALUES($1,$2,'distill','fixture','fixture','fixture','fixture','fixture','fixture','fixture',ARRAY[$3::bytea],$3,0) RETURNING processing_run_id",
@@ -149,8 +154,9 @@ fn prepare_distill(w: &mut World) -> PreparedDistill {
     let pool =
         w.h.rt
             // dep: PostgreSQL(role_private_worker) — §37 commit role
-            .block_on(PrivateWorkerDbPool::connect(&role_dsn(
+            .block_on(PrivateWorkerDbPool::connect(&publisher_dsn(
                 "role_private_worker",
+                w.h.tenant_id,
             )))
             .unwrap();
     let mut read =
@@ -385,8 +391,9 @@ fn race_registration(w: &mut World, reverse: bool) {
     let h = &w.h;
     // dep: PostgreSQL(role_retrieval_worker) — §37 actual registration API
     let pool =
-        h.rt.block_on(RetrievalWorkerDbPool::connect(&role_dsn(
+        h.rt.block_on(RetrievalWorkerDbPool::connect(&publisher_dsn(
             "role_retrieval_worker",
+            h.tenant_id,
         )))
         .unwrap();
     let result = h.rt.block_on(registry::register_private_memory_point(
@@ -402,47 +409,52 @@ fn race_registration(w: &mut World, reverse: bool) {
         expected
     );
 }
-fn race_publish(w: &mut World, site: &str, reverse: bool) {
-    if site == "registration" {
-        return race_registration(w, reverse);
-    }
+type PreparedConsolidation = (ConsolidationDbPool, Uuid, Vec<MaterializedInput>);
+fn prepare_consolidation(w: &World) -> PreparedConsolidation {
     let h = &w.h;
     let rt = &h.rt;
     let (tenant, domain, workspace) = (h.tenant_id, h.reasoning_domain_id, Some(h.workspace_id));
     // dep: PostgreSQL(role_consolidation_worker) — §37 actual consolidation API
     let pool = rt
-        .block_on(ConsolidationDbPool::connect(&role_dsn(
+        .block_on(ConsolidationDbPool::connect(&publisher_dsn(
             "role_consolidation_worker",
+            tenant,
         )))
         .unwrap();
     let run = rt
         .block_on(create_run(&pool, tenant, domain, workspace))
         .unwrap();
-    let result = rt.block_on(async {
-        let inputs =
-            select_and_materialize_inputs(&pool, run, tenant, domain, workspace, 10).await?;
-        let ids = inputs
-            .iter()
-            .map(|i| i.memory_id.into_inner().0)
-            .collect::<BTreeSet<_>>();
-        assert_eq!(ids, BTreeSet::from([w.memory, w.control]));
-        let sources = inputs
-            .iter()
-            .map(|i| (i.memory_id, i.evidence_id))
-            .collect::<Vec<_>>();
-        publish_rollup(
-            &pool,
-            run,
-            tenant,
-            workspace,
-            serde_json::json!({"rollup":"race"}),
-            AuthorityClass::PrivateKnowledge,
-            None,
-            &sources,
-            None,
-        )
-        .await
-    });
+    let inputs = rt
+        .block_on(select_and_materialize_inputs(
+            &pool, run, tenant, domain, workspace, 10,
+        ))
+        .unwrap();
+    let ids = inputs
+        .iter()
+        .map(|i| i.memory_id.into_inner().0)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(ids, BTreeSet::from([w.memory, w.control]));
+    (pool, run, inputs)
+}
+fn race_consolidation(w: &mut World, reverse: bool, prepared: PreparedConsolidation) {
+    let (pool, run, inputs) = prepared;
+    let rt = &w.h.rt;
+    let (tenant, workspace) = (w.h.tenant_id, Some(w.h.workspace_id));
+    let sources = inputs
+        .iter()
+        .map(|i| (i.memory_id, i.evidence_id))
+        .collect::<Vec<_>>();
+    let result = rt.block_on(publish_rollup(
+        &pool,
+        run,
+        tenant,
+        workspace,
+        serde_json::json!({"rollup":"race"}),
+        AuthorityClass::PrivateKnowledge,
+        None,
+        &sources,
+        None,
+    ));
     let outcome = rt
         .block_on(retry_stale_input(&pool, tenant, run, None, result))
         .unwrap();
@@ -460,13 +472,19 @@ fn race_publish(w: &mut World, site: &str, reverse: bool) {
     let status: String = w.h.admin.query_one(sql, &[&run]).unwrap().get(0);
     assert_eq!(status, if reverse { "STALE_INPUT" } else { "SUCCEEDED" });
 }
-fn wait_blocked(client: &mut postgres::Client, blocker: i32) -> Option<i32> {
+fn wait_blocked(
+    client: &mut postgres::Client,
+    blocker: i32,
+    application_name: Option<&str>,
+) -> Option<i32> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
         let rows = client
             .query(
-                "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
-                &[&blocker],
+                "SELECT pid FROM pg_stat_activity
+                 WHERE ($2::text IS NULL OR application_name = $2)
+                   AND $1 = ANY(pg_blocking_pids(pid))",
+                &[&blocker, &application_name],
             )
             .unwrap();
         if rows.len() == 1 {
@@ -522,7 +540,10 @@ fn race(name: &'static str, site: &str) {
     }
 }
 fn race_order(w: &mut World, site: &str, reverse: bool) {
-    let prepared = (site == "distill").then(|| prepare_distill(w));
+    // Finish materializing the input manifest before racing deletion against publication.
+    let distill = (site == "distill").then(|| prepare_distill(w));
+    let consolidation = (site == "consolidation").then(|| prepare_consolidation(w));
+    let publisher = w.h.tenant_id.to_string();
     w.concurrent = true;
     let (mut deletion, request, principal, intent) = race_accept(w);
     let workspace = w.h.workspace_id;
@@ -566,12 +587,13 @@ fn race_order(w: &mut World, site: &str, reverse: bool) {
     let changed = std::thread::scope(|scope| {
         let coordinator = scope.spawn(|| {
             if reverse {
-                let waiting = wait_blocked(&mut observer, deletion_pid);
+                let waiting = wait_blocked(&mut observer, deletion_pid, Some(&publisher));
                 deletion.batch_execute("COMMIT").unwrap();
                 waiting.expect("G-M19-4: publisher must wait for accept");
                 false
             } else {
-                let publisher_pid = wait_blocked(&mut observer, pid).expect("publisher barrier");
+                let publisher_pid =
+                    wait_blocked(&mut observer, pid, Some(&publisher)).expect("publisher barrier");
                 let d = scope.spawn(move || {
                     let result = accept(&mut deletion);
                     deletion.batch_execute("COMMIT").unwrap();
@@ -584,7 +606,7 @@ fn race_order(w: &mut World, site: &str, reverse: bool) {
                     );
                     site == "distill"
                 });
-                let waiting = wait_blocked(&mut observer, publisher_pid);
+                let waiting = wait_blocked(&mut observer, publisher_pid, None);
                 observer
                     .query_one("SELECT pg_advisory_unlock($1)", &[&key])
                     .unwrap();
@@ -593,9 +615,10 @@ fn race_order(w: &mut World, site: &str, reverse: bool) {
                 changed
             }
         });
-        match prepared {
-            Some(input) => distill_publish(w, reverse, Some(input)),
-            None => race_publish(w, site, reverse),
+        match (distill, consolidation) {
+            (Some(input), _) => distill_publish(w, reverse, Some(input)),
+            (_, Some(input)) => race_consolidation(w, reverse, input),
+            _ => race_registration(w, reverse),
         }
         coordinator.join().unwrap()
     });
