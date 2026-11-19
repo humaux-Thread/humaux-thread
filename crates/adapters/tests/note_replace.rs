@@ -6,7 +6,7 @@
 //!   w=[private.memory_records]]; env=[];
 //!   modules=[adapters::attribution_repo, adapters::confirm_token_repo, adapters::forget_repo, adapters::memory_governance_repo, adapters::note_repo,
 //!   adapters::operation_receipt, adapters::postgres, adapters::quota_reservation_port, adapters::remember, adapters::request_guard_repo, adapters::tests::support::governance_ops,
-//!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::authority, domain::confirm,
+//!   adapters::tests::support::operation_receipt_fixture, adapters::tests::support::quota_expiry, domain::audit, domain::authority, domain::confirm,
 //!   domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, humaux-testkit,
 //!   projection::stream]
 //! Called-by: [cargo-test]
@@ -63,10 +63,14 @@ mod operation_receipt_fixture;
 #[path = "support/governance_ops.rs"]
 mod governance_ops;
 
-use governance_ops::{ExpireSettledQuota, Governor};
+#[path = "support/quota_expiry.rs"]
+mod quota_expiry;
+
+use governance_ops::Governor;
 use operation_receipt_fixture::{
     DOMAIN, Fixture, Handle, PROJECTION_KIND, PROJECTION_VERSION, Residue, plain_memory, residue,
 };
+use quota_expiry::ExpireSettledQuota;
 
 const TOKEN_TTL: Duration = Duration::from_secs(600);
 

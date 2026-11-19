@@ -1,9 +1,9 @@
 //! `adapters::tests::support::governance_ops` — the five confirm-gated governance writes driven through the real
 //!   `memory_governance_repo` ops (ADR-0057 D-J), for projection / completeness integration tests.
-//! Depends-on: crates=[async-trait, humaux-adapters, humaux-domain, humaux-projection, postgres, serde_json, sqlx, time, tokio]; services=[PostgreSQL(owner)
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, postgres, serde_json, sqlx, tokio]; services=[PostgreSQL(owner)
 //!   w=[control.api_keys, control.confirm_tokens, control.memberships, control.quota_windows, control.tenants,
 //!   control.usage_reservations, control.users, control.workspace_memberships], PostgreSQL(role_gateway)]; env=[]; modules=[adapters::attribution_repo, adapters::confirm_token_repo,
-//!   adapters::memory_governance_repo, adapters::postgres, adapters::quota_repo, adapters::quota_reservation_port, adapters::tests::support::token_keys, domain::audit, domain::authority,
+//!   adapters::memory_governance_repo, adapters::postgres, adapters::quota_repo, adapters::tests::support::token_keys, domain::audit, domain::authority,
 //!   domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::subject,
 //!   projection::stream]
 //! Called-by: [adapters::tests::a2_point_identity, adapters::tests::governance_quota, adapters::tests::memory_attribution, adapters::tests::note_history, adapters::tests::note_replace, adapters::tests::projection_lag,
@@ -30,9 +30,6 @@ use humaux_adapters::memory_governance_repo::{
 };
 use humaux_adapters::postgres::{RuntimeDbPool, commercial_write_quota};
 use humaux_adapters::quota_repo;
-use humaux_adapters::quota_reservation_port::{
-    QuotaReservationPort, QuotaTransaction, ReservedQuota,
-};
 use humaux_domain::audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction};
 use humaux_domain::authority::MemoryId;
 use humaux_domain::confirm::{DestructiveOp, RISK_TAG_CONFIRMATION_MINTED};
@@ -43,59 +40,6 @@ use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use humaux_projection::stream::StreamKey;
 use postgres::Client;
 use sqlx::types::Uuid;
-
-// The real settlement succeeds before the database lease expires. Delay its return to
-// exercise the final lease check after settlement and before the business commit.
-pub struct ExpireSettledQuota;
-struct ExpiringLease(Box<dyn ReservedQuota>);
-
-#[async_trait::async_trait]
-impl QuotaReservationPort for ExpireSettledQuota {
-    async fn reserve(
-        &self,
-        txn: &mut QuotaTransaction<'_>,
-        auth: &AuthorizationScope,
-        request_id: Uuid,
-        operation: &str,
-        fingerprint: &str,
-        ttl: Duration,
-    ) -> Result<Option<Box<dyn ReservedQuota>>, ErrorCode> {
-        let lease = commercial_write_quota()
-            .reserve(txn, auth, request_id, operation, fingerprint, ttl)
-            .await?;
-        Ok(lease.map(|lease| Box::new(ExpiringLease(lease)) as Box<dyn ReservedQuota>))
-    }
-}
-
-#[async_trait::async_trait]
-impl ReservedQuota for ExpiringLease {
-    fn id(&self) -> Uuid {
-        self.0.id()
-    }
-
-    fn expires_at(&self) -> time::OffsetDateTime {
-        self.0.expires_at()
-    }
-
-    async fn consume(
-        &self,
-        txn: &mut QuotaTransaction<'_>,
-        auth: &AuthorizationScope,
-    ) -> Result<bool, ErrorCode> {
-        assert!(
-            self.0.consume(txn, auth).await?,
-            "native settlement before expiry"
-        );
-        sqlx::query(
-            "SELECT pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM $1::timestamptz - clock_timestamp())))",
-        )
-        .bind(self.expires_at())
-        .execute(&mut **txn)
-        .await
-        .expect("wait for the actual database reservation deadline");
-        Ok(true)
-    }
-}
 
 /// The governance principal of one fixture tenant.
 pub struct Governor {

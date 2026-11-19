@@ -1,7 +1,7 @@
 //! `adapters::tests::governance_quota` — the five governance operations drive the four PostgreSQL write transactions (§36).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, serde_json, sqlx];
 //!   services=[PostgreSQL(role_gateway) r=[control.audit_events, control.quota_windows, control.usage_reservations, private.memory_records]]; env=[];
-//!   modules=[adapters::attribution_repo, adapters::confirm_token_repo, adapters::memory_governance_repo, adapters::postgres, adapters::quota_reservation_port, adapters::request_guard_repo, adapters::tests::support::governance_ops, adapters::tests::support::operation_receipt_fixture, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, humaux-testkit, projection::stream]
+//!   modules=[adapters::attribution_repo, adapters::confirm_token_repo, adapters::memory_governance_repo, adapters::postgres, adapters::quota_reservation_port, adapters::request_guard_repo, adapters::tests::support::governance_ops, adapters::tests::support::operation_receipt_fixture, adapters::tests::support::quota_expiry, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, humaux-testkit, projection::stream]
 //! Called-by: [cargo-test]
 //! Invariants: [the runtime uses the real commercial adapter; each fault rolls back facts, quota, audit and confirmation together]
 //! Spec: Baseline §34.0.1; §36; ADR-0130 D5
@@ -37,8 +37,12 @@ mod operation_receipt_fixture;
 #[path = "support/governance_ops.rs"]
 mod governance_ops;
 
-use governance_ops::{ExpireSettledQuota, Governor};
+#[path = "support/quota_expiry.rs"]
+mod quota_expiry;
+
+use governance_ops::Governor;
 use operation_receipt_fixture::{Fixture, Handle, Residue, plain_memory, residue};
+use quota_expiry::ExpireSettledQuota;
 
 type GovernanceQuotaState = (Residue, Vec<i64>, String, bool);
 
