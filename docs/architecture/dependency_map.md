@@ -1712,6 +1712,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(any)`
 
 #### `adapters::audited_read_quota`
+- service `PostgreSQL(role_gateway)`
 
 #### `adapters::billing_repo`
 - writes `control.billing_inbox`
@@ -13508,6 +13509,7 @@ executed by:
 - `gateway::tests::mcp_gateway`
 
 ### `PostgreSQL(role_gateway)`
+- `adapters::audited_read_quota`
 - `adapters::billing_repo`
 - `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::coord_task_repo`
@@ -14053,6 +14055,7 @@ modules naming it:
 - `adapters::affect_repo`
 - `adapters::applicability_repo`
 - `adapters::attribution_repo`
+- `adapters::audited_read_quota`
 - `adapters::billing_processor_repo`
 - `adapters::billing_repo`
 - `adapters::candidate_repo`
