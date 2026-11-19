@@ -1,6 +1,8 @@
 name: PostgreSQL 19 RC probe
 
 on:
+  push:
+    branches: ['ci/pg19-probe']
   workflow_dispatch:
   schedule:
     - cron: '23 6 * * *'
