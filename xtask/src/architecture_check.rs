@@ -1982,7 +1982,7 @@ fn hex_boundary_gate(root: &Path, writer: bool) -> Verdict {
     let (file, ceiling, label) = if writer {
         ("xtask/hex_writer_baseline.txt", 43, "HEX-WRITER")
     } else {
-        ("xtask/hex_context_baseline.txt", 251, "HEX-CONTEXT")
+        ("xtask/hex_context_baseline.txt", 242, "HEX-CONTEXT")
     };
     let actual = if writer {
         hex_writer_actual(root)
@@ -10186,6 +10186,7 @@ fn w1_continuity_contract_from(
     migration: &str,
     domain: &str,
     adapter: &str,
+    ids: &str,
     marker_sets_outside_publish: usize,
 ) -> Verdict {
     let mut failures = Vec::new();
@@ -10267,13 +10268,34 @@ fn w1_continuity_contract_from(
         }
     }
     for needle in [
-        "continuity_uuid_v7!(ProjectId)",
+        "pub use crate::ids::ProjectId;",
         "continuity_uuid_v7!(ContinuityFacetVersionId)",
         "pub const ALL: [Self; 15]",
     ] {
         if !domain.contains(needle) {
             failures.push(format!("domain continuity surface missing `{needle}`"));
         }
+    }
+    let ids_code = mask_comments_and_literals(ids);
+    let project_impl = r3_function_body(&ids_code, "impl ProjectId {").unwrap_or_default();
+    if !ids_code.contains("pub struct ProjectId(pub Uuid);") {
+        failures.push("contract kernel ProjectId must wrap Uuid".to_string());
+    }
+    if r3_function_body(project_impl, "pub fn new() -> Self {")
+        != Some("{\n        Self(Uuid::now_v7())\n    }")
+    {
+        failures.push("contract kernel ProjectId must mint UUIDv7".to_string());
+    }
+    if r3_function_body(
+        project_impl,
+        "pub fn parse(value: &str) -> Result<Self, ErrorCode> {",
+    ) != Some(concat!(
+        "{\n        let id = Uuid::parse_str(value).map_err(|_| ErrorCode::InvalidInput)?;\n",
+        "        if id.get_version_num() != 7 {\n",
+        "            return Err(ErrorCode::InvalidInput);\n",
+        "        }\n        Ok(Self(id))\n    }"
+    )) {
+        failures.push("contract kernel ProjectId parse must reject non-v7 UUIDs".to_string());
     }
     for needle in [
         "pool: &RuntimeDbPool",
@@ -10301,6 +10323,7 @@ fn w1_continuity_gate(root: &Path) -> Verdict {
         "migrations/0136_project_continuity.sql",
         "crates/domain/src/continuity.rs",
         "crates/adapters/src/continuity_repo.rs",
+        "crates/domain/src/ids.rs",
     ];
     let mut sources = Vec::new();
     for path in paths {
@@ -10342,6 +10365,7 @@ fn w1_continuity_gate(root: &Path) -> Verdict {
         &sources[0],
         &sources[1],
         &sources[2],
+        &sources[3],
         sql_marker_sets + rust_marker_sets,
     )
 }
@@ -13977,7 +14001,7 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         println!("CONTEXT new single-context pub(crate)/pub(super)/pub(in crate): GREEN");
         fs::write(
             &path,
-            format!("{visible}\nuse humaux_domain::continuity::ProjectId;"),
+            format!("{visible}\nuse humaux_domain::continuity::ContinuityFacetKind;"),
         )
         .unwrap();
         let red = gate();
@@ -15987,12 +16011,13 @@ runs:
         );
     }
 
-    fn w1_real_sources() -> (String, String, String) {
+    fn w1_real_sources() -> (String, String, String, String) {
         let root = real_root();
         (
             fs::read_to_string(root.join("migrations/0136_project_continuity.sql")).unwrap(),
             fs::read_to_string(root.join("crates/domain/src/continuity.rs")).unwrap(),
             fs::read_to_string(root.join("crates/adapters/src/continuity_repo.rs")).unwrap(),
+            fs::read_to_string(root.join("crates/domain/src/ids.rs")).unwrap(),
         )
     }
 
@@ -16051,7 +16076,7 @@ runs:
 
     #[test]
     fn w1_continuity_contract_mutations_are_red() {
-        let (migration, domain, adapter) = w1_real_sources();
+        let (migration, domain, adapter, ids) = w1_real_sources();
         for needle in [
             "ALTER TABLE private.continuity_projects FORCE ROW LEVEL SECURITY;",
             "CONSTRAINT continuity_facet_slots_kind_closed CHECK",
@@ -16071,7 +16096,7 @@ runs:
             let broken = migration.replacen(needle, "", 1);
             assert!(
                 matches!(
-                    w1_continuity_contract_from(&broken, &domain, &adapter, 0),
+                    w1_continuity_contract_from(&broken, &domain, &adapter, &ids, 0),
                     Verdict::Fail(_)
                 ),
                 "mutation removing `{needle}` must fail the actual W1 gate"
@@ -16082,23 +16107,52 @@ runs:
                 &format!("{migration}\n-- 'HANDOFF'"),
                 &domain,
                 &adapter,
+                &ids,
                 0
             ),
             Verdict::Fail(_)
         ));
         assert!(matches!(
-            w1_continuity_contract_from(&migration, &domain, &adapter, 1),
+            w1_continuity_contract_from(&migration, &domain, &adapter, &ids, 1),
             Verdict::Fail(_)
         ));
-        assert!(matches!(
-            w1_continuity_contract_from(
-                &migration,
-                &domain.replacen("continuity_uuid_v7!(ProjectId)", "", 1),
-                &adapter,
-                0,
+        let without_reexport = domain.replacen("pub use crate::ids::ProjectId;", "", 1);
+        let red = w1_continuity_contract_from(&migration, &without_reexport, &adapter, &ids, 0);
+        assert!(
+            matches!(&red, Verdict::Fail(lines) if lines.iter().any(|l| l.contains("pub use crate::ids::ProjectId;")))
+        );
+        println!("ProjectId compatibility re-export removed: RED {red:?}");
+
+        for (needle, replacement, expected) in [
+            ("pub struct ProjectId(pub Uuid);", "", "must wrap Uuid"),
+            ("Uuid::now_v7()", "Uuid::new_v4()", "must mint UUIDv7"),
+            (
+                "        if id.get_version_num() != 7 {\n            return Err(ErrorCode::InvalidInput);\n        }\n",
+                "",
+                "must reject non-v7 UUIDs",
             ),
-            Verdict::Fail(_)
-        ));
+        ] {
+            let (before, project) = ids.split_once("impl ProjectId {").unwrap();
+            let broken = if needle.starts_with("pub struct") {
+                ids.replacen(needle, replacement, 1)
+            } else {
+                format!(
+                    "{before}impl ProjectId {{{}",
+                    project.replacen(needle, replacement, 1)
+                )
+            };
+            let red = w1_continuity_contract_from(&migration, &domain, &adapter, &broken, 0);
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.iter().any(|l| l.contains(expected))),
+                "{red:?}"
+            );
+            println!("ProjectId {expected}: RED {red:?}");
+        }
+        assert_eq!(
+            w1_continuity_contract_from(&migration, &domain, &adapter, &ids, 0),
+            Verdict::Pass
+        );
+        println!("ProjectId source and compatibility re-export restored: GREEN");
     }
 
     #[test]
