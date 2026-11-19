@@ -1,16 +1,19 @@
 //! `maintenance::bootstrap` — Wires maintenance operator adapters from process configuration (ADR-0130 D2).
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json, tokio, uuid]; services=[]; env=[HUMAUX_MAINTENANCE_EMBEDDING_DIMENSION, HUMAUX_MAINTENANCE_PRIVATE_MEMORY_COLLECTION, HUMAUX_MAINTENANCE_QDRANT_CIDR,
-//!   HUMAUX_MAINTENANCE_QDRANT_HOST, HUMAUX_MAINTENANCE_QDRANT_PORT]; modules=[adapters::maintenance_repo, adapters::postgres, adapters::projection_worker, adapters::provisioning, adapters::qdrant, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::retrieval_provisioning,
-//!   adapters::stream_repo, application::knowledge_backup::drill_projection, application::operator_provisioning, application::reasoning_route_admin,
+//!   HUMAUX_MAINTENANCE_QDRANT_HOST, HUMAUX_MAINTENANCE_QDRANT_PORT]; modules=[adapters::maintenance_repo, adapters::membership_repo, adapters::postgres, adapters::projection_worker, adapters::provisioning, adapters::qdrant, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::retrieval_provisioning,
+//!   adapters::stream_repo, application::knowledge_backup::drill_projection, application::operator_provisioning, application::partition_retention, application::reasoning_route_admin, application::scheduler,
 //!   domain::egress, maintenance::main]
-//! Called-by: [maintenance::drill, maintenance::main, maintenance::rebuild_cli]
-//! Invariants: [construction only; the application ports drive all operations]
+//! Called-by: [maintenance::drill, maintenance::main, maintenance::rebuild_cli, maintenance::retention, maintenance::serve]
+//! Invariants: [binds the owner guard to the caller transaction; the application ports drive all operations]
 //! Spec: ADR-0053; ADR-0130 D2 / SLICE-15c
 
-use humaux_adapters::maintenance_repo;
-use humaux_adapters::postgres::{MaintenanceDbPool, RetrievalWorkerDbPool};
+use humaux_adapters::maintenance_repo::{
+    self, MaintenanceError, MaintenanceGuardPort, MaintenanceServe, PartitionRetention, Txn,
+};
+use humaux_adapters::membership_repo::AdminAction;
+use humaux_adapters::postgres::{MaintenanceDbPool, RetentionExecutor, RetrievalWorkerDbPool};
 use humaux_adapters::projection_worker::{PassConfig, SharedProjectionDeps};
-use humaux_adapters::provisioning::ProvisioningError;
+use humaux_adapters::provisioning::{self, ProvisioningError};
 use humaux_adapters::qdrant::RetrievalFamily;
 use humaux_adapters::reasoning_route_onboarding::ReasoningRouteAdapter;
 use humaux_adapters::rebuild::{
@@ -22,6 +25,8 @@ use humaux_application::knowledge_backup::drill_projection::DrillProjectionPort;
 use humaux_application::operator_provisioning::{
     CollectionProvisioningPort, WorkspaceActivationPort,
 };
+use humaux_application::partition_retention::{PartitionRetentionPort, RetentionAdmin};
+use humaux_application::scheduler::{MaintenanceServePort, RedriveAudit};
 use humaux_domain::egress::ProcessorId;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,6 +36,105 @@ use humaux_application::reasoning_route_admin::ReasoningRoutePort;
 use serde_json::Value;
 
 use crate::{Result, env, env_parsed};
+
+pub(super) fn maintenance_serve(pool: &MaintenanceDbPool) -> impl MaintenanceServePort + '_ {
+    MaintenanceServe::new(pool, MaintenanceGuard)
+}
+
+pub(super) fn partition_retention(
+    executor: RetentionExecutor,
+) -> impl PartitionRetentionPort<Error = MaintenanceError> {
+    PartitionRetention::new(executor, MaintenanceGuard)
+}
+
+pub(super) fn retention_failure(error: MaintenanceError) -> crate::Failure {
+    match error {
+        MaintenanceError::Refused(reason) => ProvisioningError::Refused(reason).into(),
+        MaintenanceError::InvalidInput(reason) => ProvisioningError::InvalidInput(reason).into(),
+        MaintenanceError::Db(error) => ProvisioningError::Db(error).into(),
+        MaintenanceError::Dependency(error) => crate::Failure::Infra(error),
+    }
+}
+
+fn guard_error(error: ProvisioningError) -> MaintenanceError {
+    match error {
+        ProvisioningError::Refused(reason) => MaintenanceError::Refused(reason),
+        ProvisioningError::InvalidInput(reason) => MaintenanceError::InvalidInput(reason),
+        ProvisioningError::Db(error) => MaintenanceError::Db(error),
+        ProvisioningError::Qdrant(_) => MaintenanceError::Dependency(error.to_string()),
+    }
+}
+
+fn retention_admin<'a>(admin: &RetentionAdmin<'a>) -> AdminAction<'a> {
+    AdminAction {
+        actor: admin.actor,
+        reason: admin.reason,
+        ticket: admin.ticket,
+        trace_id: admin.trace_id,
+        step_up_auth_context: admin.step_up_auth_context,
+    }
+}
+
+struct MaintenanceGuard;
+
+impl MaintenanceGuardPort for MaintenanceGuard {
+    async fn install_tenant(
+        &self,
+        txn: &mut Txn<'_>,
+        tenant: Uuid,
+    ) -> std::result::Result<(), MaintenanceError> {
+        provisioning::install_maintenance_tenant(txn, tenant)
+            .await
+            .map_err(guard_error)
+    }
+
+    fn require_retention_admin(
+        &self,
+        admin: &RetentionAdmin<'_>,
+    ) -> std::result::Result<(), MaintenanceError> {
+        provisioning::require_retention_admin(&retention_admin(admin)).map_err(guard_error)
+    }
+
+    async fn audit_redrive(
+        &self,
+        txn: &mut Txn<'_>,
+        tenant: Uuid,
+        resource_id: &str,
+        audit: &RedriveAudit<'_>,
+        metadata: Value,
+    ) -> std::result::Result<(), MaintenanceError> {
+        let admin = AdminAction {
+            actor: audit.actor,
+            reason: audit.reason,
+            ticket: audit.ticket,
+            trace_id: audit.trace_id,
+            step_up_auth_context: audit.step_up_auth_context,
+        };
+        provisioning::audit_maintenance_redrive(txn, tenant, resource_id, &admin, metadata)
+            .await
+            .map(|_| ())
+            .map_err(guard_error)
+    }
+
+    async fn audit_retention(
+        &self,
+        txn: &mut Txn<'_>,
+        action: &str,
+        resource: (&str, &str),
+        admin: &RetentionAdmin<'_>,
+        metadata: Value,
+    ) -> std::result::Result<Uuid, MaintenanceError> {
+        provisioning::audit_retention_effect(
+            txn,
+            action,
+            resource,
+            &retention_admin(admin),
+            metadata,
+        )
+        .await
+        .map_err(guard_error)
+    }
+}
 
 /// The Qdrant face and the collection/dimension every onboarding step uses.
 pub(super) struct Qdrant {

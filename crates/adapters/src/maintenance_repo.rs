@@ -29,7 +29,7 @@
 //!   control.partition_drop, control.partition_drop_check, control.partition_drop_statements,
 //!   control.retention_policy_approve], PostgreSQL(role_gateway) r=[private.evidence_objects, private.memory_records,
 //!   projection.private_memory_points], PostgreSQL(role_retrieval_worker) r=[projection.memory_vectors]]; env=[];
-//!   modules=[application::knowledge_backup, application::partition_retention, adapters::membership_repo, adapters::postgres, adapters::provisioning, domain::audit, domain::error, humaux-adapters]
+//!   modules=[application::knowledge_backup, application::partition_retention, adapters::postgres, domain::error, humaux-adapters]
 //! Called-by: [maintenance::backup, maintenance::bootstrap, maintenance::serve, tests]
 //! Invariants: [the page returns tenant ids only, strictly after the cursor in tenant_id order, at most `limit`;
 //!   the definer refuses limit <= 0 (22023), so no call can read every tenant at once; every door call is one
@@ -62,7 +62,6 @@ pub use humaux_application::partition_retention::{
     DropRequest, DueLeaf,
 };
 use humaux_application::partition_retention::{PartitionRetentionPort, RetentionAdmin};
-use humaux_domain::audit::SYSTEM_TENANT_ID;
 use serde_json::json;
 use sqlx::Row;
 use sqlx::postgres::{PgArguments, Postgres};
@@ -70,19 +69,123 @@ use sqlx::query::QueryScalar;
 use sqlx::types::Uuid;
 use time::OffsetDateTime;
 
-use crate::membership_repo::AdminAction;
 use crate::postgres::{MaintenanceDbPool, RetentionExecutor, RetrievalWorkerDbPool, RuntimeDbPool};
-use crate::provisioning::{
-    self, AUDIT_RESULT_SUCCESS, ProvisioningError, REDRIVE_RESOURCE, REDRIVE_RISK_TAG,
-};
 pub use humaux_application::scheduler::{
     AuthorityI4Scan, DrEvidence, JobRetention, MaintenanceServePort, MaintenanceTask,
     MeasuredBudget, PartitionTable, PartitionsRun, RedriveAudit, TaskOutcome,
 };
 use humaux_domain::error::ErrorCode;
 
-/// §77 action of the daemon's automatic re-drive rows (ADR-0062 D-P); the operator's is `DISTILL_REQUEUE_DEAD`.
-const AUTO_REDRIVE_ACTION: &str = "DISTILL_AUTO_REDRIVE";
+/// Transaction owned by the calling maintenance operation.
+pub type Txn<'a> = sqlx::Transaction<'a, Postgres>;
+
+/// Owner guard operations on a maintenance transaction.
+pub trait MaintenanceGuardPort: Send + Sync {
+    /// Set the tenant for this transaction before running the re-drive door.
+    fn install_tenant(
+        &self,
+        txn: &mut Txn<'_>,
+        tenant: Uuid,
+    ) -> impl Future<Output = Result<(), MaintenanceError>> + Send;
+
+    /// Require complete §77 evidence before opening the executor transaction.
+    fn require_retention_admin(&self, admin: &RetentionAdmin<'_>) -> Result<(), MaintenanceError>;
+
+    /// Write the §77 row for a nonempty re-drive in the door transaction.
+    fn audit_redrive(
+        &self,
+        txn: &mut Txn<'_>,
+        tenant: Uuid,
+        resource_id: &str,
+        audit: &RedriveAudit<'_>,
+        metadata: serde_json::Value,
+    ) -> impl Future<Output = Result<(), MaintenanceError>> + Send;
+
+    /// Write the §77 system-tenant row before the executor commits the effect.
+    fn audit_retention(
+        &self,
+        txn: &mut Txn<'_>,
+        action: &str,
+        resource: (&str, &str),
+        admin: &RetentionAdmin<'_>,
+        metadata: serde_json::Value,
+    ) -> impl Future<Output = Result<Uuid, MaintenanceError>> + Send;
+}
+
+/// Operation failures mapped to the maintenance CLI and service error contracts.
+#[derive(Debug)]
+pub enum MaintenanceError {
+    /// The owner door refused the operation with a named reason.
+    Refused(String),
+    /// The request or required administrator evidence is malformed.
+    InvalidInput(String),
+    /// PostgreSQL could not complete the operation.
+    Db(sqlx::Error),
+    /// The guard returned an infrastructure failure.
+    Dependency(String),
+}
+
+impl MaintenanceError {
+    fn exit_code(&self) -> i32 {
+        match self {
+            Self::Refused(_) => 3,
+            Self::InvalidInput(_) => 2,
+            Self::Db(_) | Self::Dependency(_) => 1,
+        }
+    }
+}
+
+impl std::fmt::Display for MaintenanceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(reason) => write!(f, "refused: {reason}"),
+            Self::InvalidInput(reason) => write!(f, "invalid input: {reason}"),
+            Self::Db(error) => write!(f, "db: {error}"),
+            Self::Dependency(error) => f.write_str(error),
+        }
+    }
+}
+
+impl std::error::Error for MaintenanceError {}
+
+impl From<sqlx::Error> for MaintenanceError {
+    fn from(error: sqlx::Error) -> Self {
+        if let sqlx::Error::Database(database) = &error {
+            match database.code().as_deref() {
+                Some("55000") => return Self::Refused(database.message().to_owned()),
+                Some("22023") => return Self::InvalidInput(database.message().to_owned()),
+                _ => {}
+            }
+        }
+        Self::Db(error)
+    }
+}
+
+/// Daemon adapter holding the role-checked maintenance pool and the re-drive guard.
+pub struct MaintenanceServe<'a, G> {
+    pool: &'a MaintenanceDbPool,
+    guard: G,
+}
+
+impl<'a, G: MaintenanceGuardPort> MaintenanceServe<'a, G> {
+    /// Link the daemon operations to their §77 guard.
+    pub fn new(pool: &'a MaintenanceDbPool, guard: G) -> Self {
+        Self { pool, guard }
+    }
+}
+
+/// One-shot retention adapter holding the checked superuser executor and its guard.
+pub struct PartitionRetention<G> {
+    executor: RetentionExecutor,
+    guard: G,
+}
+
+impl<G: MaintenanceGuardPort> PartitionRetention<G> {
+    /// Link the retention operations to their §77 guard.
+    pub fn new(executor: RetentionExecutor, guard: G) -> Self {
+        Self { executor, guard }
+    }
+}
 
 /// ADR-0062 D-D: up to `limit` tenant ids strictly after `after` (`None` starts a rotation). A page shorter than
 /// `limit` ends the rotation.
@@ -174,16 +277,17 @@ pub async fn reissue_unsettled_tickets(
 /// provider call is older than `cooldown`, each at most once ever, through the operator's re-drive door (same output
 /// channel); a refused job (`evidence_gone` / `outbox_settled`) is marked and reported, never retried. When the door
 /// returned rows, one §77 row in the same transaction names them under `audit`'s fields. Returns the jobs re-armed.
-pub async fn auto_redrive_schema_failed(
+async fn auto_redrive_schema_failed(
     pool: &MaintenanceDbPool,
+    guard: &impl MaintenanceGuardPort,
     tenant: Uuid,
     cooldown: Duration,
     limit: i32,
-    audit: &AdminAction<'_>,
-) -> Result<i64, ProvisioningError> {
+    audit: &RedriveAudit<'_>,
+) -> Result<i64, MaintenanceError> {
     // dep: PostgreSQL(role_maintenance) — one transaction: tenant GUC, the 0221 door, the §77 row
     let mut txn = pool.pool().begin().await?;
-    provisioning::set_tenant(&mut txn, tenant).await?;
+    guard.install_tenant(&mut txn, tenant).await?;
     // dep: PostgreSQL(role_maintenance) — ops.auto_redrive_schema_failed (0221 owner definer)
     let rows = sqlx::query(
         "SELECT job_id, evidence_id, skipped \
@@ -211,18 +315,15 @@ pub async fn auto_redrive_schema_failed(
         }
     }
     let rearmed = i64::try_from(redriven.len()).unwrap_or(i64::MAX);
-    // dep: PostgreSQL(role_maintenance) — control.audit_event_insert via provisioning::audit_tagged (§77)
-    provisioning::audit_tagged(
-        &mut txn,
-        tenant,
-        (AUTO_REDRIVE_ACTION, REDRIVE_RISK_TAG),
-        REDRIVE_RESOURCE,
-        &ids.join(","),
-        AUDIT_RESULT_SUCCESS,
-        audit,
-        json!({ "redriven": redriven, "skipped": skipped }),
-    )
-    .await?;
+    guard
+        .audit_redrive(
+            &mut txn,
+            tenant,
+            &ids.join(","),
+            audit,
+            json!({ "redriven": redriven, "skipped": skipped }),
+        )
+        .await?;
     txn.commit().await?;
     Ok(rearmed)
 }
@@ -459,21 +560,16 @@ pub async fn propose_partitions(pool: &MaintenanceDbPool) -> Result<PartitionsRu
 /// `xtask::migrate` HXMIGRAT style); shared by approve, create-partitions and execute.
 pub const RETENTION_ADVISORY_LOCK: i64 = i64::from_be_bytes(*b"HXRETAIN");
 
-/// §77 risk tag of the three executor audit rows (ADR-0063 D-I).
-const RETENTION_RISK_TAG: &str = "retention";
-
 /// `to_char` mask of every bound in a receipt: RFC 3339 UTC, whatever the session TimeZone.
 const UTC_MASK: &str = "YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"";
 
-type Txn<'a> = sqlx::Transaction<'a, Postgres>;
-
-/// `retention refused: <code>` (SQLSTATE P0001) from the owner functions ⇒ [`ProvisioningError::Refused`] with the
+/// `retention refused: <code>` (SQLSTATE P0001) from the owner functions ⇒ [`MaintenanceError::Refused`] with the
 /// bare code; anything else keeps the provisioning mapping.
-fn refusal(error: sqlx::Error) -> ProvisioningError {
+fn refusal(error: sqlx::Error) -> MaintenanceError {
     if let sqlx::Error::Database(database) = &error
         && let Some(code) = database.message().strip_prefix("retention refused: ")
     {
-        return ProvisioningError::Refused(code.to_owned());
+        return MaintenanceError::Refused(code.to_owned());
     }
     error.into()
 }
@@ -483,7 +579,7 @@ fn refusal(error: sqlx::Error) -> ProvisioningError {
 async fn begin_executor(
     exec: &RetentionExecutor,
     lock_timeout: Duration,
-) -> Result<Txn<'_>, ProvisioningError> {
+) -> Result<Txn<'_>, MaintenanceError> {
     // dep: PostgreSQL(owner) — one executor transaction (superuser principal, never resident)
     let mut txn = exec.pool().begin().await?;
     sqlx::query("SELECT set_config('lock_timeout', $1, true)")
@@ -495,47 +591,23 @@ async fn begin_executor(
         .fetch_one(&mut *txn)
         .await?;
     if !got {
-        return Err(ProvisioningError::Refused("busy".to_owned()));
+        return Err(MaintenanceError::Refused("busy".to_owned()));
     }
     Ok(txn)
 }
 
-/// ADR-0063 D-I: the §77 row of one executor effect, under the system tenant, in the effect's own transaction right
-/// before COMMIT. The client never sets `row_security`, so the owner definer's FORCE-RLS insert runs with it on
-/// (review finding 5).
-async fn audit_effect(
-    txn: &mut Txn<'_>,
-    action: &str,
-    (resource_type, resource_id): (&str, &str),
-    admin: &AdminAction<'_>,
-    metadata: serde_json::Value,
-) -> Result<Uuid, ProvisioningError> {
-    provisioning::set_tenant(txn, SYSTEM_TENANT_ID.0).await?;
-    // dep: PostgreSQL(owner) — control.audit_event_insert via provisioning::audit_tagged (§77)
-    provisioning::audit_tagged(
-        txn,
-        SYSTEM_TENANT_ID.0,
-        (action, RETENTION_RISK_TAG),
-        resource_type,
-        resource_id,
-        AUDIT_RESULT_SUCCESS,
-        admin,
-        metadata,
-    )
-    .await
-}
-
 /// ADR-0063 D-I `retention approve`: the next revision of `table`'s policy (`months: None` = keep forever, which is
 /// how a policy is withdrawn) through `control.retention_policy_approve`, with its §77 row in the same transaction.
-pub async fn retention_approve(
+async fn retention_approve(
     exec: &RetentionExecutor,
+    guard: &impl MaintenanceGuardPort,
     table: PartitionTable,
     months: Option<i32>,
     effective_at: OffsetDateTime,
     lock_timeout: Duration,
-    admin: &AdminAction<'_>,
-) -> Result<ApproveReceipt, ProvisioningError> {
-    provisioning::require_admin(admin)?;
+    admin: &RetentionAdmin<'_>,
+) -> Result<ApproveReceipt, MaintenanceError> {
+    guard.require_retention_admin(admin)?;
     let mut txn = begin_executor(exec, lock_timeout).await?;
     // dep: PostgreSQL(owner) — control.retention_policy_approve (0224 owner definer, no runtime EXECUTE)
     let row = sqlx::query(
@@ -550,12 +622,12 @@ pub async fn retention_approve(
     .map_err(|e| match &e {
         // ADR-0063 D-G: EVENTS / AUDIT_EVENTS (and any other CHECK) are refused by the table, never by this client.
         sqlx::Error::Database(d) if d.code().as_deref() == Some("23514") => {
-            ProvisioningError::Refused(format!("policy_check:{}", d.constraint().unwrap_or("")))
+            MaintenanceError::Refused(format!("policy_check:{}", d.constraint().unwrap_or("")))
         }
         _ => refusal(e),
     })?;
     let (policy_id, policy_revision): (Uuid, i32) = (row.try_get(0)?, row.try_get(1)?);
-    let audit_event_id = audit_effect(
+    let audit_event_id = guard.audit_retention(
         &mut txn,
         "RETENTION_POLICY_APPROVED",
         ("retention_policies", &policy_id.to_string()),
@@ -575,13 +647,14 @@ pub async fn retention_approve(
 /// ADR-0063 D-F / D-I `retention create-partitions --months-ahead n`: for every table_key,
 /// `control.partition_create_month` until its last attached upper bound reaches the UTC month start + (n + 1); the
 /// creator refuses a gap or an overlap itself and answers `exists` for a month already there.
-pub async fn create_partitions(
+async fn create_partitions(
     exec: &RetentionExecutor,
+    guard: &impl MaintenanceGuardPort,
     months_ahead: i32,
     lock_timeout: Duration,
-    admin: &AdminAction<'_>,
-) -> Result<CreatePartitionsReceipt, ProvisioningError> {
-    provisioning::require_admin(admin)?;
+    admin: &RetentionAdmin<'_>,
+) -> Result<CreatePartitionsReceipt, MaintenanceError> {
+    guard.require_retention_admin(admin)?;
     let mut txn = begin_executor(exec, lock_timeout).await?;
     let mut created = Vec::new();
     for table in PartitionTable::ALL {
@@ -610,7 +683,7 @@ pub async fn create_partitions(
                     .await
                     .map_err(refusal)?;
             if outcome != "created" {
-                return Err(ProvisioningError::Refused(format!(
+                return Err(MaintenanceError::Refused(format!(
                     "create_month_{outcome}:{}",
                     table.key()
                 )));
@@ -631,17 +704,18 @@ pub async fn create_partitions(
         None
     } else {
         Some(
-            audit_effect(
-                &mut txn,
-                "PARTITIONS_CREATED",
-                (
-                    "partition_registry",
-                    &format!("months_ahead={months_ahead}"),
-                ),
-                admin,
-                json!({ "created": created }),
-            )
-            .await?,
+            guard
+                .audit_retention(
+                    &mut txn,
+                    "PARTITIONS_CREATED",
+                    (
+                        "partition_registry",
+                        &format!("months_ahead={months_ahead}"),
+                    ),
+                    admin,
+                    json!({ "created": created }),
+                )
+                .await?,
         )
     };
     txn.commit().await?;
@@ -656,7 +730,7 @@ async fn drop_check(
     txn: &mut Txn<'_>,
     policy_id: Uuid,
     registry_id: Uuid,
-) -> Result<CheckedLeaf, ProvisioningError> {
+) -> Result<CheckedLeaf, MaintenanceError> {
     // dep: PostgreSQL(owner) — control.partition_drop_check (0224 superuser-only invoker, row_security = off)
     let row = sqlx::query(
         "SELECT c.leaf, to_char(c.lower_bound AT TIME ZONE 'UTC', $3), to_char(c.upper_bound AT TIME ZONE 'UTC', $3), \
@@ -681,7 +755,7 @@ async fn drop_check(
 async fn stored_receipt(
     exec: &RetentionExecutor,
     registry_id: Uuid,
-) -> Result<DropReceipt, ProvisioningError> {
+) -> Result<DropReceipt, MaintenanceError> {
     // dep: PostgreSQL(owner) — control.partition_registry receipt columns
     let row = sqlx::query(
         "SELECT leaf_name, to_char(lower_bound AT TIME ZONE 'UTC', $2), to_char(upper_bound AT TIME ZONE 'UTC', $2), \
@@ -716,12 +790,12 @@ async fn export_leaf(
     txn: &mut Txn<'_>,
     leaf: &str,
     path: &Path,
-) -> Result<(i64, String), ProvisioningError> {
+) -> Result<(i64, String), MaintenanceError> {
     use sha2::{Digest, Sha256};
     use std::io::Write;
 
     let io = |e: std::io::Error| {
-        ProvisioningError::InvalidInput(format!("export {}: {e}", path.display()))
+        MaintenanceError::InvalidInput(format!("export {}: {e}", path.display()))
     };
     let tmp = path.with_extension("copy.tmp");
     // ADR-0063 L8: the superuser COPY bypasses RLS, so the file holds every tenant's rows of the leaf and is the only
@@ -771,15 +845,16 @@ async fn export_leaf(
 /// `control.partition_drop` (which re-derives every predicate itself, DETACHes, DROPs RESTRICT and writes the receipt),
 /// then the §77 row, all in one transaction. Never CASCADE, never DETACH CONCURRENTLY, never another leaf than the
 /// one named.
-pub async fn retention_execute(
+async fn retention_execute(
     exec: &RetentionExecutor,
+    guard: &impl MaintenanceGuardPort,
     request: &DropRequest<'_>,
-    admin: &AdminAction<'_>,
-) -> Result<DropOutcome, ProvisioningError> {
-    provisioning::require_admin(admin)?;
+    admin: &RetentionAdmin<'_>,
+) -> Result<DropOutcome, MaintenanceError> {
+    guard.require_retention_admin(admin)?;
     // D-I: a real run names its one leaf; refused before any SQL.
     if request.registry_id.is_none() && !request.dry_run {
-        return Err(ProvisioningError::InvalidInput(
+        return Err(MaintenanceError::InvalidInput(
             "registry_id_required".to_owned(),
         ));
     }
@@ -792,7 +867,7 @@ pub async fn retention_execute(
     let leaf = match drop_check(&mut txn, request.policy_id, registry_id).await {
         Ok(leaf) => leaf,
         // D-I: a lost COMMIT acknowledgement re-runs into the drop that happened, never into the next month.
-        Err(ProvisioningError::Refused(code)) if code == "not_attached" => {
+        Err(MaintenanceError::Refused(code)) if code == "not_attached" => {
             drop(txn);
             return stored_receipt(exec, registry_id)
                 .await
@@ -820,7 +895,7 @@ pub async fn retention_execute(
     }
     let (lines, export_sha256) = export_leaf(&mut txn, &leaf.leaf, &export_path).await?;
     if lines != leaf.row_count {
-        return Err(ProvisioningError::Refused("export_mismatch".to_owned()));
+        return Err(MaintenanceError::Refused("export_mismatch".to_owned()));
     }
     let export = export_path.display().to_string();
     // dep: PostgreSQL(owner) — control.partition_drop (0224 superuser-only invoker): re-check, DETACH, DROP RESTRICT,
@@ -851,14 +926,15 @@ pub async fn retention_execute(
         audit_event_id: None,
     };
     receipt.audit_event_id = Some(
-        audit_effect(
-            &mut txn,
-            "PARTITION_DROPPED",
-            ("partition_registry", &registry_id.to_string()),
-            admin,
-            serde_json::to_value(&receipt).unwrap_or_default(),
-        )
-        .await?,
+        guard
+            .audit_retention(
+                &mut txn,
+                "PARTITION_DROPPED",
+                ("partition_registry", &registry_id.to_string()),
+                admin,
+                serde_json::to_value(&receipt).unwrap_or_default(),
+            )
+            .await?,
     );
     txn.commit().await?;
     Ok(DropOutcome::Dropped(receipt))
@@ -866,7 +942,7 @@ pub async fn retention_execute(
 
 /// D-I `--dry-run` without `--registry-id`: every attached leaf of the policy's table checked under its own savepoint
 /// (one refusal does not abort the listing); a `not_due` leaf is left out. The caller's transaction is rolled back.
-async fn list_due(txn: &mut Txn<'_>, policy_id: Uuid) -> Result<Vec<DueLeaf>, ProvisioningError> {
+async fn list_due(txn: &mut Txn<'_>, policy_id: Uuid) -> Result<Vec<DueLeaf>, MaintenanceError> {
     // dep: PostgreSQL(owner) — control.partition_registry ⋈ control.retention_policies: the policy's attached leaves
     let rows = sqlx::query(
         "SELECT r.registry_id, r.leaf_name, to_char(r.lower_bound AT TIME ZONE 'UTC', $2), \
@@ -892,7 +968,7 @@ async fn list_due(txn: &mut Txn<'_>, policy_id: Uuid) -> Result<Vec<DueLeaf>, Pr
                     .await?;
                 ("ok".to_owned(), leaf.row_count)
             }
-            Err(ProvisioningError::Refused(code)) => {
+            Err(MaintenanceError::Refused(code)) => {
                 sqlx::query("ROLLBACK TO SAVEPOINT c36_verdict")
                     .execute(&mut **txn)
                     .await?;
@@ -922,19 +998,9 @@ async fn list_due(txn: &mut Txn<'_>, policy_id: Uuid) -> Result<Vec<DueLeaf>, Pr
     Ok(due)
 }
 
-fn retention_audit(admin: RetentionAdmin<'_>) -> AdminAction<'_> {
-    AdminAction {
-        actor: admin.actor,
-        reason: admin.reason,
-        ticket: admin.ticket,
-        trace_id: admin.trace_id,
-        step_up_auth_context: admin.step_up_auth_context,
-    }
-}
-
 #[async_trait::async_trait(?Send)]
-impl PartitionRetentionPort for RetentionExecutor {
-    type Error = ProvisioningError;
+impl<G: MaintenanceGuardPort> PartitionRetentionPort for PartitionRetention<G> {
+    type Error = MaintenanceError;
 
     async fn approve_policy(
         &self,
@@ -945,12 +1011,13 @@ impl PartitionRetentionPort for RetentionExecutor {
         admin: RetentionAdmin<'_>,
     ) -> Result<ApproveReceipt, Self::Error> {
         retention_approve(
-            self,
+            &self.executor,
+            &self.guard,
             table,
             months,
             effective_at,
             timeout,
-            &retention_audit(admin),
+            &admin,
         )
         .await
     }
@@ -961,7 +1028,7 @@ impl PartitionRetentionPort for RetentionExecutor {
         timeout: Duration,
         admin: RetentionAdmin<'_>,
     ) -> Result<CreatePartitionsReceipt, Self::Error> {
-        create_partitions(self, months_ahead, timeout, &retention_audit(admin)).await
+        create_partitions(&self.executor, &self.guard, months_ahead, timeout, &admin).await
     }
 
     async fn execute_retention(
@@ -969,7 +1036,7 @@ impl PartitionRetentionPort for RetentionExecutor {
         request: &DropRequest<'_>,
         admin: RetentionAdmin<'_>,
     ) -> Result<DropOutcome, Self::Error> {
-        retention_execute(self, request, &retention_audit(admin)).await
+        retention_execute(&self.executor, &self.guard, request, &admin).await
     }
 }
 
@@ -1509,9 +1576,9 @@ pub async fn insert_drill_receipt(
 }
 
 #[async_trait::async_trait]
-impl MaintenanceServePort for MaintenanceDbPool {
+impl<G: MaintenanceGuardPort> MaintenanceServePort for MaintenanceServe<'_, G> {
     async fn tenant_page(&self, after: Option<Uuid>, limit: i32) -> Result<Vec<Uuid>, String> {
-        tenant_page(self, after, limit)
+        tenant_page(self.pool, after, limit)
             .await
             .map_err(|e| e.to_string())
     }
@@ -1521,7 +1588,7 @@ impl MaintenanceServePort for MaintenanceDbPool {
         tenant: Uuid,
         limit: i32,
     ) -> Result<u64, (ErrorCode, String)> {
-        purge_expired_selection_snapshots(self, tenant, limit)
+        purge_expired_selection_snapshots(self.pool, tenant, limit)
             .await
             .map(i64::unsigned_abs)
             .map_err(|e| (ErrorCode::DependencyUnavailable, e.to_string()))
@@ -1533,7 +1600,7 @@ impl MaintenanceServePort for MaintenanceDbPool {
         retention: JobRetention,
         limit: i32,
     ) -> Result<u64, (ErrorCode, String)> {
-        purge_terminal_jobs(self, tenant, retention, limit)
+        purge_terminal_jobs(self.pool, tenant, retention, limit)
             .await
             .map(i64::unsigned_abs)
             .map_err(|e| (ErrorCode::DependencyUnavailable, e.to_string()))
@@ -1545,7 +1612,7 @@ impl MaintenanceServePort for MaintenanceDbPool {
         cooldown: Duration,
         limit: i32,
     ) -> Result<u64, (ErrorCode, String)> {
-        reissue_unsettled_tickets(self, tenant, cooldown, limit)
+        reissue_unsettled_tickets(self.pool, tenant, cooldown, limit)
             .await
             .map(i64::unsigned_abs)
             .map_err(|e| (ErrorCode::DependencyUnavailable, e.to_string()))
@@ -1558,14 +1625,7 @@ impl MaintenanceServePort for MaintenanceDbPool {
         limit: i32,
         audit: &RedriveAudit<'_>,
     ) -> Result<u64, (ErrorCode, String)> {
-        let action = AdminAction {
-            actor: audit.actor,
-            reason: audit.reason,
-            ticket: audit.ticket,
-            trace_id: audit.trace_id,
-            step_up_auth_context: audit.step_up_auth_context,
-        };
-        auto_redrive_schema_failed(self, tenant, cooldown, limit, &action)
+        auto_redrive_schema_failed(self.pool, &self.guard, tenant, cooldown, limit, audit)
             .await
             .map(i64::unsigned_abs)
             .map_err(|e| {
@@ -1579,17 +1639,21 @@ impl MaintenanceServePort for MaintenanceDbPool {
     }
 
     async fn propose_partitions(&self) -> Result<PartitionsRun, String> {
-        propose_partitions(self).await.map_err(|e| e.to_string())
+        propose_partitions(self.pool)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     async fn dr_evidence(&self) -> Result<DrEvidence, String> {
-        dr_evidence(self, None, None)
+        dr_evidence(self.pool, None, None)
             .await
             .map_err(|e| e.to_string())
     }
 
     async fn scan_authority_i4(&self) -> Result<AuthorityI4Scan, String> {
-        scan_authority_i4(self).await.map_err(|e| e.to_string())
+        scan_authority_i4(self.pool)
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 

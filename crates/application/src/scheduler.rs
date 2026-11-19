@@ -1,6 +1,6 @@
 //! `application::scheduler` — Tenant Fair Scheduler 三层限流骨架 + cost 模型（§32.0）。
 //! Depends-on: crates=[async-trait, humaux-domain, uuid]; services=[]; env=[]; modules=[domain::error]
-//! Called-by: [application::partition_retention, maintenance::retention, maintenance::serve]
+//! Called-by: [application::partition_retention, maintenance::bootstrap, maintenance::retention, maintenance::serve, tests]
 //! Invariants: []
 //! Spec: §32.0; §78.1
 //!

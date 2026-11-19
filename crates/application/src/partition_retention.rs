@@ -1,6 +1,6 @@
 //! `application::partition_retention` — operator use cases for partition lifecycle and retention.
 //! Depends-on: crates=[async-trait, serde, time, uuid]; services=[]; env=[]; modules=[application::scheduler]
-//! Called-by: [adapters::maintenance_repo, maintenance::retention]
+//! Called-by: [adapters::maintenance_repo, maintenance::bootstrap, maintenance::retention, tests]
 //! Invariants: [the authorized adapter owns cutoff, lock, export, drop and audit transaction semantics]
 //! Spec: §48.1; §77; ADR-0063 D-F/D-I
 

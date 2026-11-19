@@ -3,7 +3,7 @@
 //!   (policy, cutoff, newest leaf, registry = catalog by name and bounds, proposal, holds, row count) lives in
 //!   `control.partition_drop_check`; the SQL calls live in `adapters::maintenance_repo`.
 //! Depends-on: crates=[humaux-adapters, humaux-application, serde_json, time]; services=[PostgreSQL(owner)];
-//!   env=[HUMAUX_MIGRATOR_PG_DSN]; modules=[application::partition_retention, application::scheduler, adapters::postgres, maintenance::main]
+//!   env=[HUMAUX_MIGRATOR_PG_DSN]; modules=[application::partition_retention, application::scheduler, adapters::postgres, maintenance::bootstrap, maintenance::main]
 //! Called-by: [maintenance::main]
 //! Invariants: [never resident: each arm opens the superuser migrator principal for one transaction from the
 //!   operator's shell and exits (both resident modes refuse to boot with that key, ADR-0063 D-H); a non-superuser or
@@ -82,9 +82,10 @@ pub(crate) async fn approve(args: &Args) -> Result<Output> {
     let effective_at = OffsetDateTime::parse(&args.required("--effective-at")?, &Rfc3339)
         .map_err(|_| Failure::Usage("--effective-at must be RFC 3339".to_owned()))?;
     let timeout = lock_timeout(args)?;
-    let exec = executor().await?;
-    let receipt =
-        retention::approve(&exec, table, months, effective_at, timeout, audit(&admin)).await?;
+    let exec = crate::bootstrap::partition_retention(executor().await?);
+    let receipt = retention::approve(&exec, table, months, effective_at, timeout, audit(&admin))
+        .await
+        .map_err(crate::bootstrap::retention_failure)?;
     let mut out = to_json(&receipt)?;
     out["command"] = json!("retention approve");
     out["outcome"] = json!("created");
@@ -112,8 +113,10 @@ pub(crate) async fn create_partitions(args: &Args) -> Result<Output> {
         )));
     }
     let timeout = lock_timeout(args)?;
-    let exec = executor().await?;
-    let receipt = retention::create_partitions(&exec, months_ahead, timeout, audit(&admin)).await?;
+    let exec = crate::bootstrap::partition_retention(executor().await?);
+    let receipt = retention::create_partitions(&exec, months_ahead, timeout, audit(&admin))
+        .await
+        .map_err(crate::bootstrap::retention_failure)?;
     let mut out = to_json(&receipt)?;
     out["command"] = json!("retention create-partitions");
     out["outcome"] = json!(if receipt.created.is_empty() {
@@ -151,8 +154,11 @@ pub(crate) async fn execute(args: &Args) -> Result<Output> {
         lock_timeout: lock_timeout(args)?,
         dry_run,
     };
-    let exec = executor().await?;
-    let mut out = match retention::execute(&exec, &request, audit(&admin)).await? {
+    let exec = crate::bootstrap::partition_retention(executor().await?);
+    let mut out = match retention::execute(&exec, &request, audit(&admin))
+        .await
+        .map_err(crate::bootstrap::retention_failure)?
+    {
         DropOutcome::Listed(due) => json!({ "outcome": "listed", "due": to_json(&due)? }),
         DropOutcome::DryRun {
             leaf,
