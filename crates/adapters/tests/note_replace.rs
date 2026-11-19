@@ -30,7 +30,10 @@ use std::time::{Duration, Instant, SystemTime};
 use humaux_adapters::{
     confirm_token_repo::{self, ConfirmationClaim},
     forget_repo,
-    memory_governance_repo::ArchiveResult,
+    memory_governance_repo::{
+        self as governance, ArchiveRequest, ArchiveResult, CorrectRequest, RestoreRequest,
+        RestoreResult, SupersedeRequest,
+    },
     note_repo::NoteIntake,
     operation_receipt::{
         self, AtomicRememberRequest, AtomicRememberResult, NOTE_OPERATION, NoteReplaceOutcome,
@@ -42,7 +45,7 @@ use humaux_adapters::{
 };
 use humaux_domain::{
     audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction},
-    authority::AuthorityClass,
+    authority::{AuthorityClass, MemoryId},
     confirm::{DestructiveOp, RISK_TAG_CONFIRMATION_MINTED},
     error::ErrorCode,
     evidence::{EvidenceOriginClass, payload_sha256},
@@ -1325,17 +1328,112 @@ fn governance_quota_state(handle: &mut Handle, target: Uuid) -> (Residue, Vec<i6
     (facts, row.get(0), row.get(1), row.get(2))
 }
 
+async fn execute_confirmed_governance(
+    pool: &RuntimeDbPool,
+    quota: &dyn QuotaReservationPort,
+    auth: &AuthorizationScope,
+    stream: &StreamKey,
+    claim: &ConfirmationClaim,
+    (request_id, fingerprint): (Uuid, &str),
+    finished_audit: AuditEvent,
+) -> Result<(i64, i64), ErrorCode> {
+    let request_fingerprint = fingerprint.to_owned();
+    let target = MemoryId(claim.target_id);
+    let op = claim.op;
+    let claim = claim.clone();
+    let stream = stream.clone();
+    let reservation_ttl = Duration::from_secs(2);
+    let undo_window = Duration::from_secs(600);
+    let consistency_token_ttl = Duration::from_secs(600);
+    match op {
+        DestructiveOp::MemorySupersede => {
+            let successor = MemoryId(claim.successor_id.expect("supersede binds a successor"));
+            let request = SupersedeRequest {
+                request_id,
+                request_fingerprint,
+                reservation_ttl,
+                target,
+                successor,
+                stream,
+                claim,
+                finished_audit,
+                undo_window,
+            };
+            let result = governance::supersede_atomically(pool, quota, auth, request).await?;
+            Ok((result.stream_seq, result.commit_seq))
+        }
+        DestructiveOp::MemoryRestore => {
+            let request = RestoreRequest {
+                request_id,
+                request_fingerprint,
+                reservation_ttl,
+                target,
+                stream,
+                claim,
+                finished_audit,
+                consistency_token_ttl,
+            };
+            let RestoreResult::Restored(result) =
+                governance::restore_atomically(pool, quota, auth, request).await?
+            else {
+                panic!("restore refused a valid request")
+            };
+            Ok((result.stream_seq, result.commit_seq))
+        }
+        DestructiveOp::MemoryArchive | DestructiveOp::MemoryUnarchive => {
+            let request = ArchiveRequest {
+                request_id,
+                request_fingerprint,
+                reservation_ttl,
+                target,
+                stream,
+                claim,
+                finished_audit,
+                op,
+            };
+            let ArchiveResult::Done(result) =
+                governance::archive_or_unarchive_atomically(pool, quota, auth, request).await?
+            else {
+                panic!("archive/unarchive refused a valid request")
+            };
+            Ok((result.stream_seq, result.commit_seq))
+        }
+        DestructiveOp::MemoryCorrect => {
+            let content = serde_json::Value::String("governance correction".into());
+            let request = CorrectRequest {
+                request_id,
+                request_fingerprint,
+                reservation_ttl,
+                target,
+                payload_sha256: payload_sha256(&serde_json::to_vec(&content).unwrap()),
+                content,
+                stream,
+                claim,
+                finished_audit,
+                undo_window,
+                consistency_token_ttl,
+                subjects: Default::default(),
+                affects: Vec::new(),
+                mood_half_life: None,
+            };
+            let result = governance::correct_atomically(
+                pool,
+                quota,
+                auth,
+                request,
+                &humaux_adapters::attribution_repo::AttributionLadder,
+            )
+            .await?;
+            Ok((result.stream_seq, result.commit_seq))
+        }
+        _ => unreachable!("this test drives the four governance transactions"),
+    }
+}
+
 #[test]
 #[allow(clippy::too_many_lines)] // One target follows the confirmed lifecycle in order.
 fn governance_quota_rolls_back_audit_failure_and_expired_lease_and_replays_once() {
-    use humaux_adapters::{
-        memory_governance_repo::{
-            self as governance, ArchiveRequest, CorrectRequest, RestoreRequest, RestoreResult,
-            SupersedeRequest,
-        },
-        request_guard_repo::{self, AuditTenant},
-    };
-    use humaux_domain::authority::MemoryId;
+    use humaux_adapters::request_guard_repo::{self, AuditTenant};
 
     run_db_fixture::<Fixture, _>("governance_quota_atomicity", |mut handle| {
         let editor = editor(&mut handle);
@@ -1371,112 +1469,15 @@ fn governance_quota_rolls_back_audit_failure_and_expired_lease_and_replays_once(
                 .expect("seed an audit ID that the final audit cannot insert a second time");
             let fingerprint = governance_ops::fingerprint();
             let execute = |handle: &Handle, quota: &dyn QuotaReservationPort, finished_audit| {
-                let pool = &handle.runtime;
-                let request_fingerprint = fingerprint.clone();
-                let claim = claim.clone();
-                let stream = stream.clone();
-                let reservation_ttl = Duration::from_secs(2);
-                let undo_window = Duration::from_secs(600);
-                let consistency_token_ttl = Duration::from_secs(600);
-                handle.rt.block_on(async {
-                    match op {
-                        DestructiveOp::MemorySupersede => {
-                            let result = governance::supersede_atomically(
-                                pool,
-                                quota,
-                                auth,
-                                SupersedeRequest {
-                                    request_id,
-                                    request_fingerprint,
-                                    reservation_ttl,
-                                    target: MemoryId(target),
-                                    successor: MemoryId(successor),
-                                    stream,
-                                    claim,
-                                    finished_audit,
-                                    undo_window,
-                                },
-                            )
-                            .await?;
-                            Ok((result.stream_seq, result.commit_seq))
-                        }
-                        DestructiveOp::MemoryRestore => {
-                            let RestoreResult::Restored(result) = governance::restore_atomically(
-                                pool,
-                                quota,
-                                auth,
-                                RestoreRequest {
-                                    request_id,
-                                    request_fingerprint,
-                                    reservation_ttl,
-                                    target: MemoryId(target),
-                                    stream,
-                                    claim,
-                                    finished_audit,
-                                    consistency_token_ttl,
-                                },
-                            )
-                            .await?
-                            else {
-                                panic!("restore refused a valid request")
-                            };
-                            Ok((result.stream_seq, result.commit_seq))
-                        }
-                        DestructiveOp::MemoryArchive | DestructiveOp::MemoryUnarchive => {
-                            let ArchiveResult::Done(result) =
-                                governance::archive_or_unarchive_atomically(
-                                    pool,
-                                    quota,
-                                    auth,
-                                    ArchiveRequest {
-                                        request_id,
-                                        request_fingerprint,
-                                        reservation_ttl,
-                                        target: MemoryId(target),
-                                        stream,
-                                        claim,
-                                        finished_audit,
-                                        op,
-                                    },
-                                )
-                                .await?
-                            else {
-                                panic!("archive/unarchive refused a valid request")
-                            };
-                            Ok((result.stream_seq, result.commit_seq))
-                        }
-                        DestructiveOp::MemoryCorrect => {
-                            let content = serde_json::Value::String("governance correction".into());
-                            let result = governance::correct_atomically(
-                                pool,
-                                quota,
-                                auth,
-                                CorrectRequest {
-                                    request_id,
-                                    request_fingerprint,
-                                    reservation_ttl,
-                                    target: MemoryId(target),
-                                    payload_sha256: payload_sha256(
-                                        &serde_json::to_vec(&content).unwrap(),
-                                    ),
-                                    content,
-                                    stream,
-                                    claim,
-                                    finished_audit,
-                                    undo_window,
-                                    consistency_token_ttl,
-                                    subjects: Default::default(),
-                                    affects: Vec::new(),
-                                    mood_half_life: None,
-                                },
-                                &humaux_adapters::attribution_repo::AttributionLadder,
-                            )
-                            .await?;
-                            Ok((result.stream_seq, result.commit_seq))
-                        }
-                        _ => unreachable!("this test drives the four governance transactions"),
-                    }
-                })
+                handle.rt.block_on(execute_confirmed_governance(
+                    &handle.runtime,
+                    quota,
+                    auth,
+                    &stream,
+                    &claim,
+                    (request_id, &fingerprint),
+                    finished_audit,
+                ))
             };
 
             let before = governance_quota_state(&mut handle, target);
