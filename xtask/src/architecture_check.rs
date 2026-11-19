@@ -1105,7 +1105,7 @@ const HEX_MODULES: &str = "docs/architecture/modules.toml";
 const HEX_BASELINE: &str = "xtask/hex_layer_baseline.txt";
 const HEX_CONTEXT_BASELINE: &str = "xtask/hex_context_baseline.txt";
 const HEX_CONTEXT_CYCLE_BASELINE: &str = "xtask/hex_context_cycle_baseline.txt";
-const HEX_CONTEXT_CYCLE_CEILING: usize = 9;
+const HEX_CONTEXT_CYCLE_CEILING: usize = 8;
 const HEX_CONTEXT_EXCEPTIONS: &str = "xtask/hex_context_exceptions.txt";
 const HEX_CONTEXT_EXCEPTION_CEILING: usize = 0;
 const HEX_CONTEXT_EXCEPTION_ADR: &str = "docs/adr/0132-*.md";
@@ -2136,8 +2136,15 @@ fn hex_context_gate(root: &Path) -> Result<(Verdict, Verdict), Vec<String>> {
         ),
         Err(errors) => (actual, Verdict::Fail(errors)),
     };
-    errors.extend(hex_exact(&remaining, &baseline, 165, "HEX-CONTEXT"));
+    errors.extend(hex_exact(&remaining, &baseline, 150, "HEX-CONTEXT"));
     Ok((hex_verdict(errors), verdict))
+}
+
+fn hex_context_verdicts(root: &Path) -> (Verdict, Verdict) {
+    match hex_context_gate(root) {
+        Ok(verdicts) => verdicts,
+        Err(errors) => (Verdict::Fail(errors.clone()), Verdict::Fail(errors)),
+    }
 }
 
 fn hex_writer_gate(root: &Path) -> Verdict {
@@ -13629,10 +13636,7 @@ fn backup_catalog_gate(root: &Path, closure: bool) -> Verdict {
 #[allow(clippy::too_many_lines)] // §57.1: one flat, closed registry of every gate in declaration order — splitting it would hide the list this file exists to make visible.
 pub fn run(_args: &[String]) -> i32 {
     let root = workspace_root();
-    let (hex_context, hex_exceptions) = match hex_context_gate(&root) {
-        Ok((context, exceptions)) => (context, Some(exceptions)),
-        Err(errors) => (Verdict::Fail(errors), None),
-    };
+    let (hex_context, hex_exceptions) = hex_context_verdicts(&root);
     let mut checks: Vec<(&str, Verdict)> = vec![
         (
             "HEX-COVERAGE (ADR-0130 D4/D6/D7a)",
@@ -13640,6 +13644,7 @@ pub fn run(_args: &[String]) -> i32 {
         ),
         ("HEX-LAYER (ADR-0130 step 1)", hex_layer_gate(&root)),
         ("HEX-CONTEXT (ADR-0130 D5)", hex_context),
+        ("HEX-CONTEXT-EXCEPTIONS", hex_exceptions),
         ("HEX-WRITER (ADR-0130 D4)", hex_writer_gate(&root)),
         (
             "M03 D1 / G-M03-2 (retired PostgreSQL rate names in non-migration code == 0)",
@@ -13920,9 +13925,6 @@ pub fn run(_args: &[String]) -> i32 {
     ];
     checks.extend(provider_plane_architecture_gate_checks(&root));
 
-    if let Some(exceptions) = hex_exceptions {
-        checks.push(("HEX-CONTEXT-EXCEPTIONS", exceptions));
-    }
     let mut had_fail = false;
     for (name, verdict) in &checks {
         if report(name, verdict) {
@@ -14447,12 +14449,23 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         for kind in 0..4 {
             check(kind);
         }
+        let (_, exceptions) = hex_context_verdicts(&root);
+        assert!(!report("HEX-CONTEXT-EXCEPTIONS", &exceptions));
+        println!("P2 intact catalog: GREEN");
         let mutate = |kind, path: &str, extra: &str, label: &str| {
             let path = root.join(path);
             let original = fs::read_to_string(&path).unwrap();
             fs::write(&path, format!("{original}\n{extra}\n")).unwrap();
             let verdict = gate(kind);
             assert!(matches!(verdict, Verdict::Fail(_)), "{label}: {verdict:?}");
+            if label == "CONTEXT undeclared use" {
+                assert!(
+                    matches!(&verdict, Verdict::Fail(errors) if
+                        errors.iter().any(|e| e == "HEX-CONTEXT-CYCLES: new violation commercial->knowledge_lifecycle")
+                        && errors.iter().any(|e| e == "HEX-CONTEXT CycleError: commercial -> knowledge_lifecycle -> commercial")),
+                    "{label}: {verdict:?}"
+                );
+            }
             println!("{label}: RED {verdict:?}");
             fs::write(path, original).unwrap();
             check(kind);
@@ -15279,6 +15292,18 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
                 .unwrap()
                 .contains("humaux_adapters::remember::RememberCommand")
         );
+    }
+
+    #[test]
+    fn hex_context_exception_verdict_on_missing_catalog() {
+        let root = Path::new("/missing-boundary-fixture");
+        let (context, exceptions) = hex_context_verdicts(root);
+        assert!(matches!(context, Verdict::Fail(_)), "{context:?}");
+        assert!(
+            matches!(&exceptions, Verdict::Fail(errors) if errors.iter().any(|e| e.contains(HEX_MODULES))),
+            "HEX-CONTEXT-EXCEPTIONS must name {HEX_MODULES}: {exceptions:?}"
+        );
+        assert!(report("HEX-CONTEXT-EXCEPTIONS", &exceptions));
     }
 
     #[test]

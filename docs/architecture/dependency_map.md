@@ -13204,7 +13204,7 @@ executed by:
 - `private-worker::route_providers`
 
 ### `HTTP(provider)`
-- `billing-worker::creem`
+- `billing-worker::creem_egress`
 - `infra-egress::http`
 - `infra-egress::raw`
 
@@ -17034,7 +17034,7 @@ why: existing billing vocabularies and closed error codes (§52, §78.2)
 
 modules naming it:
 - `billing-worker::creem`
-- `billing-worker::fake_creem`
+- `billing-worker::creem_egress`
 - `billing-worker::normalize`
 - `billing-worker::process`
 - `billing-worker::signature`
@@ -17043,6 +17043,7 @@ modules naming it:
 - `billing-worker::tests::normalization`
 - `billing-worker::tests::process`
 - `billing-worker::tests::signature`
+- `billing-worker::tests::support::fixture_credential`
 - `tests`
 
 ### humaux-billing-worker → `serde_json` (normal)
@@ -17100,11 +17101,11 @@ modules naming it:
 why: purpose-bound transport and credential sources (§71.2)
 
 modules naming it:
-- `billing-worker::creem`
-- `billing-worker::fake_creem`
+- `billing-worker::creem_egress`
 - `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::process`
+- `billing-worker::tests::support::fixture_credential`
 - `tests`
 
 ### humaux-billing-worker → `url` (normal)
@@ -17112,13 +17113,15 @@ why: the existing canonical URL parser; no Layer 0 dependency or second client (
 
 modules naming it:
 - `billing-worker::creem`
+- `billing-worker::creem_egress`
 
 ### humaux-billing-worker → `async-trait` (normal)
 why: object-safe provider port implementation (§71.2)
 
 modules naming it:
 - `billing-worker::creem`
-- `billing-worker::fake_creem`
+- `billing-worker::creem_egress`
+- `billing-worker::tests::support::fixture_credential`
 - `tests`
 
 ### humaux-billing-worker → `time` (normal)
