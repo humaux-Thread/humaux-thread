@@ -1,5 +1,5 @@
 //! `application::recall_read` — ordered candidates enter one authoritative snapshot (Baseline §23 / ADR-0130).
-//! Depends-on: crates=[async-trait, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, time, tokio, uuid]; services=[]; env=[]; modules=[application::retrieval_embedding_port, application::retrieve, domain::affect, domain::authority, domain::context, domain::error, domain::identity, domain::ids, domain::note, domain::subject, projection::dense, projection::note_chunks, projection::serving, projection::sparse, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, retrieval::planner, retrieval::request, retrieval::rerank, retrieval::signals]
+//! Depends-on: crates=[async-trait, humaux-domain, humaux-projection, humaux-retrieval, serde, serde_json, time, tokio, uuid]; services=[]; env=[]; modules=[application::retrieval_embedding_port, application::retrieve, domain::affect, domain::authority, domain::context::budget_views, domain::error, domain::identity, domain::ids, domain::note, domain::subject, projection::dense, projection::note_chunks, projection::serving, projection::sparse, projection::stream, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, retrieval::planner, retrieval::request, retrieval::rerank, retrieval::signals]
 //! Called-by: [adapters::context_repo, adapters::exact_census, adapters::grep_repo, adapters::memory_repo, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, gateway::bootstrap, gateway::context, gateway::mcp_application, gateway::memory, gateway::recall, tests]
 //! Invariants: [the read port owns the complete same-snapshot hydration; candidates confer no authority]
 //! Spec: Baseline §15.5; §22; §23; ADR-0130 D7.2
@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use humaux_domain::{affect::AffectFilter, identity::AuthorizationScope, subject::SubjectId};
 use humaux_domain::{
     authority::MemoryId,
-    context::ContextBudget,
+    context::budget_views::ContextBudgetLimits,
     error::ErrorCode,
     ids::{Scope, TenantId, WorkspaceId},
     note::NoteKind,
@@ -979,7 +979,7 @@ pub struct ContextReadRequest<'a> {
     /// Canonical scope.
     pub scope: &'a Scope,
     /// Compiler budget.
-    pub budget: ContextBudget,
+    pub budget: ContextBudgetLimits,
     /// Trusted serving family.
     pub expected_family: &'a StreamFamily,
     /// Validated stream.
@@ -999,14 +999,14 @@ pub async fn assemble_materialized<P: ContextAssemblyReadPort + Sync>(
     pool: &P,
     authorization: &AuthorizationScope,
     scope: &Scope,
-    budget: ContextBudget,
+    budget: impl Into<ContextBudgetLimits>,
     expected_family: &StreamFamily,
     validated_key: &StreamKey,
 ) -> Result<MaterializedContext, ErrorCode> {
     pool.assemble_context(ContextReadRequest {
         authorization,
         scope,
-        budget,
+        budget: budget.into(),
         expected_family,
         validated_key,
     })

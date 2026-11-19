@@ -1,10 +1,10 @@
 //! `retrieval::brief` — §25.3 pure brief assembly preserves the stable prefix byte domain.
 //! Depends-on: crates=[humaux-domain, serde, serde_json, sha2]; services=[];
-//!   env=[]; modules=[domain::context]
+//!   env=[]; modules=[domain::context::budget_views]
 //! Called-by: []
 //! Invariants: [prefix has no clock, score, map, request id or tail; fixed section order]
 //! Spec: §25.3; §25.4; §25.5; §57.1; §78.1; §80.1
-use humaux_domain::context::BriefBudget;
+use humaux_domain::context::budget_views::BriefBudgetView;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 /// §25.3: declaration order is the section priority, highest first.
@@ -140,7 +140,7 @@ pub struct BriefFailure {
     /// §25.4: every Mandatory identity remains visible without returning rows.
     pub manifest: Vec<String>,
     /// §25.5: the rejected validated budget is preserved.
-    pub budget: BriefBudget,
+    pub budget: BriefBudgetView,
     /// §25.5: widened accounting cannot wrap at the total cap's integer bound.
     pub required: u64,
     /// §25.4: failed sources and unavailable Mandatory input in fixed section order.
@@ -150,7 +150,11 @@ pub struct BriefFailure {
 ///
 /// # Errors
 /// §25.4–§25.5: failed sources or Mandatory overflow return no partial output.
-pub fn assemble(mut input: BriefInput, budget: BriefBudget) -> Result<Brief, BriefFailure> {
+pub fn assemble(
+    mut input: BriefInput,
+    budget: impl Into<BriefBudgetView>,
+) -> Result<Brief, BriefFailure> {
+    let budget = budget.into();
     for rows in &mut input.sections {
         rows.sort();
     }
@@ -308,7 +312,7 @@ fn missing(kind: SectionKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use humaux_domain::error::ErrorCode;
+    use humaux_domain::{context::BriefBudget, error::ErrorCode};
     fn item(id: &str, est_tokens: u32) -> BriefItem {
         BriefItem {
             memory_id: id.into(),
@@ -449,7 +453,7 @@ mod tests {
             assemble(populated(), limits),
             Err(BriefFailure {
                 manifest: vec!["a".into(), "b".into()],
-                budget: limits,
+                budget: limits.into(),
                 required: u64::from(overhead()) + 4,
                 failed_sections: vec![],
             })
@@ -485,7 +489,7 @@ mod tests {
                 assemble(input, limits),
                 Err(BriefFailure {
                     manifest: vec![],
-                    budget: limits,
+                    budget: limits.into(),
                     required: prefix + tail,
                     failed_sections: vec![SectionKind::Mandatory],
                 })
@@ -507,7 +511,7 @@ mod tests {
                 assemble(empty(), limits),
                 Err(BriefFailure {
                     manifest: vec![],
-                    budget: limits,
+                    budget: limits.into(),
                     required: 898,
                     failed_sections: vec![],
                 })

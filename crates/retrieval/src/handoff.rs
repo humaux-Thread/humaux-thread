@@ -17,7 +17,7 @@
 //! 序列化唯一入口是 [`Handoff::canonical_bytes`]；快照身份的语义（seq 必要非充分、
 //! token 充分）见 [`FrozenSnapshot`] 的字段说明。
 
-use humaux_domain::context::{ContextBudget, MandatoryOverflow, NeedsVerification};
+use humaux_domain::context::{MandatoryOverflow, NeedsVerification};
 use humaux_domain::grounding::GroundingStateKind;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -110,8 +110,8 @@ pub struct FrozenSnapshot {
 
 /// Pure projection of a closed snapshot. Implementations keep lane admission,
 /// overlap removal, budget reservation, and selector registration with the owner.
-pub trait FrozenHandoffRead {
-    fn prepare(self, budget: ContextBudget) -> FrozenSnapshot;
+pub trait FrozenHandoffRead<B> {
+    fn prepare(self, budget: B) -> FrozenSnapshot;
 }
 
 fn state_wire(k: GroundingStateKind) -> &'static str {
@@ -137,9 +137,9 @@ fn nv_wire((nv, registered_name): (NeedsVerification, &str)) -> NeedsVerificatio
 /// 溢出（§25.5）不产出条目：`counts.overflow = true`、`overflow_manifest` 全量具名、
 /// mandatory/pinned 为空——`MandatoryOverflow` 里没有 Context 可返回，这里也没有。
 #[must_use]
-pub fn assemble_with_context(
-    frozen: impl FrozenHandoffRead,
-    budget: ContextBudget,
+pub fn assemble_with_context<B>(
+    frozen: impl FrozenHandoffRead<B>,
+    budget: B,
 ) -> (Handoff, crate::compiler::ContextOutcome) {
     let FrozenSnapshot {
         mandatory,
@@ -234,7 +234,7 @@ pub fn assemble_with_context(
     (handoff, outcome)
 }
 #[must_use]
-pub fn assemble(frozen: impl FrozenHandoffRead, budget: ContextBudget) -> Handoff {
+pub fn assemble<B>(frozen: impl FrozenHandoffRead<B>, budget: B) -> Handoff {
     assemble_with_context(frozen, budget).0
 }
 

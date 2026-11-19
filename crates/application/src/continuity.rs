@@ -31,7 +31,7 @@ use uuid::Uuid;
 /// Projects the owner's admitted lanes without reopening the captured snapshot.
 pub struct ClosedFrozenReads(pub FrozenReads);
 
-impl FrozenHandoffRead for ClosedFrozenReads {
+impl FrozenHandoffRead<ContextBudget> for ClosedFrozenReads {
     fn prepare(self, budget: ContextBudget) -> FrozenSnapshot {
         let FrozenReads {
             mandatory,
@@ -40,7 +40,7 @@ impl FrozenHandoffRead for ClosedFrozenReads {
             snapshot_token_sha256,
         } = self.0;
         let pinned = pinned.excluding_mandatory(&mandatory);
-        let reservation = budget.reserve(&mandatory, &pinned);
+        let reservation = budget.reserve(&mandatory, &pinned).map(Into::into);
         FrozenSnapshot {
             context_snapshot_seq,
             snapshot_token_sha256,
