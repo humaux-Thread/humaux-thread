@@ -1,10 +1,9 @@
 //! `adapters::tests::note_replace` — ADR-0067 D-J card 40c-1 acceptance for `memory.note_put` replacement (G19, G20,
 //!   G21, G26, G27, G28 and the note identity of the create path), against a real PostgreSQL and real `role_gateway` logins.
-//! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sqlx,
-//!   tokio]; services=[PostgreSQL(role_gateway) r=[control.audit_events, control.confirm_tokens, control.operation_receipts, control.quota_windows,
-//!   control.usage_reservations, ops.jobs, ops.memory_lifecycle_events, ops.outbox,
-//!   private.identity_note_materializations, private.note_heads, projection.stream_log] w=[private.evidence_objects,
-//!   private.memory_evidence, private.memory_records]]; env=[];
+//! Depends-on: crates=[hex, humaux-adapters, humaux-domain, humaux-projection, humaux-testkit, postgres, serde_json, sqlx,
+//!   tokio]; services=[PostgreSQL(role_gateway) r=[control.confirm_tokens, control.operation_receipts, control.usage_reservations,
+//!   ops.memory_lifecycle_events, ops.outbox, private.memory_records, private.note_heads, projection.stream_log]
+//!   w=[private.memory_records]]; env=[];
 //!   modules=[adapters::attribution_repo, adapters::confirm_token_repo, adapters::forget_repo, adapters::memory_governance_repo, adapters::note_repo,
 //!   adapters::operation_receipt, adapters::postgres, adapters::quota_reservation_port, adapters::remember, adapters::request_guard_repo, adapters::tests::support::governance_ops,
 //!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::authority, domain::confirm,

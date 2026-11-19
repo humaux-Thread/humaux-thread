@@ -5,7 +5,7 @@
 //!   control.usage_reservations, private.evidence_objects, private.memory_evidence, private.memory_projects,
 //!   private.memory_records] w=[coord.task_runs, private.evidence_task_runs], PostgreSQL(owner)];
 //!   env=[HUMAUX_TEST_PG_DSN];
-//!   modules=[adapters::coord_repo, adapters::operation_receipt, adapters::remember,
+//!   modules=[adapters::coord_repo, adapters::operation_receipt, adapters::postgres, adapters::remember,
 //!   adapters::tests::support::operation_receipt_fixture, domain::audit, domain::coordination, domain::error,
 //!   domain::evidence, domain::identity, domain::ids, domain::subject, humaux-testkit]
 //! Called-by: [cargo-test]

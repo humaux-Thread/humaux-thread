@@ -11,7 +11,7 @@
 //!   x=[private.link_memory_subjects], PostgreSQL(role_gateway) x=[private.declared_project_visible],
 //!   PostgreSQL(role_private_worker)];
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::confirm_token_repo, adapters::attribution_repo, adapters::coord_repo, adapters::distill_repo,
-//!   adapters::memory_repo, adapters::operation_receipt, adapters::remember,
+//!   adapters::memory_repo, adapters::operation_receipt, adapters::postgres, adapters::remember,
 //!   adapters::tests::support::governance_ops, adapters::tests::support::operation_receipt_fixture,
 //!   domain::attribution, domain::audit, domain::authority, domain::confirm, domain::continuity, domain::error,
 //!   domain::evidence, domain::identity, domain::ids,

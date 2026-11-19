@@ -323,9 +323,9 @@ fn assert_receipt_lock_deadline_rollback(
                     .map_err(|error| error.to_string())?;
                 Ok(rt.block_on(operation_receipt::remember_atomically(
                     &pool,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &auth,
                     request,
-                    humaux_adapters::postgres::commercial_write_quota(),
                 )))
             })();
             let _ = done_tx.send(outcome);
@@ -825,9 +825,9 @@ fn concurrent_same_key_never_commits_two_business_or_bmo_rows() {
                             .map_err(|_| "concurrent actor start timed out".to_owned())?;
                         Ok(rt.block_on(operation_receipt::remember_atomically(
                             &pool,
+                            humaux_adapters::postgres::commercial_write_quota(),
                             &auth,
                             request,
-                            humaux_adapters::postgres::commercial_write_quota(),
                         )))
                     })();
                     let _ = done_tx.send(outcome);

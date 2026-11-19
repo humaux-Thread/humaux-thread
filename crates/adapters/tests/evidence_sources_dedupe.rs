@@ -230,10 +230,10 @@ fn put_concurrently(
                 let pool = pool.expect("agent connection");
                 rt.block_on(operation_receipt::remember_sourced_atomically(
                     &pool,
+                    humaux_adapters::postgres::commercial_write_quota(),
                     &auth,
                     request,
                     &source,
-                    humaux_adapters::postgres::commercial_write_quota(),
                 ))
             })
         })
