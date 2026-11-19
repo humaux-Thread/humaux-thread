@@ -1,5 +1,5 @@
 //! `application::continuity` — §25.3 continuity 产品的装配入口（G80-31 的被测调用路径）。
-//! Depends-on: crates=[async-trait, hex, humaux-domain, humaux-retrieval, serde, serde_json, sha2, uuid]; services=[]; env=[]; modules=[domain::context, domain::continuity, domain::error, domain::identity, domain::ids, retrieval::handoff]
+//! Depends-on: crates=[async-trait, hex, humaux-domain, humaux-retrieval, serde, serde_json, sha2, uuid]; services=[]; env=[]; modules=[domain::context, domain::continuity, domain::error, domain::identity, domain::ids, retrieval::compiler, retrieval::envelope, retrieval::handoff]
 //! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::continuity_repo, gateway::bootstrap, gateway::continuity, gateway::mcp_application, tests]
 //! Invariants: [facet_completeness is the one FACET_COMPLETE predicate: only ContinuityStatus::Current covers a
 //!   required facet, and an empty required profile fails closed (§22.0, ADR-0110 D-D)]
@@ -13,18 +13,79 @@
 //! 装配」两步，**收不到时钟、收不到连接**——G80-31「同一快照两次装配逐字节相同」的
 //! application 侧保证就是这个签名形状。
 
-use humaux_domain::context::{ContextBudget, FrozenReads};
+use humaux_domain::context::{ContextBudget, FrozenReads, MandatoryRow, SelectorId, spec};
 use humaux_domain::continuity::{
     ContinuityFacetKind, ContinuityPublishResult, ContinuityPublishState, ProjectId,
 };
 use humaux_domain::error::{ConflictReason, ErrorCode};
 use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::{Scope, WorkspaceId};
-use humaux_retrieval::handoff::{Handoff, assemble};
+use humaux_retrieval::compiler::FrozenLaneRow;
+use humaux_retrieval::envelope::FrozenGrounding;
+use humaux_retrieval::handoff::{FrozenHandoffRead, FrozenSnapshot, Handoff, assemble};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+
+/// Projects the owner's admitted lanes without reopening the captured snapshot.
+pub struct ClosedFrozenReads(pub FrozenReads);
+
+impl FrozenHandoffRead for ClosedFrozenReads {
+    fn prepare(self, budget: ContextBudget) -> FrozenSnapshot {
+        let FrozenReads {
+            mandatory,
+            pinned,
+            context_snapshot_seq,
+            snapshot_token_sha256,
+        } = self.0;
+        let pinned = pinned.excluding_mandatory(&mandatory);
+        let reservation = budget.reserve(&mandatory, &pinned);
+        FrozenSnapshot {
+            context_snapshot_seq,
+            snapshot_token_sha256,
+            mandatory_expected: mandatory.expected(),
+            pinned_expected: pinned.expected(),
+            pinned_excluded: pinned.excluded().len() as u64,
+            needs_verification: mandatory
+                .needs_verification()
+                .iter()
+                .map(|nv| (*nv, selector_wire(nv.selector)))
+                .collect(),
+            unavailable_selectors: mandatory
+                .unavailable()
+                .iter()
+                .map(|(id, missing)| (selector_wire(*id).to_string(), missing.clone()))
+                .collect(),
+            mandatory: mandatory
+                .into_parts()
+                .1
+                .into_iter()
+                .map(freeze_row)
+                .collect(),
+            pinned: pinned.into_rows().into_iter().map(freeze_row).collect(),
+            reservation,
+        }
+    }
+}
+
+/// Read the registered name from the one selector registry. The slot identifier
+/// for the task selector deliberately survives the retired v1 wire registration.
+const fn selector_wire(id: SelectorId) -> &'static str {
+    spec(id).registered_name
+}
+
+fn freeze_row(row: MandatoryRow) -> FrozenLaneRow {
+    FrozenLaneRow {
+        memory_id: row.memory_id(),
+        selector: row.selector(),
+        registered_name: selector_wire(row.selector()),
+        authority: row.authority(),
+        source_authority: row.source_authority(),
+        est_tokens: row.est_tokens(),
+        grounding: FrozenGrounding::from_snapshot(row.grounding_state()),
+    }
+}
 
 /// §25.4 冻结读数的取数端口。实现方：`adapters`（`context_repo::fetch_frozen`，
 /// 单 REPEATABLE READ 事务）。
@@ -47,7 +108,7 @@ pub async fn assemble_handoff(
     budget: ContextBudget,
 ) -> Result<Handoff, ErrorCode> {
     let frozen = port.fetch_frozen(scope).await?;
-    Ok(assemble(frozen, budget))
+    Ok(assemble(ClosedFrozenReads(frozen), budget))
 }
 
 /// W2 adapter port. The implementation owns the single read-only RR transaction and returns
@@ -1132,4 +1193,290 @@ pub async fn publish_facet(
     command: &PublishContinuityFacet<'_>,
 ) -> Result<PublishFacetOutcome, ErrorCode> {
     port.publish_facet(authorization, command).await
+}
+
+#[cfg(test)]
+mod frozen_tests {
+    use super::*;
+    use humaux_domain::authority::MemoryId;
+    use humaux_domain::context::{
+        Admitted, FrozenReads, MandatoryLane, MandatoryRow, PinnedLane, SelectorId,
+        SelectorOutcome, spec,
+    };
+    use humaux_domain::grounding::{GroundingInputs, RowGrounding, derive_grounding_state};
+    use humaux_retrieval::compiler::ContextOutcome;
+    use humaux_retrieval::handoff::assemble_with_context;
+
+    fn assemble(frozen: FrozenReads, budget: ContextBudget) -> Handoff {
+        super::assemble(ClosedFrozenReads(frozen), budget)
+    }
+
+    fn current() -> RowGrounding {
+        RowGrounding::Judged(derive_grounding_state(GroundingInputs::Edges(&[])))
+    }
+
+    fn row_with(id: MemoryId, tokens: u32) -> MandatoryRow {
+        row_with_grounding(id, tokens, current())
+    }
+
+    fn row_with_grounding(id: MemoryId, tokens: u32, grounding: RowGrounding) -> MandatoryRow {
+        let s = spec(SelectorId::ProjectActiveConstraintsV1);
+        match MandatoryRow::from_selector(s, id, s.min_authority, tokens, grounding)
+            .expect("参数合法")
+        {
+            Admitted::Row(r) => r,
+            Admitted::NeedsVerification(nv) => panic!("row 不该被分流: {nv:?}"),
+        }
+    }
+
+    fn lane_of(ids: &[MemoryId]) -> MandatoryLane {
+        lane_with_rows(ids.iter().map(|id| row_with(*id, 10)).collect())
+    }
+
+    fn lane_with_rows(rows: Vec<MandatoryRow>) -> MandatoryLane {
+        MandatoryLane::from_selectors([
+            SelectorOutcome::Ran {
+                id: SelectorId::TaskExplicitContextV1,
+                candidate_ids: vec![],
+                rows: vec![],
+                needs_verification: vec![],
+            },
+            SelectorOutcome::Ran {
+                id: SelectorId::ProjectActiveConstraintsV1,
+                candidate_ids: rows.iter().map(|row| row.memory_id()).collect(),
+                rows,
+                needs_verification: vec![],
+            },
+            SelectorOutcome::Ran {
+                id: SelectorId::UserConfirmedCorrectionsV1,
+                candidate_ids: vec![],
+                rows: vec![],
+                needs_verification: vec![],
+            },
+            SelectorOutcome::Ran {
+                id: SelectorId::RequiredCurrentStateFacetsV1,
+                candidate_ids: vec![],
+                rows: vec![],
+                needs_verification: vec![],
+            },
+            SelectorOutcome::Ran {
+                id: SelectorId::ExplicitMandatoryBindingsV1,
+                candidate_ids: vec![],
+                rows: vec![],
+                needs_verification: vec![],
+            },
+        ])
+        .expect("selector outcomes")
+    }
+
+    fn frozen_of(ids: &[MemoryId]) -> FrozenReads {
+        FrozenReads {
+            mandatory: lane_of(ids),
+            pinned: PinnedLane::new(0, vec![], vec![]),
+            context_snapshot_seq: 12345,
+            snapshot_token_sha256: "deadbeef".repeat(8),
+        }
+    }
+
+    /// **G80-31 前半的纯函数形态**：同值 FrozenReads ⇒ 逐字节相同。
+    /// 行的**喂入顺序不同**也必须同字节——顺序是 lane 构造器排出来的，不是调用方碰巧的。
+    /// 注错：把 from_selectors 里的 sort 删掉 ⇒ 本条红。
+    #[test]
+    fn equal_frozen_reads_assemble_to_identical_bytes_regardless_of_feed_order() {
+        let a = MemoryId::new();
+        let b = MemoryId::new();
+        let budget = || ContextBudget::new(1000, 500).expect("budget");
+
+        let h1 = assemble(frozen_of(&[a, b]), budget());
+        let h2 = assemble(frozen_of(&[b, a]), budget()); // 反序喂入
+        assert_eq!(
+            h1.canonical_bytes(),
+            h2.canonical_bytes(),
+            "同值冻结读数必须逐字节相同——顺序由构造器保证，不靠调用方"
+        );
+        assert_eq!(h1.sha256(), h2.sha256());
+    }
+
+    /// 不同快照身份 ⇒ 字节必不同（身份真的在字节域里，不是装饰字段）。
+    #[test]
+    fn a_different_snapshot_token_changes_the_bytes() {
+        let a = MemoryId::new();
+        let budget = || ContextBudget::new(1000, 500).expect("budget");
+        let h1 = assemble(frozen_of(&[a]), budget());
+        let mut f2 = frozen_of(&[a]);
+        f2.snapshot_token_sha256 = "feedface".repeat(8);
+        let h2 = assemble(f2, budget());
+        assert_ne!(h1.canonical_bytes(), h2.canonical_bytes());
+    }
+
+    /// §25.5 溢出：不产出条目、manifest 全量具名、counts.overflow=true。
+    /// 「截一半发出去」在这条路径上没有值可发。
+    #[test]
+    fn overflow_produces_a_manifest_not_a_truncated_handoff() {
+        let ids = [MemoryId::new(), MemoryId::new()];
+        let mut f = frozen_of(&ids);
+        f.pinned = PinnedLane::new(0, vec![], vec![]);
+        // 每行 10 token，上限 5：必溢出。
+        let h = assemble(f, ContextBudget::new(100, 5).expect("budget"));
+        assert!(h.counts.overflow);
+        assert!(h.mandatory.is_empty(), "溢出路径一条都不交付");
+        assert_eq!(h.overflow_manifest.len(), 2, "manifest 必须全量");
+        assert_eq!(h.counts.mandatory_returned, 0);
+    }
+
+    /// Overflow returns no body-bearing rows, but keeps the snapshot's existing NotJudged
+    /// diagnostic instead of silently relabeling it as judged.
+    #[test]
+    fn overflow_keeps_not_judged_diagnostics() {
+        let id = MemoryId::new();
+        let frozen = FrozenReads {
+            mandatory: lane_with_rows(vec![row_with_grounding(id, 10, RowGrounding::NotJudged)]),
+            pinned: PinnedLane::new(0, vec![], vec![]),
+            context_snapshot_seq: 12345,
+            snapshot_token_sha256: "deadbeef".repeat(8),
+        };
+
+        let handoff = assemble(frozen, ContextBudget::new(100, 5).expect("budget"));
+
+        assert!(handoff.counts.overflow);
+        assert!(handoff.mandatory.is_empty());
+        assert!(handoff.pinned.is_empty());
+        assert_eq!(handoff.not_judged, vec![id.0.to_string()]);
+    }
+
+    /// Feeding overlapping owner lanes to compilation must retain only the Mandatory row.
+    #[test]
+    fn compile_keeps_a_raw_cross_lane_memory_id_once() {
+        let memory_id = MemoryId::new();
+        let mut frozen = frozen_of(&[memory_id]);
+        frozen.pinned = PinnedLane::new(1, vec![row_with(memory_id, 10)], vec![]);
+        let prepared =
+            ClosedFrozenReads(frozen).prepare(ContextBudget::new(20, 10).expect("budget"));
+        let compiled = humaux_retrieval::compiler::compile(
+            prepared.mandatory,
+            prepared.pinned,
+            prepared.reservation.expect("raw overlap must not overflow"),
+            vec![],
+        );
+        let mut ids = compiled
+            .mandatory_ids()
+            .into_iter()
+            .chain(compiled.pinned_ids())
+            .collect::<Vec<_>>();
+        let before = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+
+        assert_eq!(before, 1);
+        assert_eq!(ids, vec![memory_id]);
+    }
+
+    /// Cross-lane overlap is mandatory-precedence before reservation: one physical item,
+    /// no duplicate Pinned count, and no false mandatory overflow from charging it twice.
+    #[test]
+    fn mandatory_precedence_deduplicates_pinned_before_budget_reservation() {
+        let id = MemoryId::new();
+        let frozen = FrozenReads {
+            mandatory: lane_of(&[id]),
+            pinned: PinnedLane::new(1, vec![row_with(id, 10)], vec![]),
+            context_snapshot_seq: 12345,
+            snapshot_token_sha256: "deadbeef".repeat(8),
+        };
+        let (handoff, outcome) = assemble_with_context(
+            ClosedFrozenReads(frozen),
+            ContextBudget::new(15, 10).expect("one mandatory item fits"),
+        );
+
+        assert!(matches!(outcome, ContextOutcome::Compiled(_)));
+        assert_eq!(handoff.mandatory.len(), 1);
+        assert!(handoff.pinned.is_empty());
+        assert_eq!(handoff.counts.pinned_expected, 1);
+        assert_eq!(handoff.counts.pinned_returned, 0);
+        assert_eq!(handoff.counts.pinned_excluded, 1);
+    }
+
+    /// needs_verification 与 unavailable 都在字节域里——它们变，字节就变。
+    /// 「fail-loud」如果不进字节域，两次装配一个有告警一个没有也会"逐字节相同"，
+    /// 那是把 DOD-093 的披露从判据里洗掉。
+    #[test]
+    fn needs_verification_and_unavailable_are_part_of_the_byte_domain() {
+        let a = MemoryId::new();
+        let budget = || ContextBudget::new(1000, 500).expect("budget");
+        let h1 = assemble(frozen_of(&[a]), budget());
+
+        let mut lane_outcomes = frozen_of(&[a]);
+        // 同一行数据，但带上一条 unavailable。
+        lane_outcomes.mandatory = MandatoryLane::from_selectors([
+            SelectorOutcome::Unavailable {
+                id: SelectorId::TaskExplicitContextV1,
+                // dep-map: allow table-undeclared — selector metadata names the missing column; SQL runs in adapters
+                missing_object: "private.memory_records.task_id".into(),
+            },
+            SelectorOutcome::Ran {
+                id: SelectorId::ProjectActiveConstraintsV1,
+                candidate_ids: vec![a],
+                rows: vec![row_with(a, 10)],
+                needs_verification: vec![],
+            },
+            SelectorOutcome::Ran {
+                id: SelectorId::UserConfirmedCorrectionsV1,
+                candidate_ids: vec![],
+                rows: vec![],
+                needs_verification: vec![],
+            },
+            SelectorOutcome::Ran {
+                id: SelectorId::RequiredCurrentStateFacetsV1,
+                candidate_ids: vec![],
+                rows: vec![],
+                needs_verification: vec![],
+            },
+            SelectorOutcome::Ran {
+                id: SelectorId::ExplicitMandatoryBindingsV1,
+                candidate_ids: vec![],
+                rows: vec![],
+                needs_verification: vec![],
+            },
+        ])
+        .expect("selector outcomes");
+        let h2 = assemble(lane_outcomes, budget());
+        assert_ne!(
+            h1.canonical_bytes(),
+            h2.canonical_bytes(),
+            "unavailable 必须改变字节——否则 partial 与 full 不可区分"
+        );
+        assert_eq!(h2.unavailable_selectors.len(), 1);
+    }
+    /// The retired registration `task_explicit_context_v1` (ADR-0046) must never reappear on
+    /// any handoff surface, and every emitted selector name must be a *registered* one.
+    ///
+    /// Fault injection: put the literal back in `selector_wire` (or point it at
+    /// `RETIRED_SELECTORS`) and this goes red on both halves.
+    #[test]
+    fn retired_selector_v1_never_reaches_the_wire() {
+        let registered: Vec<&'static str> = humaux_domain::context::REGISTRY
+            .iter()
+            .map(|s| s.registered_name)
+            .collect();
+        for id in [
+            SelectorId::TaskExplicitContextV1,
+            SelectorId::ProjectActiveConstraintsV1,
+            SelectorId::UserConfirmedCorrectionsV1,
+            SelectorId::RequiredCurrentStateFacetsV1,
+            SelectorId::ExplicitMandatoryBindingsV1,
+        ] {
+            let wire = selector_wire(id);
+            assert_ne!(
+                wire, "task_explicit_context_v1",
+                "{id:?} still emits the retired v1 registration on the wire (ADR-0046)"
+            );
+            assert!(
+                registered.contains(&wire),
+                "{id:?} emits {wire}, which is not a §25.4 registered name"
+            );
+        }
+        assert_eq!(
+            selector_wire(SelectorId::TaskExplicitContextV1),
+            "task_explicit_context_v2"
+        );
+    }
 }

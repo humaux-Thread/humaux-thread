@@ -142,10 +142,7 @@ crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_mod
 crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_model:humaux_retrieval_provider::contract::RetrievalQueryCallContext
 crates/retrieval-provider/src/contract.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source::RetrievalQueryCallContext
 crates/retrieval/src/brief.rs:retrieval_read_model->project_continuity:humaux_domain::context::BriefBudget
-crates/retrieval/src/compiler.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryLane
 crates/retrieval/src/compiler.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
-crates/retrieval/src/compiler.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryRow
-crates/retrieval/src/compiler.rs:retrieval_read_model->project_continuity:humaux_domain::context::PinnedLane
 crates/retrieval/src/compiler.rs:retrieval_read_model->project_continuity:humaux_domain::context::SupplementalBudget
 crates/retrieval/src/completeness.rs:retrieval_read_model->operations_platform:humaux_telemetry::metrics::families
 crates/retrieval/src/completeness.rs:retrieval_read_model->operations_platform:humaux_telemetry::metrics::families::HUMAUX_RETRIEVAL_REQUESTS_TOTAL
@@ -165,12 +162,8 @@ crates/retrieval/src/handoff.rs:retrieval_read_model->knowledge_lifecycle:humaux
 crates/retrieval/src/handoff.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingStateKind::RecheckRequired
 crates/retrieval/src/handoff.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingStateKind::Unresolved
 crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::ContextBudget
-crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::FrozenReads
-crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryLane
 crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
 crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::NeedsVerification
-crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::PinnedLane
-crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::spec
 crates/retrieval/src/signals.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingState
 crates/telemetry/src/degrade.rs:contract_kernel->operations_platform:humaux_telemetry::metrics::Counters
 crates/telemetry/src/degrade.rs:contract_kernel->operations_platform:humaux_telemetry::metrics::Counters::new
