@@ -1,7 +1,7 @@
 //! `adapters::read_materialize` — Final PostgreSQL body materialization after authorization and token-ledger
 //!   validation.
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde_json, sha2, sqlx, time]; services=[PostgreSQL(role_gateway) r=[ops.outbox, private.events, private.evidence_objects, private.evidence_subjects, private.identity_note_materializations, private.memory_evidence, private.memory_records, private.memory_subjects, private.note_heads, private.memory_text_v, projection.stream_log]]; env=[]; modules=[adapters::affect_repo, adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::retrieve, adapters::selection_repo, adapters::stream_repo, application::affect, application::recall_read, domain::affect, domain::authority, domain::error, domain::grounding, domain::identity, domain::ids, domain::memory, domain::note, domain::selection, domain::subject, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::signals]
-//! Called-by: [adapters::context_repo, adapters::continuity_read, adapters::exact_census, adapters::grep_repo, adapters::operation_receipt, adapters::retrieve, tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, humaux-retrieval, serde_json, sha2, sqlx, time]; services=[PostgreSQL(role_gateway) r=[ops.outbox, private.events, private.evidence_objects, private.evidence_subjects, private.identity_note_materializations, private.memory_evidence, private.memory_records, private.memory_subjects, private.note_heads, private.memory_text_v, projection.stream_log]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::retrieve, adapters::selection_repo, adapters::stream_repo, application::recall_read, domain::affect, domain::authority, domain::error, domain::grounding, domain::identity, domain::ids, domain::memory, domain::note, domain::selection, domain::subject, projection::serving, projection::stream, retrieval::completeness, retrieval::envelope, retrieval::signals]
+//! Called-by: [adapters::affect_repo, adapters::context_repo, adapters::continuity_read, adapters::exact_census, adapters::grep_repo, adapters::operation_receipt, adapters::retrieve, tests]
 //! Invariants: [read-only on role_gateway under RLS; an invisible or unknown source is NotFound/Forbidden, never
 //!   partially materialized; a PG error is DependencyUnavailable; the recall/context entry points take no
 //!   [`Lifecycle`] and always run [`Lifecycle::CURRENT`] (ADR-0067 D-J2)]
@@ -9,7 +9,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use humaux_application::affect::memories_matching;
 use humaux_domain::affect::AffectFilter;
 use humaux_domain::authority::MemoryId;
 use humaux_domain::error::ErrorCode;
@@ -26,13 +25,24 @@ use sqlx::Row;
 use sqlx::types::Uuid;
 use sqlx::types::time::OffsetDateTime;
 
-use crate::affect_repo;
 use crate::context_repo::{set_authorization_local, visibility_from_row};
 use crate::postgres::RuntimeDbPool;
 use crate::read_gate::{readable_memory_ids, visibility_readable};
 use crate::retrieve::OverlayCandidate;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
+
+/// Re-checks the candidate IDs against the affect source in the caller's authorization snapshot.
+pub type AffectMatchReadPort = for<'a, 'tx> fn(
+    &'a mut Txn<'tx>,
+    Uuid,
+    &'a [Uuid],
+    &'a AffectFilter,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<HashSet<Uuid>, sqlx::Error>> + Send + 'a>,
+>;
+
+type AffectRead<'a> = (&'a AffectFilter, AffectMatchReadPort);
 
 use humaux_application::recall_read::{
     ItemFreshness, MaterializationSnapshot, MaterializedBodies, MaterializedItem,
@@ -182,7 +192,7 @@ pub(crate) async fn final_memory_ids_about_in_txn(
     candidates: &[Uuid],
     lifecycle: Lifecycle,
     subject_ids: &[SubjectId],
-    affect: Option<&AffectFilter>,
+    affect: Option<AffectRead<'_>>,
 ) -> Result<Vec<Uuid>, ErrorCode> {
     final_memory_ids_with_readable_in_txn(
         txn,
@@ -217,7 +227,7 @@ pub(crate) async fn final_memory_ids_with_readable_in_txn(
     candidates: &[Uuid],
     lifecycle: Lifecycle,
     subject_ids: &[SubjectId],
-    affect: Option<&AffectFilter>,
+    affect: Option<AffectRead<'_>>,
 ) -> Result<(Vec<Uuid>, GateReadable), ErrorCode> {
     let readable = readable_memory_ids(txn, authorization, candidates).await?;
     let subject_filter: Option<Vec<Uuid>> =
@@ -286,15 +296,10 @@ pub(crate) async fn final_memory_ids_with_readable_in_txn(
         .filter(|id| readable.contains(id) && eligible.contains(id))
         .copied()
         .collect();
-    if let Some(filter) = affect {
-        let rows =
-            affect_repo::affects_for_memories_in_txn(txn, authorization.tenant_id().0, &survivors)
-                .await
-                .map_err(|_| ErrorCode::DependencyUnavailable)?;
-        let matching = memories_matching(
-            filter,
-            &affect_repo::observed(&rows, OffsetDateTime::now_utc()),
-        );
+    if let Some((filter, read_matching)) = affect {
+        let matching = read_matching(txn, authorization.tenant_id().0, &survivors, filter)
+            .await
+            .map_err(|_| ErrorCode::DependencyUnavailable)?;
         survivors.retain(|id| matching.contains(id));
     }
     Ok((survivors, GateReadable(readable)))
@@ -306,7 +311,7 @@ async fn load_memories(
     candidates: &[Uuid],
     lifecycle: Lifecycle,
     subject_ids: &[SubjectId],
-    affect: Option<&AffectFilter>,
+    affect: Option<AffectRead<'_>>,
 ) -> Result<Vec<(Uuid, serde_json::Value, ItemFreshness)>, ErrorCode> {
     let eligible = final_memory_ids_about_in_txn(
         txn,
@@ -716,7 +721,7 @@ pub(crate) async fn materialize_final_bodies_about_in_txn(
     memory_ids: &[Uuid],
     overlay: &[OverlayCandidate],
     subject_ids: &[SubjectId],
-    affect: Option<&AffectFilter>,
+    affect: Option<AffectRead<'_>>,
 ) -> Result<MaterializedBodies, ErrorCode> {
     materialize_final_bodies_gated_in_txn(
         txn,
@@ -743,7 +748,7 @@ async fn materialize_final_bodies_gated_in_txn(
     overlay: &[OverlayCandidate],
     lifecycle: Lifecycle,
     subject_ids: &[SubjectId],
-    affect: Option<&AffectFilter>,
+    affect: Option<AffectRead<'_>>,
 ) -> Result<MaterializedBodies, ErrorCode> {
     let authorization = effective_authorization(authorization, expected_family, validated_key)?;
     set_authorization_local(txn, &authorization).await?;
