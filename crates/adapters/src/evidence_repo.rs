@@ -1,6 +1,6 @@
 //! `adapters::evidence_repo` — the sole `INSERT INTO private.evidence_objects` door (M07 D9, gate G-M07-1): one `evidence_kind = 'EVENT'`
 //!   identity row, written in the caller's transaction.
-//! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(any) w=[private.evidence_objects]]; env=[CARGO_MANIFEST_DIR]; modules=[domain::dataclass, domain::evidence, domain::identity]
+//! Depends-on: crates=[humaux-domain, serde_json, sqlx]; services=[PostgreSQL(any) w=[private.events, private.evidence_objects, private.evidence_sources, private.evidence_task_runs]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::coord_repo, domain::dataclass, domain::evidence, domain::identity, domain::ids, domain::source]
 //! Called-by: [adapters::context_repo, adapters::remember]
 //! Invariants: [every non-test Evidence INSERT in the workspace is this one statement (xtask architecture-check G-M07-1, counted `== 1`); the
 //!   statement runs inside the caller's transaction and never commits, so a caller's rollback discards the row; `evidence_id` and `created_at`
@@ -9,7 +9,7 @@
 //!   the contract tests below pin against migration 0004]
 //! Spec: Baseline §8.1; §10.1; §34.2; ADR-0046
 //!
-//! The event subtype row (`private.events`, 1:1 on `evidence_id`) is not this door's: `remember::insert_event_subtype` writes it. Callers
+//! Callers
 //! pass what they already resolved ([`NewEvidence`]); this module decides nothing about visibility, authority or reasoning domain.
 
 use sqlx::types::Uuid;
@@ -18,6 +18,10 @@ use sqlx::types::time::OffsetDateTime;
 use humaux_domain::dataclass::DataClass;
 use humaux_domain::evidence::{EvidenceOriginClass, EvidencePayloadSha256};
 use humaux_domain::identity::VisibilityClass;
+use humaux_domain::ids::TenantId;
+use humaux_domain::source::SourceIdentity;
+
+use crate::coord_repo::VerifiedTaskRun;
 
 /// How the row's `occurred_at` is stamped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +148,78 @@ pub async fn insert_evidence_in_txn(
 /// §78.2 "DB enum 与 Rust enum 走 contract test 对账", scoped to the three typed columns this door writes
 /// (`origin_class`, `visibility_class`, `data_class`; see [`origin_class_db_str`] for why the mappings live here
 /// rather than on the domain types). Runs against the real migration file text, no live DB needed.
+/// `insert_event_subtype` — `private.events` shares its primary key with the
+/// `evidence_objects` row it subtypes (`events.event_id REFERENCES evidence_objects.evidence_id`,
+/// 1:1, no separate id minted here).
+pub(crate) async fn insert_event_subtype(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    evidence_id: Uuid,
+    event_kind: &str,
+    event_payload: &serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO private.events (event_id, event_kind, payload) VALUES ($1, $2, $3)")
+        .bind(evidence_id)
+        .bind(event_kind)
+        .bind(event_payload)
+        .execute(&mut **txn)
+        .await?;
+    Ok(())
+}
+
+/// Design v0.2 §15 T04c: the one `INSERT INTO private.evidence_task_runs` statement (xtask G-T04c-3); `pub(crate)`
+/// keeps its callers inside this crate, and 0251 grants INSERT to `role_gateway` only. `verified` is taken by value: it is the proof that
+/// [`crate::coord_repo::verify_task_run`] passed in this same transaction, which still holds the
+/// task row FOR SHARE, so the row records a lease that was live at this write (§30.2) and one
+/// verification backs one row. `evidence_id` is the Evidence this transaction just wrote; the
+/// tenant-leg FKs and the FORCE RLS policy refuse a run or an Evidence outside `tenant_id`.
+pub(crate) async fn insert_evidence_task_run_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: TenantId,
+    verified: VerifiedTaskRun,
+    evidence_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO private.evidence_task_runs (tenant_id, evidence_id, task_run_id, fencing_token) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(tenant_id.0)
+    .bind(evidence_id)
+    .bind(verified.task_run_id().0)
+    .bind(verified.fencing_token().0)
+    .execute(&mut **txn)
+    .await
+    .map(|_| ())
+}
+
+/// ADR-0098 D1: the one `INSERT INTO private.evidence_sources` statement. `owner` is the `humaux.user_id` GUC
+/// the Remember transaction installed, which the table's FORCE RLS owner clause checks.
+pub(crate) async fn insert_evidence_source_in_txn(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: Uuid,
+    owner: Uuid,
+    source: &SourceIdentity,
+    evidence_id: Uuid,
+    payload: &EvidencePayloadSha256,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO private.evidence_sources \
+           (tenant_id, owner_user_id, source_kind, object_key_d16, source_version, thread_key_d16, \
+            evidence_id, payload_sha256) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(tenant_id)
+    .bind(owner)
+    .bind(source.kind().db_code())
+    .bind(source.object_key_d16().as_bytes().as_slice())
+    .bind(source.version())
+    .bind(source.thread_key_d16().map(|d| d.as_bytes().as_slice()))
+    .bind(evidence_id)
+    .bind(payload.as_bytes().as_slice())
+    .execute(&mut **txn)
+    .await
+    .map(|_| ())
+}
+
 #[cfg(test)]
 mod contract_tests {
     use super::*;
