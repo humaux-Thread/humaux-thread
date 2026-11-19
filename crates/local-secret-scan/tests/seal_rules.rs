@@ -3,7 +3,7 @@
 //! Depends-on: crates=[humaux-domain, humaux-projection, humaux-retrieval, sha2, uuid]; services=[];
 //!   env=[HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256, HUMAUX_TEST_GITLEAKS_VERSION];
 //!   modules=[domain::authority, domain::dataclass, domain::error, domain::memory, humaux-local-secret-scan,
-//!   projection::card, retrieval::request]
+//!   projection::card, projection::note_chunks, retrieval::request]
 //! Called-by: [cargo-test]
 //! Invariants: [the pinned gitleaks comes from HUMAUX_TEST_GITLEAKS_* (production reads typed config); the swap
 //!   tests run two same-length fake scanners in a private temp dir and never the real binary]
@@ -19,6 +19,9 @@ use humaux_local_secret_scan::{
 };
 use humaux_projection::card::{
     CardBudget, CardBuildOutcome, CardInput, EgressDisposition, RetrievalCard, build_card,
+};
+use humaux_projection::note_chunks::{
+    NoteChunkPolicy, PlanInput, ProjectionPlan, build_projection_plan, chunk_card,
 };
 use humaux_retrieval::request::{
     RetrievalIntent, RetrievalRequest, build_request, resolve_registered_retrieval_profile,
@@ -75,23 +78,24 @@ fn request(text: &str) -> RetrievalRequest {
     build_request(intent, &profile).expect("request")
 }
 
+fn card_input(text: &str) -> CardInput {
+    CardInput {
+        memory_id: humaux_domain::authority::MemoryId(uuid::Uuid::now_v7()),
+        memory_type: humaux_domain::memory::MemoryType::Fact,
+        data_class: DataClass::Private,
+        egress_disposition: EgressDisposition::Allowed,
+        workspace_id: None,
+        topic: None,
+        effective_from: std::time::SystemTime::now(),
+        title: text.to_owned(),
+        key_claim: Some(text.to_owned()),
+        entities: Vec::new(),
+        evidence_excerpt: Some(text.to_owned()),
+    }
+}
+
 fn card(text: &str) -> RetrievalCard {
-    let CardBuildOutcome::Card(card) = build_card(
-        CardInput {
-            memory_id: humaux_domain::authority::MemoryId(uuid::Uuid::now_v7()),
-            memory_type: humaux_domain::memory::MemoryType::Fact,
-            data_class: DataClass::Private,
-            egress_disposition: EgressDisposition::Allowed,
-            workspace_id: None,
-            topic: None,
-            effective_from: std::time::SystemTime::now(),
-            title: text.to_owned(),
-            key_claim: Some(text.to_owned()),
-            entities: Vec::new(),
-            evidence_excerpt: Some(text.to_owned()),
-        },
-        CardBudget::default(),
-    ) else {
+    let CardBuildOutcome::Card(card) = build_card(card_input(text), CardBudget::default()) else {
         panic!("fixture card builds");
     };
     *card
@@ -248,6 +252,41 @@ impl FakeScanners {
 impl Drop for FakeScanners {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn seals_projection_built_ordinary_and_chunk_cards() {
+    let fakes = FakeScanners::new();
+    let scanner = fakes.scanner();
+    let card = card("original fixture text");
+    let sealed = scanner.seal_card(&card).expect("ordinary card seals");
+    assert_eq!(sealed.as_str(), card.card_text());
+    assert_eq!(sealed.data_class(), DataClass::Private);
+
+    let body = "a long note ".repeat(80);
+    let mut input = card_input("note title");
+    input.memory_type = humaux_domain::memory::MemoryType::Note;
+    input.data_class = DataClass::Sensitive;
+    input.key_claim = Some(body.clone());
+    let ProjectionPlan::NoteChunksV1(chunks) = build_projection_plan(PlanInput {
+        card: input.clone(),
+        is_identity_note: true,
+        policy: NoteChunkPolicy::NoteChunksV1,
+    }) else {
+        panic!("fixture note is chunked");
+    };
+    let source = scanner
+        .seal_source(input.memory_id.0, input.data_class, &input.title, &body)
+        .expect("source seals");
+    for chunk in chunks {
+        let card = chunk_card(&input, &chunk);
+        let sealed = scanner
+            .seal_chunk_card(&source, &card)
+            .expect("matching chunk seals");
+        assert_eq!(sealed.as_str(), chunk.text);
+        assert_eq!(sealed.data_class(), DataClass::Sensitive);
     }
 }
 

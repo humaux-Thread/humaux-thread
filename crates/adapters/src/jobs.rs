@@ -1,7 +1,7 @@
 //! `adapters::jobs` — `ops.jobs` SKIP LOCKED claim, lease heartbeat, and terminal-state transitions (§31 Durable Jobs
 //!   / §61 SKIP LOCKED Claim SQL).
-//! Depends-on: crates=[async-trait, humaux-application, serde_json, sqlx]; services=[PostgreSQL(any) r=[ops.claim_derived_work] w=[ops.jobs] x=[ops.admit_distill_budget, ops.begin_call, ops.claim_derived_work, ops.claim_derived_work_v2, ops.distill_slots_all_bound, ops.finish_derived_work_v2, ops.renew_lease]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::distill_repo, adapters::postgres, application::consolidation_execution, application::distill_execution]
-//! Called-by: [adapters::consolidate_repo, adapters::distill_repo, private-worker::bootstrap, tests]
+//! Depends-on: crates=[async-trait, humaux-application, serde_json, sqlx]; services=[PostgreSQL(any) r=[ops.claim_derived_work] w=[ops.jobs] x=[ops.admit_distill_budget, ops.begin_call, ops.claim_derived_work, ops.claim_derived_work_v2, ops.distill_slots_all_bound, ops.finish_derived_work_v2, ops.renew_lease]]; env=[CARGO_MANIFEST_DIR]; modules=[adapters::derived_job_lease, adapters::distill_repo, adapters::postgres, application::consolidation_execution, application::distill_execution]
+//! Called-by: [private-worker::bootstrap, tests]
 //! Invariants: [one tenant per call: each table-level function opens a transaction and sets humaux.tenant_id before
 //!   touching FORCE-RLS ops.jobs; claims use SKIP LOCKED with a lease; a PG error returns to the caller with no job
 //!   state change; distill claims go only through the four ADR-0058 owner definers, which filter by tenant and job
@@ -38,6 +38,8 @@ use sqlx::Row;
 use sqlx::types::Uuid;
 use sqlx::types::time::OffsetDateTime;
 
+pub use crate::derived_job_lease::DerivedLease;
+use crate::derived_job_lease::{DerivedJobLeaseSettlementPort, DistillLeaseSettlement};
 use crate::postgres::{ConsolidationDbPool, PrivateWorkerDbPool, RuntimeDbPool};
 
 /// DB-layer failure from any function in this module. Adapter-local, not one of the
@@ -169,7 +171,7 @@ impl ClaimedJob {
 async fn set_tenant_local(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     tenant_id: Uuid,
-) -> Result<(), JobsError> {
+) -> Result<(), sqlx::Error> {
     sqlx::query(&format!("SET LOCAL humaux.tenant_id = '{tenant_id}'"))
         .execute(&mut **txn)
         .await?;
@@ -588,7 +590,7 @@ pub(crate) async fn finish_distill_in_txn(
     error_class: Option<&str>,
     backoff_seconds: f64,
     park_seconds: f64,
-) -> Result<bool, JobsError> {
+) -> Result<bool, sqlx::Error> {
     // dep: PostgreSQL(any) — executes ops.finish_derived_work_v2 against the pool
     let settled: bool =
         sqlx::query_scalar("SELECT ops.finish_derived_work_v2($1, $2, $3, $4, $5, $6, $7, $8)")
@@ -642,7 +644,7 @@ async fn settle_derived_in_txn(
     lease: &DerivedLease<'_>,
     outcome: DerivedWorkOutcome,
     lease_seconds: f64,
-) -> Result<bool, JobsError> {
+) -> Result<bool, sqlx::Error> {
     set_tenant_local(txn, lease.tenant_id).await?;
     let result = sqlx::query(
         "UPDATE ops.jobs \
@@ -664,16 +666,6 @@ async fn settle_derived_in_txn(
     .execute(&mut **txn)
     .await?;
     Ok(result.rows_affected() > 0)
-}
-
-/// The exact lease a derived-layer worker holds: identity plus the monotonic fencing token the
-/// claim returned. Grouped so the settle/heartbeat calls stay under clippy's argument-count lint.
-pub struct DerivedLease<'a> {
-    pub tenant_id: Uuid,
-    pub job_id: Uuid,
-    pub lease_owner: &'a str,
-    /// `attempt` as the claim returned it — a stale token settles nothing.
-    pub attempt: i32,
 }
 
 impl<'a> DerivedLease<'a> {
@@ -788,8 +780,36 @@ pub async fn settle_derived_consolidation(
 pub(crate) async fn settle_derived_done_in_txn(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     lease: &DerivedLease<'_>,
-) -> Result<bool, JobsError> {
+) -> Result<bool, sqlx::Error> {
     settle_derived_in_txn(txn, lease, DerivedWorkOutcome::Done, 0.0).await
+}
+
+impl<'a> DerivedJobLeaseSettlementPort<&'a DerivedLease<'a>> for ConsolidationDbPool {
+    async fn settle_in_txn(
+        &self,
+        txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        lease: &'a DerivedLease<'a>,
+    ) -> Result<bool, sqlx::Error> {
+        settle_derived_done_in_txn(txn, lease).await
+    }
+}
+
+impl<'a> DerivedJobLeaseSettlementPort<DistillLeaseSettlement<'a>> for PrivateWorkerDbPool {
+    async fn settle_in_txn(
+        &self,
+        txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        request: DistillLeaseSettlement<'a>,
+    ) -> Result<bool, sqlx::Error> {
+        finish_distill_in_txn(
+            txn,
+            request.lease,
+            request.finish.into(),
+            request.error_class,
+            request.backoff_seconds,
+            request.park_seconds,
+        )
+        .await
+    }
 }
 
 /// Locks and verifies one exact live lease inside a caller-owned business transaction.

@@ -482,18 +482,18 @@ impl LocalSecretScanner {
         })
     }
 
-    /// Seals only the actual `build_card` result, retaining its actual data class. §7.5 B:
+    /// Seals a projection-built card, retaining its data class. §7.5 B:
     /// SECRET_MATERIAL never leaves; otherwise the pinned gitleaks scan only (ADR-0056).
     pub fn seal_card(&self, card: &RetrievalCard) -> Result<SealedRetrievalCard, ErrorCode> {
-        if card.data_class == DataClass::SecretMaterial
-            || card.card_text.len() > SEALED_RETRIEVAL_MAX_BYTES
-        {
+        let data_class = card.data_class();
+        let text = card.card_text();
+        if data_class == DataClass::SecretMaterial || text.len() > SEALED_RETRIEVAL_MAX_BYTES {
             return Err(ErrorCode::InvalidInput);
         }
-        let receipt = self.scan_secrets_only(card.card_text.as_bytes())?;
+        let receipt = self.scan_secrets_only(text.as_bytes())?;
         Ok(SealedRetrievalCard {
-            text: card.card_text.clone(),
-            data_class: card.data_class,
+            text: text.to_owned(),
+            data_class,
             receipt,
         })
     }
@@ -530,7 +530,7 @@ impl LocalSecretScanner {
         source: &SealedSource,
         card: &RetrievalCard,
     ) -> Result<SealedRetrievalCard, ErrorCode> {
-        if card.memory_id.0 != source.memory_id || card.data_class != source.data_class {
+        if card.memory_id().0 != source.memory_id || card.data_class() != source.data_class {
             return Err(ErrorCode::InvalidInput);
         }
         self.seal_card(card)
@@ -858,28 +858,31 @@ mod tests {
         humaux_retrieval::request::build_request(intent, &profile).expect("request")
     }
 
+    fn card_input(text: &str, data_class: DataClass) -> humaux_projection::card::CardInput {
+        humaux_projection::card::CardInput {
+            memory_id: humaux_domain::authority::MemoryId(uuid::Uuid::now_v7()),
+            memory_type: humaux_domain::memory::MemoryType::Fact,
+            data_class,
+            egress_disposition: humaux_projection::card::EgressDisposition::Allowed,
+            workspace_id: None,
+            topic: None,
+            effective_from: std::time::SystemTime::now(),
+            title: text.to_owned(),
+            key_claim: Some(text.to_owned()),
+            entities: Vec::new(),
+            evidence_excerpt: Some(text.to_owned()),
+        }
+    }
+
     fn card(text: &str, data_class: DataClass) -> RetrievalCard {
-        let humaux_projection::card::CardBuildOutcome::Card(mut card) =
+        let humaux_projection::card::CardBuildOutcome::Card(card) =
             humaux_projection::card::build_card(
-                humaux_projection::card::CardInput {
-                    memory_id: humaux_domain::authority::MemoryId(uuid::Uuid::now_v7()),
-                    memory_type: humaux_domain::memory::MemoryType::Fact,
-                    data_class: DataClass::Internal,
-                    egress_disposition: humaux_projection::card::EgressDisposition::Allowed,
-                    workspace_id: None,
-                    topic: None,
-                    effective_from: std::time::SystemTime::now(),
-                    title: text.to_owned(),
-                    key_claim: Some(text.to_owned()),
-                    entities: Vec::new(),
-                    evidence_excerpt: Some(text.to_owned()),
-                },
+                card_input(text, data_class),
                 humaux_projection::card::CardBudget::default(),
             )
         else {
             panic!("fixture card builds");
         };
-        card.data_class = data_class;
         *card
     }
 
@@ -915,11 +918,24 @@ mod tests {
     /// §7.5 B: SECRET_MATERIAL is refused before any scan, fixture-less.
     #[test]
     fn seal_card_refuses_secret_material_before_any_scan() {
+        use humaux_projection::note_chunks::{NOTE_CHUNKS_V1_PROFILE_HASH, NoteChunk, chunk_card};
+
         let scanner = scanner_without_runtime_fixture();
+        let text = "an otherwise clean card";
+        let input = card_input(text, DataClass::SecretMaterial);
+        // The planner excludes this class. Exercise the scanner's own §7.5 B guard with the
+        // chunk builder, which preserves the input class.
+        let card = chunk_card(
+            &input,
+            &NoteChunk {
+                card_profile_hash: NOTE_CHUNKS_V1_PROFILE_HASH,
+                chunk_ordinal: 0,
+                range: 0..text.chars().count(),
+                text: format!("{text}\n{text}"),
+            },
+        );
         assert_eq!(
-            scanner
-                .seal_card(&card("an otherwise clean card", DataClass::SecretMaterial))
-                .map(|_| ()),
+            scanner.seal_card(&card).map(|_| ()),
             Err(ErrorCode::InvalidInput)
         );
     }
@@ -966,7 +982,7 @@ mod tests {
             Err(ErrorCode::InvalidInput)
         );
         let other_class = SealedSource {
-            memory_id: chunk.memory_id.0,
+            memory_id: chunk.memory_id().0,
             data_class: DataClass::Sensitive,
             payload_sha256: humaux_domain::evidence::payload_sha256(b"same"),
         };
@@ -975,7 +991,7 @@ mod tests {
             Err(ErrorCode::InvalidInput)
         );
         let own = SealedSource {
-            memory_id: chunk.memory_id.0,
+            memory_id: chunk.memory_id().0,
             data_class: DataClass::Private,
             payload_sha256: humaux_domain::evidence::payload_sha256(b"same"),
         };

@@ -6096,13 +6096,9 @@ written by:
 executed by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `adapters::tests::maintenance_doors`
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 ### `ops.anonymous_public_revocations`
 - kind: table
@@ -6380,13 +6376,9 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::distill_dispatch_v2`
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 ### `ops.claim_derived_work`
 - kind: function (SECURITY DEFINER)
@@ -6402,26 +6394,18 @@ grants (runtime roles):
 read by:
 - (no process): `adapters::tests::jobs_claim`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 written by:
 
 executed by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 ### `ops.claim_derived_work_v2`
 - kind: function (SECURITY DEFINER)
@@ -6445,13 +6429,9 @@ executed by:
 - (no process): `adapters::tests::distill_dispatch_v2`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 ### `ops.claim_global_anonymous_public_dispatches`
 - kind: function (SECURITY DEFINER)
@@ -7055,13 +7035,9 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 ### `ops.distill_tenant_scheduler`
 - kind: table
@@ -7410,13 +7386,9 @@ written by:
 
 executed by:
 - (no process): `adapters::tests::distill_dispatch_v2`
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 ### `ops.global_anonymous_public_dispatch_live_lease`
 - kind: function (SECURITY DEFINER)
@@ -7670,17 +7642,13 @@ written by:
 - (no process): `public-pool::tests::public_runtime`
 - (no process): `public-pool::tests::support::public_anonymous_seam`
 - process(cargo-xtask): `adapters::consolidate_repo`
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-gateway): `adapters::consolidate_repo`
-- process(humaux-gateway): `adapters::jobs`
 - process(humaux-maintenance): `adapters::consolidate_repo`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::consolidate_repo`
 - process(humaux-private-worker): `adapters::jobs`
 - process(humaux-retrieval-worker): `adapters::consolidate_repo`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 executed by:
 
@@ -8712,13 +8680,9 @@ read by:
 written by:
 
 executed by:
-- process(cargo-xtask): `adapters::jobs`
 - process(cargo-xtask): `maintenance::rls_check`
-- process(humaux-gateway): `adapters::jobs`
-- process(humaux-maintenance): `adapters::jobs`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-private-worker): `adapters::jobs`
-- process(humaux-retrieval-worker): `adapters::jobs`
 
 ### `ops.repair_findings`
 - kind: table
