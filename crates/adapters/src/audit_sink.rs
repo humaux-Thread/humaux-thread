@@ -1,7 +1,11 @@
 //! `adapters::audit_sink` — §77 Immutable Audit Sink export path.
 //! Depends-on: crates=[humaux-domain, uuid]; services=[]; env=[]; modules=[domain::audit]
 //! Called-by: []
-//! Invariants: [only a WORM object-store adapter may be wired in production; no WORM adapter ships here]
+//! Invariants: [only a WORM object-store adapter may be wired in production. No WORM adapter ships here.
+//!   The fs temp store is not a WORM sink and must not be wired to audit export, so no production
+//!   audit bytes are placed anywhere until a real WORM adapter implements the port.
+//!   After a successful `put`, `object_key()` must return the exact destination key used by `put`.
+//!   `export_batch` records that key in `AuditBatch::exported_object`.]
 //! Spec: Baseline §3; §77; §78.3; ADR-0115
 
 use humaux_domain::audit::{self, AuditBatch};
