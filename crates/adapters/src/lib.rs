@@ -62,6 +62,7 @@ pub mod health;
 pub mod independent_audit;
 mod ingest_ticket_repo;
 pub mod jobs;
+mod knowledge_backup_repo;
 pub mod login_repo;
 pub mod maintenance_repo;
 pub mod mechanism_observation;

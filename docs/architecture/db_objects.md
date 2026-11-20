@@ -6334,6 +6334,7 @@ foreign keys (outgoing):
 read by:
 - (no process): `maintenance::tests::backup`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 - process(humaux-maintenance): `adapters::maintenance_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -6341,7 +6342,7 @@ written by:
 - (no process): `adapters::tests::rebuild`
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::serve`
-- process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 
 executed by:
 
@@ -6376,7 +6377,7 @@ written by:
 - (no process): `adapters::tests::rebuild`
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::serve`
-- process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 
 executed by:
 
@@ -8804,12 +8805,13 @@ foreign keys (outgoing):
 read by:
 - (no process): `maintenance::tests::drill`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::rebuild`
 - (no process): `maintenance::tests::serve`
-- process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 
 executed by:
 
@@ -8840,7 +8842,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 
 executed by:
 
@@ -9402,11 +9404,12 @@ read by:
 - (no process): `maintenance::tests::backup`
 - (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 - process(humaux-maintenance): `adapters::maintenance_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 
 executed by:
 

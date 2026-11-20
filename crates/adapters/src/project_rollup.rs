@@ -1,5 +1,5 @@
 //! `adapters::project_rollup` — M14 channel attributes and query-time project references.
-//! Depends-on: crates=[humaux-domain, serde, serde_json, sqlx, uuid]; services=[PostgreSQL(role_gateway) x=[private.read_project_rollup, private.set_project_channel]]; env=[]; modules=[domain::continuity, domain::error, domain::identity, domain::subject]
+//! Depends-on: crates=[humaux-domain, serde, serde_json, sqlx, uuid]; services=[PostgreSQL(role_gateway) x=[private.read_project_rollup, private.set_project_channel]]; env=[]; modules=[domain::continuity_types, domain::error, domain::identity, domain::ids, domain::subject]
 //! Called-by: [tests]
 //! Invariants: [§25.3.1 child authorization precedes title, reference and count disclosure; ADR-0095 D-C references never copy bodies into a parent]
 //! Spec: Baseline §6.1.4; §25.3.1; ADR-0095 D-B; ADR-0095 D-C
@@ -10,10 +10,8 @@ use std::str::FromStr;
 const ROLLUP_CHILD_CAP: usize = 64;
 
 use humaux_domain::{
-    continuity::{ContinuityFacetKind, ProjectId},
-    error::ErrorCode,
-    identity::AuthorizationScope,
-    subject::SubjectId,
+    continuity_types::ContinuityFacetKind, error::ErrorCode, identity::AuthorizationScope,
+    ids::ProjectId, subject::SubjectId,
 };
 use serde::Deserialize;
 use sqlx::{Postgres, Transaction};

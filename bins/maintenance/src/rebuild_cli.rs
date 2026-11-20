@@ -4,7 +4,7 @@
 //! Depends-on: crates=[humaux-adapters, humaux-application, serde_json, tokio]; services=[PostgreSQL(role_maintenance),
 //!   PostgreSQL(role_retrieval_worker), Qdrant(*)]; env=[HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_MAINTENANCE_QDRANT_CIDR,
 //!   HUMAUX_MAINTENANCE_QDRANT_HOST, HUMAUX_MAINTENANCE_QDRANT_PORT, HUMAUX_RETRIEVAL_WORKER_EMBEDDING_VERSION,
-//!   HUMAUX_RETRIEVAL_WORKER_PG_DSN]; modules=[adapters::postgres, adapters::rebuild, application::projection_maintenance, maintenance::bootstrap, maintenance::main]
+//!   HUMAUX_RETRIEVAL_WORKER_PG_DSN]; modules=[adapters::affect_repo, adapters::postgres, adapters::rebuild, application::projection_maintenance, maintenance::bootstrap, maintenance::main]
 //! Called-by: [maintenance::main]
 //! Invariants: [every flag is required with no default except the D-G consent `--allow-reembed` (§78.1); flags are
 //!   parsed before any connection (a missing flag is exit 2 with nothing read); exactly one receipt object per stream
@@ -65,6 +65,7 @@ async fn wiring() -> Result<impl ProjectionMaintenancePort<Error: Into<crate::Pr
     Ok(humaux_adapters::rebuild::maintenance_port(
         maintenance,
         reader,
+        humaux_adapters::affect_repo::read_projection_affects,
         crate::bootstrap::tenant_page_reader(),
         &env("HUMAUX_MAINTENANCE_QDRANT_HOST")?,
         env_parsed("HUMAUX_MAINTENANCE_QDRANT_PORT")?,

@@ -1,6 +1,6 @@
 //! `application::knowledge_backup` — backup verification receipts and read-only status facts (ADR-0064, ADR-0130).
 //! Depends-on: crates=[async-trait, serde_json, time, uuid]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::maintenance_repo, application::knowledge_backup::drill_projection, maintenance::backup, maintenance::drill]
+//! Called-by: [adapters::knowledge_backup_repo, adapters::maintenance_repo, application::knowledge_backup::drill_projection, maintenance::backup, maintenance::drill]
 //! Invariants: [each verification appends one receipt; status observes one read-only snapshot]
 //! Spec: §44; ADR-0064 D-J, D-V
 
@@ -12,6 +12,33 @@ use serde_json::json;
 
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+/// The newest receipt that measured the repository (a budget refusal qualifies, 10.11 D / F4), with the limits the
+/// arm used then; the daemon reads no budget key (10.11 C / F10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeasuredBudget {
+    /// `du -sk` of the repository at that run.
+    pub repo_bytes: i64,
+    /// `HUMAUX_MAINTENANCE_BACKUP_REPO_MAX_BYTES` as that run used it.
+    pub repo_max_bytes: Option<i64>,
+    /// `HUMAUX_MAINTENANCE_BACKUP_MIN_FREE_BYTES` as that run used it.
+    pub min_free_bytes: Option<i64>,
+    /// The next set's estimate: newest VERIFIED `set_repo_bytes` × 1.25, else that receipt's `estimate_bytes`.
+    pub estimate_bytes: Option<i64>,
+}
+
+/// One DR_EVIDENCE reading from the database (ADR-0064 10.11 D). Timestamps are unix seconds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrEvidence {
+    /// `max(backup_stopped_at)` over the labels whose latest receipt is VERIFIED; `None` before the first.
+    pub backup_last_success: Option<f64>,
+    /// `finished_at` of the newest drill the table derived as succeeded.
+    pub restore_drill_last_success: Option<f64>,
+    /// `None` before the first measuring receipt.
+    pub budget: Option<MeasuredBudget>,
+    /// The latch (a row observed after the newest VERIFIED start) or archiving failing now.
+    pub wal_archive_failing: bool,
+}
 
 /// One `ops.backup_receipts` row as a backup arm writes it. The arm CLAIMS `VERIFIED` by leaving `failure` empty;
 /// the table refuses the claim unless verify exited 0 and the verified manifest is the label's first-verified one

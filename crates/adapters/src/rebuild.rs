@@ -70,7 +70,8 @@ use sqlx::types::Uuid;
 
 use crate::postgres::{MaintenanceDbPool, RetrievalWorkerDbPool};
 use crate::projection_worker::{
-    self, CardEmbedder, ExpectedPoint, SharedProjectionDeps, Sleep, begin_projector_read,
+    self, CardEmbedder, ExpectedPoint, ProjectionAffectReadPort, SharedProjectionDeps, Sleep,
+    begin_projector_read,
 };
 use crate::provisioning::{self, ProvisioningError};
 use crate::qdrant::{self, PointId, QdrantOperation, RetrievalFamily, ScrolledPoint};
@@ -164,6 +165,7 @@ pub async fn worker_label(pool: &MaintenanceDbPool, label: &str) -> Result<Worke
 
 /// What every step needs: the definer pool, the projector-view reader, the Qdrant face and the worker label.
 pub struct RebuildDeps<'a> {
+    pub read_affects: ProjectionAffectReadPort,
     pub maintenance: &'a MaintenanceDbPool,
     pub reader: &'a RetrievalWorkerDbPool,
     pub qdrant: &'a QdrantFace,
@@ -853,6 +855,7 @@ async fn read_pg_side(
         let by_outcome = outcome_excluded(&input.latest_state, input.latest_class.as_deref());
         for point in projection_worker::expected_points(
             &mut txn,
+            deps.read_affects,
             &family,
             &deps.worker.label,
             &key.projection_version,
@@ -1608,6 +1611,7 @@ impl CardEmbedder for NoProviderEmbedder {
 
 /// Every part of [`SharedProjectionDeps`] except the embedder, which [`drill_projection_deps`] supplies itself.
 pub struct ClosedDeps {
+    pub read_affects: ProjectionAffectReadPort,
     pub pool: RetrievalWorkerDbPool,
     pub scanner: Arc<LocalSecretScanner>,
     pub transport: Arc<dyn IntraCellHttpTransport>,
@@ -1624,6 +1628,7 @@ pub fn drill_projection_deps(parts: ClosedDeps) -> (SharedProjectionDeps, Arc<No
     let refusing = Arc::new(NoProviderEmbedder::default());
     let deps = SharedProjectionDeps {
         pool: parts.pool,
+        read_affects: parts.read_affects,
         embedder: refusing.clone(),
         scanner: parts.scanner,
         transport: parts.transport,
@@ -1682,8 +1687,10 @@ pub struct ScannerPin {
 /// `127.0.0.1:qdrant_port` (from `docker compose port`, CIDR the loopback /32): a fresh transport and permit minter
 /// that can reach nothing else, and the pinned scanner (the retrieval worker's literals: 5 s, 64 KiB, exit 1). The
 /// stored-vector path never seals a card, so the scanner is held, not called.
+#[allow(clippy::too_many_arguments)]
 pub fn drill_closed_deps(
     pool: RetrievalWorkerDbPool,
+    read_affects: ProjectionAffectReadPort,
     qdrant_port: u16,
     scanner: &ScannerPin,
     embedding_version: &str,
@@ -1727,6 +1734,7 @@ pub fn drill_closed_deps(
     })
     .map_err(|e| ProvisioningError::InvalidInput(format!("scanner pin: {e:?}")))?;
     Ok(ClosedDeps {
+        read_affects,
         pool,
         scanner: Arc::new(scanner),
         transport: Arc::new(transport),
@@ -1748,9 +1756,11 @@ pub fn drill_closed_deps(
 /// Assemble the projection maintenance port; all adapter DTOs remain private to this wiring.
 /// # Errors
 /// Preserves Qdrant setup and worker-label binding failures.
+#[allow(clippy::too_many_arguments)]
 pub async fn maintenance_port(
     maintenance: MaintenanceDbPool,
     reader: RetrievalWorkerDbPool,
+    read_affects: ProjectionAffectReadPort,
     read_tenant_page: TenantPageReadPort,
     host: &str,
     port: u16,
@@ -1764,6 +1774,7 @@ pub async fn maintenance_port(
     let face = QdrantFace::new(host, port, cidr)?;
     let worker = worker_label(&maintenance, label).await?;
     Ok(MaintenanceProjection {
+        read_affects,
         maintenance,
         reader,
         read_tenant_page,
@@ -1773,6 +1784,7 @@ pub async fn maintenance_port(
 }
 
 struct MaintenanceProjection {
+    read_affects: ProjectionAffectReadPort,
     maintenance: MaintenanceDbPool,
     reader: RetrievalWorkerDbPool,
     read_tenant_page: TenantPageReadPort,
@@ -1783,6 +1795,7 @@ struct MaintenanceProjection {
 impl MaintenanceProjection {
     fn deps(&self) -> RebuildDeps<'_> {
         RebuildDeps {
+            read_affects: self.read_affects,
             maintenance: &self.maintenance,
             reader: &self.reader,
             qdrant: &self.face,
