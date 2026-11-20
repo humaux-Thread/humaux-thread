@@ -1,6 +1,6 @@
 //! `protocol::tests::error_degrade_exclusive` — G52-4 exercises the production MCP adapter at the HTTP wire boundary.
-//! Depends-on: crates=[async-trait, axum, humaux-domain, serde_json, tokio]; services=[HTTP(loopback)]; env=[];
-//!   modules=[domain::error, protocol::mcp, protocol::mcp_catalog]
+//! Depends-on: crates=[async-trait, axum, humaux-domain, humaux-telemetry, serde_json, tokio]; services=[HTTP(loopback)]; env=[];
+//!   modules=[domain::error, protocol::mcp, protocol::mcp_catalog, telemetry::degrade]
 //! Called-by: [cargo-test]
 //! Invariants: [terminal wire responses carry no degradation markers]
 //! Spec: Baseline §52.4 G52-4
@@ -16,6 +16,7 @@ use humaux_protocol::{
     },
     mcp_catalog,
 };
+use humaux_telemetry::degrade::DegradeCode;
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -42,7 +43,7 @@ impl McpApplication for FixtureApplication {
             Some("degraded") => {
                 let structured_content = json!({
                     "items": ["stale-result"],
-                    "completeness": {"degradations": ["PROJECTION_LAG"]}
+                    "completeness": {"degradations": [DegradeCode::ProjectionLag.line_format()]}
                 });
                 Ok(ToolOutput {
                     text: structured_content.to_string(),
@@ -125,6 +126,12 @@ async fn wire_error_and_degrade_are_exclusive() {
     let degraded = call(address, "degraded").await;
     assert!(degraded.get("error").is_none(), "{degraded}");
     assert_ne!(degraded["result"]["isError"], true, "{degraded}");
+    assert!(
+        degraded["result"]["structuredContent"]
+            .get("code")
+            .is_none(),
+        "G52-4: degraded response carries a terminal code: {degraded}"
+    );
     assert_eq!(
         degraded["result"]["structuredContent"]["items"],
         json!(["stale-result"])

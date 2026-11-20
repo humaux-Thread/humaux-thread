@@ -41,3 +41,7 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync"] }
 tokio-util = "0.7"
 # why: MCP request/session id generation; used-by: [protocol::mcp, tests]
 uuid = { version = "1.25.0", features = ["v7"] }
+
+[dev-dependencies]
+# why: exercise production degradation wire spelling in the HTTP contract test; used-by: [protocol::tests::error_degrade_exclusive]
+humaux-telemetry = { version = "0.1.0", path = "../telemetry" }
