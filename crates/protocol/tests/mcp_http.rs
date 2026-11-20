@@ -1,6 +1,6 @@
 //! `protocol::tests::mcp_http` — integration test: spins up `protocol::mcp`'s Axum router on a real loopback TCP listener and drives it as an HTTP client, covering dual-output raw arguments, stateless transport, legacy/malformed request rejection, and authorization-error status codes.
 //! Depends-on: crates=[async-trait, axum, humaux-domain, serde_json, tokio, uuid]; services=[HTTP(loopback)]; env=[];
-//!   modules=[domain::error, protocol::mcp]
+//!   modules=[domain::error, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]
 //! Invariants: [drives protocol::mcp's router over a real loopback listener: malformed/legacy transport is rejected
 //!   before invoke and authorization errors set the HTTP status before dispatch]
@@ -15,9 +15,10 @@ use std::{
 use async_trait::async_trait;
 use humaux_domain::error::ErrorCode;
 use humaux_protocol::mcp::{
-    McpAdapter, McpApplication, McpHttpConfig, McpHttpContext, McpOperation, McpToolArguments,
-    McpToolSchema, ToolName, ToolOutput, TrustedMcpCatalog,
+    McpAdapter, McpApplication, McpHttpConfig, McpHttpContext, McpOperation, McpResourceRoute,
+    McpToolArguments, McpToolSchema, ToolName, ToolOutput, TrustedMcpCatalog,
 };
+use humaux_protocol::mcp_catalog::CanonicalCatalog;
 use serde_json::{Map, Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -32,9 +33,11 @@ struct MockApplication {
     /// Refuses every later per-operation access check (`authorize`), the second 503 source of `protocol::mcp`.
     operation_denied: Mutex<Option<ErrorCode>>,
     invoke_denied: Mutex<Option<ErrorCode>>,
+    scope_catalog: Option<CanonicalCatalog>,
     operations: Mutex<Vec<McpOperation>>,
     invocations: Mutex<Vec<(ToolName, String, String)>>,
     request_ids: Mutex<Vec<uuid::Uuid>>,
+    expected_resources: Mutex<Vec<Option<String>>>,
 }
 
 #[async_trait]
@@ -63,6 +66,10 @@ impl McpApplication for MockApplication {
             .lock()
             .expect("request ids")
             .push(context.request_id());
+        self.expected_resources
+            .lock()
+            .expect("expected resources")
+            .push(context.expected_resource().map(str::to_owned));
         stage
             .lock()
             .expect("denied")
@@ -73,11 +80,21 @@ impl McpApplication for MockApplication {
 
     async fn invoke(
         &self,
-        _context: &McpHttpContext,
+        context: &McpHttpContext,
         tool: ToolName,
         arguments: McpToolArguments<'_>,
     ) -> Result<ToolOutput, ErrorCode> {
         if let Some(code) = *self.invoke_denied.lock().expect("invoke denied") {
+            if let Some(catalog) = self
+                .scope_catalog
+                .as_ref()
+                .filter(|_| code == ErrorCode::Forbidden)
+            {
+                let operation = catalog
+                    .validate(tool, &Value::Object(arguments.decoded().clone()))
+                    .expect("canonical MCP operation");
+                context.mark_insufficient_scope(operation.required_scope());
+            }
             return Err(code);
         }
         self.invocations.lock().expect("invocations").push((
@@ -137,16 +154,24 @@ async fn start_router(
     app: Arc<MockApplication>,
     router: fn(&McpAdapter) -> axum::Router,
 ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let adapter = McpAdapter::new(
-        app,
-        catalog(),
-        McpHttpConfig::new(
-            vec!["mcp.test".to_owned()],
-            vec!["https://mcp.test".to_owned()],
-            64 * 1024,
-        )
-        .expect("safe config"),
-    );
+    start_with_oauth(app, router, None).await
+}
+
+async fn start_with_oauth(
+    app: Arc<MockApplication>,
+    router: fn(&McpAdapter) -> axum::Router,
+    issuer: Option<&str>,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let mut config = McpHttpConfig::new(
+        vec!["mcp.test".to_owned()],
+        vec!["https://mcp.test".to_owned()],
+        64 * 1024,
+    )
+    .expect("safe config");
+    if let Some(issuer) = issuer {
+        config = config.with_oauth_issuer(issuer.to_owned());
+    }
+    let adapter = McpAdapter::new(app, catalog(), config);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind loopback");
@@ -395,6 +420,107 @@ async fn authorization_errors_change_the_http_status_before_dispatch() {
     *app.invoke_denied.lock().expect("invoke denied") = Some(ErrorCode::Forbidden);
     let (status, _body, _) = request(address, "POST", &tool_call_headers(), &body).await;
     assert_eq!(status, 403);
+    server.abort();
+}
+
+// The transport Host is deliberately different from the deployment origin.
+const DISCOVERY_ISSUER: &str = "https://mcp-edge.example.test:8443";
+const DISCOVERY_PRM: &str = "/.well-known/oauth-protected-resource/mcp";
+const DISCOVERY_RESOURCE: &str = "https://mcp-edge.example.test:8443/mcp";
+const DISCOVERY_CHALLENGE: &str = r#"Bearer resource_metadata="https://mcp-edge.example.test:8443/.well-known/oauth-protected-resource/mcp""#;
+
+#[tokio::test]
+async fn discovery_publishes_only_the_native_resource_and_its_exact_metadata() {
+    let app = Arc::new(MockApplication::default());
+    let (address, server) =
+        start_with_oauth(app.clone(), McpAdapter::router, Some(DISCOVERY_ISSUER)).await;
+    for path in [DISCOVERY_PRM, "/.well-known/oauth-protected-resource"] {
+        let (status, body, headers) = request_at(address, path, "GET", &[], "").await;
+        assert_eq!(status, 200);
+        assert_eq!(headers["content-type"], "application/json");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap(),
+            json!({
+                "resource": DISCOVERY_RESOURCE,
+                "authorization_servers": [DISCOVERY_ISSUER],
+                "scopes_supported": ["context:read", "memory:write", "artifact:manage",
+                                     "code:manage", "coordination:manage"],
+                "bearer_methods_supported": ["header"]
+            }),
+        );
+    }
+    for path in [
+        "/.well-known/oauth-protected-resource/mcp/legacy",
+        "/mcp/legacy",
+    ] {
+        assert_eq!(request_at(address, path, "GET", &[], "").await.0, 404);
+    }
+    assert!(app.operations.lock().unwrap().is_empty());
+    assert_eq!(
+        McpResourceRoute::Legacy.resource(DISCOVERY_ISSUER),
+        "https://mcp-edge.example.test:8443/mcp/legacy"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn discovery_challenges_unauthenticated_mcp_with_the_same_resource() {
+    let app = Arc::new(MockApplication {
+        operation_denied: Mutex::new(Some(ErrorCode::Unauthorized)),
+        ..MockApplication::default()
+    });
+    let (address, server) =
+        start_with_oauth(app.clone(), McpAdapter::router, Some(DISCOVERY_ISSUER)).await;
+    let body = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}}"#,
+        modern_params("")
+    );
+    let headers = modern_headers("server/discover");
+    let (status, _, response) = request(address, "POST", &headers[..2], &body).await;
+    assert_eq!(status, 401);
+    assert_eq!(response["www-authenticate"], DISCOVERY_CHALLENGE);
+    let (status, _, response) = request(address, "POST", &headers, &body).await;
+    assert_eq!(status, 401);
+    assert_eq!(
+        response["www-authenticate"],
+        format!(r#"{DISCOVERY_CHALLENGE}, error="invalid_token""#)
+    );
+    assert_eq!(
+        app.expected_resources.lock().unwrap().as_slice(),
+        vec![Some(DISCOVERY_RESOURCE.to_owned()); 4].as_slice()
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn discovery_challenges_only_the_403_for_an_exact_catalog_scope() {
+    let app = Arc::new(MockApplication {
+        invoke_denied: Mutex::new(Some(ErrorCode::Forbidden)),
+        operation_denied: Mutex::new(Some(ErrorCode::Forbidden)),
+        scope_catalog: Some(CanonicalCatalog::load().expect("canonical MCP catalog")),
+        ..MockApplication::default()
+    });
+    let (address, server) = start_with_oauth(app, McpAdapter::router, Some(DISCOVERY_ISSUER)).await;
+    let body = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}}"#,
+        modern_params(
+            r#""name":"remember","arguments":{"operation":"put","source":{"kind":"AgentNote","object_key":"entry"},"content":"test","idempotency_key":"entry"}"#
+        )
+    );
+    let (status, _, response) = request(address, "POST", &tool_call_headers(), &body).await;
+    assert_eq!(status, 403);
+    assert_eq!(
+        response["www-authenticate"],
+        format!(r#"{DISCOVERY_CHALLENGE}, error="insufficient_scope", scope="memory:write""#)
+    );
+    let body = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}}"#,
+        modern_params("")
+    );
+    let (status, _, response) =
+        request(address, "POST", &modern_headers("tools/list"), &body).await;
+    assert_eq!(status, 403);
+    assert_eq!(response.get("www-authenticate"), None);
     server.abort();
 }
 

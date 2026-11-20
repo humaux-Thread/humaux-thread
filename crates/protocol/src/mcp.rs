@@ -1,9 +1,9 @@
 //! `protocol::mcp` — Native MCP codec and shared stateless HTTP/application boundary.
 //! Depends-on: crates=[async-trait, axum, humaux-domain, rmcp, serde, serde_json, uuid]; services=[]; env=[];
-//!   modules=[domain::error, protocol::error_map, protocol::mcp_legacy]
+//!   modules=[domain::error, protocol::error_map, protocol::mcp_catalog, protocol::mcp_legacy]
 //! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, protocol::mcp_catalog, protocol::mcp_legacy, protocol::mcp_profile, tests]
 //! Invariants: [Retry-After is restricted to limiter capacity refusals (§67.2; ADR-0100)]
-//! Spec: Baseline §67.2; ADR-0100
+//! Spec: Baseline §33, §67.2; ADR-0100, ADR-0125 D1
 //!
 //! This module owns the rmcp/Axum boundary.  It deliberately exposes a
 //! small application port instead of routing directly into a domain handler:
@@ -16,7 +16,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     net::{IpAddr, SocketAddr},
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU16, Ordering},
     },
 };
@@ -26,10 +26,14 @@ use axum::{
     Router,
     body::{Body, to_bytes},
     extract::{ConnectInfo, Request, State},
-    http::{HeaderMap, HeaderValue, StatusCode, request::Parts},
+    http::{
+        HeaderMap, HeaderValue, StatusCode,
+        header::{CONTENT_TYPE, WWW_AUTHENTICATE},
+        request::Parts,
+    },
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::any_service,
+    routing::{any_service, get},
 };
 use humaux_domain::error::ErrorCode;
 use rmcp::{
@@ -45,15 +49,43 @@ use rmcp::{
     },
 };
 use serde::Deserialize;
-use serde_json::{Map, Value, value::RawValue};
+use serde_json::{Map, Value, json, value::RawValue};
 use uuid::Uuid;
 
 use crate::{
     error_map::{self, McpError},
+    mcp_catalog::Scope,
     mcp_legacy,
 };
 
 const NATIVE_PROTOCOL: ProtocolVersion = ProtocolVersion::V_2026_07_28;
+const RESOURCE_METADATA_ROOT: &str = "/.well-known/oauth-protected-resource";
+
+/// Exact audience for each MCP transport. Legacy discovery is reserved for its mount card.
+#[derive(Clone, Copy)]
+pub enum McpResourceRoute {
+    Native,
+    Legacy,
+}
+
+impl McpResourceRoute {
+    const fn path(self) -> &'static str {
+        match self {
+            Self::Native => "/mcp",
+            Self::Legacy => "/mcp/legacy",
+        }
+    }
+
+    /// The configured public origin is canonical and has no trailing slash.
+    pub fn resource(self, public_origin: &str) -> String {
+        format!("{public_origin}{}", self.path())
+    }
+
+    fn metadata_path(self) -> String {
+        format!("{RESOURCE_METADATA_ROOT}{}", self.path())
+    }
+}
+
 const TOOL_SET: [ToolName; 8] = [
     ToolName::Remember,
     ToolName::Recall,
@@ -188,6 +220,8 @@ pub struct McpHttpContext {
     forwarded: Option<String>,
     raw_arguments: Option<Arc<RawValue>>,
     capacity_denied: Arc<AtomicBool>,
+    expected_resource: Option<Arc<str>>,
+    insufficient_scope: Arc<OnceLock<&'static str>>,
 }
 
 impl McpHttpContext {
@@ -210,6 +244,23 @@ impl McpHttpContext {
 
     pub fn forwarded(&self) -> Option<&str> {
         self.forwarded.as_deref()
+    }
+
+    /// Trusted OAuth audience for this mounted route, when OAuth is enabled.
+    pub fn expected_resource(&self) -> Option<&str> {
+        self.expected_resource.as_deref()
+    }
+
+    /// The guard calls this only when a verified credential lacks the operation's scope.
+    /// Other authorization refusals leave the marker unset and retain their normal HTTP response.
+    pub fn mark_insufficient_scope(&self, required_scope: &str) {
+        if let Some(scope) = Scope::ALL
+            .iter()
+            .copied()
+            .find(|scope| *scope == required_scope)
+        {
+            let _ = self.insufficient_scope.set(scope);
+        }
     }
 
     /// Lexical JSON for `params.arguments`, preserved from the request body.
@@ -280,6 +331,7 @@ pub struct McpHttpConfig {
     allowed_hosts: Vec<String>,
     allowed_origins: Vec<String>,
     max_request_body_bytes: usize,
+    oauth_issuer: Option<String>,
 }
 
 impl McpHttpConfig {
@@ -295,7 +347,15 @@ impl McpHttpConfig {
             allowed_hosts,
             allowed_origins,
             max_request_body_bytes,
+            oauth_issuer: None,
         })
+    }
+
+    /// Enables discovery using the validated, canonical public origin from gateway bootstrap.
+    #[must_use]
+    pub fn with_oauth_issuer(mut self, issuer: String) -> Self {
+        self.oauth_issuer = Some(issuer);
+        self
     }
 
     fn sdk_config(&self) -> StreamableHttpServerConfig {
@@ -343,21 +403,37 @@ impl McpAdapter {
             Arc::new(NeverSessionManager::default()),
             self.config.sdk_config(),
         );
-        Router::new()
-            .route_service("/mcp", any_service(service))
-            .layer(middleware::from_fn_with_state(
-                self.boundary(false),
+        let route = McpResourceRoute::Native;
+        let router = Router::new()
+            .route_service(route.path(), any_service(service))
+            .route_layer(middleware::from_fn_with_state(
+                self.boundary(route),
                 request_boundary,
-            ))
+            ));
+        let Some(issuer) = &self.config.oauth_issuer else {
+            return router;
+        };
+        let document = json!({
+            "resource": route.resource(issuer),
+            "authorization_servers": [issuer],
+            "scopes_supported": Scope::ALL,
+            "bearer_methods_supported": ["header"],
+        })
+        .to_string();
+        let metadata = get(move || async move { ([(CONTENT_TYPE, "application/json")], document) });
+        router
+            .route(&route.metadata_path(), metadata.clone())
+            .route(RESOURCE_METADATA_ROOT, metadata)
     }
 
     /// Builds only the stateless legacy resource. Serve with socket connect info.
     pub fn legacy_router(&self) -> Router {
+        let route = McpResourceRoute::Legacy;
         Router::new()
-            .route("/mcp/legacy", axum::routing::any(mcp_legacy::dispatch))
+            .route(route.path(), axum::routing::any(mcp_legacy::dispatch))
             .with_state(self.handler_state())
             .route_layer(middleware::from_fn_with_state(
-                self.boundary(true),
+                self.boundary(route),
                 request_boundary,
             ))
     }
@@ -369,13 +445,19 @@ impl McpAdapter {
         }
     }
 
-    fn boundary(&self, legacy: bool) -> BoundaryConfig {
+    fn boundary(&self, route: McpResourceRoute) -> BoundaryConfig {
+        let legacy = matches!(route, McpResourceRoute::Legacy);
+        let issuer = self.config.oauth_issuer.as_deref();
         BoundaryConfig {
             application: self.application.clone(),
             allowed_hosts: self.config.allowed_hosts.clone(),
             allowed_origins: self.config.allowed_origins.clone(),
             max_request_body_bytes: self.config.max_request_body_bytes,
             legacy,
+            expected_resource: issuer.map(|issuer| Arc::from(route.resource(issuer))),
+            metadata_url: issuer
+                .filter(|_| !legacy)
+                .map(|issuer| format!("{issuer}{}", route.metadata_path())),
         }
     }
 }
@@ -393,6 +475,8 @@ struct BoundaryConfig {
     allowed_origins: Vec<String>,
     max_request_body_bytes: usize,
     legacy: bool,
+    expected_resource: Option<Arc<str>>,
+    metadata_url: Option<String>,
 }
 
 /// State inserted into the HTTP request parts and then picked up from rmcp's
@@ -403,6 +487,8 @@ pub(crate) struct McpRequestState {
     raw_arguments: Option<Arc<RawValue>>,
     capacity_denied: Arc<AtomicBool>,
     http_status: Arc<AtomicU16>,
+    expected_resource: Option<Arc<str>>,
+    insufficient_scope: Arc<OnceLock<&'static str>>,
 }
 
 #[derive(Deserialize)]
@@ -446,16 +532,24 @@ async fn request_boundary(
     };
     let status = Arc::new(AtomicU16::new(StatusCode::OK.as_u16()));
     let capacity_denied = Arc::new(AtomicBool::new(false));
+    let insufficient_scope = Arc::new(OnceLock::new());
     let mut request_state = McpRequestState {
         request_id: Uuid::now_v7(),
         raw_arguments: None,
         http_status: status.clone(),
         capacity_denied: capacity_denied.clone(),
+        expected_resource: config.expected_resource,
+        insufficient_scope: insufficient_scope.clone(),
     };
     let mut context = match http_context(&parts, &request_state) {
         Ok(context) => context,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
+    let has_bearer = context.authorization().is_some_and(|authorization| {
+        authorization
+            .split_once(' ')
+            .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
+    });
     if let Err(code) = config
         .application
         .check_access(&context, McpOperation::Preflight)
@@ -467,7 +561,12 @@ async fn request_boundary(
             code.as_str(),
         )
             .into_response();
-        return with_capacity_retry(response, &capacity_denied);
+        return with_bearer_challenge(
+            with_capacity_retry(response, &capacity_denied),
+            config.metadata_url.as_deref(),
+            has_bearer,
+            None,
+        );
     }
     if config.legacy {
         let message = match mcp_legacy::decode(&parts.headers, &bytes) {
@@ -500,7 +599,36 @@ async fn request_boundary(
     {
         *response.status_mut() = status;
     }
-    with_capacity_retry(response, &capacity_denied)
+    with_bearer_challenge(
+        with_capacity_retry(response, &capacity_denied),
+        config.metadata_url.as_deref(),
+        has_bearer,
+        insufficient_scope.get().copied(),
+    )
+}
+
+fn with_bearer_challenge(
+    mut response: Response,
+    metadata_url: Option<&str>,
+    has_bearer: bool,
+    insufficient_scope: Option<&str>,
+) -> Response {
+    let Some(metadata_url) = metadata_url else {
+        return response;
+    };
+    let parameters = match (response.status(), insufficient_scope) {
+        (StatusCode::UNAUTHORIZED, _) if has_bearer => ", error=\"invalid_token\"".into(),
+        (StatusCode::UNAUTHORIZED, _) => String::new(),
+        (StatusCode::FORBIDDEN, Some(scope)) => {
+            format!(", error=\"insufficient_scope\", scope=\"{scope}\"")
+        }
+        _ => return response,
+    };
+    let challenge = format!("Bearer resource_metadata=\"{metadata_url}\"{parameters}");
+    if let Ok(value) = HeaderValue::from_str(&challenge) {
+        response.headers_mut().insert(WWW_AUTHENTICATE, value);
+    }
+    response
 }
 
 // §67.2 / ADR-0100: capacity refusals at both protocol stages carry a bounded retry hint.
@@ -655,6 +783,8 @@ fn http_context(parts: &Parts, state: &McpRequestState) -> Result<McpHttpContext
         forwarded: single_header(&parts.headers, "forwarded")?,
         raw_arguments: state.raw_arguments.clone(),
         capacity_denied: state.capacity_denied.clone(),
+        expected_resource: state.expected_resource.clone(),
+        insufficient_scope: state.insufficient_scope.clone(),
     })
 }
 
