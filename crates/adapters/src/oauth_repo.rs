@@ -47,25 +47,34 @@ fn ttl_seconds(ttl: Duration) -> Result<i32, ErrorCode> {
         .ok_or(ErrorCode::Internal)
 }
 
+type ConsentCheck = fn(request_guard_repo::EffectiveEntitlementFacts) -> Result<(), ErrorCode>;
+
 /// One open transaction of an OAuth exchange. Dropping it without [`OAuthTxn::commit`] rolls everything back.
 pub struct OAuthTxn {
     txn: sqlx::Transaction<'static, sqlx::Postgres>,
+    consent: Option<(AuthorizationScope, ConsentCheck)>,
 }
 
 /// Opens an [`OAuthTxn`] on the gateway pool.
 pub async fn begin(pool: &RuntimeDbPool) -> Result<OAuthTxn, ErrorCode> {
     // dep: PostgreSQL(any) — opens a PostgreSQL transaction
     let txn = pool.pool().begin().await.map_err(db_failure)?;
-    Ok(OAuthTxn { txn })
+    Ok(OAuthTxn { txn, consent: None })
 }
 
 impl OAuthTxn {
-    /// Read the scoped entitlement while holding its row against concurrent changes until commit.
-    pub async fn consent_entitlement_facts(
+    /// Lock and validate consent entitlement, retaining the same policy for the post-insert check.
+    pub async fn admit_consent(
         &mut self,
         scope: &AuthorizationScope,
-    ) -> Result<request_guard_repo::EffectiveEntitlementFacts, ErrorCode> {
-        request_guard_repo::read_effective_entitlements_in_txn(&mut self.txn, scope, true).await
+        check: ConsentCheck,
+    ) -> Result<(), ErrorCode> {
+        let facts =
+            request_guard_repo::read_effective_entitlements_in_txn(&mut self.txn, scope, true)
+                .await?;
+        check(facts)?;
+        self.consent = Some((scope.clone(), check));
+        Ok(())
     }
 
     /// Commits every door call made on this transaction.
@@ -365,7 +374,11 @@ impl humaux_application::oauth_exchange::ExchangeTransaction for OAuthTxn {
         request: &CodeIssue<'_>,
         ttl: Duration,
     ) -> Result<bool, ErrorCode> {
-        sqlx::query_scalar::<_, bool>(
+        let (scope, check) = self.consent.as_ref().ok_or(ErrorCode::Internal)?;
+        if scope.tenant_id() != request.tenant_id || scope.user_id() != Some(request.user_id) {
+            return Err(ErrorCode::Forbidden);
+        }
+        let issued = sqlx::query_scalar::<_, bool>(
             "SELECT CASE WHEN ARRAY(SELECT control.oauth_consent_tenants($6)) = ARRAY[$7::uuid] \
              THEN control.oauth_code_issue($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) IS NOT NULL ELSE false END",
         )
@@ -382,7 +395,15 @@ impl humaux_application::oauth_exchange::ExchangeTransaction for OAuthTxn {
         // dep: PostgreSQL(any) — recheck membership and persist in one statement.
         .fetch_one(&mut *self.txn)
         .await
-        .map_err(db_failure)
+        .map_err(db_failure)?;
+        if issued {
+            // The row is still locked, but the clock may have advanced during the insert.
+            let facts =
+                request_guard_repo::read_effective_entitlements_in_txn(&mut self.txn, scope, false)
+                    .await?;
+            check(facts)?;
+        }
+        Ok(issued)
     }
 
     async fn refresh_grant(

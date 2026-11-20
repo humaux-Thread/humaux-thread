@@ -497,7 +497,7 @@ async fn allow_consent(
             &code,
         ),
         Ok(None) => auth_pages::forbidden(),
-        Err(code) => server_failure(code),
+        Err(code) => consent_failure(code),
     }
 }
 

@@ -2371,15 +2371,18 @@ pub(crate) async fn begin_oauth_consent(
     if txn.consent_tenants(user).await?.as_slice() != [scope.tenant_id()] {
         return Err(ErrorCode::Forbidden);
     }
-    let facts = txn.consent_entitlement_facts(scope).await?;
-    quota_policy(
-        &QuotaPolicyFacts {
-            effective: facts.effective,
-            computed_at: facts.computed_at,
-            observed_at: facts.observed_at,
-        },
-        BMO_ENTITLEMENT,
-    )?;
+    txn.admit_consent(scope, |facts| {
+        quota_policy(
+            &QuotaPolicyFacts {
+                effective: facts.effective,
+                computed_at: facts.computed_at,
+                observed_at: facts.observed_at,
+            },
+            BMO_ENTITLEMENT,
+        )
+        .map(drop)
+    })
+    .await?;
     Ok(Box::new(txn))
 }
 
