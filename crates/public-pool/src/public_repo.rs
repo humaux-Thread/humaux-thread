@@ -362,7 +362,6 @@ async fn admit_release_in_txn(
     })
 }
 
-/// Restricts the moderator port to trusted scope bindings within this crate.
 pub(crate) mod sealed {
     //! Seal the evaluator scope port at the cloud assembly boundary (§12.6).
 
