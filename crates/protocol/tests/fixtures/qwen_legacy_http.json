@@ -1,0 +1,15 @@
+{
+  "source": {
+    "test": "https://github.com/QwenLM/qwen-code/blob/2421ad2c3b18d0efce6a50c7576d2c4c735ec644/packages/core/src/tools/mcp-client-v2.test.ts#L352-L445",
+    "sdk": "https://registry.npmjs.org/@modelcontextprotocol%2fsdk/1.32.2",
+    "dist.integrity": "sha512-SWsVtH/0vULSQStoZ6xxH2K09Li8fXYTMC64ZeogCdpZ3XSi1eCPOByV1OpuJxuI3OcmHhosDWYyii07tpPsLw==",
+    "normalization": "Reconstructed from the pinned official test and SDK. IDs normalized. Replay uses the Humaux path and substitutes the canonical recall tool for echo."
+  },
+  "accept": "application/json, text/event-stream",
+  "initialize": {"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"extensions":{"io.modelcontextprotocol/ui":{"mimeTypes":["text/html;profile=mcp-app"]}},"roots":{"listChanged":true}},"clientInfo":{"name":"qwen-code-mcp-client","version":"0.0.1"}}},
+  "initialize_response": {"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"http-legacy","version":"1.0.0"}}},
+  "initialized": {"jsonrpc":"2.0","method":"notifications/initialized"},
+  "list": {"jsonrpc":"2.0","id":1,"method":"tools/list"},
+  "call": {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo"}},
+  "call_response": {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"ok"}]}}
+}

@@ -72,7 +72,7 @@ const DRILL_LABEL: &str = "humaux.drill";
 /// The repository filesystem's mount point in every container (the compose bind target).
 const REPO_MOUNT: &str = "/var/lib/pgbackrest";
 /// `pg1-path` in the conf: the base image's PGDATA.
-const PG1_PATH: &str = "/var/lib/postgresql/18/docker";
+const PG1_PATH: &str = "/var/lib/postgresql/19/docker";
 /// D-M: roles whose passwords the drill replaces before TCP opens; every other LOGIN role becomes NOLOGIN.
 const DRILL_LOGIN_ROLES: [&str; 4] = [
     "postgres",

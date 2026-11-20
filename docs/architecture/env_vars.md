@@ -285,6 +285,7 @@ modules:
 - `maintenance::tests::exit_codes`
 - `private-worker::main`
 - `private-worker::tests::exit_codes`
+- `protocol::mcp_legacy`
 - `retrieval-worker::main`
 - `retrieval-worker::tests::exit_codes`
 - `xtask::main`

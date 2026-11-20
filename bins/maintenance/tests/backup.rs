@@ -196,7 +196,7 @@ fn the_dr_wrapper_refuses_a_group_readable_env_file() {
 }
 
 /// T-H1: the Dockerfile's base is the pinned digest in the one stage `pg`, pgBackRest is installed by exact version,
-/// and the built image carries exactly that package and PostgreSQL 18.7. Fault: unpin the package version → red.
+/// and the built image carries exactly that package and PostgreSQL 19.0. Fault: unpin the package version → red.
 #[test]
 fn the_image_is_pinned_and_carries_pgbackrest() {
     let dockerfile = std::fs::read_to_string(root().join("deploy/images/postgres/Dockerfile"))
@@ -208,9 +208,9 @@ fn the_image_is_pinned_and_carries_pgbackrest() {
     let from: Vec<&&str> = live.iter().filter(|l| l.starts_with("FROM ")).collect();
     assert_eq!(from.len(), 1, "one stage");
     let digest = from[0]
-        .strip_prefix("FROM postgres:18.7@sha256:")
+        .strip_prefix("FROM postgres:19.0@sha256:")
         .and_then(|r| r.strip_suffix(" AS pg"))
-        .expect("FROM postgres:18.7@sha256:<digest> AS pg");
+        .expect("FROM postgres:19.0@sha256:<digest> AS pg");
     assert!(
         digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()),
         "{digest}"
@@ -245,7 +245,7 @@ fn the_image_is_pinned_and_carries_pgbackrest() {
         lines.next(),
         Some(format!("pgBackRest {upstream}").as_str())
     );
-    assert!(lines.next().is_some_and(|l| l.contains("18.7")), "{got}");
+    assert!(lines.next().is_some_and(|l| l.contains("19.0")), "{got}");
 }
 
 /// T-H2: `archive-push` (archive-async=n) answers 0 for an already archived segment with the same content and refuses
@@ -262,7 +262,7 @@ fn archive_push_refuses_a_same_name_segment_with_other_content() {
     };
     source.stanza_create();
     let codes = source.sh(
-        "set -u; G=/var/lib/postgresql/18/docker; S=$(psql -qAt -c 'select pg_walfile_name(pg_current_wal_lsn())'); \
+        "set -u; G=/var/lib/postgresql/19/docker; S=$(psql -qAt -c 'select pg_walfile_name(pg_current_wal_lsn())'); \
          psql -qAt -c 'create table t(i int); insert into t values (1); select pg_switch_wal()' >/dev/null; sleep 2; \
          d=$(mktemp -d); mkdir -p $d/pg_wal/archive_status $d/global; cp $G/global/pg_control $d/global/; \
          cp $G/pg_wal/$S $d/pg_wal/; P=\"pgbackrest --stanza=humaux --pg1-path=$d --log-level-console=off archive-push\"; \
@@ -605,7 +605,7 @@ fn a_backup_that_would_break_the_budget_is_refused_before_writing() {
     source.stanza_create();
     let estimate = kib(
         &source,
-        "du -sk /var/lib/postgresql/18/docker/base | cut -f1",
+        "du -sk /var/lib/postgresql/19/docker/base | cut -f1",
     );
     assert!(estimate >= 64 << 20, "database >= 64 MiB: {estimate}");
     // `fill_to` leaves `FILLER_HEADROOM` unallocated, so ask that much below the 8 MiB safety margin this test

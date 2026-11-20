@@ -21,16 +21,16 @@ humaux-application = { version = "0.1.0", path = "../application" }
 # why: SHA256 digest for the page@1 args hash; used-by: [protocol::page]
 sha2 = "0.11"
 # §33: SDK and HTTP wire types stay inside the Protocol adapter.
-# Native 2026-07-28 only; no provider/client/auth SDK feature is enabled.
-# why: MCP-over-HTTP server framework this adapter owns; used-by: [protocol::mcp]
+# The HTTP profiles use server-side wire types only.
+# why: MCP-over-HTTP server framework this adapter owns; used-by: [protocol::mcp, protocol::mcp_legacy]
 rmcp = { version = "=3.9.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
-# why: HTTP router the native MCP adapter is built on; used-by: [protocol::mcp, tests]
+# why: HTTP router for both MCP profiles; used-by: [protocol::mcp, protocol::mcp_legacy, tests]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 # why: object-safe async traits at the rmcp/Axum boundary; used-by: [protocol::mcp, tests]
 async-trait = "0.1"
 # why: MCP tool schema and JSON-RPC (de)serialization; used-by: [protocol::mcp, protocol::mcp_catalog]
 serde = { version = "1", features = ["derive"] }
-# why: JSON-RPC bodies, the embedded contracts/mcp catalog documents and page@1 cursor payloads; used-by: [protocol::mcp, protocol::mcp_catalog, protocol::page, tests]
+# why: JSON-RPC bodies, the embedded contracts/mcp catalog documents and page@1 cursor payloads; used-by: [protocol::mcp, protocol::mcp_catalog, protocol::mcp_legacy, protocol::page, tests]
 serde_json = { version = "1", features = ["raw_value"] }
 # why: validates the embedded contracts/mcp catalog documents at load time; used-by: [protocol::mcp_catalog]
 jsonschema = { version = "=0.52.0", default-features = false }

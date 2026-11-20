@@ -48,7 +48,7 @@ const REPO_MOUNT: &str = "/var/lib/pgbackrest";
 /// `repo1-path` in the conf (T-H6 pins the conf).
 const REPO_PATH: &str = "/var/lib/pgbackrest/repo";
 /// `pg1-path` in the conf: the base image's PGDATA.
-const PG1_PATH: &str = "/var/lib/postgresql/18/docker";
+const PG1_PATH: &str = "/var/lib/postgresql/19/docker";
 /// ADR-0064 D-H / 10.11 G: the only cipher `check` accepts for repo1.
 const CIPHER: &str = "aes-256-cbc";
 /// pgBackRest NEWS (weak subkeys): a subkey with six or more zero bytes is weak.
