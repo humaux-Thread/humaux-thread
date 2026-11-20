@@ -322,11 +322,7 @@ pub struct GatewayBootstrap {
     readiness_refresh: Duration,
     /// §30.2 / §78.1 `HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS`: the lease `coordinate.task_claim` / `task_heartbeat` grant.
     task_lease_ttl: Duration,
-    /// M02 D8 / §78.1 `HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS`: the least time between two `last_used_at`
-    /// writes of one credential; every request still validates the credential.
-    credential_touch_interval: Duration,
-    credential_batch_touch: bool,
-    credential_route_region: Option<(u64, Duration)>,
+    credential_settings: CredentialGatewaySettings,
     /// ADR-0062 D-K `HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS`: one memory.enumerate manifest segment's lifetime.
     enumeration_ttl: Duration,
     /// ADR-0062 D-K `HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP`: the most ids one manifest segment stores.
@@ -549,27 +545,7 @@ impl GatewayBootstrap {
         let session_lock = acquire_gateway_lock(&pool, &self.deployment)
             .await
             .map_err(|code| BootstrapError::new(DEPLOYMENT_KEY, code.as_str()))?;
-        let route_cache = self.credential_route_region.map(|(bytes, ttl)| {
-            Arc::new(CredentialRouteCache::new(
-                &self.guard.credential_pepper,
-                bytes,
-                ttl,
-            ))
-        });
-        let mut guard = GatewayGuard::new(pool, self.guard)
-            .map_err(|_| BootstrapError::new("gateway guard", "unsafe configuration"))?
-            .with_credential_touch_interval(self.credential_touch_interval);
-        if let Some(cache) = route_cache {
-            guard = guard.with_credential_route_cache(cache);
-        }
-        if self.credential_batch_touch {
-            guard = guard
-                .with_batched_credential_touch(self.credential_touch_interval)
-                .map_err(|_| {
-                    BootstrapError::new(CREDENTIAL_TOUCH_INTERVAL_KEY, "invalid batch interval")
-                })?;
-        }
-        let guard = Arc::new(guard);
+        let guard = Arc::new(self.credential_settings.build_guard(pool, self.guard)?);
         let catalog = CanonicalCatalog::load().map_err(|_| {
             BootstrapError::new("canonical MCP catalog", "invalid embedded contract")
         })?;
@@ -704,39 +680,7 @@ impl GatewayBootstrap {
             None => None,
         };
         let task_lease_ttl = task_lease_ttl(required(&effective, TASK_LEASE_TTL_KEY)?)?;
-        let credential_touch_interval =
-            credential_touch_interval(required(&effective, CREDENTIAL_TOUCH_INTERVAL_KEY)?)?;
-        let credential_batch_touch =
-            credential_flag(&effective, CREDENTIAL_BATCH_TOUCH_ENABLED_KEY)?;
-        if credential_batch_touch && credential_touch_interval.as_secs() < MIN_BATCH_TOUCH_SECONDS {
-            return Err(BootstrapError::new(
-                CREDENTIAL_TOUCH_INTERVAL_KEY,
-                "batch touch requires at least 60 seconds",
-            ));
-        }
-        let route_cache_enabled = credential_flag(&effective, CREDENTIAL_ROUTE_CACHE_ENABLED_KEY)?;
-        let route_cache_bytes = required(&effective, CREDENTIAL_ROUTE_CACHE_BYTES_KEY)?
-            .parse::<u64>()
-            .ok()
-            .filter(|bytes| (1..=MAX_CREDENTIAL_ROUTE_BYTES).contains(bytes))
-            .ok_or_else(|| {
-                BootstrapError::new(
-                    CREDENTIAL_ROUTE_CACHE_BYTES_KEY,
-                    "must be 1..=8388608 bytes",
-                )
-            })?;
-        let route_cache_ttl = Duration::from_secs(u64::from(parse_u32(
-            required(&effective, CREDENTIAL_ROUTE_CACHE_TTL_KEY)?,
-            CREDENTIAL_ROUTE_CACHE_TTL_KEY,
-        )?));
-        if route_cache_ttl.is_zero() {
-            return Err(BootstrapError::new(
-                CREDENTIAL_ROUTE_CACHE_TTL_KEY,
-                "must be positive",
-            ));
-        }
-        let credential_route_region =
-            route_cache_enabled.then_some((route_cache_bytes, route_cache_ttl));
+        let credential_settings = CredentialGatewaySettings::parse(&effective)?;
         let enumeration_ttl = seconds(
             required(&effective, ENUMERATION_TTL_KEY)?,
             ENUMERATION_TTL_KEY,
@@ -779,9 +723,7 @@ impl GatewayBootstrap {
             metrics_addr,
             readiness_refresh,
             task_lease_ttl,
-            credential_touch_interval,
-            credential_batch_touch,
-            credential_route_region,
+            credential_settings,
             enumeration_ttl,
             enumeration_manifest_cap,
             effective_config: effective_config_rows(&registry, &raw, &effective),
@@ -2060,6 +2002,83 @@ fn task_lease_ttl(value: &str) -> Result<Duration, BootstrapError> {
         .ok_or_else(|| BootstrapError::new(TASK_LEASE_TTL_KEY, "must be 1..=4294967295 seconds"))
 }
 
+struct CredentialGatewaySettings {
+    touch_interval: Duration,
+    batch_touch: bool,
+    route_region: Option<(u64, Duration)>,
+}
+
+impl CredentialGatewaySettings {
+    fn parse(effective: &BTreeMap<String, String>) -> Result<Self, BootstrapError> {
+        let credential_touch_interval =
+            credential_touch_interval(required(effective, CREDENTIAL_TOUCH_INTERVAL_KEY)?)?;
+        let credential_batch_touch =
+            credential_flag(effective, CREDENTIAL_BATCH_TOUCH_ENABLED_KEY)?;
+        if credential_batch_touch && credential_touch_interval.as_secs() < MIN_BATCH_TOUCH_SECONDS {
+            return Err(BootstrapError::new(
+                CREDENTIAL_TOUCH_INTERVAL_KEY,
+                "batch touch requires at least 60 seconds",
+            ));
+        }
+        let route_cache_enabled = credential_flag(effective, CREDENTIAL_ROUTE_CACHE_ENABLED_KEY)?;
+        let route_cache_bytes = required(effective, CREDENTIAL_ROUTE_CACHE_BYTES_KEY)?
+            .parse::<u64>()
+            .ok()
+            .filter(|bytes| (1..=MAX_CREDENTIAL_ROUTE_BYTES).contains(bytes))
+            .ok_or_else(|| {
+                BootstrapError::new(
+                    CREDENTIAL_ROUTE_CACHE_BYTES_KEY,
+                    "must be 1..=8388608 bytes",
+                )
+            })?;
+        let route_cache_ttl = Duration::from_secs(u64::from(parse_u32(
+            required(effective, CREDENTIAL_ROUTE_CACHE_TTL_KEY)?,
+            CREDENTIAL_ROUTE_CACHE_TTL_KEY,
+        )?));
+        if route_cache_ttl.is_zero() {
+            return Err(BootstrapError::new(
+                CREDENTIAL_ROUTE_CACHE_TTL_KEY,
+                "must be positive",
+            ));
+        }
+        let credential_route_region =
+            route_cache_enabled.then_some((route_cache_bytes, route_cache_ttl));
+        Ok(Self {
+            touch_interval: credential_touch_interval,
+            batch_touch: credential_batch_touch,
+            route_region: credential_route_region,
+        })
+    }
+
+    fn build_guard(
+        self,
+        pool: RuntimeDbPool,
+        settings: GuardSettings,
+    ) -> Result<GatewayGuard, BootstrapError> {
+        let route_cache = self.route_region.map(|(bytes, ttl)| {
+            Arc::new(CredentialRouteCache::new(
+                &settings.credential_pepper,
+                bytes,
+                ttl,
+            ))
+        });
+        let mut guard = GatewayGuard::new(pool, settings)
+            .map_err(|_| BootstrapError::new("gateway guard", "unsafe configuration"))?
+            .with_credential_touch_interval(self.touch_interval);
+        if let Some(cache) = route_cache {
+            guard = guard.with_credential_route_cache(cache);
+        }
+        if self.batch_touch {
+            guard = guard
+                .with_batched_credential_touch(self.touch_interval)
+                .map_err(|_| {
+                    BootstrapError::new(CREDENTIAL_TOUCH_INTERVAL_KEY, "invalid batch interval")
+                })?;
+        }
+        Ok(guard)
+    }
+}
+
 fn credential_flag(
     effective: &BTreeMap<String, String>,
     key: &str,
@@ -2944,7 +2963,7 @@ mod tests {
             let mut values = raw();
             values.insert(CREDENTIAL_TOUCH_INTERVAL_KEY.into(), value.into());
             GatewayBootstrap::from_raw(values)
-                .map(|boot| boot.credential_touch_interval)
+                .map(|boot| boot.credential_settings.touch_interval)
                 .map_err(|error| error.key)
         };
         for value in ["3601", "-1", "soon", "1.5"] {
@@ -2965,7 +2984,7 @@ mod tests {
         let mut values = raw();
         values.remove(CREDENTIAL_TOUCH_INTERVAL_KEY);
         assert_eq!(
-            GatewayBootstrap::from_raw(values).map(|boot| boot.credential_touch_interval),
+            GatewayBootstrap::from_raw(values).map(|boot| boot.credential_settings.touch_interval),
             Ok(Duration::from_secs(60)),
             "unset resolves to the registered default"
         );
@@ -2991,9 +3010,9 @@ mod tests {
             assert!(matches!(outcome(bad), Err(found) if found == key));
         }
         let boot = outcome(values).unwrap();
-        assert!(boot.credential_batch_touch);
+        assert!(boot.credential_settings.batch_touch);
         assert_eq!(
-            boot.credential_route_region,
+            boot.credential_settings.route_region,
             Some((8 * 1024 * 1024, Duration::from_secs(60)))
         );
     }

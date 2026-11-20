@@ -1,6 +1,6 @@
 //! `gateway::tests::route_cache` — G-M03-4 and G-M03-5 through the MCP HTTP guard.
-//! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-testkit, postgres, tokio, uuid];
-//!   services=[HTTP(gateway), PostgreSQL(role_migration_owner) r=[control.api_keys] x=[control.revoke_api_key]]; env=[]; modules=[adapters::postgres, adapters::tests::support::operation_receipt_fixture, application::api_key, domain::error, domain::ids, gateway::guard, gateway::limiter, gateway::route_cache, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog]
+//! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-testkit, tokio, uuid];
+//!   services=[HTTP(gateway)]; env=[]; modules=[adapters::postgres, adapters::tests::support::operation_receipt_fixture, application::api_key, domain::error, domain::ids, gateway::guard, gateway::limiter, gateway::route_cache, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]
 //! Invariants: [one real gateway-login pool and isolated fixture tenant per gate; use the transport and guard for every request]
 //! Spec: Baseline §73.5.1; §79.2; ADR-0133; G-M03-4; G-M03-5
@@ -176,10 +176,9 @@ fn g_m03_4_revoke_and_wrong_tenant_candidates_fail_on_http_entry() {
             INTERVAL,
         ));
         let key = cache.key(credential.bearer.strip_prefix("Bearer ").unwrap());
-        let pool = fixture.rt.block_on(fixture.fresh_runtime()).unwrap();
-        let admin = &mut fixture.admin;
-        let tenant = fixture.tenant_id;
-        fixture.rt.block_on(async {
+        let rt = fixture.rt.handle().clone();
+        rt.block_on(async {
+            let pool = fixture.fresh_runtime().await.unwrap();
             let (address, server) = start(pool, Arc::clone(&cache)).await;
             assert!(cache.lookup(&key).await.is_none());
             assert_eq!(catalog_request(address, &credential).await, 200);
@@ -207,25 +206,7 @@ fn g_m03_4_revoke_and_wrong_tenant_candidates_fail_on_http_entry() {
                 cache.lookup(&key).await.is_some(),
                 "revocation case must begin with a hit"
             );
-            tokio::task::block_in_place(|| {
-                let mut txn = admin.transaction().unwrap();
-                txn.query_one(
-                    "SELECT set_config('humaux.tenant_id', $1, true)",
-                    &[&tenant.to_string()],
-                )
-                .unwrap();
-                let wire = credential.bearer.strip_prefix("Bearer ").unwrap();
-                let prefix = wire.split_once('.').unwrap().0;
-                let changed: bool = txn
-                    .query_one(
-                        "SELECT changed FROM control.revoke_api_key($1, $2)",
-                        &[&tenant, &prefix],
-                    )
-                    .unwrap()
-                    .get(0);
-                assert!(changed, "fixture credential was revoked");
-                txn.commit().unwrap();
-            });
+            tokio::task::block_in_place(|| fixture.revoke_service_credential(&credential));
             assert_eq!(
                 catalog_request(address, &credential).await,
                 401,
@@ -240,35 +221,27 @@ fn g_m03_4_revoke_and_wrong_tenant_candidates_fail_on_http_entry() {
     });
 }
 
-fn activity(admin: &mut postgres::Client, id: Uuid) -> (String, bool) {
-    let row = admin.query_one(
-        "SELECT xmin::text, last_used_at IS NOT NULL FROM control.api_keys WHERE api_key_id = $1",
-        &[&id],
-    ).unwrap();
-    (row.get(0), row.get(1))
-}
-
 #[test]
 fn g_m03_5_http_calls_change_the_activity_row_once_per_window() {
     run_db_fixture::<Fixture, _>("G-M03-5 HTTP activity writes", |mut fixture| {
         let credential = seed(&mut fixture);
-        let pool = fixture.rt.block_on(fixture.fresh_runtime()).unwrap();
         let cache = Arc::new(CredentialRouteCache::new(
             SYNTHETIC_CREDENTIAL_PEPPER,
             4096,
             INTERVAL,
         ));
-        let admin = &mut fixture.admin;
-        fixture.rt.block_on(async {
+        let rt = fixture.rt.handle().clone();
+        rt.block_on(async {
+            let pool = fixture.fresh_runtime().await.unwrap();
             let (address, server) = start(pool, cache).await;
             let mut previous =
-                tokio::task::block_in_place(|| activity(admin, credential.api_key_id));
+                tokio::task::block_in_place(|| fixture.credential_activity(&credential));
             assert!(!previous.1);
             let start = Instant::now();
             let mut updates = 0;
             for _ in 0..100 {
                 assert_eq!(catalog_request(address, &credential).await, 200);
-                let next = tokio::task::block_in_place(|| activity(admin, credential.api_key_id));
+                let next = tokio::task::block_in_place(|| fixture.credential_activity(&credential));
                 updates += usize::from(next.0 != previous.0);
                 previous = next;
             }

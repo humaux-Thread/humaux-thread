@@ -635,6 +635,18 @@ impl Handle {
             .expect("owner revokes isolated synthetic credential");
     }
 
+    /// Reads the isolated credential's current row version and whether activity was stamped.
+    pub fn credential_activity(
+        &mut self,
+        credential: &SyntheticServiceCredential,
+    ) -> (String, bool) {
+        let row = self.admin.query_one(
+            "SELECT xmin::text, last_used_at IS NOT NULL FROM control.api_keys WHERE api_key_id = $1",
+            &[&credential.api_key_id],
+        ).expect("owner reads isolated credential activity");
+        (row.get(0), row.get(1))
+    }
+
     /// Seeds a `WORKSPACE_SHARED` memory and matching workspace-scoped mandatory binding.
     /// This is owner-only fixture setup; requests still use the gateway runtime identity.
     pub fn seed_workspace_visible_context_record(&mut self) -> ScopedContextRecord {

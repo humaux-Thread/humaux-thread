@@ -266,7 +266,6 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::credential_grants`
-- (no process): `gateway::tests::route_cache`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::provisioning`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -4790,7 +4789,6 @@ read by:
 written by:
 
 executed by:
-- (no process): `gateway::tests::route_cache`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::provisioning`

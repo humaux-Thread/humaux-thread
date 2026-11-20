@@ -151,25 +151,31 @@ pub(crate) struct BatchTouch {
 impl BatchTouch {
     pub(crate) fn new(pool: Arc<RuntimeDbPool>, interval: Duration, seconds: i32) -> Self {
         let throttle = Arc::new(TouchThrottle::new(interval));
-        let (pending, mut receiver) = mpsc::channel::<PendingTouch>(TOUCH_MAP_CAP);
-        let claims = Arc::clone(&throttle);
+        let (pending, receiver) = mpsc::channel(TOUCH_MAP_CAP);
         // One writer drains eligible requests together. It owns admitted work if a request is cancelled.
-        tokio::spawn(async move {
-            let mut batch = Vec::new();
-            let mut ids = Vec::new();
-            while receiver.recv_many(&mut batch, TOUCH_MAP_CAP).await != 0 {
-                ids.extend(batch.iter().map(|(principal, _)| principal.0));
-                let result = mark_used_batch(&pool, &ids, seconds).await.map(|_| ());
-                ids.clear();
-                for (principal, done) in batch.drain(..) {
-                    if result.is_err() {
-                        claims.release(principal);
-                    }
-                    let _ = done.send(result);
-                }
-            }
-        });
+        tokio::spawn(Self::flush(pool, receiver, Arc::clone(&throttle), seconds));
         Self { throttle, pending }
+    }
+
+    async fn flush(
+        pool: Arc<RuntimeDbPool>,
+        mut receiver: mpsc::Receiver<PendingTouch>,
+        claims: Arc<TouchThrottle>,
+        seconds: i32,
+    ) {
+        let mut batch = Vec::new();
+        let mut ids = Vec::new();
+        while receiver.recv_many(&mut batch, TOUCH_MAP_CAP).await != 0 {
+            ids.extend(batch.iter().map(|(principal, _)| principal.0));
+            let result = mark_used_batch(&pool, &ids, seconds).await.map(|_| ());
+            ids.clear();
+            for (principal, done) in batch.drain(..) {
+                if result.is_err() {
+                    claims.release(principal);
+                }
+                let _ = done.send(result);
+            }
+        }
     }
 
     pub(crate) async fn stamp(
