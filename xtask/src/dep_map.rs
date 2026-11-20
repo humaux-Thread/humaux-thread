@@ -5965,6 +5965,35 @@ mod tests {
         assert!(fx.found("crates/a/src/y.rs").is_empty());
     }
 
+    #[test]
+    fn m01_5_domain_header_upward_edge_is_drift() {
+        let fx = Fx::new("m01_5_domain_header");
+        let path = "crates/domain/src/affect.rs";
+        let header = hdr("domain::affect", NODEP, "[]", "[]");
+        fx.pkg("crates/domain", "humaux-domain", "")
+            .file("crates/domain/src/lib.rs", "pub mod affect;\n")
+            .file(path, &header);
+        assert!(fx.found(path).is_empty());
+
+        fx.file(
+            path,
+            &header.replace("modules=[]", "modules=[adapters::remember]"),
+        );
+        let red = fx.found(path);
+        assert_eq!(
+            red,
+            [(
+                1,
+                "modules-drift",
+                "modules= extra [adapters::remember] missing [] (computed: [])".into(),
+            )],
+        );
+        println!("M01-5 domain header: RED {red:?}");
+        fx.file(path, &header);
+        assert!(fx.found(path).is_empty());
+        println!("M01-5 domain header: restored GREEN");
+    }
+
     // ---- call sites and tags -------------------------------------------------------------
 
     #[test]

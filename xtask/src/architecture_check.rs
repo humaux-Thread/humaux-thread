@@ -1527,7 +1527,8 @@ fn hex_layer_source(path: &str) -> bool {
     (path.strip_prefix("bins/").is_some_and(|p| {
         p.split_once('/')
             .is_some_and(|(_, p)| p.starts_with("src/"))
-    }) || path.starts_with("crates/protocol/src/"))
+    }) || path.starts_with("crates/domain/src/")
+        || path.starts_with("crates/protocol/src/"))
         && !HEX_LAYER_EXCLUDED.contains(&path)
         && !path.split('/').any(|part| part == "tests")
 }
@@ -1535,7 +1536,7 @@ fn hex_layer_source(path: &str) -> bool {
 fn hex_layer_gate(root: &Path) -> Verdict {
     let mut actual = BTreeSet::new();
     let mut problems = Vec::new();
-    for directory in ["bins", "crates/protocol/src"] {
+    for directory in ["bins", "crates/domain/src", "crates/protocol/src"] {
         let files = walk_files(&root.join(directory), &["rs"]);
         if files.is_empty() {
             problems.push(format!("missing source object `{directory}`"));
@@ -14679,6 +14680,35 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         check(2);
         println!("COVERAGE orphan: restored GREEN");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn m01_5_domain_import_fails_hex_layer() {
+        let root = fresh_tmp("m01-5-domain-layer");
+        hex_copy_boundary_fixture(&real_root(), &root);
+        let path = "crates/domain/src/affect.rs";
+        let source_path = root.join(path);
+        let original = fs::read_to_string(&source_path).unwrap();
+        let adapter = "humaux_adapters::affect_repo::AffectRepoError";
+        assert_eq!(hex_layer_gate(&root), Verdict::Pass);
+
+        fs::write(
+            &source_path,
+            format!("{original}\nuse {adapter} as BoundaryUpwardImport;\n"),
+        )
+        .unwrap();
+        let red = hex_layer_gate(&root);
+        fs::write(source_path, original).unwrap();
+        let restored = hex_layer_gate(&root);
+        fs::remove_dir_all(root).unwrap();
+
+        assert_eq!(
+            red,
+            Verdict::Fail(vec![format!("HEX-LAYER: new violation {path}:{adapter}")]),
+        );
+        println!("M01-5 LAYER domain import: RED {red:?}");
+        assert_eq!(restored, Verdict::Pass);
+        println!("M01-5 LAYER domain import: restored GREEN");
     }
 
     #[test]

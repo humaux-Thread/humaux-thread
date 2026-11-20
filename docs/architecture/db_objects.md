@@ -10937,6 +10937,7 @@ read by:
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::note_put`
+- (no process): `adapters::tests::note_reads`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::read_decoupling`
@@ -11049,6 +11050,7 @@ written by:
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
+- (no process): `adapters::tests::note_reads`
 - (no process): `adapters::tests::offset_pagination_positive_control`
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `adapters::tests::outbox_batch_remember`
