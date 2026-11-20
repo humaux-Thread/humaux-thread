@@ -186,6 +186,7 @@ impl reqwest::dns::Resolve for PinnedResolver {
         }
         let inner = self.inner.clone();
         let cache = self.cache.clone();
+        let cache_enabled = !self.ttl.is_zero();
         Box::pin(async move {
             let lookup_host = host.clone();
             // 注入的 resolver 可能是阻塞的（`SystemCheckedResolve` 的 `ToSocketAddrs`、
@@ -199,7 +200,7 @@ impl reqwest::dns::Resolve for PinnedResolver {
             if addrs.is_empty() {
                 return Err(refused(&host, "resolved to zero addresses".to_string()));
             }
-            if let Ok(mut guard) = cache.lock() {
+            if cache_enabled && let Ok(mut guard) = cache.lock() {
                 guard.insert(host, (Instant::now(), addrs.clone()));
             }
             Ok(as_addrs(addrs))
