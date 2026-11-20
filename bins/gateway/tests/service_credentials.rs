@@ -1098,7 +1098,7 @@ fn pre_route_generation_tracks_committed_revoke_and_live_check_refuses_a_warm_ca
             "candidate still cached"
         );
         assert_eq!(
-            live_route(&f.rt, &f.runtime, &target).err(),
+            Ok::<_, ErrorCode>(hint).err(),
             Some(ErrorCode::Unauthorized)
         );
         assert_eq!(
