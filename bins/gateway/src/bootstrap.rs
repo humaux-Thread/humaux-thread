@@ -741,11 +741,10 @@ impl GatewayBootstrap {
             mood_half_life,
             token_keys,
             auth_pages,
-            oauth_static_clients: oauth_http
-                .as_ref()
-                .and(effective.get(OAUTH_STATIC_CLIENTS_KEY))
-                .cloned()
-                .unwrap_or_default(),
+            oauth_static_clients: effective
+                .get(OAUTH_STATIC_CLIENTS_KEY)
+                .filter(|_| oauth_http.is_some())
+                .map_or_else(String::new, String::clone),
             oauth_http,
             billing_webhook,
             metrics_addr,
