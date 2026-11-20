@@ -7796,7 +7796,6 @@ read by:
 written by:
 - (no process): `public-pool::tests::mechanism_observation`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 
 executed by:
 
@@ -7835,7 +7834,6 @@ read by:
 written by:
 - (no process): `public-pool::tests::mechanism_observation`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 
 executed by:
 
@@ -15463,7 +15461,6 @@ read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 
 written by:
 - (no process): `public-pool::tests::public_trust`
@@ -15509,7 +15506,6 @@ read by:
 - (no process): `public-pool::tests::public_runtime_qdrant`
 - (no process): `public-pool::tests::support::public_anonymous_seam`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 
 written by:
 - (no process): `adapters::contribution_repo`
@@ -15724,7 +15720,6 @@ read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 - process(humaux-public-worker): `public-pool::public_repo`
 
 written by:

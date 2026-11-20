@@ -1,8 +1,83 @@
-//! `domain::vocab` — shared visibility and moderation labels (ADR-0131).
+//! `domain::vocab` — shared cache, retrieval, visibility and moderation labels (ADR-0131).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [retrieval::request, telemetry::metrics]
-//! Invariants: [closed variant sets and stable database labels]
-//! Spec: Baseline §6.1.1; §12; §78.2
+//! Called-by: [cache::bounded, gateway::cached_embedding, retrieval::request, telemetry::metrics]
+//! Invariants: [closed variant sets and stable wire and database labels]
+//! Spec: Baseline §6.1.1; §12; §41.2; §51; §78.2
+
+/// A named cache instance; the `cache` label (§41.2). One value per cache the process runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheName {
+    /// Query-embedding cache in the gateway (M12 design D2).
+    EmbedQuery,
+}
+
+impl CacheName {
+    /// Every variant, in label order.
+    pub const ALL: [Self; 1] = [Self::EmbedQuery];
+
+    /// The `cache` label value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EmbedQuery => "embed_query",
+        }
+    }
+}
+
+/// How one cache lookup ended (§41.2 `result` label; §51.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheResult {
+    /// Served from the cache (including a caller that joined an in-flight compute).
+    Hit,
+    /// Computed by this caller and admitted.
+    Miss,
+    /// Computed but not admitted: cache disabled, zero capacity or tenant over its byte cap.
+    Bypass,
+    /// The compute failed or the cache itself faulted; nothing was cached and the request went on.
+    Error,
+}
+
+impl CacheResult {
+    /// Every variant, in label order.
+    pub const ALL: [Self; 4] = [Self::Hit, Self::Miss, Self::Bypass, Self::Error];
+
+    /// The `result` label value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Hit => "hit",
+            Self::Miss => "miss",
+            Self::Bypass => "bypass",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// Why an entry left the cache (§41.2 `cause` label); mirrors moka's removal causes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvictionCause {
+    /// Time-to-live elapsed.
+    Expired,
+    /// Removed by an explicit invalidation.
+    Explicit,
+    /// Overwritten by a newer value for the same key.
+    Replaced,
+    /// Evicted to stay under the byte capacity.
+    Size,
+}
+
+impl EvictionCause {
+    /// Every variant, in label order.
+    pub const ALL: [Self; 4] = [Self::Expired, Self::Explicit, Self::Replaced, Self::Size];
+
+    /// The `cause` label value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Expired => "expired",
+            Self::Explicit => "explicit",
+            Self::Replaced => "replaced",
+            Self::Size => "size",
+        }
+    }
+}
 
 /// §41.2 `humaux_retrieval_requests_total.intent`: a closed label for the request constructor (ADR-0061 D-C).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -8,9 +8,10 @@
 //!
 //! Layer direction is cloud → core: this crate reaches the typed pools through
 //! `humaux-adapters`. The reverse seam is `humaux_adapters::mechanism_observation::PublicClaimEvaluator`, implemented
-//! here by [`public_repo::PublicRepoEvaluator`].
+//! at the assembly boundary by [`bootstrap::PublicRepoEvaluator`].
 
 pub mod admission;
+pub mod bootstrap;
 pub mod completeness;
 pub mod notice;
 pub mod policy;

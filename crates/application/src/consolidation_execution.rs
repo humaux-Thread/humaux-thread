@@ -1,6 +1,6 @@
 //! `application::consolidation_execution` — Run and dispatch consolidation (§11.7–§11.9, ADR-0036).
 //! Depends-on: crates=[async-trait, humaux-domain, serde_json, uuid]; services=[]; env=[]; modules=[application::consolidate, domain::authority, domain::consolidate, domain::error]
-//! Called-by: [adapters::consolidate_repo, adapters::jobs, consolidation-worker::main, tests]
+//! Called-by: [adapters::consolidate_repo, adapters::jobs, consolidation-worker::bootstrap, tests]
 //! Invariants: [bind inference after recording the run; commit a published rollup and job DONE under one lease fence]
 //! Spec: §11.7; §11.8; §11.9; ADR-0036; ADR-0130
 

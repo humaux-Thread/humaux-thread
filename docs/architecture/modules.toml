@@ -600,6 +600,8 @@ files = [
   "crates/cache/tests/failure.rs",
   "crates/cache/tests/isolation.rs",
   "crates/cache/tests/singleflight.rs",
+  "crates/cache/tests/support/mod.rs",
+  "crates/domain/src/grounding_read.rs",
   "crates/domain/src/selection.rs",
   "crates/projection/src/card.rs",
   "crates/projection/src/code.rs",
@@ -996,6 +998,14 @@ use_case = "remember"
 note = "M07 fact door and M18 verification collaborate in one PG transaction"
 
 # Shared source ownership is explicit; it grants no guest table write permission.
+
+[[shared_file]]
+path = "bins/consolidation-worker/src/bootstrap.rs"
+contexts = ["knowledge_curation", "operations_platform"]
+
+[[shared_file]]
+path = "crates/public-pool/src/bootstrap.rs"
+contexts = ["operations_platform", "public_knowledge"]
 
 [[shared_file]]
 path = "bins/gateway/build.rs"

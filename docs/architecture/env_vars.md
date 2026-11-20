@@ -272,7 +272,7 @@ modules:
 - `admin::main`
 - `admin::probe`
 - `admin::tests::exit_codes`
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::exit_codes`
 - `gateway::context`
 - `gateway::main`
@@ -626,7 +626,7 @@ modules:
 - `admin::main`
 - `admin::probe`
 - `admin::tests::exit_codes`
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::exit_codes`
 - `gateway::build`
 - `gateway::context`
@@ -664,7 +664,7 @@ modules:
 - `admin::main`
 - `admin::probe`
 - `admin::tests::exit_codes`
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::exit_codes`
 - `gateway::context`
 - `gateway::main`
@@ -781,7 +781,7 @@ processes:
 - process(humaux-consolidation-worker)
 
 modules:
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::exit_codes`
 - `consolidation-worker::tests::ops_listener`
@@ -798,7 +798,7 @@ processes:
 - process(humaux-consolidation-worker)
 
 modules:
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::exit_codes`
 - `consolidation-worker::tests::ops_listener`
@@ -815,7 +815,7 @@ processes:
 - process(humaux-consolidation-worker)
 
 modules:
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::exit_codes`
 - `consolidation-worker::tests::ops_listener`
@@ -832,7 +832,7 @@ processes:
 - process(humaux-consolidation-worker)
 
 modules:
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::exit_codes`
 - `consolidation-worker::tests::ops_listener`
@@ -849,7 +849,7 @@ processes:
 - process(humaux-consolidation-worker)
 
 modules:
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::exit_codes`
 - `consolidation-worker::tests::ops_listener`
@@ -866,7 +866,7 @@ processes:
 - process(humaux-consolidation-worker)
 
 modules:
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::exit_codes`
 - `consolidation-worker::tests::ops_listener`
@@ -896,7 +896,7 @@ processes:
 - process(humaux-consolidation-worker)
 
 modules:
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 
 ### `HUMAUX_CONSOLIDATION_WORKER_POLL_INTERVAL_SECS`
 - witness: literal
@@ -910,7 +910,7 @@ processes:
 - process(humaux-consolidation-worker)
 
 modules:
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::exit_codes`
 - `consolidation-worker::tests::ops_listener`
@@ -929,7 +929,7 @@ processes:
 - process(humaux-maintenance)
 
 modules:
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::exit_codes`
 - `consolidation-worker::tests::ops_listener`
@@ -947,7 +947,7 @@ processes:
 - process(humaux-consolidation-worker)
 
 modules:
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::exit_codes`
 - `consolidation-worker::tests::ops_listener`
@@ -964,7 +964,7 @@ processes:
 - process(humaux-consolidation-worker)
 
 modules:
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::exit_codes`
 - `consolidation-worker::tests::ops_listener`

@@ -1,8 +1,8 @@
 //! `gateway::cached_embedding` — `CachedEmbeddingPort`: the §51 query-embedding cache in front of the ADR-0012
 //!   `RetrievalEmbeddingPort` (M12 D2).
-//! Depends-on: crates=[async-trait, humaux-application, humaux-cache, humaux-domain, humaux-telemetry, sha2];
+//! Depends-on: crates=[async-trait, humaux-application, humaux-cache, humaux-domain, sha2];
 //!   services=[]; env=[]; modules=[application::retrieval_embedding_port, cache::bounded, cache::key, domain::error,
-//!   telemetry::cache]
+//!   domain::vocab]
 //! Called-by: [gateway::bootstrap, tests]
 //! Invariants: [the key namespace comes from the trusted `AuthorizationScope` only: tenant + user (M12 D3); a call the
 //!   inner client would refuse (no user, or a workspace outside the scope's allowed set) goes straight to the inner
@@ -29,9 +29,10 @@ use async_trait::async_trait;
 use humaux_application::retrieval_embedding_port::{
     RetrievalEmbeddingInput, RetrievalEmbeddingOutcome, RetrievalEmbeddingPort,
 };
+use humaux_cache::bounded::CacheObserver;
 use humaux_cache::{BoundedCache, CacheConfig, EmbeddingQueryKey};
 use humaux_domain::error::ErrorCode;
-use humaux_telemetry::cache::CacheName;
+use humaux_domain::vocab::CacheName;
 use sha2::{Digest, Sha256};
 
 /// Domain tag of [`GenerationStamp::fingerprint`]; bump it, never reuse it, if the field list changes.
@@ -105,10 +106,11 @@ impl CachedEmbeddingPort {
         inner: Arc<dyn RetrievalEmbeddingPort>,
         stamp: GenerationStamp,
         config: CacheConfig,
+        observer: CacheObserver,
     ) -> Self {
         Self {
             inner,
-            cache: BoundedCache::new(CacheName::EmbedQuery, config),
+            cache: BoundedCache::new(CacheName::EmbedQuery, config, observer),
             generation_fingerprint: stamp.fingerprint(),
             stamp,
         }

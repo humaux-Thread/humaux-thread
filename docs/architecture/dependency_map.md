@@ -577,6 +577,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::grounding`
 
+#### `domain::grounding_read`
+
 #### `domain::identity`
 
 #### `domain::ids`
@@ -1682,14 +1684,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::private_inference`
 
-#### `consolidation-worker::dsn`
-- env `CONSOLIDATION_WORKER_PG_DSN`
-- env `HUMAUX_CONSOLIDATION_WORKER_PG_DSN`
-
-#### `consolidation-worker::inference_client`
-- service `UDS(private-worker)`
-
-#### `consolidation-worker::main`
+#### `consolidation-worker::bootstrap`
 - env `CARGO_PKG_VERSION`
 - env `HUMAUX_BUILD_GIT_SHA`
 - env `HUMAUX_BUILD_TIME`
@@ -1707,6 +1702,15 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `HTTP(loopback)`
 - service `PostgreSQL(role_consolidation_worker)`
 - service `UDS(private-worker)`
+
+#### `consolidation-worker::dsn`
+- env `CONSOLIDATION_WORKER_PG_DSN`
+- env `HUMAUX_CONSOLIDATION_WORKER_PG_DSN`
+
+#### `consolidation-worker::inference_client`
+- service `UDS(private-worker)`
+
+#### `consolidation-worker::main`
 
 #### `domain::authority`
 
@@ -2357,6 +2361,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::evidence`
 
 #### `domain::grounding`
+
+#### `domain::grounding_read`
 
 #### `domain::identity`
 
@@ -3330,6 +3336,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::evidence`
 
 #### `domain::grounding`
+
+#### `domain::grounding_read`
 
 #### `domain::identity`
 
@@ -4495,6 +4503,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::grounding`
 
+#### `domain::grounding_read`
+
 #### `domain::identity`
 
 #### `domain::ids`
@@ -4658,16 +4668,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 ### process(humaux-public-worker)
 
-#### `adapters::mechanism_observation`
-- reads `public.claim_trust_evaluations`
-- reads `public.claims`
-- reads `public.consensus_ready`
-- reads `public.corroborated`
-- reads `public.eligible_objects`
-- writes `ops.mechanism_e2e_runs`
-- writes `ops.mechanism_observations`
-- service `PostgreSQL(any)`
-
 #### `adapters::outbox_repo`
 - writes `ops.outbox`
 - service `PostgreSQL(any)`
@@ -4705,13 +4705,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `adapters::quota_reservation_port`
 
-#### `application::mechanism_observation`
-
 #### `application::public_dispatch`
-
-#### `contracts::mechanism_registry`
-- reads `public.consensus_ready`
-- service `PostgreSQL(any)`
 
 #### `domain::authority`
 
@@ -5349,6 +5343,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::evidence`
 
 #### `domain::grounding`
+
+#### `domain::grounding_read`
 
 #### `domain::identity`
 
@@ -8834,7 +8830,6 @@ read by:
 written by:
 - (no process): `public-pool::tests::mechanism_observation`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 
 executed by:
 
@@ -8847,7 +8842,6 @@ read by:
 written by:
 - (no process): `public-pool::tests::mechanism_observation`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 
 executed by:
 
@@ -12662,7 +12656,6 @@ read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 
 written by:
 - (no process): `public-pool::tests::public_trust`
@@ -12680,7 +12673,6 @@ read by:
 - (no process): `public-pool::tests::public_runtime_qdrant`
 - (no process): `public-pool::tests::support::public_anonymous_seam`
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 
 written by:
 - (no process): `adapters::contribution_repo`
@@ -12735,8 +12727,6 @@ read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(cargo-xtask): `contracts::mechanism_registry`
 - process(humaux-admin): `contracts::mechanism_registry`
-- process(humaux-public-worker): `adapters::mechanism_observation`
-- process(humaux-public-worker): `contracts::mechanism_registry`
 
 written by:
 
@@ -12745,7 +12735,6 @@ executed by:
 ### `public.corroborated`
 read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 
 written by:
 
@@ -12780,7 +12769,6 @@ read by:
 - process(cargo-xtask): `adapters::mechanism_observation`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
-- process(humaux-public-worker): `adapters::mechanism_observation`
 - process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
@@ -13246,7 +13234,7 @@ executed by:
 - `billing-worker::tests::cancel`
 - `billing-worker::tests::fetch`
 - `billing-worker::tests::process`
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::ops_listener`
 - `gateway::admission`
 - `gateway::main`
@@ -13584,7 +13572,7 @@ executed by:
 - `adapters::tests::forget_race`
 - `adapters::tests::jobs_claim`
 - `adapters::tests::memory_subjects_link`
-- `consolidation-worker::main`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::run_once_e2e`
@@ -13946,8 +13934,8 @@ executed by:
 
 ### `UDS (clients)`
 - `admin::cell_resources`
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::inference_client`
-- `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `gateway::retrieval_embedding_client`
 - `gateway::status`
@@ -16032,15 +16020,15 @@ modules naming it:
 - `tests`
 
 ### humaux-cache → `humaux-telemetry` (normal)
-why: the four §51 cache metric families and their closed label sets
+why: the four §51 cache metric families exercised by integration fixtures
 
 modules naming it:
-- `cache::bounded`
 - `cache::tests::bounds`
 - `cache::tests::embedding_key`
 - `cache::tests::failure`
 - `cache::tests::isolation`
 - `cache::tests::singleflight`
+- `cache::tests::support`
 - `tests`
 
 ### humaux-cache → `moka` (normal)
@@ -16477,6 +16465,7 @@ modules naming it:
 why: typed per-role pools, Qdrant transport error, claim-evaluator seam
 
 modules naming it:
+- `public-pool::bootstrap`
 - `public-pool::public_projection`
 - `public-pool::public_provenance`
 - `public-pool::public_repo`
@@ -16495,6 +16484,7 @@ modules naming it:
 why: domain types the public plane reads/returns
 
 modules naming it:
+- `public-pool::bootstrap`
 - `public-pool::notice`
 - `public-pool::public_evolve`
 - `public-pool::public_projection`
@@ -16539,6 +16529,7 @@ modules naming it:
 why: dyn-compatible async ports (PublicProjectionPort, PublicClaimEvaluator)
 
 modules naming it:
+- `public-pool::bootstrap`
 - `public-pool::public_projection`
 - `public-pool::public_repo`
 - `public-pool::tests::mechanism_observation`
@@ -16901,6 +16892,7 @@ modules naming it:
 why: domain ids, errors and value types shared across layers
 
 modules naming it:
+- `telemetry::cache`
 - `telemetry::degrade`
 - `telemetry::health`
 - `telemetry::metrics`
@@ -17308,8 +17300,8 @@ modules naming it:
 why: humaux-adapters dependency
 
 modules naming it:
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::inference_client`
-- `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::run_once_e2e`
@@ -17330,8 +17322,8 @@ modules naming it:
 why: humaux-domain dependency
 
 modules naming it:
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::inference_client`
-- `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::run_once_e2e`
 - `tests`
@@ -17340,16 +17332,16 @@ modules naming it:
 why: humaux-infra-cell dependency
 
 modules naming it:
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::inference_client`
-- `consolidation-worker::main`
 - `tests`
 
 ### humaux-consolidation-worker → `humaux-telemetry` (normal)
 why: /metrics + /status exposition
 
 modules naming it:
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::dsn`
-- `consolidation-worker::main`
 - `consolidation-worker::tests::exit_codes`
 - `tests`
 
@@ -17357,6 +17349,7 @@ modules naming it:
 why: tokio dependency
 
 modules naming it:
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::inference_client`
 - `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
@@ -17368,8 +17361,8 @@ modules naming it:
 why: uuid dependency
 
 modules naming it:
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::inference_client`
-- `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::run_once_e2e`
@@ -17425,8 +17418,8 @@ modules naming it:
 why: uuid dependency
 
 modules naming it:
+- `consolidation-worker::bootstrap`
 - `consolidation-worker::inference_client`
-- `consolidation-worker::main`
 - `consolidation-worker::tests::consolidation_hop_e2e`
 - `consolidation-worker::tests::derived_dispatch_e2e`
 - `consolidation-worker::tests::run_once_e2e`
@@ -17660,7 +17653,6 @@ why: metrics exposition, degrade counters, the loopback ops listener and the ver
 modules naming it:
 - `gateway::admission`
 - `gateway::bootstrap`
-- `gateway::cached_embedding`
 - `gateway::context`
 - `gateway::guard`
 - `gateway::main`
@@ -21222,9 +21214,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3852` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3857` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3862` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3867` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3872` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3877` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
@@ -21233,11 +21225,11 @@ default run:
 - `crates/adapters/tests/contribution_execution_repo.rs:42` [table-undeclared] (line) — static source-text guard; no DB connection
 - `crates/application/Cargo.toml:43` [cargo-usedby] (line) — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
 - `crates/application/src/auth.rs:521` [table-undeclared] (line) — names the table only in a panic message; no DB access here
-- `crates/application/src/continuity.rs:1415` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
+- `crates/application/src/continuity.rs:1424` [table-undeclared] (line) — selector metadata names the missing column; SQL runs in adapters
 - `crates/protocol/Cargo.toml:39` [cargo-usedby] (line) — declared but named by no module today; kept for the Axum server's transitive requirement (removal is a code change, out of card 26 scope)
 - `crates/public-pool/src/completeness.rs:379` [table-undeclared] (line) — §57.1 names the missing relation; no SQL reads it in this module
-- `crates/retrieval/src/envelope.rs:2161` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
-- `crates/retrieval/src/envelope.rs:2980` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2160` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
+- `crates/retrieval/src/envelope.rs:2979` [table-undeclared] (line) — unit-test string naming a table/pipeline stage; retrieval has no DB access
 - `crates/retrieval/src/planner.rs:314` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_eval.rs:108` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census
 - `crates/retrieval/src/predicate_registry.rs:173` [table-undeclared] (line) — predicate scope metadata; SQL is executed by adapters::exact_census

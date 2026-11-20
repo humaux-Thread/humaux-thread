@@ -3,16 +3,6 @@
 # read_gate.rs:RowGrounding{,::Judged,::NotJudged} -> read_materialize.rs:same symbols (3 rows).
 # read_gate.rs:MemoryId -> application/recall_read.rs:MemoryId.
 # read_gate.rs:NoteKind -> application/recall_read.rs:NoteKind.
-bins/consolidation-worker/src/dsn.rs:knowledge_curation->operations_platform:humaux_telemetry::renamed_key
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::ModeFailure
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::ModeFailure::runtime
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::metrics::OpsListener
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::metrics::parse_ops_addr
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::metrics::process_routes
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::metrics::render_stage_liveness
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::metrics::serve_loopback
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::start_line
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::version_mode
 crates/adapters/src/applicability_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/continuity_read.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/continuity_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
@@ -28,27 +18,9 @@ crates/adapters/src/qdrant.rs:retrieval_read_model->knowledge_lifecycle:humaux_d
 crates/adapters/src/qdrant.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::BasisPoints
 crates/adapters/src/qdrant.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::EmotionLabel
 crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
-crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding
-crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding::Judged
-crates/adapters/src/read_materialize.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::RowGrounding::NotJudged
 crates/adapters/src/retrieve.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
 crates/application/src/contribute.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
 crates/application/src/recall_read.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
-crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::CacheName
-crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::CacheResult
-crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::CacheResult::Bypass
-crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::CacheResult::Error
-crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::CacheResult::Hit
-crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::CacheResult::Miss
-crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::EvictionCause
-crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::EvictionCause::Expired
-crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::EvictionCause::Explicit
-crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::EvictionCause::Replaced
-crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::EvictionCause::Size
-crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::count_cache_eviction
-crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::count_cache_request
-crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::set_cache_bytes
-crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_telemetry::cache::set_cache_singleflight_waiters
 crates/projection/src/dense.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::AffectFilter
 crates/projection/src/dense.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::BasisPointRange
 crates/projection/src/dense.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::affect::BasisPoints
@@ -56,9 +28,6 @@ crates/projection/src/dense.rs:retrieval_read_model->knowledge_lifecycle:humaux_
 crates/projection/src/fingerprint.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::evidence::EvidencePayloadSha256
 crates/projection/src/fingerprint.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::evidence::EvidencePayloadSha256::to_hex
 crates/public-pool/src/public_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
-crates/public-pool/src/public_repo.rs:public_knowledge->operations_platform:humaux_adapters::mechanism_observation::EvaluateClaim
-crates/public-pool/src/public_repo.rs:public_knowledge->operations_platform:humaux_adapters::mechanism_observation::EvaluationResult
-crates/public-pool/src/public_repo.rs:public_knowledge->operations_platform:humaux_adapters::mechanism_observation::PublicClaimEvaluator
 crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source
 crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source::RetrievalQuerySourceError::Disclosure
 crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source::SerializedRetrievalQueryBatch
@@ -68,18 +37,5 @@ crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_mod
 crates/retrieval-provider/src/contract.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source::RetrievalQueryCallContext
 crates/retrieval/src/compiler.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
 crates/retrieval/src/completeness.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
-crates/retrieval/src/envelope.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingState
-crates/retrieval/src/envelope.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingStateKind
-crates/retrieval/src/envelope.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingStateKind::CannotEstablish
-crates/retrieval/src/envelope.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingStateKind::Current
-crates/retrieval/src/envelope.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingStateKind::RecheckRequired
-crates/retrieval/src/envelope.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingStateKind::Unresolved
 crates/retrieval/src/envelope.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
-crates/retrieval/src/handoff.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingStateKind
-crates/retrieval/src/handoff.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingStateKind::CannotEstablish
-crates/retrieval/src/handoff.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingStateKind::Current
-crates/retrieval/src/handoff.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingStateKind::RecheckRequired
-crates/retrieval/src/handoff.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingStateKind::Unresolved
 crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
-crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::NeedsVerification
-crates/retrieval/src/signals.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::grounding::GroundingState

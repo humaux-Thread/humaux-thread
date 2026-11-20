@@ -17,16 +17,16 @@ workspace = true
 humaux-application = { path = "../application" }
 # Pool wrappers (`PublicWorkerDbPool` et al.), `QdrantTransportError` and the `PublicClaimEvaluator` trait this crate
 # implements. `cloud-raw-pool` is the only way to reach a wrapper's `PgPool` from outside the adapters crate.
-# why: typed per-role pools, Qdrant transport error, claim-evaluator seam; used-by: [public-pool::public_projection, public-pool::public_provenance, public-pool::public_repo, tests]
+# why: typed per-role pools, Qdrant transport error, claim-evaluator seam; used-by: [public-pool::bootstrap, public-pool::public_projection, public-pool::public_provenance, public-pool::public_repo, tests]
 humaux-adapters = { path = "../adapters", features = ["cloud-raw-pool"] }
-# why: domain types the public plane reads/returns; used-by: [public-pool::public_evolve, public-pool::public_provenance, public-pool::public_repo]
+# why: domain types the public plane reads/returns; used-by: [public-pool::bootstrap, public-pool::public_evolve, public-pool::public_provenance, public-pool::public_repo]
 humaux-domain = { path = "../domain" }
 # why: same-Cell resource/permit types for the Qdrant projection adapter; used-by: [public-pool::public_projection, tests]
 humaux-infra-cell = { path = "../infra-cell" }
 # §78 boundary row G-M01-3 names this crate beside humaux-adapters: the public tables are queried here.
 # why: public-schema queries and transactions; used-by: [public-pool::public_provenance, public-pool::public_repo, tests]
 sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio", "uuid", "time", "json"] }
-# why: dyn-compatible async ports (PublicProjectionPort, PublicClaimEvaluator); used-by: [public-pool::public_projection, public-pool::public_repo, tests]
+# why: dyn-compatible async ports (PublicProjectionPort, PublicClaimEvaluator); used-by: [public-pool::bootstrap, public-pool::public_projection, public-pool::public_repo, tests]
 async-trait = "0.1"
 # why: projection payload and receipt JSON; used-by: [public-pool::public_projection, public-pool::public_repo, tests]
 serde_json = "1"

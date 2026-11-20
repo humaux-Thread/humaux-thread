@@ -1,6 +1,6 @@
 //! `cache::bounded` — `BoundedCache`: a moka-backed cache with byte weights, TTL, single-flight, a per-tenant byte
 //!   cap and the §51.3 failure rule.
-//! Depends-on: crates=[moka, humaux-domain, humaux-telemetry]; services=[]; env=[]; modules=[cache::key, domain::ids, telemetry::cache]
+//! Depends-on: crates=[humaux-domain, moka]; services=[]; env=[]; modules=[cache::key, domain::ids, domain::vocab]
 //! Called-by: [gateway::bootstrap, gateway::cached_embedding, tests]
 //! Invariants: [concurrent identical misses run one compute (§51, M12 D7); an `Err` is never cached; an insert that
 //!   would take a tenant over `per_tenant_bytes` is skipped as `bypass` and evicts nobody (M12 D5); a disabled or
@@ -25,13 +25,23 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use humaux_domain::ids::TenantId;
-use humaux_telemetry::cache::{
-    CacheName, CacheResult, EvictionCause, count_cache_eviction, count_cache_request,
-    set_cache_bytes, set_cache_singleflight_waiters,
-};
+use humaux_domain::vocab::{CacheName, CacheResult, EvictionCause};
 use moka::notification::RemovalCause;
 
 use crate::key::{CacheKey, CacheValue};
+
+/// Cache observation port (§41.2). Callbacks run inline, including under the byte-accounting lock,
+/// and must return without blocking, panicking, or re-entering the cache.
+pub struct CacheObserver {
+    /// Reports one finished lookup.
+    pub request: fn(CacheName, CacheResult),
+    /// Reports one removal from the eviction listener.
+    pub eviction: fn(CacheName, EvictionCause),
+    /// Reports the current byte accounting after reservation or release.
+    pub bytes: fn(CacheName, u64),
+    /// Reports the number of callers in single-flight, including the leader.
+    pub singleflight_waiters: fn(CacheName, u64),
+}
 
 /// Sizes and switches of one cache; every value comes from the config registry (§78.1), never from here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +66,7 @@ struct Accounts {
 /// Shared between the cache handle and moka's eviction listener.
 struct State {
     name: CacheName,
+    observer: CacheObserver,
     accounts: Mutex<Accounts>,
     in_flight: AtomicU64,
 }
@@ -75,7 +86,7 @@ impl State {
         }
         *used += bytes;
         accounts.total = accounts.total.saturating_add(bytes);
-        set_cache_bytes(self.name, accounts.total);
+        (self.observer.bytes)(self.name, accounts.total);
         true
     }
 
@@ -88,7 +99,7 @@ impl State {
             }
         }
         accounts.total = accounts.total.saturating_sub(bytes);
-        set_cache_bytes(self.name, accounts.total);
+        (self.observer.bytes)(self.name, accounts.total);
     }
 }
 
@@ -98,7 +109,7 @@ struct InFlight<'a>(&'a State);
 impl<'a> InFlight<'a> {
     fn enter(state: &'a State) -> Self {
         let n = state.in_flight.fetch_add(1, Ordering::Relaxed) + 1;
-        set_cache_singleflight_waiters(state.name, n);
+        (state.observer.singleflight_waiters)(state.name, n);
         Self(state)
     }
 }
@@ -106,7 +117,7 @@ impl<'a> InFlight<'a> {
 impl Drop for InFlight<'_> {
     fn drop(&mut self) {
         let n = self.0.in_flight.fetch_sub(1, Ordering::Relaxed) - 1;
-        set_cache_singleflight_waiters(self.0.name, n);
+        (self.0.observer.singleflight_waiters)(self.0.name, n);
     }
 }
 
@@ -137,9 +148,10 @@ pub struct BoundedCache<K: CacheKey, V: CacheValue> {
 
 impl<K: CacheKey, V: CacheValue> BoundedCache<K, V> {
     /// Builds the cache for `name`; a disabled or zero-capacity `config` yields a pass-through.
-    pub fn new(name: CacheName, config: CacheConfig) -> Self {
+    pub fn new(name: CacheName, config: CacheConfig, observer: CacheObserver) -> Self {
         let state = Arc::new(State {
             name,
+            observer,
             accounts: Mutex::new(Accounts::default()),
             in_flight: AtomicU64::new(0),
         });
@@ -151,7 +163,7 @@ impl<K: CacheKey, V: CacheValue> BoundedCache<K, V> {
                 .time_to_live(config.ttl)
                 .eviction_listener(move |k: Arc<K>, v: V, cause: RemovalCause| {
                     listener_state.release(k.tenant(), weight(k.as_ref(), &v));
-                    count_cache_eviction(listener_state.name, cause_of(cause));
+                    (listener_state.observer.eviction)(listener_state.name, cause_of(cause));
                 })
                 .build()
         });
@@ -181,8 +193,9 @@ impl<K: CacheKey, V: CacheValue> BoundedCache<K, V> {
         F: Future<Output = Result<V, E>>,
     {
         let name = self.state.name;
+        let record_request = self.state.observer.request;
         let Some(cache) = &self.cache else {
-            return Self::uncached(name, compute, CacheResult::Bypass).await;
+            return self.uncached(compute, CacheResult::Bypass).await;
         };
         let tenant = key.tenant();
         let key_bytes = key.key_bytes() as u64;
@@ -223,27 +236,25 @@ impl<K: CacheKey, V: CacheValue> BoundedCache<K, V> {
                 } else {
                     CacheResult::Hit
                 };
-                count_cache_request(name, result);
+                record_request(name, result);
                 Ok(v)
             }
             Err(_) => {
                 let outcome = lock(&leader_outcome).take();
                 match outcome {
                     Some(Ok(v)) => {
-                        count_cache_request(name, CacheResult::Bypass);
+                        record_request(name, CacheResult::Bypass);
                         Ok(v)
                     }
                     Some(Err(e)) => {
-                        count_cache_request(name, CacheResult::Error);
+                        record_request(name, CacheResult::Error);
                         Err(e)
                     }
                     None => {
                         // Joined a leader that did not cache: compute for ourselves.
                         let compute = lock(&own).take();
                         match compute {
-                            Some(compute) => {
-                                Self::uncached(name, compute, CacheResult::Bypass).await
-                            }
+                            Some(compute) => self.uncached(compute, CacheResult::Bypass).await,
                             // moka runs a caller's init future at most once, and a leader that ran it recorded its
                             // outcome above, so this arm has no execution.
                             None => unreachable!(
@@ -256,12 +267,15 @@ impl<K: CacheKey, V: CacheValue> BoundedCache<K, V> {
         }
     }
 
-    async fn uncached<E, F>(name: CacheName, compute: F, ok: CacheResult) -> Result<V, E>
+    async fn uncached<E, F>(&self, compute: F, ok: CacheResult) -> Result<V, E>
     where
         F: Future<Output = Result<V, E>>,
     {
         let out = compute.await;
-        count_cache_request(name, if out.is_ok() { ok } else { CacheResult::Error });
+        (self.state.observer.request)(
+            self.state.name,
+            if out.is_ok() { ok } else { CacheResult::Error },
+        );
         out
     }
 }
