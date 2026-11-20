@@ -281,7 +281,7 @@ impl ContributionFixture {
         }
     }
 
-    pub fn request(&self) -> PrepareContribution {
+    pub fn request(&self) -> PrepareContribution<AuthorizationScope> {
         PrepareContribution {
             authorization: self.auth.clone(),
             requested_sources: vec![ReleaseSource::Memory(MemoryId(self.memory))],
@@ -321,7 +321,7 @@ impl ContributionFixture {
             .expect("authenticated prepare")
     }
 
-    pub fn confirm(&self, id: ContributionCandidateId) -> ConfirmContribution {
+    pub fn confirm(&self, id: ContributionCandidateId) -> ConfirmContribution<AuthorizationScope> {
         let preview = self
             .rt
             .block_on(contribution_entry_repo::preview(

@@ -80,7 +80,7 @@ fn command_owns_contracts_and_serializes_concurrent_first_creators() {
     let mut fixture = ContributionFixture::new();
     let ingress = ContributionExecutionIngress::new(&fixture.private);
     let command = StartManualContributionCommand::new(&ingress);
-    let request: ContributionPreparationInput = (&fixture.request()).into();
+    let request: ContributionPreparationInput<_> = (&fixture.request()).into();
     let tenant_id = fixture.auth.tenant_id().0;
     let key = format!("private-worker-command-{}", Uuid::new_v4());
 

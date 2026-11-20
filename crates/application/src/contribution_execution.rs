@@ -15,7 +15,8 @@ use uuid::Uuid;
 use crate::{
     consolidate::{ContentSha256, LogicalReasoningCallId, ProviderTraceRef, ReasoningIntentSha256},
     contribute::{
-        ContributionGate, PreparationSnapshot, PreparedAssessedContribution, PublicCoverageDigest,
+        ContributionCandidatePort, ContributionGate, PreparationSnapshot,
+        PreparedAssessedContribution, PublicCoverageDigest,
     },
 };
 
@@ -181,23 +182,24 @@ impl ContributionPromptContract {
 }
 
 /// Immutable application value consumed by the authoritative enqueue SQL command.
-pub struct ContributionExecutionEnqueueInput {
+pub struct ContributionExecutionEnqueueInput<Authorization> {
     idempotency_key: String,
     coverage_contract: ContributionPromptContract,
     assessment_contract: ContributionPromptContract,
-    prepared: PreparedAssessedContribution,
+    prepared: PreparedAssessedContribution<Authorization>,
 }
 
-impl ContributionExecutionEnqueueInput {
-    pub fn try_new(
+impl<Authorization: Eq> ContributionExecutionEnqueueInput<Authorization> {
+    pub fn try_new<C: ContributionCandidatePort<Authorization = Authorization> + ?Sized>(
         idempotency_key: String,
         coverage_contract: ContributionPromptContract,
         assessment_contract: ContributionPromptContract,
-        prepared: PreparedAssessedContribution,
+        prepared: PreparedAssessedContribution<Authorization>,
+        candidates: &C,
     ) -> Result<Self, ErrorCode> {
         let preparation = prepared.preparation();
         if idempotency_key.trim().is_empty()
-            || preparation.authorization.user_id().is_none()
+            || !candidates.has_user(&preparation.authorization)
             || preparation.sources.is_empty()
             || preparation.policy_version <= 0
             || preparation.reasoning.binding_version.0 <= 0
@@ -226,11 +228,11 @@ impl ContributionExecutionEnqueueInput {
         self.assessment_contract
     }
 
-    pub const fn preparation(&self) -> &PreparationSnapshot {
+    pub const fn preparation(&self) -> &PreparationSnapshot<Authorization> {
         self.prepared.preparation()
     }
 
-    pub const fn prepared(&self) -> &PreparedAssessedContribution {
+    pub const fn prepared(&self) -> &PreparedAssessedContribution<Authorization> {
         &self.prepared
     }
 }
@@ -798,18 +800,21 @@ pub struct EnqueuedContributionExecution {
 /// Atomic MANUAL preparation and enqueue door; implementations own the whole transaction.
 #[async_trait::async_trait]
 pub trait ManualContributionPort: Send + Sync {
+    /// Trusted scope accepted by the manual admission adapter.
+    type Authorization: Send + Sync;
+
     /// Freeze trusted preparation and enqueue before any provider execution (ADR-0130 D7a).
     async fn start_manual(
         &self,
-        request: crate::contribute::ContributionPreparationInput,
+        request: crate::contribute::ContributionPreparationInput<Self::Authorization>,
         idempotency_key: String,
     ) -> Result<EnqueuedContributionExecution, ErrorCode>;
 }
 
 /// Admit an explicit contribution through the transaction-owning private boundary.
-pub async fn start_manual_contribution(
-    port: &dyn ManualContributionPort,
-    request: crate::contribute::ContributionPreparationInput,
+pub async fn start_manual_contribution<Authorization: Send + Sync>(
+    port: &dyn ManualContributionPort<Authorization = Authorization>,
+    request: crate::contribute::ContributionPreparationInput<Authorization>,
     idempotency_key: String,
 ) -> Result<EnqueuedContributionExecution, ErrorCode> {
     port.start_manual(request, idempotency_key).await

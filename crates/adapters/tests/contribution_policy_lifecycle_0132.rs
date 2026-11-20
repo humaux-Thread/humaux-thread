@@ -583,7 +583,7 @@ fn same_key_replay_freezes_policy_authority() {
     let mut fixture = ContributionFixture::new();
     let (tenant_id, policy_id) = fixture_policy(&mut fixture);
     let ingress = ContributionExecutionIngress::new(&fixture.private);
-    let request: ContributionPreparationInput = (&fixture.request()).into();
+    let request: ContributionPreparationInput<_> = (&fixture.request()).into();
     let key = format!("policy-replay-{}", Uuid::new_v4());
 
     let first = fixture
@@ -771,7 +771,7 @@ fn exact_history_successor_concurrency_and_head_admission_hold() {
     let old_candidate = fixture.prepare();
     let old_confirmation = fixture.confirm(old_candidate);
     let ingress = ContributionExecutionIngress::new(&fixture.private);
-    let request: ContributionPreparationInput = (&fixture.request()).into();
+    let request: ContributionPreparationInput<_> = (&fixture.request()).into();
     let v1_execution = fixture
         .rt
         .block_on(ingress.start_manual(

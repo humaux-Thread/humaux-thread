@@ -106,7 +106,7 @@ fn production_core_is_atomic_v2_complete_and_v1_compatible() {
     // READ COMMITTED preparation snapshot: exactly one creates, and every waiter sees its IDs.
     let mut race = ContributionFixture::new();
     let race_ingress = ContributionExecutionIngress::new(&race.private);
-    let race_request: ContributionPreparationInput = (&race.request()).into();
+    let race_request: ContributionPreparationInput<_> = (&race.request()).into();
     let race_tenant_id = race.auth.tenant_id().0;
     let race_key = format!("production-ingress-race-{}", Uuid::new_v4());
     let race_coverage = coverage_prompt_contract();
@@ -164,7 +164,7 @@ fn production_core_is_atomic_v2_complete_and_v1_compatible() {
 
     let mut fixture = ContributionFixture::new();
     let ingress = ContributionExecutionIngress::new(&fixture.private);
-    let request: ContributionPreparationInput = (&fixture.request()).into();
+    let request: ContributionPreparationInput<_> = (&fixture.request()).into();
     let tenant_id = fixture.auth.tenant_id().0;
     let key = format!("production-ingress-{}", Uuid::new_v4());
     let coverage = coverage_prompt_contract();
@@ -263,7 +263,7 @@ fn production_core_is_atomic_v2_complete_and_v1_compatible() {
     // Seed exactly one legacy v1 root through the accepted compatibility wrapper, then prove the
     // production command reuses it only while every formerly omitted axis still matches.
     let mut legacy = ContributionFixture::new();
-    let legacy_request: ContributionPreparationInput = (&legacy.request()).into();
+    let legacy_request: ContributionPreparationInput<_> = (&legacy.request()).into();
     let legacy_tenant_id = legacy.auth.tenant_id().0;
     let legacy_key = format!("legacy-v1-{}", Uuid::new_v4());
     let prepared = legacy
@@ -278,6 +278,7 @@ fn production_core_is_atomic_v2_complete_and_v1_compatible() {
         coverage,
         assessment,
         prepared,
+        &ContributionEntryRepo::new(&legacy.private),
     )
     .expect("legacy enqueue input");
     let legacy_root = legacy

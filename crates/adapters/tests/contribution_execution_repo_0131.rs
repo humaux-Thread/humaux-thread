@@ -67,7 +67,7 @@ fn require_db() -> bool {
 
 fn direct_request(
     fixture: &ContributionFixture,
-) -> humaux_application::contribute::PrepareContribution {
+) -> humaux_application::contribute::PrepareContribution<AuthorizationScope> {
     let mut request = fixture.request();
     let user = fixture.auth.user_id().expect("fixture user");
     request.authorization = AuthorizationScope::new(
@@ -79,7 +79,10 @@ fn direct_request(
     request
 }
 
-fn input(fixture: &ContributionFixture, label: &str) -> ContributionExecutionEnqueueInput {
+fn input(
+    fixture: &ContributionFixture,
+    label: &str,
+) -> ContributionExecutionEnqueueInput<AuthorizationScope> {
     let prepared = fixture
         .rt
         .block_on(prepare_assessed_input(
@@ -92,6 +95,7 @@ fn input(fixture: &ContributionFixture, label: &str) -> ContributionExecutionEnq
         coverage_prompt_contract(),
         assessment_prompt_contract(),
         prepared,
+        &ContributionEntryRepo::new(&fixture.private),
     )
     .expect("typed enqueue input")
 }
@@ -430,6 +434,7 @@ fn typed_repo_all_eight_commands_are_durable_and_provider_free() {
         ContributionPromptContract::try_new(9, ContentSha256([9; 32])).expect("changed contract"),
         assessment_prompt_contract(),
         prepared,
+        &ContributionEntryRepo::new(&fixture.private),
     )
     .expect("conflicting input");
     db_error(
