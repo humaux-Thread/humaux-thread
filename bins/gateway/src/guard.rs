@@ -250,7 +250,7 @@ pub trait OAuthRequestContext {
 
 impl OAuthRequestContext for McpHttpContext {
     fn expected_resource(&self) -> Option<&str> {
-        McpHttpContext::expected_resource(self)
+        None
     }
 
     fn mark_insufficient_scope(&self, required_scope: &str) {
