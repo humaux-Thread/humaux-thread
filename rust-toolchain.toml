@@ -1,4 +1,4 @@
-# ADR-0050 D-G, amended 2026-10-03 (Baseline 2.9 §70: Rust 1.100 / Edition 2024). The exact patch version is pinned so
+# ADR-0050 D-G, amended 2026-11-20 (Baseline 2.9 §70: Rust 1.100 / Edition 2024). The exact patch version is pinned so
 # "`rustc --version` matches this file" is a string comparison. Installed explicitly with
 # `rustup toolchain install 1.100.0 --profile minimal -c clippy -c rustfmt`.
 [toolchain]
