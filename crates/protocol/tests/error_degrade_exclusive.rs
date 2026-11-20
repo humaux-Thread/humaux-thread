@@ -43,6 +43,7 @@ impl McpApplication for FixtureApplication {
             Some("degraded") => {
                 let structured_content = json!({
                     "items": ["stale-result"],
+                    "code": "PROJECTION_LAG",
                     "completeness": {"degradations": [DegradeCode::ProjectionLag.line_format()]}
                 });
                 Ok(ToolOutput {
