@@ -14061,6 +14061,9 @@ async fn memory_get_in(
 
 #[test]
 fn native_mcp_api_key_compat() {
+    let _metrics = CONTEXT_METRIC_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     run_db_fixture::<Fixture, _>("api_key_compat_foreign", |mut foreign| {
         let foreign_memory = foreign.seed_workspace_visible_context_record();
         run_db_fixture::<Fixture, _>("api_key_compat", |mut handle| {
@@ -14131,7 +14134,7 @@ fn native_mcp_api_key_compat() {
                 .await;
                 assert_eq!(status, 401, "revoked key: {response}");
                 assert_eq!(response["error"]["data"]["code"], "UNAUTHORIZED");
-                server.abort();
+                stop_server(server).await.expect("stop API key fixture");
             });
         });
     });
