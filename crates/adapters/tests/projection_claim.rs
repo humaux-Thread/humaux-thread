@@ -11,7 +11,7 @@
 //!   PostgreSQL(role_gateway), PostgreSQL(role_maintenance), PostgreSQL(role_retrieval_worker),
 //!   subprocess(gitleaks)];
 //!   env=[HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256, HUMAUX_TEST_GITLEAKS_VERSION, HUMAUX_TEST_PG_DSN];
-//!   modules=[adapters::postgres, adapters::projection_worker, adapters::qdrant, adapters::remember,
+//!   modules=[adapters::affect_repo, adapters::postgres, adapters::projection_worker, adapters::qdrant, adapters::remember,
 //!   adapters::stream_repo, adapters::tests::support::token_keys, domain::egress, domain::error, domain::evidence, domain::ids, domain::subject,
 //!   humaux-local-secret-scan, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport,
 //!   projection::note_chunks, retrieval-provider::adapters, retrieval-provider::contract]
@@ -1411,6 +1411,7 @@ fn pass_deps_with(env: &Env, scanner: LocalSecretScanner) -> PassDeps {
     let embed_delay_ms = Arc::new(AtomicU64::new(0));
     PassDeps {
         deps: SharedProjectionDeps {
+            read_affects: humaux_adapters::affect_repo::read_projection_affects,
             pool,
             embedder: Arc::new(Embedder(provider.clone(), embed_delay_ms.clone())),
             scanner: Arc::new(scanner),

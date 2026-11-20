@@ -14,7 +14,7 @@
 //!   HUMAUX_MAINTENANCE_DRILL_RESTORE_TIMEOUT_SECONDS, HUMAUX_MAINTENANCE_PG_DSN,
 //!   HUMAUX_MAINTENANCE_RESTORE_MIN_FREE_DISK_BYTES, HUMAUX_PG_ARCHIVE_TIMEOUT_SECONDS, HUMAUX_PG_CONTAINER,
 //!   HUMAUX_PG_IMAGE, HUMAUX_PG_LISTEN_ADDRESSES, HUMAUX_PG_PORT, HUMAUX_PG_REPO_DIR, PATH];
-//!   modules=[adapters::postgres, adapters::private_projection_registry, adapters::projection_worker,
+//!   modules=[adapters::affect_repo, adapters::postgres, adapters::private_projection_registry, adapters::projection_worker,
 //!   adapters::qdrant, adapters::rebuild, adapters::retrieval_provisioning, adapters::stream_repo,
 //!   adapters::tests::support::a2_fixture, adapters::tests::support::governance_ops,
 //!   adapters::tests::support::scratch_qdrant, domain::egress, domain::error, domain::ids, humaux-infra-cell,
@@ -627,6 +627,7 @@ fn rebuild_once(h: &Handle, face: &QdrantFace, stream: &Stream) -> (f64, f64, f6
         h.rt.block_on(rebuild::worker_label(&h.maintenance, LABEL))
             .expect("label bound");
     let deps = RebuildDeps {
+        read_affects: humaux_adapters::affect_repo::read_projection_affects,
         maintenance: &h.maintenance,
         reader: &reader,
         qdrant: face,
@@ -641,6 +642,7 @@ fn rebuild_once(h: &Handle, face: &QdrantFace, stream: &Stream) -> (f64, f64, f6
         )))
         .expect("pass pool");
     let (shared, refusing) = rebuild::drill_projection_deps(ClosedDeps {
+        read_affects: humaux_adapters::affect_repo::read_projection_affects,
         pool: pass_pool,
         scanner: h.scanner.clone(),
         transport: h.transport.clone(),

@@ -13,7 +13,7 @@
 //!   PostgreSQL(role_batch_issuer), PostgreSQL(role_gateway) x=[projection.stream_point_ledger],
 //!   PostgreSQL(role_retrieval_worker), Qdrant(*),
 //!   subprocess(gitleaks)]; env=[HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_PG_DSN,
-//!   HUMAUX_TEST_QDRANT_URL]; modules=[adapters::memory_governance_repo, adapters::postgres,
+//!   HUMAUX_TEST_QDRANT_URL]; modules=[adapters::affect_repo, adapters::memory_governance_repo, adapters::postgres,
 //!   adapters::private_projection_registry, adapters::projection_worker, adapters::qdrant, adapters::remember,
 //!   adapters::tests::support::governance_ops, adapters::tests::support::token_keys, domain::authority,
 //!   domain::confirm, domain::dataclass, domain::egress, domain::error, domain::evidence, domain::identity, domain::ids,
@@ -810,6 +810,7 @@ async fn deps_for(
     )
     .expect("retrieval worker Qdrant permit");
     ProjectionWorkerDeps {
+        read_affects: humaux_adapters::affect_repo::read_projection_affects,
         pool,
         embedder: Arc::new(TestEmbedder(provider)),
         scanner: handle.scanner.clone(),
@@ -1110,6 +1111,7 @@ fn dimension_mismatch_fails_before_reaching_qdrant() {
             )
             .expect("retrieval worker Qdrant permit");
             let deps = ProjectionWorkerDeps {
+                read_affects: humaux_adapters::affect_repo::read_projection_affects,
                 pool,
                 embedder: Arc::new(WrongDimEmbedder),
                 scanner: handle.scanner.clone(),
@@ -1236,6 +1238,7 @@ fn unconfirmed_visibility_retries_row_and_blocks_checkpoint() {
                 inner: handle.transport.clone(),
             });
             let deps = ProjectionWorkerDeps {
+                read_affects: humaux_adapters::affect_repo::read_projection_affects,
                 pool,
                 embedder: Arc::new(TestEmbedder(provider)),
                 scanner: handle.scanner.clone(),
