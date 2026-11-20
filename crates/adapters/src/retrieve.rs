@@ -50,7 +50,7 @@ use humaux_application::recall_read::{
     PlacementLookupError, PreparedDenseQuery, PreparedQueryDigest, RecallCandidate,
     RecallCandidateIndexPort, RecallCandidateSearchRequest, RecallIndexPermit, RecallPlacement,
     RecallPoint, RecallQueryLogCounts, RecallQueryLogPort, RecallReadState, RecallRoutePort,
-    UnservedLedger,
+    RecallServingFrontier, UnservedLedger,
 };
 pub use humaux_application::signed_token::TokenKeys;
 use humaux_application::signed_token::{FIELD_SEP, TokenLabel, labelled_hmac};
@@ -155,6 +155,8 @@ pub enum RetrieveError {
     /// The Qdrant candidate query used a version that stopped being the serving projection
     /// before the authoritative PostgreSQL snapshot began. The caller must retry from routing.
     ServingProjectionChanged,
+    /// Successful reads could not prove coverage of the validated token.
+    ProjectionLag,
 }
 
 impl From<sqlx::Error> for RetrieveError {
@@ -229,6 +231,7 @@ impl std::fmt::Display for RetrieveError {
                 f,
                 "read-your-writes overlay repeats an Evidence with conflicting state"
             ),
+            Self::ProjectionLag => write!(f, "strict recall frontier is unsatisfied"),
             Self::ServingProjectionChanged => write!(
                 f,
                 "private semantic candidate version is no longer the serving projection"
@@ -747,6 +750,7 @@ pub(crate) async fn pg_delta_overlay_in_txn(
                   AS memory_ids
          FROM projection.stream_log sl
          JOIN ops.outbox ob ON ob.tenant_id = sl.tenant_id AND ob.commit_seq = sl.commit_seq
+                           AND ob.stream_seq = sl.stream_seq
          JOIN private.evidence_objects evidence
            ON evidence.evidence_id = ob.evidence_id AND evidence.tenant_id = sl.tenant_id
          LEFT JOIN private.memory_evidence me ON me.evidence_id = evidence.evidence_id
@@ -968,17 +972,48 @@ pub async fn materialize_private_read_serving_about(
     affect: Option<AffectRead<'_>>,
     read_texts: Option<MemoryTextReadPort>,
 ) -> Result<MaterializedPrivateReadServing, RetrieveError> {
-    // dep: PostgreSQL(role_gateway) — transaction entry for `materialize_private_read_serving_about`
+    materialize_recall_snapshot(
+        pool,
+        consistency_token,
+        authorization,
+        family,
+        Some(projection_version),
+        None,
+        embedding_version,
+        semantic,
+        subject_ids,
+        affect,
+        read_texts,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)] // The final snapshot's route, candidates and read axes.
+async fn materialize_recall_snapshot(
+    pool: &RuntimeDbPool,
+    consistency_token: Option<&str>,
+    authorization: &AuthorizationScope,
+    family: &StreamFamily,
+    projection_version: Option<&str>,
+    frontier: Option<RecallServingFrontier>,
+    embedding_version: &str,
+    semantic: &[DenseCandidate],
+    subject_ids: &[SubjectId],
+    affect: Option<AffectRead<'_>>,
+    read_texts: Option<MemoryTextReadPort>,
+) -> Result<MaterializedPrivateReadServing, RetrieveError> {
+    // dep: PostgreSQL(role_gateway) — transaction entry for `materialize_recall_snapshot`
     let mut txn = pool.pool().begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .execute(&mut *txn)
         .await?;
-    let (bodies, point_slots) = materialize_private_read_serving_in_txn(
+    let (bodies, point_slots, key) = materialize_private_read_serving_in_txn(
         &mut txn,
         consistency_token,
         authorization,
         family,
         projection_version,
+        frontier,
         embedding_version,
         semantic,
         subject_ids,
@@ -989,7 +1024,6 @@ pub async fn materialize_private_read_serving_about(
         None => BTreeMap::new(),
         Some(read) => gated_memory_texts(&mut txn, authorization, &bodies, read).await?,
     };
-    let key = family.with_version(projection_version);
     let ledger = close_ledger_in_txn(&mut txn, &key, authorization).await?;
     let pipeline = stream_pipeline_counts_in_txn(&mut txn, &key)
         .await
@@ -1047,39 +1081,42 @@ async fn private_read_projection_selector_in_txn(
 }
 
 #[allow(clippy::too_many_arguments)] // Transaction-owned twin of `materialize_private_read_serving_about`.
-pub(crate) async fn materialize_private_read_serving_in_txn(
+async fn materialize_private_read_serving_in_txn(
     txn: &mut Txn<'_>,
     consistency_token: Option<&str>,
     authorization: &AuthorizationScope,
     family: &StreamFamily,
-    projection_version: &str,
+    projection_version: Option<&str>,
+    frontier: Option<RecallServingFrontier>,
     embedding_version: &str,
     semantic: &[DenseCandidate],
     subject_ids: &[SubjectId],
     affect: Option<AffectRead<'_>>,
-) -> Result<(MaterializedBodies, PointSlots), RetrieveError> {
-    let envelope = match consistency_token {
-        Some(token) => recall_with_overlay_in_txn(txn, token, authorization, family).await?,
+) -> Result<(MaterializedBodies, PointSlots, StreamKey), RetrieveError> {
+    let issued = match consistency_token {
+        Some(token) => Some(read_issued_token(txn, token, authorization, family).await?),
         None => {
             set_authorization_local(txn, authorization).await?;
-            let serving_version =
-                private_read_projection_selector_in_txn(txn, authorization, family).await?;
-            RecallEnvelope {
-                validated_stream_key: family.with_version(projection_version),
-                served_by_projection: true,
-                overlay: Vec::new(),
-                contiguous_done_prefix: 0,
-                serving_version,
-            }
+            None
         }
     };
-    if envelope.validated_stream_key != family.with_version(projection_version) {
-        return Err(RetrieveError::UntrustedStreamFamily);
-    }
-    if envelope.serving_version.as_deref() != Some(projection_version) {
+    let serving_version =
+        private_read_projection_selector_in_txn(txn, authorization, family).await?;
+    if serving_version.as_deref() != projection_version {
         return Err(RetrieveError::ServingProjectionChanged);
     }
-    let mut serving = private_read_serving_candidates(&[], &envelope)?;
+    let (overlay_key, overlay) = match issued {
+        Some((claims, scope, key)) => {
+            let overlay =
+                strict_recall_overlay(txn, &scope, &key, &claims, projection_version, frontier)
+                    .await?;
+            (key, overlay)
+        }
+        None => (
+            family.with_version(projection_version.ok_or(RetrieveError::ServingProjectionChanged)?),
+            Vec::new(),
+        ),
+    };
     let point_ids = semantic
         .iter()
         .map(|candidate| match candidate.point_id {
@@ -1087,15 +1124,19 @@ pub(crate) async fn materialize_private_read_serving_in_txn(
             PointId::Num(_) => Err(RetrieveError::UnsupportedPrivateProjectionPointId),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let resolved = resolve_private_memory_points_in_txn(
-        txn,
-        authorization,
-        family,
-        projection_version,
-        embedding_version,
-        &point_ids,
-    )
-    .await?;
+    let resolved = if let Some(version) = projection_version {
+        resolve_private_memory_points_in_txn(
+            txn,
+            authorization,
+            family,
+            version,
+            embedding_version,
+            &point_ids,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
     // ADR-0068 D-E: a grouped query's group id is an unverified payload copy; the registry's resolution of the point
     // is the identity. A mismatch drops that point only (its group may still have a legitimate chunk elsewhere) and is
     // logged as a projection inconsistency, never accepted under either Memory.
@@ -1109,14 +1150,13 @@ pub(crate) async fn materialize_private_read_serving_in_txn(
         )
         .collect();
     let (memory_ids, point_slots) = stand_in_points(resolved, &groups);
-    serving.memory_ids = memory_ids;
     let bodies = materialize_final_bodies_about_in_txn(
         txn,
         authorization,
         family,
-        &envelope.validated_stream_key,
-        &serving.memory_ids,
-        &serving.overlay,
+        &overlay_key,
+        &memory_ids,
+        &overlay,
         // Q3/ADR-0024 D-C, ADR-0067 D-J2: this face of the shared hydrate gate is always `Lifecycle::CURRENT`
         // (archived and superseded rows excluded; the Qdrant points stay, PG filters).
         // §6.1.3/ADR-0029 D-A: subject membership re-check at the same gate.
@@ -1126,7 +1166,8 @@ pub(crate) async fn materialize_private_read_serving_in_txn(
     )
     .await
     .map_err(RetrieveError::FinalMaterialization)?;
-    Ok((bodies, point_slots))
+    let key = projection_version.map_or(overlay_key, |version| family.with_version(version));
+    Ok((bodies, point_slots, key))
 }
 
 /// ADR-0084 D-C 3 / G-RET-13: the canonical text of exactly the Memory items `bodies` holds, read in the hydrate
@@ -1215,12 +1256,12 @@ pub async fn recall_with_overlay(
 /// This decides only the PG delta. When `served_by_projection` is false, callers must union
 /// normal serving candidates with [`RecallEnvelope::overlay`] before final authorization and
 /// lifecycle materialization; lag never replaces the serving result set with overlay alone.
-pub(crate) async fn recall_with_overlay_in_txn(
+async fn read_issued_token(
     txn: &mut Txn<'_>,
     token: &str,
     authorization: &AuthorizationScope,
     family: &StreamFamily,
-) -> Result<RecallEnvelope, RetrieveError> {
+) -> Result<(TokenClaims, AuthorizationScope, StreamKey), RetrieveError> {
     let claims = decode_consistency_token(token)?;
     let authorization = validate_scope(&claims, authorization)?;
     validate_stream_family(&claims, family)?;
@@ -1229,6 +1270,73 @@ pub(crate) async fn recall_with_overlay_in_txn(
 
     set_authorization_local(txn, &authorization).await?;
     validate_issued_token_in_txn(txn, &key, &claims).await?;
+    Ok((claims, authorization, key))
+}
+
+/// ADR-0134: only the observation bound to the candidate query can certify its prefix.
+async fn strict_recall_overlay(
+    txn: &mut Txn<'_>,
+    authorization: &AuthorizationScope,
+    key: &StreamKey,
+    claims: &TokenClaims,
+    serving_version: Option<&str>,
+    frontier: Option<RecallServingFrontier>,
+) -> Result<Vec<OverlayCandidate>, RetrieveError> {
+    let lower = match frontier {
+        Some(pinned)
+            if pinned.key == *key && serving_version == Some(key.projection_version.as_str()) =>
+        {
+            if pinned.highwater >= claims.stream_seq {
+                return Ok(Vec::new());
+            }
+            pinned.contiguous_done_prefix.min(pinned.highwater)
+        }
+        _ => 0,
+    };
+    // §15.1 ledger sequences are dense. Original tickets need an outbox anchor even if
+    // their Evidence is later filtered; rebuild tickets cannot prove the requested write.
+    let covered: bool = sqlx::query_scalar(
+        "SELECT count(*) = $8::bigint - $7::bigint
+            AND COALESCE(bool_and(
+                CASE WHEN rt.stream_seq IS NOT NULL THEN sl.stream_seq <> $8
+                     ELSE ob.evidence_id IS NOT NULL
+                END), false)
+         FROM projection.stream_log sl
+         LEFT JOIN ops.outbox ob
+           ON ob.tenant_id = sl.tenant_id AND ob.commit_seq = sl.commit_seq
+          AND ob.stream_seq = sl.stream_seq
+         LEFT JOIN projection.rebuild_tickets rt
+           ON rt.tenant_id = sl.tenant_id AND rt.scope_kind = sl.scope_kind
+          AND rt.scope_id = sl.scope_id AND rt.domain = sl.domain
+          AND rt.projection_kind = sl.projection_kind AND rt.projection_version = sl.projection_version
+          AND rt.stream_seq = sl.stream_seq
+         WHERE sl.tenant_id = $1 AND sl.scope_kind = $2 AND sl.scope_id = $3
+           AND sl.domain = $4 AND sl.projection_kind = $5 AND sl.projection_version = $6
+           AND sl.stream_seq > $7 AND sl.stream_seq <= $8",
+    )
+    .bind(key.tenant_id.0)
+    .bind(&key.scope_kind)
+    .bind(key.scope_id)
+    .bind(&key.domain)
+    .bind(&key.projection_kind)
+    .bind(&key.projection_version)
+    .bind(lower)
+    .bind(claims.stream_seq)
+    .fetch_one(&mut **txn)
+    .await?;
+    if !covered {
+        return Err(RetrieveError::ProjectionLag);
+    }
+    pg_delta_overlay_in_txn(txn, authorization, key, lower, claims.stream_seq).await
+}
+
+pub(crate) async fn recall_with_overlay_in_txn(
+    txn: &mut Txn<'_>,
+    token: &str,
+    authorization: &AuthorizationScope,
+    family: &StreamFamily,
+) -> Result<RecallEnvelope, RetrieveError> {
+    let (claims, authorization, key) = read_issued_token(txn, token, authorization, family).await?;
     let serving_version =
         private_read_projection_selector_in_txn(txn, &authorization, family).await?;
     let serving_highwater = serving_projection_highwater_in_txn(txn, &key).await?;
@@ -2162,12 +2270,13 @@ impl humaux_application::recall_read::RecallHydrationReadPort for PostgresRecall
                 memory_id: candidate.memory_id,
             })
             .collect();
-        materialize_private_read_serving_about(
+        materialize_recall_snapshot(
             self.pool,
             request.consistency_token,
             request.authorization,
             request.family,
             request.projection_version,
+            request.frontier,
             request.embedding_version,
             &candidates,
             request.subject_ids,
@@ -2194,6 +2303,7 @@ impl From<RetrieveError> for HydrateRefusal {
                 reason: "token_not_issued",
             },
             RetrieveError::TokenKeysUnset => HydrateRefusal::TokenKeysUnset,
+            RetrieveError::ProjectionLag => HydrateRefusal::ProjectionLag,
             RetrieveError::Db(_) => HydrateRefusal::DependencyUnavailable {
                 class: "db_error".to_owned(),
             },
@@ -2276,6 +2386,37 @@ impl RecallRoutePort for PostgresRecallRouteStore<'_> {
             serving: state.serving,
             unserved: state.unserved,
         })
+    }
+
+    async fn observe_candidate_frontier(
+        &self,
+        authorization: &AuthorizationScope,
+        key: &StreamKey,
+    ) -> Result<RecallServingFrontier, ErrorCode> {
+        async fn observe(
+            pool: &RuntimeDbPool,
+            authorization: &AuthorizationScope,
+            key: &StreamKey,
+        ) -> Result<RecallServingFrontier, RetrieveError> {
+            // dep: PostgreSQL(role_gateway) — bind both bounds to one pre-query snapshot.
+            let mut txn = pool.pool().begin().await?;
+            sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                .execute(&mut *txn)
+                .await?;
+            set_authorization_local(&mut txn, authorization).await?;
+            let highwater = serving_projection_highwater_in_txn(&mut txn, key).await?;
+            let contiguous_done_prefix = contiguous_done_prefix_in_txn(&mut txn, key).await?;
+            txn.commit().await?;
+            Ok(RecallServingFrontier {
+                key: key.clone(),
+                highwater,
+                contiguous_done_prefix,
+            })
+        }
+
+        observe(self.pool, authorization, key)
+            .await
+            .map_err(|_| ErrorCode::DependencyUnavailable)
     }
 
     async fn tombstoned_source_seqs(

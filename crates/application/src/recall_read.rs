@@ -352,7 +352,9 @@ pub struct RecallHydrationRequest<'a> {
     /// Bootstrap-selected stream family.
     pub family: &'a StreamFamily,
     /// Projection selected for the candidate search; rechecked by the port.
-    pub projection_version: &'a str,
+    pub projection_version: Option<&'a str>,
+    /// Visibility observation taken before this batch queried the selected index.
+    pub frontier: Option<RecallServingFrontier>,
     /// Registered embedding identity.
     pub embedding_version: &'a str,
     /// Ordered, untrusted nominations.
@@ -1332,6 +1334,14 @@ impl PreparedQueryDigest {
     }
 }
 
+/// A pre-query observation for one exact serving target.
+#[derive(Debug, Clone)]
+pub struct RecallServingFrontier {
+    pub key: StreamKey,
+    pub highwater: i64,
+    pub contiguous_done_prefix: i64,
+}
+
 /// Family read-routing state returned by [`RecallRoutePort::family_read_state`].
 #[derive(Debug, Clone)]
 pub struct RecallReadState {
@@ -1384,6 +1394,7 @@ pub enum SparseLegFailure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HydrateRefusal {
     Forbidden,
+    ProjectionLag,
     ConsistencyTokenRefused { reason: &'static str },
     TokenKeysUnset,
     DependencyUnavailable { class: String },
@@ -1417,6 +1428,12 @@ pub trait RecallRoutePort: Send + Sync {
         key: &StreamKey,
         unserved: UnservedLedger,
     ) -> Result<RecallReadState, ErrorCode>;
+
+    async fn observe_candidate_frontier(
+        &self,
+        authorization: &AuthorizationScope,
+        key: &StreamKey,
+    ) -> Result<RecallServingFrontier, ErrorCode>;
 
     async fn tombstoned_source_seqs(
         &self,
@@ -1893,6 +1910,97 @@ where
     }
     let request_id = config.request_id;
     let authorization = config.authorization.narrow(input.workspace_id)?;
+    clock.lap(Stage::Route);
+    let intent = RetrievalIntent::new(input.query, Vec::new(), BTreeSet::new(), BTreeSet::new())
+        .map_err(|_| ErrorCode::InvalidInput)?;
+    let retrieval = prepare_request(intent, config.profile).map_err(|_| ErrorCode::Internal)?;
+    if let Some(limit) = input.limit
+        && (limit == 0 || limit > retrieval.top_k())
+    {
+        async_support.record_diagnostic(RecallDiagnostic::LimitNotProfileTopK {
+            request_id,
+            limit,
+            profile_top_k: retrieval.top_k(),
+        });
+        return Err(ErrorCode::InvalidInput);
+    }
+    clock.lap(Stage::Planner);
+    let state = route_port
+        .family_read_state(
+            &authorization,
+            &config.key,
+            if input.consistency_token.is_some() {
+                UnservedLedger::Skip
+            } else {
+                UnservedLedger::Read
+            },
+        )
+        .await
+        .map_err(|_| {
+            async_support
+                .record_diagnostic(RecallDiagnostic::ProjectionSelectorFailed { request_id });
+            ErrorCode::DependencyUnavailable
+        })?;
+    if !state.initialized && input.consistency_token.is_none() {
+        async_support.record_diagnostic(RecallDiagnostic::StreamUninitialized { request_id });
+        return Err(ErrorCode::DependencyUnavailable);
+    }
+    if state.serving.is_none()
+        && let Some(token) = input.consistency_token.as_deref()
+    {
+        let mut materialized = hydrate_recall(
+            hydration_port,
+            RecallHydrationRequest {
+                authorization: &authorization,
+                consistency_token: Some(token),
+                family: &config.family,
+                projection_version: None,
+                frontier: None,
+                embedding_version: config.embedding_version,
+                candidates: &[],
+                subject_ids: &input.subject_ids,
+                affect: input.affect.as_ref(),
+                texts: GatedTexts::Skip,
+            },
+        )
+        .await
+        .map_err(|error| recall_hydration_error(error.into(), async_support, request_id))?;
+        truncate_memory_items(
+            &mut materialized.bodies.items,
+            input.limit.unwrap_or_else(|| retrieval.top_k()),
+        );
+        let freshness = materialized.bodies.freshness_summary();
+        let grounding =
+            GroundingBlock::tally(std::iter::repeat_n(None, materialized.bodies.items.len()));
+        let items = render_recall_items(materialized.bodies.items, &materialized.bodies.freshness)?;
+        let returned = u32::try_from(items.len()).map_err(|_| ErrorCode::Internal)?;
+        let (evidence, knowledge) = materialized.pipeline.blocks();
+        let pending = no_serving_projection_envelope(
+            &retrieval,
+            config.binary_build,
+            vec!["dense".to_owned()],
+            &materialized.ledger,
+            evidence,
+            knowledge,
+            |mut envelope: Envelope<Value>| {
+                envelope.items = items;
+                envelope.completeness.returned = returned;
+                envelope.freshness = freshness;
+                envelope.grounding = grounding;
+                render_output(serde_json::to_value(envelope).map_err(|_| ErrorCode::Internal)?)
+            },
+        )?;
+        return Ok((
+            pending,
+            RecallQueryLogCounts {
+                cand_k: retrieval.cand_k(),
+                candidates: 0,
+                visible: None,
+                returned,
+                stage_ms: None,
+            },
+        ));
+    }
     let placement = match route_port
         .private_memory_placement(authorization.tenant_id())
         .await
@@ -1911,33 +2019,6 @@ where
             return Err(ErrorCode::DependencyUnavailable);
         }
     };
-    clock.lap(Stage::Route);
-    let intent = RetrievalIntent::new(input.query, Vec::new(), BTreeSet::new(), BTreeSet::new())
-        .map_err(|_| ErrorCode::InvalidInput)?;
-    let retrieval = prepare_request(intent, config.profile).map_err(|_| ErrorCode::Internal)?;
-    if let Some(limit) = input.limit
-        && (limit == 0 || limit > retrieval.top_k())
-    {
-        async_support.record_diagnostic(RecallDiagnostic::LimitNotProfileTopK {
-            request_id,
-            limit,
-            profile_top_k: retrieval.top_k(),
-        });
-        return Err(ErrorCode::InvalidInput);
-    }
-    clock.lap(Stage::Planner);
-    let state = route_port
-        .family_read_state(&authorization, &config.key, UnservedLedger::Read)
-        .await
-        .map_err(|_| {
-            async_support
-                .record_diagnostic(RecallDiagnostic::ProjectionSelectorFailed { request_id });
-            ErrorCode::DependencyUnavailable
-        })?;
-    if !state.initialized {
-        async_support.record_diagnostic(RecallDiagnostic::StreamUninitialized { request_id });
-        return Err(ErrorCode::DependencyUnavailable);
-    }
     let projection_version = match (state.serving, state.unserved) {
         (Some(version), _) => version,
         (None, Some((ledger, pipeline))) => {
@@ -2086,6 +2167,15 @@ where
                 as BoxFuture<'_, Result<Vec<RecallCandidate>, &'static str>>,
         )
     });
+    let frontier = if input.consistency_token.is_some() {
+        Some(
+            route_port
+                .observe_candidate_frontier(&authorization, &serving_key)
+                .await?,
+        )
+    } else {
+        None
+    };
     let (dense_outcome, sparse_outcome) = async_support
         .run_candidate_legs(
             Box::pin(index_port.search_dense(&permit, &dense, grouped)),
@@ -2130,7 +2220,8 @@ where
             authorization: &authorization,
             consistency_token: input.consistency_token.as_deref(),
             family: &config.family,
-            projection_version: &projection_version,
+            projection_version: Some(&projection_version),
+            frontier,
             embedding_version: config.embedding_version,
             candidates: &candidates,
             subject_ids: &input.subject_ids,
@@ -2143,30 +2234,7 @@ where
         },
     )
     .await
-    .map_err(|error| match error.into() {
-        HydrateRefusal::Forbidden => ErrorCode::Forbidden,
-        HydrateRefusal::ConsistencyTokenRefused { reason } => {
-            async_support.record_diagnostic(RecallDiagnostic::ConsistencyTokenRefused {
-                request_id,
-                reason,
-            });
-            ErrorCode::InvalidInput
-        }
-        HydrateRefusal::TokenKeysUnset => {
-            async_support.record_diagnostic(RecallDiagnostic::MaterializeFailed {
-                request_id,
-                class: "token_keys_unset",
-            });
-            ErrorCode::DependencyUnavailable
-        }
-        HydrateRefusal::DependencyUnavailable { class } => {
-            async_support.record_diagnostic(RecallDiagnostic::MaterializeFailed {
-                request_id,
-                class: &class,
-            });
-            ErrorCode::DependencyUnavailable
-        }
-    })?;
+    .map_err(|error| recall_hydration_error(error.into(), async_support, request_id))?;
     clock.lap(Stage::Hydrate);
     let rerank = rerank_stage(
         async_support,
@@ -2242,6 +2310,38 @@ where
         clock,
         render_output,
     )
+}
+
+fn recall_hydration_error(
+    error: HydrateRefusal,
+    async_support: &dyn RecallAsyncSupport,
+    request_id: Uuid,
+) -> ErrorCode {
+    match error {
+        HydrateRefusal::Forbidden => ErrorCode::Forbidden,
+        HydrateRefusal::ProjectionLag => ErrorCode::ProjectionLag,
+        HydrateRefusal::ConsistencyTokenRefused { reason } => {
+            async_support.record_diagnostic(RecallDiagnostic::ConsistencyTokenRefused {
+                request_id,
+                reason,
+            });
+            ErrorCode::InvalidInput
+        }
+        HydrateRefusal::TokenKeysUnset => {
+            async_support.record_diagnostic(RecallDiagnostic::MaterializeFailed {
+                request_id,
+                class: "token_keys_unset",
+            });
+            ErrorCode::DependencyUnavailable
+        }
+        HydrateRefusal::DependencyUnavailable { class } => {
+            async_support.record_diagnostic(RecallDiagnostic::MaterializeFailed {
+                request_id,
+                class: &class,
+            });
+            ErrorCode::DependencyUnavailable
+        }
+    }
 }
 
 fn sparse_corpus_filter(

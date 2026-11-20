@@ -17170,7 +17170,6 @@ modules naming it:
 - `testkit::tests::pair::cannot_establish_completeness_degraded`
 - `testkit::tests::pair::cannot_establish_completeness_terminal`
 - `testkit::tests::pair::projection_lag_degraded`
-- `testkit::tests::pair::projection_lag_terminal`
 - `tests`
 
 ### humaux-testkit → `humaux-retrieval` (dev)
@@ -17243,7 +17242,6 @@ modules naming it:
 - `testkit::tests::pair::cannot_establish_completeness_degraded`
 - `testkit::tests::pair::cannot_establish_completeness_terminal`
 - `testkit::tests::pair::projection_lag_degraded`
-- `testkit::tests::pair::projection_lag_terminal`
 - `tests`
 
 ### humaux-admin → `humaux-infra-cell` (normal)
