@@ -1,7 +1,1 @@
-# ponytail: syntax-only legacy debt; upgrade to compiler/SQL AST when macros/dynamic SQL own contracts.
-# Relocated debt (SLICE-2b): existing types follow moved code; no new business dependency.
-# read_gate.rs:RowGrounding{,::Judged,::NotJudged} -> read_materialize.rs:same symbols (3 rows).
-# read_gate.rs:MemoryId -> application/recall_read.rs:MemoryId.
-# read_gate.rs:NoteKind -> application/recall_read.rs:NoteKind.
-crates/adapters/src/continuity_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
-crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
+# ADR-0132: all residual context imports have an explicit disposition.

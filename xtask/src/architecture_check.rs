@@ -1107,7 +1107,7 @@ const HEX_CONTEXT_BASELINE: &str = "xtask/hex_context_baseline.txt";
 const HEX_CONTEXT_CYCLE_BASELINE: &str = "xtask/hex_context_cycle_baseline.txt";
 const HEX_CONTEXT_CYCLE_CEILING: usize = 2;
 const HEX_CONTEXT_EXCEPTIONS: &str = "xtask/hex_context_exceptions.txt";
-const HEX_CONTEXT_EXCEPTION_CEILING: usize = 16;
+const HEX_CONTEXT_EXCEPTION_CEILING: usize = 18;
 const HEX_CONTEXT_EXCEPTION_ADR: &str = "docs/adr/0132-*.md";
 
 struct HexModule {
@@ -2137,7 +2137,7 @@ fn hex_context_gate(root: &Path) -> Result<(Verdict, Verdict), Vec<String>> {
         ),
         Err(errors) => (actual, Verdict::Fail(errors)),
     };
-    errors.extend(hex_exact(&remaining, &baseline, 2, "HEX-CONTEXT"));
+    errors.extend(hex_exact(&remaining, &baseline, 0, "HEX-CONTEXT"));
     Ok((hex_verdict(errors), verdict))
 }
 

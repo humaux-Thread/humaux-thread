@@ -47,6 +47,17 @@ In the confirmed path, the caller consumes the token before applying mutations a
 | #5 `crates/adapters/src/context_repo.rs:update private.context_bindings:2` | Both soft revocations update only `revoked_at` and require the tenant and an active row. The internal door uses a resolved binding ID. Replacement also requires `TASK`, the matching scope ID and `MANDATORY`. Confirmed revocations use the token transaction and revoke any applicable grant with the binding. | Retained with #2 as the binding mutation group. Moving the revocations alone leaves the sealed INSERT and its A2 pin in the shared adapter and splits the group across adapter locations. Moving the whole group inherits #2's cycle and pin constraints. | Re-review with #2 when the owner door can enforce the same predicates and transaction boundary. Require a wrong-scope replacement to fail without revoking the binding or consuming its token. |
 | #6 `crates/adapters/src/context_repo.rs:update private.task_binding_grants:1` | A3b pins the grant UPDATE (`xtask/src/architecture_check.rs:9548`). Replacement or unbind soft-revokes the active grant for the tenant and binding ID in the same transaction as binding revocation and token consumption, preserving I-NONINHERIT. | Moving the UPDATE to an M14-only adapter would cross A3b's SQL path pin. A separate transaction could leave a live grant on a revoked binding. | Re-review when a replacement A3b pin admits one M14 revocation door that proves atomic binding and grant revocation. Require a split-transaction negative control and a rollback check for the binding, grant and token. |
 
+### Restricted writer retention (ADR-0130 close-out)
+
+The four OPEN-1 rows above were recorded in #622. The remaining four keys below keep their exact `HEX-WRITER` entries at `8f4b631`. Each entry covers one existing statement with its current role and predicates.
+
+| Exact baseline entry | Reason for retention and enforcing checks | Re-review trigger |
+| --- | --- | --- |
+| `crates/adapters/src/forget_repo.rs:update projection.stream_log:1` | The §37.2 maintenance tombstone transition sets only `state`, scoped by the full stream key and sequence. The terminal-state guard makes replay a no-op. Keep the transition on the deletion path alongside the distinct frozen-Evidence accept door in ADR-0092 D-C. `HEX-WRITER` pins the statement and the stream-log transition trigger restricts the maintenance role. | Re-review when a stream-owner command can preserve the full locator, terminal transition and retry behavior. Require replay to update zero rows and a wrong tenant or stream key to leave the target untouched. |
+| `crates/adapters/src/maintenance_repo.rs:update control.partition_registry:1` | ADR-0063 D-K grants maintenance updates to `proposed_at` and `proposed_policy_revision` for candidacy under the effective latest policy. This keeps proposal and horizon read in one transaction and leaves detach/drop eligibility to the executor. `HEX-WRITER` pins the statement, column grants limit writes, and the retention integration test rejects stale or unproposed rows. | Re-review when a registry-owner command preserves the UTC cutoff, newest-leaf exclusion and policy-revision checks while keeping proposal separate from detach/drop. |
+| `crates/adapters/src/stream_repo.rs:update private.ingest_tickets:1` | ADR-0123 D4 uses the maintenance role to expire a bounded, oldest-first batch of overdue `ISSUED` tickets for one tenant. Keeping the rows preserves the expected count. `HEX-WRITER` pins the statement, RLS scopes maintenance, and G-M21-4 (`ingest_ticket_expiry`) covers tenant isolation, concurrency and terminal states. | Re-review when an ingest-ticket owner door can preserve the database clock, limit, tenant scope, state guard and `SKIP LOCKED` behavior. Recheck the expected count after expiry. |
+| `crates/testkit/src/fixture_purge.rs:delete from control.tenants:1` | The final tenant delete belongs to the atomic fixture purge after its FK and identity closure has been removed. `HEX-WRITER` pins the statement. The purge SQL requires an existing `e2e-` fixture and refuses a closure that reaches another tenant. This keeps privileged teardown in testkit. | Re-review when isolated test databases or a replacement fixture teardown preserve non-fixture and cross-tenant refusal, rollback, and orphan-free cleanup. |
+
 ### Rejected alternatives
 
 A second independent writer breaks ADR-0130 D4 and makes the transaction ownership split difficult to reverse. A blanket file, module or edge exemption would allow subsequent imports to inherit an unrelated decision. Moving the pins would require replacing their structural proofs and negative controls. No equivalent replacement was established for these rows.
@@ -56,6 +67,13 @@ A second independent writer breaks ADR-0130 D4 and makes the transaction ownersh
 G1′ freezes the exact existing back-edges reversed by a declared path in `xtask/hex_context_cycle_baseline.txt`. HEX-CONTEXT checks the union of declared dependencies and actual edges after excluding only still-applicable frozen back-edges. Both debt and exception imports participate in detection. The actual debt also includes `knowledge_lifecycle -> provider_execution` via the audit imports in `confirm_token_repo.rs` and `memory_governance_repo.rs`. That forms a two-edge cycle with the edge in the BYOK and scanner evidence exceptions. Their declared return path is given in each ruling. The frozen list is shrink-only, and a new symbol on an already frozen edge still needs its own disposition.
 
 G2 (`HEX-CONTEXT-EXCEPTIONS`) requires every exception key to match an actual import, carry a reference present in a `docs/adr/0132-*.md` file and stay disjoint from the debt baseline. Each store is exact with its ceiling equal to the row count. After removing the accepted exception keys from the actual set, HEX-CONTEXT compares the remainder against the debt baseline. A removed import must leave its store and lower its ceiling. See `xtask/src/architecture_check.rs:1975–2140`.
+
+A new exception requires a named ADR-0132 ruling for the exact import. In the same change, move the key from debt to the exception store with its ADR pointer and synchronize the two ceilings. This is the G2 path used for the final two authorization keys below.
+
+### Pins that followed their definitions
+
+- **#647, W1 continuity facet vocabulary.** The definition of `ContinuityFacetKind` moved from `crates/domain/src/continuity.rs` to `crates/domain/src/continuity_types.rs`, owned by `contract_kernel` in `docs/architecture/modules.toml`. W1 now requires `ALL: [Self; 15]` at that definition and checks the re-export at the original `domain::continuity` path (`xtask/src/architecture_check.rs:10433–10443,10486–10493` at `8f4b631`). The closed vocabulary stays at 15.
+- **#631, deploy-check pool budget.** `pool_budget_every_binary_topology` follows the moved pool constructors from `consolidation-worker/src/main.rs` to `consolidation-worker/src/bootstrap.rs`. The expected count remains 5 (`bins/maintenance/src/deploy_check.rs:2241–2260` at `8f4b631`).
 
 ### ADR-0132 X-1
 
@@ -217,6 +235,22 @@ Classification row 370 moved from H after #608. The card's source fields are `pu
 
 Alternatives rejected: A mutable transfer object or scanner-side builder would reopen the provenance defect fixed by #608, and a new `may_depend_on` edge would formalize the declared return cycle.
 
+### ADR-0132 X-17
+
+**Continuity workspace authorization.**
+
+Exact key: `crates/adapters/src/continuity_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope`
+
+#628 and #655 leave this scope at the storage boundary. W1 requires the typed authorization and workspace narrowing on the adapter surface (`xtask/src/architecture_check.rs:10466–10475,10486–10493` at `8f4b631`). Publication narrows the caller's scope before the slot snapshot read, and the reader passes the scoped identity and allowed workspaces to the storage door (`continuity_repo.rs:233–253,391–410`). Keep the owning authorization value so a caller cannot supply an independently assembled workspace list. Re-review when a replacement contract can carry the same narrowed scope and a replacement W1 pin and negative control reject an out-of-scope workspace before any snapshot read.
+
+### ADR-0132 X-18
+
+**Contribution source authorization.**
+
+Exact key: `crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope`
+
+#657 leaves the typed scope in the contribution adapter for X-5's visibility path. G-M08-2 pins `can_read` to the shared gate and counts the contribution adapter's `visibility_readable` tokens (`xtask/src/architecture_check.rs:6351–6384,6492–6496` at `8f4b631`). The same scope goes through the shared judgement for the source Memory and each backing Evidence row (`contribution_entry_repo.rs:175–193,325–357`). Keep the direct scope because the shared door consumes it and `can_read` must remain the sole judgement. Re-review with X-5 when `readable_memory_ids` or an owner contract preserves complete mediation and a negative control shows invisible backing Evidence still denies contribution.
+
 ## Consequences
 
-The 16 accepted keys move from debt to the exception store. Six keys share two frozen back-edges. This change authorizes zero new map edges and decouples zero source imports. Future removal of an accepted dependency shrinks its store and can also retire a frozen back-edge when the last actual import on it disappears. The debt baseline continues toward zero through the R work, and OPEN-1 implementation remains with WRITER-OPEN1.
+The original ruling moved 16 keys from debt to the exception store. The close-out amendment moves the final two, leaving 18 exact exceptions, zero CONTEXT debt rows and two frozen back-edges. It authorizes zero new map edges and decouples zero source imports. Removing an accepted dependency shrinks its store and can retire a frozen back-edge when the last actual import on it disappears. All eight retained writer rows are documented above.

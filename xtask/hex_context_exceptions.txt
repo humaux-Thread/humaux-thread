@@ -16,3 +16,5 @@ crates/local-secret-scan/src/lib.rs:provider_execution->knowledge_lifecycle:huma
 crates/local-secret-scan/src/lib.rs:provider_execution->retrieval_read_model:humaux_retrieval::request::ProfileFingerprint # ADR-0132 X-14
 crates/local-secret-scan/src/lib.rs:provider_execution->retrieval_read_model:humaux_retrieval::request::TrustedRetrievalQuery # ADR-0132 X-15
 crates/local-secret-scan/src/lib.rs:provider_execution->retrieval_read_model:humaux_projection::card::RetrievalCard # ADR-0132 X-16
+crates/adapters/src/continuity_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope # ADR-0132 X-17
+crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope # ADR-0132 X-18
