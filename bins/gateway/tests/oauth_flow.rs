@@ -1033,8 +1033,8 @@ fn m02_10b_returns_to_authorize_after_real_login() {
 }
 
 #[test]
-fn m02_10b_authorize_consent_and_revoke() {
-    run_db_fixture::<OAuthFixture, _>("m02_10b_authorize_consent_and_revoke", |mut h| {
+fn m02_10b_authorize_and_consent() {
+    run_db_fixture::<OAuthFixture, _>("m02_10b_authorize_and_consent", |mut h| {
         let tenant = h.tenant_id;
         add_active_membership(&mut h, tenant);
         add_entitlement(&mut h, tenant);
@@ -1090,28 +1090,6 @@ fn m02_10b_authorize_consent_and_revoke() {
             &code_form(&h, &params["code"], &[("resource", Some(NATIVE_RESOURCE))]),
         );
         assert_eq!(tokens.status, 200, "{}", tokens.body);
-        let value: Value = serde_json::from_str(&tokens.body).unwrap();
-        let refresh = value["refresh_token"].as_str().unwrap();
-        let revoke = |client: &str, token: &str| {
-            h.rt.block_on(http(
-                address,
-                "POST",
-                "/oauth/revoke",
-                &form(&[("client_id", client), ("token", token)]),
-            ))
-        };
-        assert_eq!(revoke("different-client", refresh).status, 200);
-        let access = decode(&value);
-        assert_eq!(
-            lookup(&h, access.grant_id).status,
-            Some(oauth_repo::GrantStatus::Active)
-        );
-        assert_eq!(revoke(&h.client_id, refresh).status, 200);
-        assert_eq!(revoke(&h.client_id, refresh).status, 200);
-        assert_eq!(
-            lookup(&h, access.grant_id).status,
-            Some(oauth_repo::GrantStatus::Revoked)
-        );
     });
 }
 
@@ -1162,5 +1140,55 @@ fn m02_10b_preregistered_client_contract() {
             assert_eq!(page.status, 200, "{name}");
             assert_eq!(callback(&error)["iss"], ORIGIN, "{name}");
         }
+    });
+}
+
+#[test]
+fn m02_10b_revoke_is_client_bound_and_idempotent() {
+    run_db_fixture::<OAuthFixture, _>("m02_10b_revoke_is_client_bound_and_idempotent", |h| {
+        let address = serve(&h, 7200);
+        let tokens = post(&h, address, &code_form(&h, &issue_code(&h), &[]));
+        assert_eq!(tokens.status, 200);
+        let value: Value = serde_json::from_str(&tokens.body).unwrap();
+        let refresh = value["refresh_token"].as_str().unwrap();
+        let revoke = |client: &str, token: &str| {
+            h.rt.block_on(http(
+                address,
+                "POST",
+                "/oauth/revoke",
+                &form(&[("client_id", client), ("token", token)]),
+            ))
+        };
+        assert_eq!(revoke("different-client", refresh).status, 200);
+        let access = decode(&value);
+        assert_eq!(
+            lookup(&h, access.grant_id).status,
+            Some(oauth_repo::GrantStatus::Active)
+        );
+        assert_eq!(revoke(&h.client_id, refresh).status, 200);
+        assert_eq!(revoke(&h.client_id, refresh).status, 200);
+        assert_eq!(
+            lookup(&h, access.grant_id).status,
+            Some(oauth_repo::GrantStatus::Revoked)
+        );
+    });
+}
+
+#[test]
+fn m02_10b_consent_rejects_cross_origin() {
+    run_db_fixture::<OAuthFixture, _>("m02_10b_consent_rejects_cross_origin", |mut h| {
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        let address = serve(&h, 7200);
+        let session = session_cookie(&h);
+        let path = authorize_url(&h.client_id, REDIRECT, "S256");
+        let page = browser_get(&h, address, &path, &session);
+        assert_eq!(page.status, 200);
+        let body = consent_body(&page, "allow");
+        assert_eq!(
+            browser_consent(&h, address, &session, "https://wrong.example.test", &body).status,
+            403
+        );
     });
 }
