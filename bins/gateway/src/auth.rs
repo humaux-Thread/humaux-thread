@@ -270,7 +270,7 @@ pub(crate) async fn authenticate_live(
             Ok(credential) => {
                 let live = credential.route_hint();
                 if hint.is_some_and(|hint| {
-                    hint.tenant_id != live.tenant_id || hint.principal != live.principal
+                    hint.principal != live.principal
                 }) {
                     cache.invalidate(&key).await;
                     return Err(ErrorCode::Unauthorized);
