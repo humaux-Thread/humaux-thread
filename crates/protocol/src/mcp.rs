@@ -61,7 +61,7 @@ use crate::{
 const NATIVE_PROTOCOL: ProtocolVersion = ProtocolVersion::V_2026_07_28;
 const RESOURCE_METADATA_ROOT: &str = "/.well-known/oauth-protected-resource";
 
-/// Exact audience for each MCP transport. Legacy discovery is reserved for its mount card.
+/// Exact audience and discovery path for each MCP transport.
 #[derive(Clone, Copy)]
 pub enum McpResourceRoute {
     Native,
@@ -332,6 +332,7 @@ pub struct McpHttpConfig {
     allowed_origins: Vec<String>,
     max_request_body_bytes: usize,
     oauth_issuer: Option<String>,
+    legacy_enabled: bool,
 }
 
 impl McpHttpConfig {
@@ -348,6 +349,7 @@ impl McpHttpConfig {
             allowed_origins,
             max_request_body_bytes,
             oauth_issuer: None,
+            legacy_enabled: false,
         })
     }
 
@@ -355,6 +357,13 @@ impl McpHttpConfig {
     #[must_use]
     pub fn with_oauth_issuer(mut self, issuer: String) -> Self {
         self.oauth_issuer = Some(issuer);
+        self
+    }
+
+    /// ADR-0136: the trusted startup flag controls the legacy mount and its metadata.
+    #[must_use]
+    pub fn with_legacy_enabled(mut self, enabled: bool) -> Self {
+        self.legacy_enabled = enabled;
         self
     }
 
@@ -369,7 +378,7 @@ impl McpHttpConfig {
     }
 }
 
-/// Builds the `/mcp` router.  The caller must serve it with
+/// Builds the MCP router. The caller must serve it with
 /// `into_make_service_with_connect_info::<SocketAddr>()`; missing peer address
 /// is rejected before the application port can be reached.
 #[derive(Clone)]
@@ -392,6 +401,7 @@ impl McpAdapter {
         }
     }
 
+    /// Mounts native MCP and, when enabled, the independent legacy resource.
     pub fn router(&self) -> Router {
         let state = self.handler_state();
         let service = StreamableHttpService::new(
@@ -410,6 +420,28 @@ impl McpAdapter {
                 self.boundary(route),
                 request_boundary,
             ));
+        let router = self.with_metadata(router, route);
+        if self.config.legacy_enabled {
+            router.merge(self.legacy_router())
+        } else {
+            router
+        }
+    }
+
+    /// Builds only the stateless legacy resource. Serve with socket connect info.
+    pub fn legacy_router(&self) -> Router {
+        let route = McpResourceRoute::Legacy;
+        let router = Router::new()
+            .route(route.path(), axum::routing::any(mcp_legacy::dispatch))
+            .with_state(self.handler_state())
+            .route_layer(middleware::from_fn_with_state(
+                self.boundary(route),
+                request_boundary,
+            ));
+        self.with_metadata(router, route)
+    }
+
+    fn with_metadata(&self, router: Router, route: McpResourceRoute) -> Router {
         let Some(issuer) = &self.config.oauth_issuer else {
             return router;
         };
@@ -421,21 +453,12 @@ impl McpAdapter {
         })
         .to_string();
         let metadata = get(move || async move { ([(CONTENT_TYPE, "application/json")], document) });
-        router
-            .route(&route.metadata_path(), metadata.clone())
-            .route(RESOURCE_METADATA_ROOT, metadata)
-    }
-
-    /// Builds only the stateless legacy resource. Serve with socket connect info.
-    pub fn legacy_router(&self) -> Router {
-        let route = McpResourceRoute::Legacy;
-        Router::new()
-            .route(route.path(), axum::routing::any(mcp_legacy::dispatch))
-            .with_state(self.handler_state())
-            .route_layer(middleware::from_fn_with_state(
-                self.boundary(route),
-                request_boundary,
-            ))
+        let router = router.route(&route.metadata_path(), metadata.clone());
+        if matches!(route, McpResourceRoute::Native) {
+            router.route(RESOURCE_METADATA_ROOT, metadata)
+        } else {
+            router
+        }
     }
 
     fn handler_state(&self) -> HandlerState {
@@ -455,9 +478,7 @@ impl McpAdapter {
             max_request_body_bytes: self.config.max_request_body_bytes,
             legacy,
             expected_resource: issuer.map(|issuer| Arc::from(route.resource(issuer))),
-            metadata_url: issuer
-                .filter(|_| !legacy)
-                .map(|issuer| format!("{issuer}{}", route.metadata_path())),
+            metadata_url: issuer.map(|issuer| format!("{issuer}{}", route.metadata_path())),
         }
     }
 }

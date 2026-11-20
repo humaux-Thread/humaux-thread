@@ -154,20 +154,22 @@ async fn start_router(
     app: Arc<MockApplication>,
     router: fn(&McpAdapter) -> axum::Router,
 ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    start_with_oauth(app, router, None).await
+    start_with_oauth(app, router, None, false).await
 }
 
 async fn start_with_oauth(
     app: Arc<MockApplication>,
     router: fn(&McpAdapter) -> axum::Router,
     issuer: Option<&str>,
+    legacy_enabled: bool,
 ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let mut config = McpHttpConfig::new(
         vec!["mcp.test".to_owned()],
         vec!["https://mcp.test".to_owned()],
         64 * 1024,
     )
-    .expect("safe config");
+    .expect("safe config")
+    .with_legacy_enabled(legacy_enabled);
     if let Some(issuer) = issuer {
         config = config.with_oauth_issuer(issuer.to_owned());
     }
@@ -432,8 +434,13 @@ const DISCOVERY_CHALLENGE: &str = r#"Bearer resource_metadata="https://mcp-edge.
 #[tokio::test]
 async fn discovery_publishes_only_the_native_resource_and_its_exact_metadata() {
     let app = Arc::new(MockApplication::default());
-    let (address, server) =
-        start_with_oauth(app.clone(), McpAdapter::router, Some(DISCOVERY_ISSUER)).await;
+    let (address, server) = start_with_oauth(
+        app.clone(),
+        McpAdapter::router,
+        Some(DISCOVERY_ISSUER),
+        false,
+    )
+    .await;
     for path in [DISCOVERY_PRM, "/.well-known/oauth-protected-resource"] {
         let (status, body, headers) = request_at(address, path, "GET", &[], "").await;
         assert_eq!(status, 200);
@@ -464,13 +471,54 @@ async fn discovery_publishes_only_the_native_resource_and_its_exact_metadata() {
 }
 
 #[tokio::test]
+async fn legacy_mount_publishes_its_own_metadata() {
+    let app = Arc::new(MockApplication::default());
+    let (address, server) = start_with_oauth(
+        app.clone(),
+        McpAdapter::router,
+        Some(DISCOVERY_ISSUER),
+        true,
+    )
+    .await;
+    for (path, resource) in [
+        (
+            "/.well-known/oauth-protected-resource/mcp/legacy",
+            "https://mcp-edge.example.test:8443/mcp/legacy",
+        ),
+        (DISCOVERY_PRM, DISCOVERY_RESOURCE),
+        ("/.well-known/oauth-protected-resource", DISCOVERY_RESOURCE),
+    ] {
+        let (status, body, headers) = request_at(address, path, "GET", &[], "").await;
+        assert_eq!(status, 200, "{path}");
+        assert_eq!(headers["content-type"], "application/json");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap(),
+            json!({
+                "resource": resource,
+                "authorization_servers": [DISCOVERY_ISSUER],
+                "scopes_supported": ["context:read", "memory:write", "artifact:manage",
+                                     "code:manage", "coordination:manage"],
+                "bearer_methods_supported": ["header"]
+            }),
+        );
+    }
+    assert!(app.operations.lock().unwrap().is_empty());
+    server.abort();
+}
+
+#[tokio::test]
 async fn discovery_challenges_unauthenticated_mcp_with_the_same_resource() {
     let app = Arc::new(MockApplication {
         operation_denied: Mutex::new(Some(ErrorCode::Unauthorized)),
         ..MockApplication::default()
     });
-    let (address, server) =
-        start_with_oauth(app.clone(), McpAdapter::router, Some(DISCOVERY_ISSUER)).await;
+    let (address, server) = start_with_oauth(
+        app.clone(),
+        McpAdapter::router,
+        Some(DISCOVERY_ISSUER),
+        false,
+    )
+    .await;
     let body = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}}"#,
         modern_params("")
@@ -500,7 +548,8 @@ async fn discovery_challenges_only_the_403_for_an_exact_catalog_scope() {
         scope_catalog: Some(CanonicalCatalog::load().expect("canonical MCP catalog")),
         ..MockApplication::default()
     });
-    let (address, server) = start_with_oauth(app, McpAdapter::router, Some(DISCOVERY_ISSUER)).await;
+    let (address, server) =
+        start_with_oauth(app, McpAdapter::router, Some(DISCOVERY_ISSUER), false).await;
     let body = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}}"#,
         modern_params(
@@ -643,10 +692,9 @@ async fn legacy_qwen_get_probe_is_405() {
 }
 
 #[tokio::test]
-async fn legacy_qwen_replay_uses_native_catalog_and_invokes_once() {
+async fn legacy_mount_replays_qwen_with_native_catalog_and_one_dispatch() {
     let app = Arc::new(MockApplication::default());
-    let (address, server) = start_legacy(app.clone()).await;
-    let (native, native_server) = start(Arc::new(MockApplication::default())).await;
+    let (address, server) = start_with_oauth(app.clone(), McpAdapter::router, None, true).await;
     let sample = qwen_sample();
     for (key, headers, expected) in [
         ("initialize", &[][..], 200),
@@ -692,7 +740,7 @@ async fn legacy_qwen_replay_uses_native_catalog_and_invokes_once() {
         modern_params("")
     );
     let (status, native_list, _) =
-        request(native, "POST", &modern_headers("tools/list"), &native_list).await;
+        request(address, "POST", &modern_headers("tools/list"), &native_list).await;
     assert_eq!(status, 200, "{native_list}");
     let legacy_list: Value = serde_json::from_str(&legacy_list).unwrap();
     let native_list: Value = serde_json::from_str(&native_list).unwrap();
@@ -735,11 +783,12 @@ async fn legacy_qwen_replay_uses_native_catalog_and_invokes_once() {
             McpOperation::Preflight,
             McpOperation::Preflight,
             McpOperation::Catalog,
+            McpOperation::Preflight,
+            McpOperation::Catalog,
             McpOperation::Preflight
         ]
     );
     server.abort();
-    native_server.abort();
 }
 
 #[tokio::test]

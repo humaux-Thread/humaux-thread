@@ -12,6 +12,7 @@
 //!   HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH,
 //!   HUMAUX_GATEWAY_ALLOWED_HOSTS, HUMAUX_GATEWAY_ALLOWED_ORIGINS, HUMAUX_GATEWAY_AUTH_HMAC_KEY,
 //!   HUMAUX_GATEWAY_AUTH_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED, HUMAUX_GATEWAY_BIND_ADDR,
+//!   HUMAUX_GATEWAY_MCP_LEGACY_ENABLED,
 //!   HUMAUX_GATEWAY_CACHE_EMBED_QUERY_BYTES, HUMAUX_GATEWAY_CACHE_EMBED_QUERY_ENABLED,
 //!   HUMAUX_GATEWAY_CACHE_EMBED_QUERY_TTL_SECONDS, HUMAUX_GATEWAY_CACHE_PER_TENANT_BYTES,
 //!   HUMAUX_GATEWAY_CALLER_ID, HUMAUX_GATEWAY_CELL_ID, HUMAUX_GATEWAY_CONFIRM_TOKEN_TTL_SECONDS,
@@ -164,6 +165,7 @@ const EMAIL_RECIPIENT_ALLOWLIST_KEY: &str = "HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLO
 /// ADR-0125 8e (§78.1): the console session's absolute and idle lifetimes, the login code's lifetime and attempt cap,
 /// and the resend cooldown. Registry defaults are the former `AuthConfig::default()` values.
 const OAUTH_RESOURCE_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE";
+const MCP_LEGACY_ENABLED_KEY: &str = "HUMAUX_GATEWAY_MCP_LEGACY_ENABLED";
 const OAUTH_CODE_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS";
 const OAUTH_ACCESS_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS";
 const OAUTH_REFRESH_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS";
@@ -666,8 +668,11 @@ impl GatewayBootstrap {
         )?;
         let token_keys = parse_token_keys(&effective)?;
         let auth_pages = parse_auth_pages(&effective, &token_keys, &guard)?;
-        let oauth_http = parse_oauth_http(&effective, &token_keys)?;
-        let mut http = parse_http(&effective)?;
+        let legacy_enabled = present(&effective, MCP_LEGACY_ENABLED_KEY)?
+            .parse::<bool>()
+            .map_err(|_| BootstrapError::new(MCP_LEGACY_ENABLED_KEY, "must be true or false"))?;
+        let oauth_http = parse_oauth_http(&effective, &token_keys, legacy_enabled)?;
+        let mut http = parse_http(&effective)?.with_legacy_enabled(legacy_enabled);
         if let Some(oauth) = &oauth_http {
             http = http.with_oauth_issuer(oauth.issuer.clone());
         }
@@ -916,6 +921,7 @@ fn parse_auth_pages(
 fn parse_oauth_http(
     effective: &BTreeMap<String, String>,
     token_keys: &TokenKeys,
+    legacy_enabled: bool,
 ) -> Result<Option<OAuthHttpConfig>, BootstrapError> {
     let Some(keys) = parse_auth_keys(effective, token_keys)? else {
         return Ok(None);
@@ -944,10 +950,14 @@ fn parse_oauth_http(
             "must exactly match the native MCP resource URI",
         ));
     }
+    let mut resources = vec![resource];
+    if legacy_enabled {
+        resources.push(McpResourceRoute::Legacy.resource(&issuer));
+    }
     Ok(Some(OAuthHttpConfig {
         keys: Arc::new(keys),
         issuer,
-        resource,
+        resources,
         login_return_ttl: parse_auth_lifetimes(effective)?.login_challenge.ttl,
         code_ttl,
         access_ttl,
@@ -1909,6 +1919,7 @@ pub fn registry() -> Vec<ConfigEntry> {
         "60",
     ));
     entries.extend([
+        entry_with_default(MCP_LEGACY_ENABLED_KEY, "bool", false, "false"),
         entry_with_default(CREDENTIAL_BATCH_TOUCH_ENABLED_KEY, "bool", false, "false"),
         entry_with_default(CREDENTIAL_ROUTE_CACHE_ENABLED_KEY, "bool", false, "false"),
         entry_with_default(CREDENTIAL_ROUTE_CACHE_BYTES_KEY, "u64", false, "8388608"),
@@ -3410,8 +3421,17 @@ mod tests {
                 .oauth_http
                 .expect("OAuth enabled");
             assert_eq!(oauth.issuer, "https://console.example.test");
-            assert_eq!(oauth.resource, exact);
+            assert_eq!(oauth.resources, [exact]);
         }
+        values.insert(MCP_LEGACY_ENABLED_KEY.into(), "true".into());
+        let oauth = GatewayBootstrap::from_raw(values.clone())
+            .expect("legacy enabled")
+            .oauth_http
+            .expect("OAuth enabled");
+        assert_eq!(
+            oauth.resources,
+            [exact, "https://console.example.test/mcp/legacy"]
+        );
         for configured in [
             "https://console.example.test/mcp/",
             "https://console.example.test/mcp/legacy",
@@ -3423,6 +3443,12 @@ mod tests {
             };
             assert_eq!(error.key, OAUTH_RESOURCE_KEY);
         }
+        values.remove(OAUTH_RESOURCE_KEY);
+        values.insert(MCP_LEGACY_ENABLED_KEY.into(), "yes".into());
+        let Err(error) = GatewayBootstrap::from_raw(values) else {
+            panic!("accepted invalid legacy switch");
+        };
+        assert_eq!(error.key, MCP_LEGACY_ENABLED_KEY);
     }
 
     /// ADR-0125 8a/8c/8d: with the surface on, the origin, the sender and the pepper are each required and validated, and
