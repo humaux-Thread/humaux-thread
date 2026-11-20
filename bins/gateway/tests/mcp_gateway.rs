@@ -14059,6 +14059,67 @@ async fn memory_get_in(
     .await
 }
 
+#[test]
+fn native_mcp_api_key_compat() {
+    run_db_fixture::<Fixture, _>("api_key_compat_foreign", |mut foreign| {
+        let foreign_memory = foreign.seed_workspace_visible_context_record();
+        run_db_fixture::<Fixture, _>("api_key_compat", |mut handle| {
+            handle.assert_gateway_login();
+            let memory = handle.seed_workspace_visible_context_record();
+            let mut seed_key = |scopes| {
+                let prefix = format!("compat{}", Uuid::now_v7().simple());
+                let wire = format!("{prefix}.{}", "a".repeat(32));
+                handle.seed_synthetic_service_credential(
+                    scopes,
+                    &prefix,
+                    &wire,
+                    &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
+                )
+            };
+            let reader = seed_key(SyntheticCredentialScopes::ContextRead);
+            let writer = seed_key(SyntheticCredentialScopes::RememberWrite);
+            let workspace = handle.workspace_id;
+            let rt = handle.rt.handle().clone();
+            let runtime = rt.block_on(handle.fresh_runtime()).expect("gateway pool");
+            let app = application(&handle, runtime);
+
+            rt.block_on(async {
+                let (address, server) = start(app).await;
+                let (status, response) =
+                    memory_get_in(address, &writer.bearer, 1, memory.memory_id, Some(workspace))
+                        .await;
+                assert_eq!(status, 200, "active context:read key: {response}");
+                assert_memory_response(&response, memory.memory_id, 5);
+
+                let (status, response) = memory_get_in(
+                    address,
+                    &reader.bearer,
+                    2,
+                    foreign_memory.memory_id,
+                    Some(foreign.workspace_id),
+                )
+                .await;
+                assert_eq!(status, 403, "foreign tenant workspace: {response}");
+                assert_eq!(response["error"]["data"]["code"], "FORBIDDEN");
+
+                let (status, response) =
+                    memory_get_in(address, &writer.bearer, 3, memory.memory_id, Some(workspace))
+                        .await;
+                assert_eq!(status, 403, "key without context:read: {response}");
+                assert_eq!(response["error"]["data"]["code"], "FORBIDDEN");
+
+                tokio::task::block_in_place(|| handle.revoke_service_credential(&reader));
+                let (status, response) =
+                    memory_get_in(address, &reader.bearer, 4, memory.memory_id, Some(workspace))
+                        .await;
+                assert_eq!(status, 401, "revoked key: {response}");
+                assert_eq!(response["error"]["data"]["code"], "UNAUTHORIZED");
+                server.abort();
+            });
+        });
+    });
+}
+
 /// Card 13 acceptance gate (ADR-0035, §6.1.1): `AuthorizationScope.allowed_workspace_ids` is
 /// derived per request from the on-behalf-of user's live ACTIVE *WorkspaceMembership* set
 /// (`control.workspace_memberships`, migration 0162 — a tenant membership alone grants NO
