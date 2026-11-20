@@ -1,7 +1,7 @@
 //! `infra-egress::oauth_metadata` — Layer 1A's credential-free OAUTH_METADATA GET capability.
 //! Depends-on: crates=[humaux-infra-network, tokio]; services=[HTTP(provider), HTTP(loopback)]; env=[];
-//!   modules=[infra-egress::resolver, infra-network::http]
-//! Called-by: [tests]
+//!   modules=[humaux-infra-network, infra-egress::resolver, infra-network::http]
+//! Called-by: []
 //! Invariants: [only validated public addresses reach the connector; no ambient proxy, credentials, or redirects]
 //! Spec: Baseline §33; §83.4; ADR-0039
 
