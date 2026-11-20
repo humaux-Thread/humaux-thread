@@ -73,7 +73,8 @@ async fn set_authorization_local(
     set_authorized_ids_local(txn, authorization.tenant_id(), authorization.user_id()).await
 }
 
-async fn set_authorized_ids_local(
+/// Bind the verified tenant and user for authorization reads under RLS.
+pub(crate) async fn set_authorized_ids_local(
     txn: &mut Txn<'_>,
     tenant_id: TenantId,
     user_id: Option<UserId>,

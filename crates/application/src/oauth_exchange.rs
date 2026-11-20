@@ -1,6 +1,6 @@
 //! `application::oauth_exchange` — M02 token exchange use cases and transactional credential store port.
 //! Depends-on: crates=[async-trait, hex, humaux-domain, rand, serde_json, sha2, time, uuid]; services=[]; env=[]; modules=[application::oauth, domain::error, domain::ids]
-//! Called-by: [adapters::oauth_repo, gateway::bootstrap, gateway::oauth_http]
+//! Called-by: [adapters::oauth_repo, application::bearer, gateway::bootstrap, gateway::oauth_http]
 //! Invariants: [precheck before consume; spent codes and revoking refusals commit; other refusals roll back]
 //! Spec: ADR-0130; §73.5; §78.1; M02 D3/D4.
 
@@ -454,7 +454,7 @@ pub async fn exchange_code(
         .await?
         .ok_or(ErrorCode::Internal)?;
     let now = OffsetDateTime::now_utc();
-    let access = oauth::access_terms(issued.grant_id, &grant_view(&grant), now, policy);
+    let access = oauth::access_terms(issued.grant_id, &grant.view(), now, policy);
     let response = Ok(TokenExchange {
         access,
         refresh,
@@ -464,18 +464,20 @@ pub async fn exchange_code(
     Ok(response)
 }
 
-fn grant_view(grant: &GrantRecord) -> GrantView<'_> {
-    GrantView {
-        client_id: &grant.client_id,
-        resource: &grant.resource,
-        scopes: &grant.scopes,
-        active: grant.status == Some(GrantStatus::Active),
-        revoked_at: grant.revoked_at,
-        grant_max_expires_at: grant.grant_max_expires_at,
-        user_epoch_snapshot: grant.user_epoch_snapshot,
-        tenant_epoch_snapshot: grant.tenant_epoch_snapshot,
-        live_user_epoch: grant.live_user_epoch,
-        live_tenant_epoch: grant.live_tenant_epoch,
+impl GrantRecord {
+    pub(crate) fn view(&self) -> GrantView<'_> {
+        GrantView {
+            client_id: &self.client_id,
+            resource: &self.resource,
+            scopes: &self.scopes,
+            active: self.status == Some(GrantStatus::Active),
+            revoked_at: self.revoked_at,
+            grant_max_expires_at: self.grant_max_expires_at,
+            user_epoch_snapshot: self.user_epoch_snapshot,
+            tenant_epoch_snapshot: self.tenant_epoch_snapshot,
+            live_user_epoch: self.live_user_epoch,
+            live_tenant_epoch: self.live_tenant_epoch,
+        }
     }
 }
 
@@ -525,7 +527,7 @@ pub async fn refresh_token(
         RotationFact::Rotated { grant_id, .. } => txn.lookup_grant(grant_id).await?,
         _ => None,
     };
-    let view = grant.as_ref().map(grant_view);
+    let view = grant.as_ref().map(GrantRecord::view);
     let now = OffsetDateTime::now_utc();
     // RFC 6749 §6 / OPEN-5: requested scope is ignored; only the stored grant's scopes are returned.
     match oauth::decide_refresh(fact, view.as_ref(), &request, now, policy) {

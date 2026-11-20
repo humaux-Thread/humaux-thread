@@ -1,5 +1,5 @@
 //! `gateway::auth` — §73.5.1 headless authentication.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-application, tokio]; services=[]; env=[]; modules=[adapters::credential_repo, adapters::postgres, gateway::route_cache, domain::error, domain::identity, domain::ids, application::api_key, gateway::bootstrap]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-application, time, tokio]; services=[]; env=[]; modules=[adapters::oauth_repo, application::bearer, application::signed_token, adapters::credential_repo, adapters::postgres, gateway::route_cache, domain::error, domain::identity, domain::ids, application::api_key, gateway::bootstrap]
 //! Called-by: [gateway::bootstrap, gateway::guard, tests]
 //! Invariants: [a PAT's allowed_workspace_ids is always an intersection of the live ACTIVE membership set with the credential's bound workspace; a stale binding whose membership was revoked yields Forbidden, never a silent tenant-wide downgrade; a key verified only by the previous pepper is rehashed after validation and the rehash is never fatal to the request (ADR-0059 D-H); the touch throttle gates only the last_used_at write, so lookup and validation run on every request and a revoked or expired key is refused on the very next request whatever the throttle window holds (M02 D8)]
 //! Spec: Baseline §73.5.1; §6.1.1; §33; §78.1; ADR-0035; ADR-0059
@@ -28,21 +28,29 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
-use humaux_adapters::credential_repo::{mark_used, mark_used_batch};
+use humaux_adapters::credential_repo::{load_live_workspace_ids, mark_used, mark_used_batch};
+use humaux_adapters::oauth_repo;
 use humaux_adapters::postgres::RuntimeDbPool;
 pub use humaux_application::api_key::CredentialScope;
 use humaux_application::api_key::{VerifiedCredential, authenticate_key};
+use humaux_application::bearer::VerifiedAccess;
+use humaux_application::signed_token::TokenKeys;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::{AuthorizationScope, PrincipalId};
 use humaux_domain::ids::WorkspaceId;
+use time::OffsetDateTime;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::route_cache::CredentialRouteCache;
-/// Request-local credential verified against live database facts (§73.5).
-pub struct AuthenticatedServiceCredential(VerifiedCredential);
+/// Request-local key or OAuth credential verified against live database facts (§73.5).
+pub struct AuthenticatedBearer(VerifiedCredential);
 
-impl AuthenticatedServiceCredential {
-    pub(crate) fn identity(&self) -> &AuthorizationScope {
+/// Existing service-credential entry returns the shared authenticated binding.
+pub type AuthenticatedServiceCredential = AuthenticatedBearer;
+
+impl AuthenticatedBearer {
+    /// Live authenticated identity before operation narrowing.
+    pub fn identity(&self) -> &AuthorizationScope {
         self.0.identity()
     }
 
@@ -58,6 +66,19 @@ impl AuthenticatedServiceCredential {
         requested_workspace: Option<WorkspaceId>,
     ) -> Result<AuthorizationScope, ErrorCode> {
         self.0.authorize(required_scope, requested_workspace)
+    }
+
+    pub(crate) fn authorize_reporting_scope(
+        &self,
+        required_scope: CredentialScope,
+        requested_workspace: Option<WorkspaceId>,
+        mark_insufficient_scope: impl FnOnce(),
+    ) -> Result<AuthorizationScope, ErrorCode> {
+        self.0.authorize_reporting_scope(
+            required_scope,
+            requested_workspace,
+            mark_insufficient_scope,
+        )
     }
 }
 
@@ -301,14 +322,46 @@ pub(crate) async fn authenticate_live(
             Err(_) => {}
         }
     }
-    result.map(AuthenticatedServiceCredential)
+    result.map(AuthenticatedBearer)
 }
 
-fn parse_bearer_credential(header: &str) -> Result<(&str, &str), ErrorCode> {
-    let (scheme, raw_key) = header.split_once(' ').ok_or(ErrorCode::Unauthorized)?;
+pub(crate) async fn authenticate_access_token(
+    pool: &RuntimeDbPool,
+    issuer_keys: &TokenKeys,
+    token: &str,
+    expected_resource: &str,
+    now: OffsetDateTime,
+) -> Result<AuthenticatedBearer, ErrorCode> {
+    let access = VerifiedAccess::verify(issuer_keys, token, expected_resource, now)?;
+    let mut txn = oauth_repo::begin(pool).await?;
+    let grant = txn
+        .lookup_grant(access.grant_id())
+        .await?
+        .ok_or(ErrorCode::Unauthorized)?;
+    if !txn.subject_is_active(&grant).await? {
+        return Err(ErrorCode::Unauthorized);
+    }
+    txn.commit().await?;
+    let workspaces = load_live_workspace_ids(pool, grant.tenant_id.0, grant.user_id.0).await?;
+    access
+        .bind(
+            grant,
+            workspaces.into_iter().map(WorkspaceId).collect(),
+            now,
+        )
+        .map(AuthenticatedBearer)
+}
+
+pub(crate) fn parse_bearer_header(header: &str) -> Result<&str, ErrorCode> {
+    let (scheme, raw) = header.split_once(' ').ok_or(ErrorCode::Unauthorized)?;
     if !scheme.eq_ignore_ascii_case("Bearer") {
         return Err(ErrorCode::Unauthorized);
     }
+    Ok(raw)
+}
+
+fn parse_bearer_credential(header: &str) -> Result<(&str, &str), ErrorCode> {
+    let raw_key = parse_bearer_header(header)?;
     let (prefix, secret) = raw_key.split_once('.').ok_or(ErrorCode::Unauthorized)?;
     let valid_part = |part: &str, min, max| {
         (min..=max).contains(&part.len())
