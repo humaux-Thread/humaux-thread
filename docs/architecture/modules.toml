@@ -273,6 +273,7 @@ files = [
   "crates/adapters/src/entitlement_repo.rs",
   "crates/adapters/src/plan_repo.rs",
   "crates/adapters/src/quota_repo.rs",
+  "crates/adapters/src/tenant_cost_write_repo.rs",
   "crates/application/src/billing.rs",
   "crates/application/src/billing_process.rs",
   "crates/application/src/entitlement.rs",

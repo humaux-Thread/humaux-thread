@@ -118,6 +118,7 @@ pub mod session_repo;
 pub mod stream_repo;
 pub mod structured_reasoning;
 pub mod subject_repo;
+mod tenant_cost_write_repo;
 pub mod valkey;
 
 use std::sync::atomic::{AtomicU64, Ordering};
