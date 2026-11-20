@@ -1,7 +1,7 @@
 //! `public-pool::bootstrap` — Wire the operations-owned claim evaluator to the public repository.
 //! Depends-on: crates=[async-trait, humaux-adapters, humaux-domain]; services=[]; env=[]; modules=[adapters::mechanism_observation, adapters::postgres, domain::error, domain::identity, public-pool::public_repo]
 //! Called-by: [tests]
-//! Invariants: [one public repository evaluation per port call; return the original error unchanged]
+//! Invariants: [moderation binds the original authenticated tenant and user; one evaluation per port call; return the original error unchanged]
 //! Spec: Baseline §12.6; ADR-0130 D2
 
 use humaux_adapters::{
