@@ -59,6 +59,7 @@ use uuid::Uuid;
 
 const ORIGIN: &str = "https://as.example.test";
 const NATIVE_RESOURCE: &str = "https://as.example.test/mcp";
+const LEGACY_RESOURCE: &str = "https://as.example.test/mcp/legacy";
 const REDIRECT: &str = "https://client.example.test/cb";
 const RESOURCE: &str = "https://resource.example.test/mcp";
 // RFC 7636 Appendix B: base64url(SHA256(VERIFIER)), without padding.
@@ -72,7 +73,7 @@ fn config(max: u64) -> OAuthHttpConfig {
     OAuthHttpConfig {
         keys: Arc::new(keys()),
         issuer: ORIGIN.to_owned(),
-        resource: NATIVE_RESOURCE.to_owned(),
+        resources: vec![NATIVE_RESOURCE.to_owned()],
         login_return_ttl: Duration::from_secs(900),
         code_ttl: Duration::from_secs(300),
         access_ttl: Duration::from_secs(3600),
@@ -218,6 +219,10 @@ fn guard_settings() -> GuardSettings {
     }
 }
 fn serve(h: &Handle, max: u64) -> SocketAddr {
+    serve_oauth(h, config(max))
+}
+
+fn serve_oauth(h: &Handle, config: OAuthHttpConfig) -> SocketAddr {
     // dep: PostgreSQL(role_gateway) — §79.2: exercise the runtime role.
     let pool =
         h.rt.block_on(RuntimeDbPool::connect(&dsn_as_role(&h.dsn)))
@@ -232,7 +237,7 @@ fn serve(h: &Handle, max: u64) -> SocketAddr {
         recipient_allowlist: String::new(),
     };
     let login = passwordless_login_port(&guard, &pages);
-    let router = oauth_http::router(Arc::clone(&guard), config(max), Arc::clone(&login))
+    let router = oauth_http::router(Arc::clone(&guard), config, Arc::clone(&login))
         .merge(auth_pages::router(guard, pages, login));
     serve_router(h, router)
 }
@@ -871,14 +876,17 @@ fn bearer_fixture(h: &mut Handle) -> (GatewayGuard, Value) {
     add_active_membership(h, tenant);
     let address = serve(h, 7200);
     let tokens = issued(h, address);
+    (bearer_guard(h), tokens)
+}
+
+fn bearer_guard(h: &Handle) -> GatewayGuard {
     // dep: PostgreSQL(role_gateway) — the same role and guard entry as the gateway
     let pool =
         h.rt.block_on(RuntimeDbPool::connect(&dsn_as_role(&h.dsn)))
             .expect("gateway pool");
-    let guard = GatewayGuard::new(pool, guard_settings())
+    GatewayGuard::new(pool, guard_settings())
         .expect("guard")
-        .with_oauth_issuer(ORIGIN.to_owned(), Arc::new(keys()));
-    (guard, tokens)
+        .with_oauth_issuer(ORIGIN.to_owned(), Arc::new(keys()))
 }
 
 fn bearer(
@@ -1128,7 +1136,7 @@ fn g_m02_10_bearer_cross_tenant_scope_is_not_widened() {
     });
 }
 
-fn native_mcp_router(guard: GatewayGuard) -> axum::Router {
+fn mcp_router(guard: GatewayGuard, legacy_enabled: bool) -> axum::Router {
     let catalog = CanonicalCatalog::load().expect("canonical catalog");
     let advertised = catalog.trusted_catalog().expect("trusted catalog");
     let remember = RememberPolicy::new(
@@ -1162,7 +1170,8 @@ fn native_mcp_router(guard: GatewayGuard) -> axum::Router {
         64 * 1024,
     )
     .unwrap()
-    .with_oauth_issuer(ORIGIN.to_owned());
+    .with_oauth_issuer(ORIGIN.to_owned())
+    .with_legacy_enabled(legacy_enabled);
     McpAdapter::new(Arc::new(app), advertised, config).router()
 }
 
@@ -1244,7 +1253,7 @@ fn g_m02_10_bearer_native_http() {
         let guard = GatewayGuard::new(pool, guard_settings())
             .unwrap()
             .with_oauth_issuer(ORIGIN.to_owned(), Arc::new(keys()));
-        let address = serve_router(&h, native_mcp_router(guard));
+        let address = serve_router(&h, mcp_router(guard, false));
         let good = native_mcp_request(&h, address, "/mcp", Some(&native), None);
         assert_eq!(good.status, 200, "native audience");
         let catalog: Value = serde_json::from_str(&good.body).unwrap();
@@ -1290,7 +1299,100 @@ fn g_m02_10_bearer_native_http() {
     });
 }
 
+#[test]
+fn legacy_mount_oauth_audience_and_authorization_parity() {
+    run_db_fixture::<OAuthFixture, _>("M26 legacy mount OAuth parity", |mut h| {
+        h.scopes = vec!["memory:write".to_owned()];
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        let as_address = serve(&h, 7200);
+        let mint = |resource| {
+            let code = issue_code_for(&h, resource);
+            let reply = post(
+                &h,
+                as_address,
+                &code_form(&h, &code, &[("resource", Some(resource))]),
+            );
+            assert_eq!(reply.status, 200, "access token was not issued");
+            let tokens: Value = serde_json::from_str(&reply.body).unwrap();
+            assert_eq!(decode(&tokens).resource, resource);
+            assert_eq!(tokens["scope"], "memory:write");
+            raw_access(&tokens).to_owned()
+        };
+        let native = mint(NATIVE_RESOURCE);
+        let legacy = mint(LEGACY_RESOURCE);
+        let address = serve_router(&h, mcp_router(bearer_guard(&h), true));
+        let legacy_request = |token: Option<&str>, body: Value| {
+            let mut headers = vec![
+                ("Content-Type", "application/json"),
+                ("Accept", "application/json, text/event-stream"),
+                ("MCP-Protocol-Version", "2025-06-18"),
+            ];
+            let authorization = token.map(|token| format!("Bearer {token}"));
+            if let Some(header) = authorization.as_deref() {
+                headers.push(("Authorization", header));
+            }
+            h.rt.block_on(http_with(
+                address,
+                "POST",
+                "/mcp/legacy",
+                &headers,
+                &body.to_string(),
+            ))
+        };
+        let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+        let legacy_challenge = format!(
+            "Bearer resource_metadata=\"{ORIGIN}/.well-known/oauth-protected-resource/mcp/legacy\""
+        );
+        let wrong_legacy = legacy_request(Some(&native), list.clone());
+        let wrong_native = native_mcp_request(&h, address, "/mcp", Some(&legacy), None);
+        assert_eq!((wrong_legacy.status, wrong_native.status), (401, 401));
+        assert_eq!(
+            wrong_legacy.headers["www-authenticate"],
+            format!("{legacy_challenge}, error=\"invalid_token\"")
+        );
+        let anonymous = legacy_request(None, list.clone());
+        assert_eq!(anonymous.status, 401);
+        assert_eq!(anonymous.headers["www-authenticate"], legacy_challenge);
+
+        let legacy_list = legacy_request(Some(&legacy), list);
+        let native_list = native_mcp_request(&h, address, "/mcp", Some(&native), None);
+        assert_eq!((legacy_list.status, native_list.status), (200, 200));
+        let tools = |reply: Reply| {
+            serde_json::from_str::<Value>(&reply.body).unwrap()["result"]["tools"].clone()
+        };
+        let native_tools = tools(native_list);
+        assert!(native_tools.is_array());
+        assert_eq!(tools(legacy_list), native_tools);
+
+        let arguments = serde_json::json!({"action": "get", "memory_id": Uuid::now_v7()});
+        let legacy_denied = legacy_request(
+            Some(&legacy),
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "memory", "arguments": arguments}
+            }),
+        );
+        let native_denied = native_mcp_request(
+            &h,
+            address,
+            "/mcp",
+            Some(&native),
+            Some(("memory", arguments)),
+        );
+        assert_eq!((legacy_denied.status, native_denied.status), (403, 403));
+        assert_eq!(
+            legacy_denied.headers["www-authenticate"],
+            format!("{legacy_challenge}, error=\"insufficient_scope\", scope=\"context:read\"")
+        );
+    });
+}
+
 fn authorize_url(client: &str, redirect: &str, method: &str) -> String {
+    authorize_url_for(client, redirect, method, NATIVE_RESOURCE)
+}
+
+fn authorize_url_for(client: &str, redirect: &str, method: &str, resource: &str) -> String {
     format!(
         "/oauth/authorize?{}",
         form(&[
@@ -1299,11 +1401,39 @@ fn authorize_url(client: &str, redirect: &str, method: &str) -> String {
             ("response_type", "code"),
             ("code_challenge", CHALLENGE),
             ("code_challenge_method", method),
-            ("resource", NATIVE_RESOURCE),
+            ("resource", resource),
             ("scope", "context:read"),
             ("state", "state + & 東京"),
         ])
     )
+}
+
+#[test]
+fn legacy_mount_authorize_only_admits_enabled_exact_resource() {
+    run_db_fixture::<OAuthFixture, _>("M26 legacy mount authorize allowlist", |mut h| {
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        let cookie = session_cookie(&h);
+        let mut enabled = config(7200);
+        enabled.resources.push(LEGACY_RESOURCE.to_owned());
+        let on = serve_oauth(&h, enabled);
+        let off = serve(&h, 7200);
+        let authorize = |address, resource| {
+            let path = authorize_url_for(&h.client_id, REDIRECT, "S256", resource);
+            browser_get(&h, address, &path, &cookie)
+        };
+        for address in [off, on] {
+            assert_eq!(authorize(address, NATIVE_RESOURCE).status, 200);
+        }
+        assert_eq!(authorize(on, LEGACY_RESOURCE).status, 200);
+        for reply in [
+            authorize(off, LEGACY_RESOURCE),
+            authorize(on, &format!("{LEGACY_RESOURCE}/")),
+        ] {
+            assert_eq!(callback(&reply)["error"], "invalid_target");
+        }
+    });
 }
 
 fn session_cookie(h: &Handle) -> String {
