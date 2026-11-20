@@ -4,6 +4,7 @@
 #   docker reads the value from its own environment; a `-e NAME=value` would show in `ps`):
 #   ( . "$HOME/.config/humaux/dev_role_passwords.env" && POSTGRES_PASSWORD="$HUMAUX_DEV_PG_SUPERUSER_PASSWORD" \
 #     docker run -d --name humaux-thread-pg -e POSTGRES_PASSWORD \
+#     -e POSTGRES_INITDB_ARGS="--locale-provider=libc --lc-collate=en_US.utf8 --lc-ctype=en_US.utf8" \
 #     -e POSTGRES_DB=humaux_thread_dev -p 127.0.0.1:54329:5432 postgres:19.0@sha256:bb6e70add742cd868fb62cb3b2f67d1dd2bdd2b65a521e778420748753687c60 )
 #   Compose below interpolates the value into the container config through the API, not argv.
 # 测试 DSN 约定（testkit DB fixture 读取）：
@@ -18,5 +19,6 @@ services:
     environment:
       POSTGRES_PASSWORD: ${HUMAUX_DEV_PG_SUPERUSER_PASSWORD:?set HUMAUX_DEV_PG_SUPERUSER_PASSWORD (dev_role_passwords.env)}
       POSTGRES_DB: humaux_thread_dev
+      POSTGRES_INITDB_ARGS: "--locale-provider=libc --lc-collate=en_US.utf8 --lc-ctype=en_US.utf8"
     ports:
       - "127.0.0.1:54329:5432"

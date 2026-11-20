@@ -1103,6 +1103,23 @@ fn drill_end_to_end_on_scratch_containers() {
     let test = "drill_end_to_end_on_scratch_containers";
     let one = drills();
     let Some(live) = live(test, "l1") else { return };
+    let locale = live
+        .client()
+        .query_one(
+            "SELECT datlocprovider::text, datctype, datcollate
+             FROM pg_catalog.pg_database WHERE datname = current_database()",
+            &[],
+        )
+        .expect("scratch database locale");
+    assert_eq!(
+        (
+            locale.get::<_, &str>(0),
+            locale.get::<_, &str>(1),
+            locale.get::<_, &str>(2)
+        ),
+        ("c", "en_US.utf8", "en_US.utf8"),
+        "ADR-0135 database locale (provider, LC_CTYPE, LC_COLLATE)"
+    );
     let qdrant =
         scratch_qdrant::ScratchQdrant::start("decoy").unwrap_or_else(|e| panic!("{test}: {e}"));
     let handles = seed(&live, qdrant.port);

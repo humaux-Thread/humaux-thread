@@ -30,8 +30,12 @@ is a Git revert. Production launch requires separate owner authorization.
   same-run ratio, later-page latency and manifest cap. Record the absolute
   first-page 300 ms target separately.
 - PostgreSQL 19 uses the database locale provider for FTS and `pg_trgm`
-  character classification. PG19-FTS-LOCALE tracks multilingual token and
-  ranking comparison. The repository does not change its locale in this card.
+  character classification. The [PG19-FTS-LOCALE paired run](https://github.com/humaux-Thread/humaux-thread/actions/runs/44759667852)
+  found identical vectors, queries, ranking, hits and snapshots for nine
+  samples on 18.7 and 19.0 using libc and `en_US.utf8`. The release image,
+  dev Compose and CI services explicitly initialize with `libc` and
+  `LC_CTYPE = LC_COLLATE = en_US.utf8`. Databases created from either
+  template inherit those values. The scratch drill checks the live catalog.
 - The build, pgBackRest stanza and restore commands use PostgreSQL 19's
   `/var/lib/postgresql/19/docker` path. The scratch drill requires source
   `server_version_num = 190000`. ADR-0064 D-N still requires exact source and

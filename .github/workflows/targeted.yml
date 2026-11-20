@@ -78,6 +78,7 @@ jobs:
           # On `postgres` every fixture tenant stayed behind and the I-SLOT probe of
           # distill_dispatch_v2 grew red with each test (run 37613916837).
           POSTGRES_DB: humaux_thread_ci
+          POSTGRES_INITDB_ARGS: "--locale-provider=libc --lc-collate=en_US.utf8 --lc-ctype=en_US.utf8"
         ports:
           - 5432:5432
         # 没有 health check 的话，migrate 会在库还没起来时抢跑，红得莫名其妙。

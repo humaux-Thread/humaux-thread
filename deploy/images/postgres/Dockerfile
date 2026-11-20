@@ -16,3 +16,6 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && pgbackrest version \
  && install -d -o postgres -g postgres -m 0750 /var/log/pgbackrest /var/lib/pgbackrest /tmp/pgbackrest
+
+# ADR-0135: match the PostgreSQL 18.7 FTS locale on first initialization.
+ENV POSTGRES_INITDB_ARGS="--locale-provider=libc --lc-collate=en_US.utf8 --lc-ctype=en_US.utf8"

@@ -76,6 +76,7 @@ jobs:
           # On `postgres` every fixture tenant stayed behind and the I-SLOT probe of
           # distill_dispatch_v2 grew red with each test (run 37613916837).
           POSTGRES_DB: humaux_thread_ci
+          POSTGRES_INITDB_ARGS: "--locale-provider=libc --lc-collate=en_US.utf8 --lc-ctype=en_US.utf8"
         ports:
           - 5432:5432
         # 没有 health check 的话，migrate 会在库还没起来时抢跑，红得莫名其妙。
@@ -543,6 +544,11 @@ jobs:
           # virtiofs lets the Mac user through; native Linux needs root for that one package.
           # The target dir is handed back to the runner user afterwards.
           sudo -E env "PATH=$PATH" TMPDIR="$RUNNER_TEMP/scratch" bash -c 'umask 000 && cargo test -p humaux-maintenance --no-fail-fast' || rc=1
+          # ADR-0135 exercises the existing live drill on the 19.0 scratch image, including locale and version.
+          sudo -E env "PATH=$PATH" TMPDIR="$RUNNER_TEMP/scratch" bash -c '
+            umask 000
+            cargo test -p humaux-maintenance --test drill -- --ignored --exact drill_end_to_end_on_scratch_containers
+          ' || rc=1
           sudo chown -R "$(id -u):$(id -g)" target "$HOME/.cargo" "$RUNNER_TEMP/scratch"
           exit $rc
       - uses: actions/upload-artifact@v4
@@ -773,6 +779,7 @@ jobs:
           # On `postgres` every fixture tenant stayed behind and the I-SLOT probe of
           # distill_dispatch_v2 grew red with each test (run 37613916837).
           POSTGRES_DB: humaux_thread_ci
+          POSTGRES_INITDB_ARGS: "--locale-provider=libc --lc-collate=en_US.utf8 --lc-ctype=en_US.utf8"
         ports:
           - 5432:5432
         # 没有 health check 的话，migrate 会在库还没起来时抢跑，红得莫名其妙。
