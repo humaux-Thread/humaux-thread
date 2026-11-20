@@ -610,9 +610,22 @@ impl GatewayBootstrap {
                 );
             }
         }
-        if self.oauth_http.is_some() {
-            provision_oauth_clients(guard.runtime_pool().as_ref(), &self.oauth_static_clients)
-                .await?;
+        if self.oauth_http.is_some()
+            && let Err(code) =
+                provision_oauth_clients(guard.runtime_pool().as_ref(), &self.oauth_static_clients)
+                    .await
+        {
+            use humaux_domain::error::ErrorCode;
+
+            // The operator sees a fixed diagnostic, independent of registry or input contents.
+            let reason = match code {
+                ErrorCode::InvalidInput => "invalid public client configuration",
+                ErrorCode::Conflict => {
+                    "client id already registered with a different kind or disabled"
+                }
+                _ => "could not persist public clients",
+            };
+            return Err(BootstrapError::new(OAUTH_STATIC_CLIENTS_KEY, reason));
         }
         let application = Arc::new(application);
         // ADR-0125: anonymous callers are keyed by the IP the pre-auth bucket charges them.
@@ -2468,8 +2481,9 @@ pub(crate) async fn check_oauth_entitlement(
 pub async fn provision_oauth_clients(
     pool: &RuntimeDbPool,
     configured: &str,
-) -> Result<(), BootstrapError> {
+) -> Result<(), humaux_domain::error::ErrorCode> {
     use humaux_adapters::oauth_repo::{self, ClientKind};
+    use humaux_domain::error::ErrorCode;
     use std::collections::HashSet;
 
     #[derive(Deserialize)]
@@ -2482,13 +2496,8 @@ pub async fn provision_oauth_clients(
     if configured.is_empty() {
         return Ok(());
     }
-    let invalid = || {
-        BootstrapError::new(
-            OAUTH_STATIC_CLIENTS_KEY,
-            "invalid public client configuration",
-        )
-    };
-    let clients: Vec<StaticClient> = serde_json::from_str(configured).map_err(|_| invalid())?;
+    let clients: Vec<StaticClient> =
+        serde_json::from_str(configured).map_err(|_| ErrorCode::InvalidInput)?;
     let mut seen = HashSet::new();
     if clients.iter().any(|client| {
         client.client_id.is_empty()
@@ -2499,14 +2508,12 @@ pub async fn provision_oauth_clients(
             || !seen.insert(&client.client_id)
             || client.metadata.validate().is_err()
     }) {
-        return Err(invalid());
+        return Err(ErrorCode::InvalidInput);
     }
     if clients.is_empty() {
         return Ok(());
     }
-    let failure =
-        |_| BootstrapError::new(OAUTH_STATIC_CLIENTS_KEY, "could not persist public clients");
-    let mut txn = oauth_repo::begin(pool).await.map_err(failure)?;
+    let mut txn = oauth_repo::begin(pool).await?;
     for client in clients {
         let stored = txn
             .register_client(
@@ -2516,16 +2523,12 @@ pub async fn provision_oauth_clients(
                 &serde_json::json!(client.metadata),
                 None,
             )
-            .await
-            .map_err(failure)?;
+            .await?;
         if !stored {
-            return Err(BootstrapError::new(
-                OAUTH_STATIC_CLIENTS_KEY,
-                "client id already registered with a different kind or disabled",
-            ));
+            return Err(ErrorCode::Conflict);
         }
     }
-    txn.commit().await.map_err(failure)
+    txn.commit().await
 }
 
 /// Persist one newly issued public client ID before returning it on the wire.
