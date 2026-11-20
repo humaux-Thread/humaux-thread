@@ -4727,6 +4727,13 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_retrieval_worker)`
 - service `PostgreSQL(owner)`
 
+#### `adapters::public_evaluation_repo`
+- reads `control.public_moderator_grants`
+- writes `public.claim_trust_evaluation_sources`
+- writes `public.claim_trust_evaluations`
+- writes `public.poisoning_signals`
+- service `PostgreSQL(any)`
+
 #### `adapters::public_outbox_port`
 
 #### `adapters::quota_repo`
@@ -4787,10 +4794,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `public.relations`
 - reads `public.synthesis_inputs`
 - reads `staging.contribution_releases`
-- writes `public.claim_trust_evaluation_sources`
-- writes `public.claim_trust_evaluations`
 - writes `public.claims`
-- writes `public.poisoning_signals`
 - writes `public.provenance_edges`
 - writes `public.source_closure`
 - writes `public.sources`
@@ -7078,6 +7082,7 @@ executed by:
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
+- process(humaux-public-worker): `adapters::public_evaluation_repo`
 - process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
@@ -12692,7 +12697,7 @@ read by:
 
 written by:
 - (no process): `public-pool::tests::public_trust`
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_evaluation_repo`
 
 executed by:
 
@@ -12706,7 +12711,7 @@ read by:
 
 written by:
 - (no process): `public-pool::tests::public_trust`
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_evaluation_repo`
 
 executed by:
 
@@ -12903,7 +12908,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_evaluation_repo`
 
 executed by:
 
@@ -13373,6 +13378,7 @@ executed by:
 - `adapters::private_projection_registry`
 - `adapters::projection_worker`
 - `adapters::provider_budget`
+- `adapters::public_evaluation_repo`
 - `adapters::quota_repo`
 - `adapters::read_gate`
 - `adapters::reasoning_route_admission`
@@ -14236,6 +14242,7 @@ modules naming it:
 - `adapters::projection_worker`
 - `adapters::provider_budget`
 - `adapters::provisioning`
+- `adapters::public_evaluation_repo`
 - `adapters::public_outbox_port`
 - `adapters::qdrant`
 - `adapters::quota_repo`
