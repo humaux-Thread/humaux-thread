@@ -1991,9 +1991,9 @@ fn m02_10c_registration_ip_rate_is_separate() {
         let body = registration_body(&[REDIRECT]).to_string();
         let (one, two, separate_ip) = h.rt.block_on(async {
             tokio::join!(
-                registration_from(address, "for=192.0.2.1", &body),
-                registration_from(address, "for=192.0.2.1", &body),
-                registration_from(address, "for=192.0.2.2", &body),
+                registration_from(address, "192.0.2.1", &body),
+                registration_from(address, "192.0.2.1", &body),
+                registration_from(address, "192.0.2.2", &body),
             )
         });
         let mut shared = [
@@ -2021,8 +2021,8 @@ fn m02_10c_registration_unused_quota_is_atomic_across_ips() {
         let body = registration_body(&[REDIRECT]).to_string();
         let (one, two) = h.rt.block_on(async {
             tokio::join!(
-                registration_from(address, "for=192.0.2.3", &body),
-                registration_from(address, "for=192.0.2.4", &body),
+                registration_from(address, "192.0.2.3", &body),
+                registration_from(address, "192.0.2.4", &body),
             )
         });
         let mut result = [
@@ -2064,7 +2064,7 @@ fn m02_10c_registration_unused_quota_is_atomic_across_ips() {
         );
         assert_eq!(exchange.status, 200, "{}", exchange.body);
         let freed =
-            h.rt.block_on(registration_from(address, "for=192.0.2.5", &body));
+            h.rt.block_on(registration_from(address, "192.0.2.5", &body));
         assert_eq!(
             limited_registration(&mut h, &freed),
             201,
