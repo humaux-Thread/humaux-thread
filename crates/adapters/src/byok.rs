@@ -2450,6 +2450,79 @@ mod tests {
         });
     }
 
+    #[test]
+    fn provider_error_metadata_contains_only_safe_diagnostics() {
+        struct RejectedRequest(u16, Vec<u8>);
+
+        #[async_trait::async_trait]
+        impl OpenAiCompatTransport for RejectedRequest {
+            async fn send(
+                &self,
+                _request: OpenAiHttpRequest,
+                _policy: &ssrf::CustomEndpointPolicy,
+            ) -> Result<OpenAiHttpOutcome, ReasoningProviderError> {
+                Ok(OpenAiHttpOutcome {
+                    status: self.0,
+                    retry_after: None,
+                    body: self.1.clone(),
+                })
+            }
+        }
+
+        rt().block_on(async {
+            let resolver = resolver_for(example_public_ip());
+            let secret = "opaque-credential-fixture";
+            let body = serde_json::to_vec(&serde_json::json!({
+                "error": {
+                    "code": "unsupported_parameter",
+                    "param": "response_format",
+                    "type": secret,
+                    "message": format!("Authorization: Bearer {secret}; {}", "密".repeat(512)),
+                }
+            }))
+            .unwrap();
+            for (status, body, class, expected_diagnostic) in [
+                (
+                    400,
+                    body,
+                    "PROVIDER_PERMANENT",
+                    Some("code=unsupported_parameter param=response_format"),
+                ),
+                (403, secret.as_bytes().to_vec(), "PROVIDER_PERMANENT", None),
+                (401, secret.as_bytes().to_vec(), "WAITING_KEY", None),
+                (
+                    200,
+                    format!(r#"{{"base_resp":{{"status_code":9999,"status_msg":"{secret}"}}}}"#)
+                        .into_bytes(),
+                    "PROVIDER_PERMANENT",
+                    Some("base_resp 9999"),
+                ),
+            ] {
+                let provider = OpenAiCompatibleProvider::new(
+                    descriptor(),
+                    "https://api.example.com/v1/chat/completions".to_string(),
+                    RejectedRequest(status, body),
+                    StaticDecryptor,
+                    ssrf::CustomEndpointPolicy::default(),
+                    &resolver,
+                )
+                .expect("valid endpoint");
+                let error = provider
+                    .complete_structured(&ctx(TenantId::new()), structured_request())
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.class(), class);
+                let display = error.to_string();
+                assert!(display.len() <= 512);
+                assert!(!display.contains(secret));
+                assert!(!format!("{error:?}").contains(secret));
+                if let Some(expected) = expected_diagnostic {
+                    assert!(display.contains(expected), "{display}");
+                }
+            }
+        });
+    }
+
     // -------------------------------------------------------------------
     // ADR-0058 D-M: the emit_distillation tool channel.
     // -------------------------------------------------------------------

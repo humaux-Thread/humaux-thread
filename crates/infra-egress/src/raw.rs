@@ -283,4 +283,45 @@ mod tests {
             .expect_err("4096 字节的 body 必须撞上 1024 的上限");
         assert!(matches!(err, RawSendError::BodyTooLarge { limit: 1024 }));
     }
+
+    #[tokio::test]
+    async fn provider_error_metadata_retry_after_over_http() {
+        use std::time::SystemTime;
+        use tokio::io::AsyncWriteExt;
+
+        let raw = RawHttpPost::new(Duration::from_secs(5), Arc::new(SystemCheckedResolve))
+            .expect("client");
+        let future = SystemTime::UNIX_EPOCH + Duration::from_secs(4_070_908_800);
+        for (header, expected) in [
+            ("17", Some(Duration::from_secs(17))),
+            ("Thu, 01 Jan 2099 00:00:00 GMT", None),
+            ("Sat, 01 Jan 2000 00:00:00 GMT", Some(Duration::ZERO)),
+            ("invalid", None),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let response = format!(
+                "HTTP/1.1 429 Too Many Requests\r\nRetry-After: {header}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                socket.write_all(response.as_bytes()).await.unwrap();
+            });
+            let before = SystemTime::now();
+            let outcome = raw
+                .send(&format!("http://{addr}/x"), &[], vec![], 1024)
+                .await
+                .expect("loopback HTTP response");
+            let after = SystemTime::now();
+            server.await.unwrap();
+            assert_eq!(outcome.status, 429);
+            if header.contains("2099") {
+                let delay = outcome.retry_after.expect("HTTP-date Retry-After");
+                assert!(delay >= future.duration_since(after).unwrap());
+                assert!(delay <= future.duration_since(before).unwrap());
+            } else {
+                assert_eq!(outcome.retry_after, expected, "{header}");
+            }
+        }
+    }
 }
