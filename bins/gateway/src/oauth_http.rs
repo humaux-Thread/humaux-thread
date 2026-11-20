@@ -61,7 +61,7 @@ pub struct OAuthHttpConfig {
     pub keys: Arc<TokenKeys>,
     /// Normalized public origin, identical to the metadata issuer (RFC 8414 §3.3).
     pub issuer: String,
-    /// Exact resource URIs available for new authorization (RFC 8707).
+    /// Exact resource URIs currently enabled for authorization and token issuance (RFC 8707).
     pub resources: Vec<String>,
     /// Same lifetime as the interactive login challenge.
     pub login_return_ttl: Duration,
@@ -84,8 +84,7 @@ impl OAuthHttpConfig {
             access_ttl: self.access_ttl,
             refresh_ttl: self.refresh_ttl,
             grant_max_ttl: self.grant_max_ttl,
-            // Token exchange checks the resource in the code or grant, not the current authorize allowlist.
-            allowed_resources: &[],
+            allowed_resources: &self.resources,
             supported_scopes: &[],
         }
     }
@@ -424,7 +423,6 @@ async fn validate(state: &HttpState, query: &str) -> Result<ValidatedAuthorize, 
         disabled: c.disabled_at.is_some(),
     });
     let policy = OAuthPolicy {
-        allowed_resources: &state.config.resources,
         supported_scopes: &state.scopes,
         ..state.config.policy()
     };
