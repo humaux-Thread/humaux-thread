@@ -1286,22 +1286,7 @@ fn m02_10b_review_entitlement_expiry_wins_pending_issuance() {
             )
             .await
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            let waiting: bool = barrier.query_one(
-                "SELECT EXISTS (SELECT FROM pg_locks WHERE locktype='transactionid' AND NOT granted \
-                 AND pg_backend_pid() = ANY(pg_blocking_pids(pid)))",
-                &[],
-            ).unwrap().get(0);
-            if waiting {
-                break;
-            }
-            assert!(
-                !request.is_finished() && std::time::Instant::now() < deadline,
-                "issuance did not reach the DB barrier"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        wait_for_code_insert(&mut barrier, &request);
         let still_valid: bool = barrier
             .query_one(
                 "SELECT clock_timestamp() < $1::text::timestamptz",
@@ -1322,6 +1307,112 @@ fn m02_10b_review_entitlement_expiry_wins_pending_issuance() {
         assert!(!reply.headers.contains_key("location"));
         assert_eq!(authorization_code_count(&mut h), 0);
     });
+}
+
+#[test]
+fn m02_10b_review_membership_deactivation_wins_pending_issuance() {
+    membership_change_wins_pending_issuance(false);
+}
+
+#[test]
+fn m02_10b_review_membership_second_tenant_wins_pending_issuance() {
+    membership_change_wins_pending_issuance(true);
+}
+
+fn membership_change_wins_pending_issuance(add_second_tenant: bool) {
+    run_db_fixture::<OAuthFixture, _>("M02-10b review: membership change", |mut h| {
+        let tenant = h.tenant_id;
+        let user = h.user_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        let address = serve(&h, 7200);
+        let session = session_cookie(&h);
+        let path = authorize_url(&h.client_id, REDIRECT, "S256");
+        let page = browser_get(&h, address, &path, &session);
+        assert_eq!(page.status, 200);
+        let body = consent_body(&page, "allow");
+
+        let mut barrier = h.admin.transaction().unwrap();
+        barrier.query_one(
+            "SELECT client_id FROM control.oauth_client_registrations WHERE client_id=$1 FOR UPDATE",
+            &[&h.client_id],
+        ).unwrap();
+        let request = h.rt.spawn(async move {
+            http_with(
+                address,
+                "POST",
+                "/oauth/authorize",
+                &[
+                    ("Cookie", &session),
+                    ("Origin", ORIGIN),
+                    ("Sec-Fetch-Site", "same-origin"),
+                ],
+                &body,
+            )
+            .await
+        });
+        wait_for_code_insert(&mut barrier, &request);
+        let second = if add_second_tenant {
+            let second: Uuid = barrier.query_one(
+                "INSERT INTO control.tenants(name,state) VALUES ('oauth second fixture','ACTIVE') RETURNING tenant_id",
+                &[],
+            ).unwrap().get(0);
+            barrier.execute(
+                "INSERT INTO control.memberships(tenant_id,user_id,role,state) VALUES($1,$2,'OWNER','ACTIVE')",
+                &[&second, &user],
+            ).unwrap();
+            Some(second)
+        } else {
+            assert_eq!(barrier.execute(
+                "UPDATE control.memberships SET state='SUSPENDED' WHERE tenant_id=$1 AND user_id=$2",
+                &[&tenant, &user],
+            ).unwrap(), 1);
+            None
+        };
+        barrier.commit().unwrap();
+
+        let reply = h.rt.block_on(request);
+        if let Some(second) = second {
+            h.admin
+                .execute(
+                    "DELETE FROM control.memberships WHERE tenant_id=$1",
+                    &[&second],
+                )
+                .unwrap();
+            h.admin
+                .execute("DELETE FROM control.tenants WHERE tenant_id=$1", &[&second])
+                .unwrap();
+        }
+        let reply = reply.unwrap();
+        assert_eq!(
+            reply.status, 403,
+            "membership change must prevent code issuance"
+        );
+        assert!(!reply.headers.contains_key("location"));
+        assert_eq!(authorization_code_count(&mut h), 0);
+    });
+}
+
+fn wait_for_code_insert(
+    barrier: &mut postgres::Transaction<'_>,
+    request: &tokio::task::JoinHandle<Reply>,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let waiting: bool = barrier.query_one(
+            "SELECT EXISTS (SELECT FROM pg_locks WHERE locktype='transactionid' AND NOT granted \
+             AND pg_backend_pid() = ANY(pg_blocking_pids(pid)))",
+            &[],
+        ).unwrap().get(0);
+        if waiting {
+            break;
+        }
+        assert!(
+            !request.is_finished() && std::time::Instant::now() < deadline,
+            "issuance did not reach the DB barrier"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn authorization_code_count(h: &mut Handle) -> i64 {
