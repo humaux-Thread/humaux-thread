@@ -1424,7 +1424,7 @@ processes:
 modules:
 - `gateway::bootstrap`
 
-### `HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_REFILL_PER_SECOND`
+### `HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_REFILL_PER_MINUTE`
 - witness: literal
 - registry: gateway
 
@@ -1438,6 +1438,32 @@ modules:
 - `gateway::bootstrap`
 
 ### `HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_MAX_UNUSED`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_MAX_UNUSED_PER_IP`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_UNUSED_TTL_SECONDS`
 - witness: literal
 - registry: gateway
 
