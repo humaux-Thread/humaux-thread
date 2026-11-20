@@ -114,7 +114,7 @@ mod tests {
     use humaux_domain::dataclass::DataClass;
     use humaux_domain::egress::{self, PrivateDataPurpose, ProcessorId};
     use humaux_domain::identity::{BoundedSet, PrincipalId};
-    use humaux_domain::ids::{TenantId, UserId};
+    use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
     use humaux_local_secret_scan::{
         LocalSecretScanner, LocalSecretScannerConfig, SealedRetrievalQuery,
     };
