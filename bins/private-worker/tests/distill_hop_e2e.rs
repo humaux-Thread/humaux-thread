@@ -18,7 +18,7 @@
 //!   modules=[adapters::affect_repo, adapters::byok, adapters::byok::ssrf,
 //!   adapters::distill_reasoner, adapters::distill_repo, adapters::jobs,
 //!   adapters::membership_repo, adapters::model_call_ledger, adapters::postgres, adapters::projection_worker, adapters::provisioning,
-//!   adapters::qdrant, application::affect, domain::affect, domain::authority,
+//!   adapters::qdrant, application::affect, application::distill_execution, domain::affect, domain::authority,
 //!   domain::egress, domain::error, domain::evidence, domain::identity, domain::ids, domain::ticket_family,
 //!   humaux-local-secret-scan, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport,
 //!   private-worker::distill, private-worker::tests::support::dispatch_fence,
@@ -2298,17 +2298,6 @@ fn provider_error_settlement() {
             ),
         ),
         (
-            "HTTP timeout",
-            ScriptedReply::Timeout,
-            (
-                "PENDING",
-                1,
-                Some("RETRY_WAIT"),
-                "PENDING",
-                Some((22.5, 37.5)),
-            ),
-        ),
-        (
             "401",
             http_failure(401, None),
             (
@@ -2330,6 +2319,70 @@ fn provider_error_settlement() {
         };
         assert_provider_settlement(&rt, &mut f, case, reply, expected);
     }
+}
+
+#[test]
+fn provider_error_settlement_jitters_http_timeout() {
+    use humaux_application::distill_execution::{Dispatcher, DistillJobPort, JobOutcome, work_job};
+
+    let Some(mut f) = setup_db("provider_error_settlement_jitters_http_timeout") else {
+        return;
+    };
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    let (evidence, _, _) = seed_evidence(&mut f, EVIDENCE_TEXT);
+    let job = job_of(&mut f, evidence);
+    let (provider, sent) = scripted_http_provider(std::iter::once(ScriptedReply::Timeout));
+    let pool = private_pool(&rt, &f);
+    let config = dispatch_config("provider-timeout-jitter", 30.0);
+    let providers = routes(&provider);
+    let runtime = distill_lane::distill_runtime(&pool, &providers, contribution_config(), &config)
+        .expect("Distill runtime");
+    let dispatcher = Dispatcher {
+        runtime: &runtime,
+        sleep_until: |deadline| Box::pin(tokio::time::sleep_until(deadline.into())),
+        retry_jitter: || 0.875,
+        dispatch: &config,
+    };
+    let before = database_epoch(&mut f);
+    let deadline =
+        std::time::Instant::now() + Duration::from_secs_f64(config.hard_deadline_seconds);
+    let claim = rt
+        .block_on(runtime.claim(&config))
+        .expect("claim")
+        .expect("job due");
+    assert_eq!(claim.job_id, job);
+    let mut attempt = claim.attempt;
+    let mut report = DistillDispatchReport::default();
+    let settled = rt
+        .block_on(work_job(
+            &dispatcher,
+            &claim,
+            &DistillLease::of(&claim, &config.lease_owner),
+            deadline,
+            &mut attempt,
+            &mut String::new(),
+            &mut report,
+        ))
+        .expect("timeout settlement");
+    let after = database_epoch(&mut f);
+
+    assert_eq!(settled.outcome, JobOutcome::Retry);
+    assert_eq!(settled.next_retry_seconds, Some(26.25));
+    assert!((before + 26.25..=after + 26.25).contains(&job_retry_epoch(&mut f, job)));
+    let (status, attempt, _, class) = job_state(&mut f, evidence);
+    assert_eq!(
+        (status.as_str(), attempt, class.as_deref()),
+        ("PENDING", 1, Some("RETRY_WAIT"))
+    );
+    assert_eq!(report.attempts, 1);
+    assert_eq!(sent.lock().expect("sent").len(), 1);
+    let observed = observe(&mut f, evidence);
+    assert_eq!(observed.outbox_status, "PENDING");
+    assert_eq!(observed.ledger.rows, 1);
+    assert_eq!(observed.ledger.status.as_deref(), Some("FAILED"));
+    assert_eq!(observed.ledger.input_tokens, None);
+    assert_eq!(observed.ledger.output_tokens, None);
+    assert_eq!(observed.disclosure_outcomes, ["FAILED"]);
 }
 
 type ExpectedSettlement = (
