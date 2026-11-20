@@ -32,14 +32,14 @@ BEGIN
   v_requested := regexp_match(p_redirect_uri, v_loopback COLLATE "C");
   PERFORM 1 FROM control.oauth_client_registrations r
    WHERE r.client_id = p_client_id AND r.disabled_at IS NULL
-     AND (p_redirect_uri = ANY (r.redirect_uris) OR (
+     AND (p_redirect_uri COLLATE "C" = ANY (r.redirect_uris) OR (
          v_requested IS NOT NULL
          AND coalesce(v_requested[2]::integer, 80) BETWEEN 1 AND 65535
          AND EXISTS (
            SELECT FROM unnest(r.redirect_uris) AS registered(uri)
            CROSS JOIN LATERAL regexp_match(registered.uri, v_loopback COLLATE "C") AS matched(parts)
-           WHERE matched.parts[1] = v_requested[1]
-             AND matched.parts[3] IS NOT DISTINCT FROM v_requested[3]
+           WHERE matched.parts[1] COLLATE "C" = v_requested[1]
+             AND matched.parts[3] COLLATE "C" IS NOT DISTINCT FROM v_requested[3]
              AND coalesce(matched.parts[2]::integer, 80) BETWEEN 1 AND 65535
          )
      ))

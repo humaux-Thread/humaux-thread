@@ -1724,7 +1724,9 @@ fn m02_10c_operator_preregistration_is_atomic_and_authorizes() {
         let mut registration = registration_body(&[REDIRECT]);
         registration["client_id"] = id.clone().into();
         let mut invalid = registration.clone();
-        invalid["client_id"] = format!("invalid-{id}").into();
+        let invalid_id = format!("invalid-{id}");
+        h.registered_clients.push(invalid_id.clone());
+        invalid["client_id"] = invalid_id.into();
         invalid["token_endpoint_auth_method"] = "client_secret_basic".into();
         assert!(
             h.rt.block_on(provision_oauth_clients(
@@ -1854,9 +1856,11 @@ fn m02_10c_refuses_unregistered_redirect_in_http_and_pg() {
     run_db_fixture::<OAuthFixture, _>("M02-10c callback matching bounds", |mut h| {
         seed_loopback_client(&h);
         let address = serve(&h, 7200);
+        let mut accepted = Vec::new();
         for uri in [
             "https://client.example.test:444/cb",
             "http://127.0.0.2:36000/cb",
+            "http://127.0.0.1:36000/cb?mode=desktop",
             "http://localhost:36000/cb",
             "http://localhost:36000/cb?mode=other",
             "http://[::1]:36000/other",
@@ -1865,8 +1869,9 @@ fn m02_10c_refuses_unregistered_redirect_in_http_and_pg() {
             "http://localhost:0/cb?mode=desktop",
         ] {
             let reply = browser_get(&h, address, &authorize_url(&h.client_id, uri, "S256"), "");
-            assert_eq!(reply.status, 400, "authorize {uri}: {}", reply.body);
-            assert!(!reply.headers.contains_key("location"));
+            if reply.status != 400 || reply.headers.contains_key("location") {
+                accepted.push(("authorize", uri));
+            }
             let result = h.rt.block_on(async {
                 let mut txn = oauth_repo::begin(&h.gateway).await.unwrap();
                 txn.issue_code(
@@ -1886,8 +1891,11 @@ fn m02_10c_refuses_unregistered_redirect_in_http_and_pg() {
                 .await
                 .unwrap()
             });
-            assert_eq!(result, None, "issuing door accepted {uri}");
+            if result.is_some() {
+                accepted.push(("issuing door", uri));
+            }
         }
+        assert!(accepted.is_empty(), "{accepted:?}");
         assert_eq!(grant_count(&mut h), 0);
     });
 }
