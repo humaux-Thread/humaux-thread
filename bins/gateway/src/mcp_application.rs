@@ -3225,6 +3225,100 @@ mod tests {
     };
     use crate::guard::{GuardRatePolicies, GuardSettings};
 
+    #[test]
+    fn g_m03_5_batch_retries_db_skip_across_windows() {
+        use crate::auth::BatchTouch;
+        use std::time::SystemTime;
+
+        run_db_fixture::<Fixture, _>("M03-4 batch retries DB skip", |mut handle| {
+            let mut seed = || {
+                let prefix = format!("touch_{}", Uuid::now_v7().simple());
+                let wire = format!("{prefix}.{}", "d".repeat(32));
+                handle.seed_synthetic_service_credential(
+                    SyntheticCredentialScopes::ContextRead,
+                    &prefix,
+                    &wire,
+                    &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
+                )
+            };
+            let (a, b) = (seed(), seed());
+            let (a_id, b_id) = (PrincipalId(a.api_key_id), PrincipalId(b.api_key_id));
+            // Both sends in join! enter the same batch before the single-threaded writer is polled.
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let batch = rt.block_on(async {
+                BatchTouch::new(
+                    Arc::new(handle.fresh_runtime().await.unwrap()),
+                    Duration::from_secs(60),
+                    60,
+                )
+            });
+            let t0 = SystemTime::now();
+            let at = |seconds| t0 + Duration::from_secs(seconds);
+            let stamp =
+                |principal, seconds| rt.block_on(batch.stamp(principal, at(seconds))).unwrap();
+
+            let a_initial = handle.credential_activity(&a);
+            stamp(a_id, 0);
+            let a_first = handle.credential_activity(&a);
+            assert!(a_first.1);
+            assert_ne!(a_first, a_initial, "A must write once in its first window");
+            stamp(a_id, 59);
+            assert_eq!(handle.credential_activity(&a), a_first);
+
+            // At local t=60, A's persisted stamp is still only 58 seconds old.
+            handle.age_credential_activity(&a, 58);
+            let (a_before_skip, b_initial) = (
+                handle.credential_activity(&a),
+                handle.credential_activity(&b),
+            );
+            let (a_attempt, b_attempt) = rt.block_on(async {
+                tokio::join!(batch.stamp(a_id, at(60)), batch.stamp(b_id, at(60)))
+            });
+            a_attempt.unwrap();
+            b_attempt.unwrap();
+            assert_eq!(
+                handle.credential_activity(&a),
+                a_before_skip,
+                "DB must skip A at local t=60"
+            );
+            assert_ne!(
+                handle.credential_activity(&b),
+                b_initial,
+                "B must write in the mixed batch"
+            );
+
+            // At local t=63, A's persisted stamp is 61 seconds old. Making B eligible at the DB
+            // isolates the local claim check: a successful B must still own its local window.
+            handle.age_credential_activity(&a, 61);
+            handle.age_credential_activity(&b, 61);
+            let (a_before_retry, b_before_repeat) = (
+                handle.credential_activity(&a),
+                handle.credential_activity(&b),
+            );
+            stamp(a_id, 63);
+            assert_ne!(
+                handle.credential_activity(&a),
+                a_before_retry,
+                "A must write once DB time reaches its second window"
+            );
+            stamp(b_id, 63);
+            assert_eq!(
+                handle.credential_activity(&b),
+                b_before_repeat,
+                "A's miss must preserve B's successful local claim"
+            );
+            stamp(b_id, 120);
+            assert_ne!(
+                handle.credential_activity(&b),
+                b_before_repeat,
+                "B must write in its own second window"
+            );
+        });
+    }
+
     const HOST: &str = "mcp.test";
     const ORIGIN: &str = "https://mcp.test";
     const BARRIER_RUN_ID: &str = "HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID";
