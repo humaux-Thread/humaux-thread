@@ -239,6 +239,7 @@ pub fn degrade_last_fired_unix(code: DegradeCode) -> Option<u64> {
 pub fn abstain<T>(code: DegradeCode, fallback: T) -> Outcome<T> {
     tracing::warn!(target: "degrade", code = code.as_str(), "abstain");
     DEGRADE_TOTAL.inc(code);
+    DEGRADE_TOTAL.inc(code);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
