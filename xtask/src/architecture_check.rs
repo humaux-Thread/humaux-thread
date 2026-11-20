@@ -134,15 +134,28 @@ impl<'ast> syn::visit::Visit<'ast> for GuardSourcePaths<'ast> {
         self.modules.push(item);
     }
 
+    fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+        self.record_path(guard_extern_binding(item).1);
+    }
+
     fn visit_block(&mut self, block: &'ast syn::Block) {
         let outer = self.locals.clone();
         for stmt in &block.stmts {
-            if let syn::Stmt::Item(syn::Item::Use(item)) = stmt {
-                let mut imports = Vec::new();
-                hex_imports(&item.tree, Vec::new(), &mut imports);
-                self.locals.extend(imports.into_iter().map(|(alias, path)| {
-                    (alias.strip_prefix("r#").unwrap_or(&alias).to_owned(), path)
-                }));
+            match stmt {
+                syn::Stmt::Item(syn::Item::Use(item)) => {
+                    let mut imports = Vec::new();
+                    hex_imports(&item.tree, Vec::new(), &mut imports);
+                    self.locals.extend(imports.into_iter().map(|(alias, path)| {
+                        (alias.strip_prefix("r#").unwrap_or(&alias).to_owned(), path)
+                    }));
+                }
+                syn::Stmt::Item(syn::Item::ExternCrate(item)) => {
+                    let (alias, target) = guard_extern_binding(item);
+                    if alias != "_" {
+                        self.locals.insert(alias, target);
+                    }
+                }
+                _ => {}
             }
         }
         syn::visit::visit_block(self, block);
@@ -213,10 +226,26 @@ fn guard_scoped_path(path: &[String], scope: &[String]) -> GuardPath {
     }
 }
 
+fn guard_extern_binding(item: &syn::ItemExternCrate) -> (String, GuardPath) {
+    use syn::ext::IdentExt;
+    let name = item.ident.unraw().to_string();
+    let alias = item
+        .rename
+        .as_ref()
+        .map_or_else(|| name.clone(), |(_, alias)| alias.unraw().to_string());
+    let target = if name == "self" {
+        "humaux_gateway".into()
+    } else {
+        name
+    };
+    (alias, vec![target])
+}
+
 #[derive(Default)]
 struct GuardModuleGraph {
     bindings: BTreeMap<GuardPath, BTreeSet<GuardPath>>,
     exports: BTreeSet<GuardPath>,
+    extern_prelude: BTreeMap<String, GuardPath>,
     references: BTreeSet<(String, GuardPath)>,
     loading: BTreeSet<PathBuf>,
     found_guard: bool,
@@ -259,10 +288,20 @@ impl GuardModuleGraph {
         let is_guard = scope.get(1).is_some_and(|module| module == "guard");
         let mut scan = GuardSourcePaths::default();
         for item in items {
-            if let syn::Item::Use(item) = item {
-                self.index_imports(item, scope);
+            match item {
+                syn::Item::Use(item) => self.index_imports(item, scope),
+                syn::Item::ExternCrate(item) => self.index_extern_crate(item, scope),
+                _ => {}
             }
             scan.visit_item(item);
+        }
+        // Crate-root extern aliases are visible in descendants through Rust's extern prelude.
+        for (alias, target) in &self.extern_prelude {
+            let mut key = scope.to_vec();
+            key.push(alias.clone());
+            self.bindings
+                .entry(key)
+                .or_insert_with(|| BTreeSet::from([target.clone()]));
         }
         if is_guard {
             // Keep the original resolved references, including accesses via imported typed handles.
@@ -321,16 +360,34 @@ impl GuardModuleGraph {
         let mut imports = Vec::new();
         hex_imports(&item.tree, Vec::new(), &mut imports);
         for (alias, path) in imports {
-            let mut key = scope.to_vec();
-            key.push(alias.strip_prefix("r#").unwrap_or(&alias).to_owned());
-            if !matches!(item.vis, syn::Visibility::Inherited) {
-                self.exports.insert(key.clone());
-            }
-            self.bindings
-                .entry(key)
-                .or_default()
-                .insert(guard_scoped_path(&path, scope));
+            self.index_binding(scope, &alias, guard_scoped_path(&path, scope), &item.vis);
         }
+    }
+
+    fn index_extern_crate(&mut self, item: &syn::ItemExternCrate, scope: &[String]) {
+        let (alias, target) = guard_extern_binding(item);
+        if alias == "_" {
+            return;
+        }
+        if scope.len() == 1 {
+            self.extern_prelude.insert(alias.clone(), target.clone());
+        }
+        self.index_binding(scope, &alias, target, &item.vis);
+    }
+
+    fn index_binding(
+        &mut self,
+        scope: &[String],
+        alias: &str,
+        target: GuardPath,
+        visibility: &syn::Visibility,
+    ) {
+        let mut key = scope.to_vec();
+        key.push(alias.strip_prefix("r#").unwrap_or(alias).to_owned());
+        if !matches!(visibility, syn::Visibility::Inherited) {
+            self.exports.insert(key.clone());
+        }
+        self.bindings.entry(key).or_default().insert(target);
     }
 
     fn forbidden(
@@ -14439,22 +14496,84 @@ mod tests {
             ),
             ("glob reexport", "use crate::bridge::door as mint;"),
             ("glob import", "use crate::bridge::*;"),
+            (
+                "extern crate reexport",
+                "use crate::bridge::links::store::confirm_token_repo;",
+            ),
         ] {
             guard_graph_fault(
                 case,
                 &[
                     ("lib.rs", "pub mod guard; pub mod bridge;"),
-                    ("guard.rs", ""),
+                    (
+                        "guard.rs",
+                        "use crate::bridge::links::store::credential_repo;",
+                    ),
                     (
                         "bridge.rs",
                         "pub use humaux_adapters::confirm_token_repo as token; \
-                         pub(crate) mod links { pub(crate) use super::token as door; } \
+                         pub(crate) extern crate humaux_adapters as storage; \
+                         pub(crate) mod links { pub(crate) use super::token as door; \
+                         pub(crate) use super::storage as store; } \
                          pub(crate) use links::*;",
                     ),
                 ],
                 "guard.rs",
                 import,
                 "humaux_adapters::confirm_token_repo",
+            );
+        }
+    }
+
+    #[test]
+    fn g_m03_12_guard_crate_aliases() {
+        for (case, source) in [
+            (
+                "crate renamed by use",
+                "use humaux_adapters as storage; \
+                 fn fault() { storage::confirm_token_repo::mint_with_audit(); }",
+            ),
+            (
+                "crate renamed by extern crate",
+                "extern crate humaux_adapters as storage; \
+                 fn fault() { storage::confirm_token_repo::mint_with_audit(); }",
+            ),
+            (
+                "crate renamed in block",
+                "fn fault() { extern crate humaux_adapters as storage; \
+                 storage::confirm_token_repo::mint_with_audit(); }",
+            ),
+        ] {
+            guard_graph_fault(
+                case,
+                &[("lib.rs", "pub mod guard;"), ("guard.rs", "")],
+                "guard.rs",
+                source,
+                "humaux_adapters::confirm_token_repo::mint_with_audit",
+            );
+        }
+    }
+
+    #[test]
+    fn g_m03_12_root_extern_crate_alias() {
+        for (case, root, call) in [
+            (
+                "crate root alias",
+                "extern crate humaux_adapters as storage; pub mod guard;",
+                "fn fault() { storage::confirm_token_repo::mint_with_audit(); }",
+            ),
+            (
+                "gateway self alias",
+                "extern crate self as gateway; pub use humaux_adapters as storage; pub mod guard;",
+                "fn fault() { gateway::storage::confirm_token_repo::mint_with_audit(); }",
+            ),
+        ] {
+            guard_graph_fault(
+                case,
+                &[("lib.rs", root), ("guard.rs", "")],
+                "guard.rs",
+                call,
+                "humaux_adapters::confirm_token_repo::mint_with_audit",
             );
         }
     }
