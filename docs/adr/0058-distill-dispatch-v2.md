@@ -97,11 +97,10 @@ Read on `5ff4aff` (file:line at that commit):
   only; an error that escapes a job (DB, reasoner, membership) is `errors=<n>` on the dispatch line and
   `outcome=ERROR error_class=<class>` on the job line, so "healthy = `lost_lease=0`" stays true.
 - **D-F settles (slice 2)**: anything before the first admitted request is NOT_READY; a provider 401
-  (`ReasoningProviderError::WAITING_KEY_CLASS`) parks WAITING_KEY and reverts its attempt. Per Baseline §11.3,
-  `PROVIDER_PERMANENT` settles DEAD immediately with its class and the outbox FAILED in the same transaction.
-  A retryable failure honors a bounded provider delay when present; otherwise it uses
-  `jobs::retry_backoff_seconds(lease, attempt)` with D1 jitter (the E1 window below). At `max_attempts` it settles
-  DEAD and is recovered with `jobs requeue-dead` once the provider is back (ADR-0060 D-G). A refused malformed re-ask
+  (`ReasoningProviderError::WAITING_KEY_CLASS`) parks WAITING_KEY and reverts its attempt; any other failed call is
+  RETRY with `jobs::retry_backoff_seconds(lease, attempt)` or, at `max_attempts`, DEAD with the class and the outbox
+  FAILED in the same transaction (forward pointer: so a provider outage settles RETRY → DEAD, not WAITING_KEY,
+  and is recovered with `jobs requeue-dead` once the provider is back — ADR-0060 D-G); a refused malformed re-ask
   is DEAD `FAILED_OUTPUT_SCHEMA`, a refused empty retry
   accepts the empty answer; a claim with `attempt` or `abandoned_claims ≥ max_attempts` is DEAD at once
   (`ATTEMPTS_EXHAUSTED` / `PRE_DISPATCH_ABANDONED`). Every settle runs `finish_derived_work_v2` as the first
@@ -511,6 +510,9 @@ recorded here).
 
 ### Live gate `distill_poison_live` (M6, moved out of `distill_fairness_live`)
 
+The runs and three-attempt expectation below are historical. For the active M6 criterion, see
+[the provider settlement correction](#provider-settlement-correction-baseline-113).
+
 M6 used to run inside `distill_fairness_live` with the poison-lane and the good-lane dispatchers concurrent over
 one queue. Each can only release the other's jobs NOT_READY (`configured provider does not match admitted route`),
 so which one claims the poison job after a backoff is a race; the main-line chain lost it
@@ -740,3 +742,25 @@ door keeps every R4 handle: a DEAD distill job is purgeable iff `requeue_dead_di
 CLAMP; pure retry; global FIFO; row_number-only batch pick; process-only semaphore; count<4-then-insert;
 lease-expiry-frees-slot; tool-call-as-validation; implicit provider switch; a second job table; new
 `ops.jobs.status` values; a NOLOGIN function owner (D-I); a `max_attempts` column (D-F).
+
+
+## Provider settlement correction (Baseline §11.3)
+
+PROVIDER-ERR-SETTLE-B supersedes §7 M6's former three-attempt permanent-refusal criterion and the
+corresponding D-F rule. Baseline §11.3 gives permanent provider refusals a terminal disposition.
+The NVIDIA-WEAK-PROBE observed four HTTP 400 responses classified PROVIDER_PERMANENT and settled
+RETRY/PENDING with a 30-second delay, putting the call budget at risk from repeated invalid
+requests. The historical M6 measurements above belong to the previous contract.
+[Baseline §11.3](../architecture/Baseline_2.9.md#113-provider-error-semantics) ·
+[NVIDIA probe run 44755681615](https://github.com/humaux-Thread/humaux-thread/actions/runs/44755681615) ·
+[NVIDIA probe run 44756213111](https://github.com/humaux-Thread/humaux-thread/actions/runs/44756213111)
+
+M6 keeps max_attempts at three. The first permanent refusal settles the job DEAD and the outbox
+FAILED in the same transaction, with one admitted attempt and one FAILED model-call ledger row.
+The good domain spends zero attempts during the poison phase and still settles afterwards.
+The dead job's claim generation does not advance. Transient failures retain the attempt budget
+and settle DEAD with their provider class and a FAILED outbox when the budget is exhausted.
+Before exhaustion, a bounded Retry-After takes priority over the existing local schedule with
+the D1 jitter window described in E1.
+
+Effective change: PROVIDER-ERR-SETTLE-B. Real-provider M6 execution for this change: NOT_RUN.

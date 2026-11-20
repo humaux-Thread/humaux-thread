@@ -2340,6 +2340,61 @@ type ExpectedSettlement = (
     Option<(f64, f64)>,
 );
 
+// ADR-0058 D-F: a retryable failure exhausts the budget under its provider class.
+#[test]
+fn provider_error_settlement_exhausts_transient_budget() {
+    let Some(mut f) = setup_db("provider_error_settlement_exhausts_transient_budget") else {
+        return;
+    };
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    let (evidence, _, _) = seed_evidence(&mut f, EVIDENCE_TEXT);
+    let job = job_of(&mut f, evidence);
+    let (provider, sent) =
+        scripted_http_provider([ScriptedReply::Timeout, ScriptedReply::Timeout].into_iter());
+    let pool = private_pool(&rt, &f);
+    let mut config = dispatch_config("provider-transient-budget", 30.0);
+    config.max_attempts = 2;
+    let providers = routes(&provider);
+    let dispatch = || {
+        rt.block_on(dispatch_pass(
+            &pool,
+            &providers,
+            contribution_config(),
+            &config,
+        ))
+        .expect("distill dispatch pass")
+    };
+
+    let first = dispatch();
+    assert_eq!((first.attempts, first.deferred, first.dead), (1, 1, 0));
+    let (status, attempt, _, class) = job_state(&mut f, evidence);
+    assert_eq!(
+        (status.as_str(), attempt, class.as_deref()),
+        ("PENDING", 1, Some("RETRY_WAIT"))
+    );
+    let first_written = observe(&mut f, evidence);
+    assert_eq!(first_written.outbox_status, "PENDING");
+    assert_eq!(first_written.ledger.rows, 1);
+    assert_eq!(first_written.ledger.status.as_deref(), Some("FAILED"));
+
+    ready_now(&mut f, evidence);
+    let due = job_retry_epoch(&mut f, job);
+    let last = dispatch();
+    assert_eq!((last.attempts, last.deferred, last.dead), (1, 0, 1));
+    let (status, attempt, _, class) = job_state(&mut f, evidence);
+    assert_eq!(
+        (status.as_str(), attempt, class.as_deref()),
+        ("DEAD", 2, Some("RETRY_WAIT"))
+    );
+    let last_written = observe(&mut f, evidence);
+    assert_eq!(last_written.outbox_status, "FAILED");
+    assert_eq!(last_written.ledger.rows, 2);
+    assert_eq!(last_written.ledger.status.as_deref(), Some("FAILED"));
+    assert_eq!(job_retry_epoch(&mut f, job), due);
+    assert_eq!(dispatch().claimed, 0);
+    assert_eq!(sent.lock().expect("sent").len(), 2);
+}
+
 fn assert_provider_settlement(
     rt: &tokio::runtime::Runtime,
     f: &mut Fixture,

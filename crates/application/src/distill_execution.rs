@@ -1168,7 +1168,7 @@ async fn settle_after_error<R: DistillPorts>(
         // succeeded provider call settles RETRY here, and the next claim calls the provider again
         // (one extra billed call, counted). Upgrade: retry the write leg in place with the parsed
         // reply, inside the claim's hard deadline.
-        settle_failed_call(dispatcher, lease, row, attempt, error.class()).await
+        settle_failed_call(dispatcher, lease, row, attempt, error.class(), None).await
     }?;
     settled.record_origin_error(error);
     Ok(settled)
@@ -1232,7 +1232,7 @@ async fn write_leg<R: DistillPorts>(
                 "humaux-private-worker: distill job={} write failed: {error}",
                 lease.job_id
             );
-            settle_failed_call(dispatcher, lease, row, attempt, error.class()).await
+            settle_failed_call(dispatcher, lease, row, attempt, error.class(), None).await
         }
     }
 }
