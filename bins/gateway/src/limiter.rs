@@ -1,6 +1,6 @@
 //! `gateway::limiter` — In-process hierarchical token buckets (§72.3; ADR-0100).
 //! Depends-on: crates=[humaux-domain, tokio, uuid]; services=[]; env=[]; modules=[domain::error]
-//! Called-by: [gateway::guard, gateway::bootstrap, tests]
+//! Called-by: [gateway::guard, gateway::bootstrap, gateway::oauth_http, tests]
 //! Invariants: [no PG I/O; never an allow decision beyond rate; one mutex makes tier charges atomic;
 //!   buckets start at one refill-second; per-tier caps; at most 32 idle probes per pressured tier; only replenished buckets may be evicted]
 //! Spec: Baseline §67.2; §72.3; §73.3; §78.1; ADR-0100
