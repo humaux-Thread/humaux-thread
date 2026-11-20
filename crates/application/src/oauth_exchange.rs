@@ -1,6 +1,6 @@
 //! `application::oauth_exchange` — M02 token exchange use cases and transactional credential store port.
 //! Depends-on: crates=[async-trait, hex, humaux-domain, rand, serde_json, sha2, time, uuid]; services=[]; env=[]; modules=[application::oauth, domain::error, domain::ids]
-//! Called-by: [adapters::oauth_repo, gateway::oauth_http]
+//! Called-by: [adapters::oauth_repo, gateway::bootstrap, gateway::oauth_http]
 //! Invariants: [precheck before consume; spent codes and revoking refusals commit; other refusals roll back]
 //! Spec: ADR-0130; §73.5; §78.1; M02 D3/D4.
 
