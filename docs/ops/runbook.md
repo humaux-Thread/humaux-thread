@@ -1492,6 +1492,44 @@ bundle). 0210 makes the NOLOGIN `role_health_reader` the owner of `ops.health_sn
 <migrator>`, `REVOKE CREATE ON SCHEMA ops FROM role_health_reader`), then run `rls-check`: it is red while the
 reader has a member or the extra grant.
 
+### Connect an MCP client with a test API key
+
+For headless access, have an authorized operator issue a fresh service credential for an isolated
+test tenant. Bind it to the intended workspace, set expiry to the shortest practical test window,
+and grant only the scope the test needs. For a read check with `memory.get`, use `context:read`
+alone. Use a synthetic record in that workspace and revoke the key when the check ends.
+See [Baseline §73.5.1](../architecture/Baseline_2.9.md#7351-headless-service-credential-授权绑定).
+
+Use your deployment's HTTPS MCP URL. Each client must support the transport and protocol revision
+served by that endpoint. The native `/mcp` example above uses Streamable HTTP and
+`2026-07-28`. A client that only speaks legacy MCP needs a separately configured compatible
+endpoint. The API key only supplies authentication.
+
+Inject the raw `prefix.secret` from your secret store into the client's process as
+`HUMAUX_MCP_API_KEY` where supported. A manual header entry takes the full value
+`Bearer <test-api-key>` under the header name `Authorization`.
+
+| Client | Where to configure the test credential |
+| --- | --- |
+| Kimi Code CLI | In `mcpServers.humaux` in the user `mcp.json`, set `url` to the MCP URL and `bearerTokenEnvVar` to `HUMAUX_MCP_API_KEY`. The client adds the Bearer prefix. [Kimi MCP configuration](https://moonshotai.github.io/kimi-code/en/customization/mcp.html) |
+| Qwen Code CLI | In the user `settings.json`, use `mcpServers.humaux.httpUrl` for Streamable HTTP and `mcpServers.humaux.headers.Authorization` for the header. The pinned remote client uses legacy negotiation. [Qwen MCP configuration](https://github.com/QwenLM/qwen-code/blob/2421ad2c3b18d0efce6a50c7576d2c4c735ec644/docs/users/features/mcp.md) |
+| ZCode | In the IDE, open Settings → MCP, add a user-level HTTP server, and enter `Authorization` under Request Headers. The UI saves this entry to the user-scope `.zcode` configuration. In JSON, set `headers.Authorization` on the remote server entry. [ZCode MCP configuration](https://zcode.z.ai/cn/docs/mcp-services) |
+| Claude Code | In `.mcp.json`, set `mcpServers.humaux.type` to `http`, `url` to the MCP URL, and `headers.Authorization` to the literal template `Bearer ${HUMAUX_MCP_API_KEY}`. The client expands the variable at runtime. [Claude Code MCP configuration](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcpjson) |
+
+For other clients with custom HTTP headers, use the same `Authorization` value in the client's
+remote MCP settings. If a client accepts only literal values, keep the short-lived key in a
+private user-level profile outside version control, restrict access to that profile, and remove
+the entry after revoking the key. Keep raw keys out of URLs, shell arguments and history,
+repositories, logs, screenshots, and diagnostic exports. Redact the entire `Authorization` header
+from any HTTP trace.
+
+Check that `memory.get` returns the intended test record. A revoked key must receive
+`401 UNAUTHORIZED`. A valid key used for a workspace in another tenant or without
+`context:read` must receive `403 FORBIDDEN`. The gateway integration test
+`native_mcp_api_key_compat` covers these server responses using synthetic credentials.
+Client configuration references document where to enter the credentials. Client interoperability
+requires a separate test with the deployed endpoint.
+
 ## 8. Load sizing — read before the first real traffic
 
 The Distill hop makes **one serial provider round trip per Evidence**, so its throughput is the provider's, not the
