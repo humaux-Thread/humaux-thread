@@ -59,6 +59,8 @@ pub mod context;
 /// Closed selector identifiers shared by continuity and retrieval (§25.4).
 pub mod context_types;
 pub mod continuity;
+/// Published source-backed facet vocabulary (§25.3.1).
+pub mod continuity_types;
 pub mod coordination;
 pub mod dataclass;
 pub mod egress;

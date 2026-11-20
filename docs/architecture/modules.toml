@@ -780,6 +780,7 @@ files = [
   "crates/domain/src/network.rs",
   "crates/domain/src/audit_types.rs",
   "crates/domain/src/context_types.rs",
+  "crates/domain/src/continuity_types.rs",
   "crates/domain/src/dataclass.rs",
   "crates/domain/src/error.rs",
   "crates/domain/src/ids.rs",
