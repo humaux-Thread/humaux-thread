@@ -1,0 +1,18 @@
+migration_id = "0311_oauth_loopback_redirect"
+class = "EXPAND_CONTRACT"
+precheck = """
+SELECT to_regprocedure('control.oauth_code_issue(bytea,text,text,text,text,uuid,uuid,uuid,text[],integer)') IS NOT NULL
+       AS precheck_ok
+"""
+postcheck = """
+SELECT proowner = 'role_migration_owner'::regrole AND prosecdef
+   AND 'search_path=pg_catalog' = ANY(proconfig)
+   AND has_function_privilege('role_gateway', oid, 'EXECUTE')
+   AND NOT EXISTS (SELECT FROM aclexplode(proacl) x
+                    WHERE x.privilege_type = 'EXECUTE'
+                      AND x.grantee NOT IN (proowner, 'role_gateway'::regrole)) AS postcheck_ok
+  FROM pg_proc
+ WHERE oid = to_regprocedure('control.oauth_code_issue(bytea,text,text,text,text,uuid,uuid,uuid,text[],integer)')
+"""
+rollback_or_forward_fix = "Forward fix. Restore the 0268 exact redirect predicate if port variation must be withdrawn."
+backup_restore_requirement = "No existing data or privileges change."

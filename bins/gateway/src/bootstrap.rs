@@ -23,7 +23,7 @@
 //!   HUMAUX_GATEWAY_PUBLIC_BASE_URL, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS,
 //!   HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS,
-//!   HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE, HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS,
+//!   HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE, HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_STATIC_CLIENTS,
 //!   HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_EMBEDDING_DIMENSION, HUMAUX_GATEWAY_EMBEDDING_MODEL_ID, HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION,
 //!   HUMAUX_GATEWAY_EMBEDDING_PROVIDER_ID, HUMAUX_GATEWAY_EMBEDDING_VERSION, HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP,
@@ -117,7 +117,7 @@ use crate::{
     context::ContextBootstrap,
     guard::{ConfirmationMint, GatewayGuard, GuardRatePolicies, GuardSettings},
     mcp_application::GatewayMcpApplication,
-    oauth_http::OAuthHttpConfig,
+    oauth_http::{OAuthHttpConfig, PublicClientMetadata},
     recall::{SemanticRecallRuntime, SemanticRecallVersions},
     remember::{self, ProcessFamily, RememberEventKind, RememberPolicy},
     rerank_client::{GatewayRerankClient, RerankLane},
@@ -163,6 +163,7 @@ const LOGIN_CODE_PEPPER_KEY: &str = "HUMAUX_GATEWAY_LOGIN_CODE_PEPPER";
 const EMAIL_RECIPIENT_ALLOWLIST_KEY: &str = "HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST";
 /// ADR-0125 8e (§78.1): the console session's absolute and idle lifetimes, the login code's lifetime and attempt cap,
 /// and the resend cooldown. Registry defaults are the former `AuthConfig::default()` values.
+const OAUTH_STATIC_CLIENTS_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_STATIC_CLIENTS";
 const OAUTH_RESOURCE_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE";
 const OAUTH_CODE_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS";
 const OAUTH_ACCESS_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS";
@@ -319,6 +320,7 @@ pub struct GatewayBootstrap {
     /// MAC keys are a separate pair from `token_keys`: one leak must not mint both token families.
     auth_pages: Option<AuthPagesConfig>,
     oauth_http: Option<OAuthHttpConfig>,
+    oauth_static_clients: String,
     billing_webhook: Option<HashMap<String, BillingWebhookConfig>>,
     /// ADR-0061 D-B `HUMAUX_GATEWAY_METRICS_ADDR`: the loopback ops listener (`/metrics`, `/status`).
     metrics_addr: SocketAddr,
@@ -608,6 +610,10 @@ impl GatewayBootstrap {
                 );
             }
         }
+        if self.oauth_http.is_some() {
+            provision_oauth_clients(guard.runtime_pool().as_ref(), &self.oauth_static_clients)
+                .await?;
+        }
         let application = Arc::new(application);
         // ADR-0125: anonymous callers are keyed by the IP the pre-auth bucket charges them.
         let admission = Admission::new(self.admission).keyed_by_client(Arc::clone(&guard));
@@ -723,6 +729,10 @@ impl GatewayBootstrap {
             token_keys,
             auth_pages,
             oauth_http,
+            oauth_static_clients: effective
+                .get(OAUTH_STATIC_CLIENTS_KEY)
+                .cloned()
+                .unwrap_or_default(),
             billing_webhook,
             metrics_addr,
             readiness_refresh,
@@ -1834,6 +1844,12 @@ pub fn registry() -> Vec<ConfigEntry> {
         .map(|(name, default)| entry_with_default(name, "u64", false, default)),
     );
     entries.push(entry_with_default(OAUTH_RESOURCE_KEY, "string", false, ""));
+    entries.push(entry_with_default(
+        OAUTH_STATIC_CLIENTS_KEY,
+        "string",
+        false,
+        "",
+    ));
     entries.push(entry_with_default(BILLING_PROVIDERS, "string", false, "{}"));
     entries.extend(
         ["REMEMBER_TENANT_ID", "REMEMBER_WORKSPACE_ID"]
@@ -2446,6 +2462,97 @@ pub(crate) async fn check_oauth_entitlement(
     charge_policy_for(&read_quota_store(pool), scope, BMO_ENTITLEMENT)
         .await
         .map(drop)
+}
+
+/// Apply the operator's public client registrations as one transaction before exposing the OAuth surface.
+pub async fn provision_oauth_clients(
+    pool: &RuntimeDbPool,
+    configured: &str,
+) -> Result<(), BootstrapError> {
+    use humaux_adapters::oauth_repo::{self, ClientKind};
+    use std::collections::HashSet;
+
+    #[derive(Deserialize)]
+    struct StaticClient {
+        client_id: String,
+        #[serde(flatten)]
+        metadata: PublicClientMetadata,
+    }
+
+    if configured.is_empty() {
+        return Ok(());
+    }
+    let invalid = || {
+        BootstrapError::new(
+            OAUTH_STATIC_CLIENTS_KEY,
+            "invalid public client configuration",
+        )
+    };
+    let clients: Vec<StaticClient> = serde_json::from_str(configured).map_err(|_| invalid())?;
+    let mut seen = HashSet::new();
+    if clients.iter().any(|client| {
+        client.client_id.is_empty()
+            || !client
+                .client_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            || !seen.insert(&client.client_id)
+            || client.metadata.validate().is_err()
+    }) {
+        return Err(invalid());
+    }
+    if clients.is_empty() {
+        return Ok(());
+    }
+    let failure =
+        |_| BootstrapError::new(OAUTH_STATIC_CLIENTS_KEY, "could not persist public clients");
+    let mut txn = oauth_repo::begin(pool).await.map_err(failure)?;
+    for client in clients {
+        let stored = txn
+            .register_client(
+                &client.client_id,
+                ClientKind::Static,
+                &client.metadata.redirect_uris,
+                &serde_json::json!(client.metadata),
+                None,
+            )
+            .await
+            .map_err(failure)?;
+        if !stored {
+            return Err(BootstrapError::new(
+                OAUTH_STATIC_CLIENTS_KEY,
+                "client id already registered with a different kind or disabled",
+            ));
+        }
+    }
+    txn.commit().await.map_err(failure)
+}
+
+/// Persist one newly issued public client ID before returning it on the wire.
+pub(crate) async fn register_dynamic_oauth_client(
+    pool: &RuntimeDbPool,
+    client_id: &str,
+    metadata: &PublicClientMetadata,
+    document: &Value,
+) -> Result<(), humaux_domain::error::ErrorCode> {
+    use humaux_adapters::oauth_repo::{self, ClientKind};
+    use humaux_domain::error::ErrorCode;
+
+    let mut txn = oauth_repo::begin(pool).await?;
+    if txn.lookup_client(client_id).await?.is_some()
+        || !txn
+            .register_client(
+                client_id,
+                ClientKind::Dcr,
+                &metadata.redirect_uris,
+                document,
+                None,
+            )
+            .await?
+    {
+        return Err(ErrorCode::Internal);
+    }
+    txn.commit().await
 }
 
 /// Open the consent write transaction and keep the admitted entitlement locked through issuance.

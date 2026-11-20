@@ -29,7 +29,7 @@ use humaux_domain::{
 };
 use humaux_gateway::{
     auth_pages::{self, AuthPagesConfig},
-    bootstrap::passwordless_login_port,
+    bootstrap::{passwordless_login_port, provision_oauth_clients},
     guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
     limiter::RatePolicy,
     oauth_http::{self, OAuthHttpConfig},
@@ -81,6 +81,7 @@ struct Handle {
     tenant_id: Uuid,
     user_id: Uuid,
     client_id: String,
+    registered_clients: Vec<String>,
     scopes: Vec<String>,
 }
 impl Drop for Handle {
@@ -106,9 +107,10 @@ impl Drop for Handle {
         ] {
             let _ = self.admin.execute(sql, &[&self.tenant_id]);
         }
+        self.registered_clients.push(self.client_id.clone());
         let _ = self.admin.execute(
-            "DELETE FROM control.oauth_client_registrations WHERE client_id=$1",
-            &[&self.client_id],
+            "DELETE FROM control.oauth_client_registrations WHERE client_id=ANY($1)",
+            &[&self.registered_clients],
         );
         let _ = self.admin.execute(
             "DELETE FROM control.users WHERE user_id=$1",
@@ -157,6 +159,7 @@ impl DbIntegrationFixture for OAuthFixture {
             tenant_id,
             user_id,
             client_id,
+            registered_clients: Vec::new(),
             scopes: vec!["context:read".to_owned(), "memory:write".to_owned()],
         };
         h.rt.block_on(async {
@@ -206,6 +209,10 @@ fn guard_settings() -> GuardSettings {
     }
 }
 fn serve(h: &Handle, max: u64) -> SocketAddr {
+    serve_surface(h, Some(max))
+}
+
+fn serve_surface(h: &Handle, max: Option<u64>) -> SocketAddr {
     // dep: PostgreSQL(role_gateway) — §79.2: exercise the runtime role.
     let pool =
         h.rt.block_on(RuntimeDbPool::connect(&dsn_as_role(&h.dsn)))
@@ -220,8 +227,12 @@ fn serve(h: &Handle, max: u64) -> SocketAddr {
         recipient_allowlist: String::new(),
     };
     let login = passwordless_login_port(&guard, &pages);
-    let router = oauth_http::router(Arc::clone(&guard), config(max), Arc::clone(&login))
-        .merge(auth_pages::router(guard, pages, login));
+    let router = oauth_http::router(Arc::clone(&guard), max.map(config), Arc::clone(&login));
+    let router = if max.is_some() {
+        router.merge(auth_pages::router(guard, pages, login))
+    } else {
+        router
+    };
     h.rt.block_on(async {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let address = listener.local_addr().expect("address");
@@ -255,12 +266,17 @@ async fn http_with(
 ) -> Reply {
     // dep: HTTP(loopback) — production router and pre-auth guard
     let mut stream = TcpStream::connect(address).await.expect("connect");
+    let content_type = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+        .map_or("application/x-www-form-urlencoded", |(_, value)| value);
     let extra: String = headers
         .iter()
+        .filter(|(name, _)| !name.eq_ignore_ascii_case("content-type"))
         .map(|(name, value)| format!("{name}: {value}\r\n"))
         .collect();
     let raw = format!(
-        "{method} {path} HTTP/1.1\r\nHost: as.example.test\r\nConnection: close\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n{extra}\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: as.example.test\r\nConnection: close\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{extra}\r\n{body}",
         body.len()
     );
     stream.write_all(raw.as_bytes()).await.expect("write");
@@ -1514,5 +1530,364 @@ fn m02_10b_consent_rejects_cross_origin() {
             browser_consent(&h, address, &session, "https://wrong.example.test", &body).status,
             403
         );
+    });
+}
+
+fn registration_body(redirects: &[&str]) -> serde_json::Value {
+    serde_json::json!({
+        "redirect_uris": redirects,
+        "token_endpoint_auth_method": "none",
+        "grant_types": ["authorization_code", "refresh_token"],
+        "client_name": "M02-10c fixture"
+    })
+}
+
+fn register_client_http(h: &Handle, address: SocketAddr, path: &str, body: &str) -> Reply {
+    h.rt.block_on(http_with(
+        address,
+        "POST",
+        path,
+        &[("Content-Type", "application/json")],
+        body,
+    ))
+}
+
+fn recorded_client(h: &Handle, client_id: &str) -> Option<oauth_repo::ClientRecord> {
+    h.rt.block_on(async {
+        let mut txn = oauth_repo::begin(&h.gateway).await.unwrap();
+        txn.lookup_client(client_id).await.unwrap()
+    })
+}
+
+#[test]
+fn m02_10c_advertised_registration_persists_public_client() {
+    run_db_fixture::<OAuthFixture, _>("M02-10c dynamic registration", |mut h| {
+        let address = serve(&h, 7200);
+        let metadata = h.rt.block_on(http(
+            address,
+            "GET",
+            "/.well-known/oauth-authorization-server",
+            "",
+        ));
+        assert_eq!(metadata.status, 200);
+        let metadata: Value = serde_json::from_str(&metadata.body).unwrap();
+        let registration =
+            url::Url::parse(metadata["registration_endpoint"].as_str().unwrap()).unwrap();
+        assert_eq!(registration.origin().ascii_serialization(), ORIGIN);
+        let input = registration_body(&[
+            REDIRECT,
+            "http://localhost:37123/cb",
+            "http://127.0.0.1/cb",
+            "http://[::1]/cb",
+        ]);
+        let reply = register_client_http(&h, address, registration.path(), &input.to_string());
+        assert_eq!(reply.status, 201, "{}", reply.body);
+        assert_eq!(reply.headers["cache-control"], "no-store");
+        let mut response: Value = serde_json::from_str(&reply.body).unwrap();
+        let client = response
+            .as_object_mut()
+            .unwrap()
+            .remove("client_id")
+            .unwrap();
+        let client = client.as_str().unwrap();
+        h.registered_clients.push(client.to_owned());
+        assert!(Uuid::parse_str(client).is_ok());
+        let record = recorded_client(&h, client).expect("committed client");
+        assert_eq!(record.kind, Some(ClientKind::Dcr));
+        assert_eq!(
+            serde_json::json!(record.redirect_uris),
+            input["redirect_uris"]
+        );
+        assert_eq!(record.metadata, response);
+        assert_eq!(response["client_name"], input["client_name"]);
+        assert_eq!(response["token_endpoint_auth_method"], "none");
+        assert_eq!(response["grant_types"], input["grant_types"]);
+        assert_eq!(response["response_types"], serde_json::json!(["code"]));
+        assert!(response.get("client_secret").is_none());
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        let page = browser_get(
+            &h,
+            address,
+            &authorize_url(client, "http://localhost:37124/cb", "S256"),
+            &session_cookie(&h),
+        );
+        assert_eq!(page.status, 200, "dynamic authorize: {}", page.body);
+    });
+}
+
+#[test]
+fn m02_10c_disabled_surface_has_no_registration_or_advertisement() {
+    run_db_fixture::<OAuthFixture, _>("M02-10c disabled auth surface", |h| {
+        let address = serve_surface(&h, None);
+        assert_eq!(
+            h.rt.block_on(http(
+                address,
+                "GET",
+                "/.well-known/oauth-authorization-server",
+                ""
+            ))
+            .status,
+            404
+        );
+        assert_eq!(
+            register_client_http(
+                &h,
+                address,
+                "/oauth/register",
+                &registration_body(&[REDIRECT]).to_string()
+            )
+            .status,
+            404
+        );
+    });
+}
+
+#[test]
+fn m02_10c_rejects_invalid_registration_metadata_and_redirects() {
+    run_db_fixture::<OAuthFixture, _>("M02-10c invalid registration", |mut h| {
+        let address = serve(&h, 7200);
+        let valid = registration_body(&[REDIRECT]);
+        let mut metadata = vec!["{".into(), r#"{"token_endpoint_auth_method":"none","token_endpoint_auth_method":"none","redirect_uris":["https://example.test/cb"]}"#.into()];
+        for method in [
+            "client_secret_basic",
+            "client_secret_post",
+            "private_key_jwt",
+        ] {
+            let mut body = valid.clone();
+            body["token_endpoint_auth_method"] = method.into();
+            metadata.push(body.to_string());
+        }
+        let mut body = valid.clone();
+        body.as_object_mut()
+            .unwrap()
+            .remove("token_endpoint_auth_method");
+        metadata.push(body.to_string());
+        for (key, value) in [
+            ("client_id", serde_json::json!(h.client_id)),
+            ("client_secret", serde_json::json!("not-a-real-secret")),
+            ("grant_types", serde_json::json!(["client_credentials"])),
+            ("response_types", serde_json::json!(["token"])),
+        ] {
+            let mut body = valid.clone();
+            body[key] = value;
+            metadata.push(body.to_string());
+        }
+        let mut failures = Vec::new();
+        for (error, bodies) in [
+            ("invalid_client_metadata", metadata),
+            (
+                "invalid_redirect_uri",
+                [
+                    vec![],
+                    vec![REDIRECT, REDIRECT],
+                    vec![REDIRECT, "https://client.example.test/cb#fragment"],
+                    vec!["javascript:ignored"],
+                    vec!["com.example.app:/cb"],
+                    vec!["http://client.example.test/cb"],
+                    vec!["http://localhost.evil.test/cb"],
+                    vec!["http://127.0.0.2/cb"],
+                    vec!["http://[0:0:0:0:0:0:0:1]/cb"],
+                    vec!["http://127.000.0.1/cb"],
+                    vec!["https://client.example.test/cb?%73tate=old"],
+                    vec!["https://username@client.example.test/cb"],
+                    vec!["http://localhost:65536/cb"],
+                    vec!["https://client.example.test:invalid/cb"],
+                ]
+                .into_iter()
+                .map(|uris| registration_body(&uris).to_string())
+                .collect(),
+            ),
+        ] {
+            for (index, body) in bodies.iter().enumerate() {
+                let reply = register_client_http(&h, address, "/oauth/register", body);
+                let value: Value = serde_json::from_str(&reply.body).unwrap();
+                if let Some(id) = value["client_id"].as_str() {
+                    h.registered_clients.push(id.to_owned());
+                }
+                if (reply.status, &value) != (400, &serde_json::json!({"error": error})) {
+                    failures.push((error, index, reply.status, value));
+                }
+                assert_eq!(reply.headers["cache-control"], "no-store");
+            }
+        }
+        assert!(failures.is_empty(), "{failures:?}");
+    });
+}
+
+#[test]
+fn m02_10c_operator_preregistration_is_atomic_and_authorizes() {
+    run_db_fixture::<OAuthFixture, _>("M02-10c controlled registration", |mut h| {
+        let id = format!("static-{}", h.client_id);
+        h.registered_clients.push(id.clone());
+        let mut registration = registration_body(&[REDIRECT]);
+        registration["client_id"] = id.clone().into();
+        let mut invalid = registration.clone();
+        invalid["client_id"] = format!("invalid-{id}").into();
+        invalid["token_endpoint_auth_method"] = "client_secret_basic".into();
+        assert!(
+            h.rt.block_on(provision_oauth_clients(
+                &h.gateway,
+                &serde_json::json!([registration, invalid]).to_string()
+            ))
+            .is_err()
+        );
+        assert!(recorded_client(&h, &id).is_none());
+        h.rt.block_on(provision_oauth_clients(
+            &h.gateway,
+            &serde_json::json!([registration]).to_string(),
+        ))
+        .unwrap();
+        let record = recorded_client(&h, &id).expect("committed static client");
+        assert_eq!(record.kind, Some(ClientKind::Static));
+        assert_eq!(record.redirect_uris, [REDIRECT]);
+        assert_eq!(record.metadata["token_endpoint_auth_method"], "none");
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        let address = serve(&h, 7200);
+        let session = session_cookie(&h);
+        let page = browser_get(&h, address, &authorize_url(&id, REDIRECT, "S256"), &session);
+        assert_eq!(page.status, 200, "{}", page.body);
+    });
+}
+
+fn seed_loopback_client(h: &Handle) {
+    h.rt.block_on(async {
+        let mut txn = oauth_repo::begin(&h.gateway).await.unwrap();
+        assert!(
+            txn.register_client(
+                &h.client_id,
+                ClientKind::Static,
+                &[
+                    "http://localhost:31000/cb?mode=desktop",
+                    "http://127.0.0.1/cb",
+                    "http://[::1]:31000/cb",
+                    REDIRECT
+                ]
+                .map(str::to_owned),
+                &serde_json::json!({}),
+                None,
+            )
+            .await
+            .unwrap()
+        );
+        txn.commit().await.unwrap();
+    });
+}
+
+#[test]
+fn m02_10c_loopback_port_varies_but_code_binds_actual_uri() {
+    run_db_fixture::<OAuthFixture, _>("M02-10c loopback issuance and exchange", |mut h| {
+        seed_loopback_client(&h);
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        let address = serve(&h, 7200);
+        let session = session_cookie(&h);
+        for (uri, exchange_uri, status) in [
+            (
+                "http://localhost:36493/cb?mode=desktop",
+                "http://localhost:31000/cb?mode=desktop",
+                400,
+            ),
+            (
+                "http://localhost:36494/cb?mode=desktop",
+                "http://localhost:36494/cb?mode=desktop",
+                200,
+            ),
+            (
+                "http://127.0.0.1:36494/cb",
+                "http://127.0.0.1:36494/cb",
+                200,
+            ),
+            ("http://[::1]:36494/cb", "http://[::1]:36494/cb", 200),
+        ] {
+            let page = browser_get(
+                &h,
+                address,
+                &authorize_url(&h.client_id, uri, "S256"),
+                &session,
+            );
+            assert_eq!(page.status, 200, "authorize {uri}: {}", page.body);
+            let consent =
+                browser_consent(&h, address, &session, ORIGIN, &consent_body(&page, "allow"));
+            assert_eq!(consent.status, 303, "consent {uri}: {}", consent.body);
+            let target = &consent.headers["location"];
+            assert!(target.starts_with(&format!(
+                "{uri}{}",
+                if uri.contains('?') { '&' } else { '?' }
+            )));
+            let callback = url::Url::parse(target).unwrap();
+            let code = callback
+                .query_pairs()
+                .find(|(key, _)| key == "code")
+                .unwrap()
+                .1;
+            let reply = post(
+                &h,
+                address,
+                &code_form(
+                    &h,
+                    &code,
+                    &[
+                        ("redirect_uri", Some(exchange_uri)),
+                        ("resource", Some(NATIVE_RESOURCE)),
+                    ],
+                ),
+            );
+            assert_eq!(
+                reply.status, status,
+                "{uri} to {exchange_uri}: {}",
+                reply.body
+            );
+            if status == 400 {
+                denied(&reply, OAuthReason::CODE_REDIRECT_MISMATCH);
+            }
+        }
+    });
+}
+
+#[test]
+fn m02_10c_refuses_unregistered_redirect_in_http_and_pg() {
+    run_db_fixture::<OAuthFixture, _>("M02-10c callback matching bounds", |mut h| {
+        seed_loopback_client(&h);
+        let address = serve(&h, 7200);
+        for uri in [
+            "https://client.example.test:444/cb",
+            "http://127.0.0.2:36000/cb",
+            "http://localhost:36000/cb",
+            "http://localhost:36000/cb?mode=other",
+            "http://[::1]:36000/other",
+            "https://localhost:36000/cb?mode=desktop",
+            "http://LOCALHOST:36000/cb?mode=desktop",
+            "http://localhost:0/cb?mode=desktop",
+        ] {
+            let reply = browser_get(&h, address, &authorize_url(&h.client_id, uri, "S256"), "");
+            assert_eq!(reply.status, 400, "authorize {uri}: {}", reply.body);
+            assert!(!reply.headers.contains_key("location"));
+            let result = h.rt.block_on(async {
+                let mut txn = oauth_repo::begin(&h.gateway).await.unwrap();
+                txn.issue_code(
+                    &CodeIssue {
+                        code_hash: &SecretHash::of_secret("negative loopback door probe"),
+                        client_id: &h.client_id,
+                        redirect_uri: uri,
+                        pkce_challenge: CHALLENGE,
+                        resource: NATIVE_RESOURCE,
+                        user_id: UserId(h.user_id),
+                        tenant_id: TenantId(h.tenant_id),
+                        workspace_id: None,
+                        scopes: &h.scopes,
+                    },
+                    Duration::from_secs(300),
+                )
+                .await
+                .unwrap()
+            });
+            assert_eq!(result, None, "issuing door accepted {uri}");
+        }
+        assert_eq!(grant_count(&mut h), 0);
     });
 }
