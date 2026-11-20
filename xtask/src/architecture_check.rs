@@ -1105,7 +1105,7 @@ const HEX_MODULES: &str = "docs/architecture/modules.toml";
 const HEX_BASELINE: &str = "xtask/hex_layer_baseline.txt";
 const HEX_CONTEXT_BASELINE: &str = "xtask/hex_context_baseline.txt";
 const HEX_CONTEXT_CYCLE_BASELINE: &str = "xtask/hex_context_cycle_baseline.txt";
-const HEX_CONTEXT_CYCLE_CEILING: usize = 5;
+const HEX_CONTEXT_CYCLE_CEILING: usize = 4;
 const HEX_CONTEXT_EXCEPTIONS: &str = "xtask/hex_context_exceptions.txt";
 const HEX_CONTEXT_EXCEPTION_CEILING: usize = 16;
 const HEX_CONTEXT_EXCEPTION_ADR: &str = "docs/adr/0132-*.md";
@@ -2137,7 +2137,7 @@ fn hex_context_gate(root: &Path) -> Result<(Verdict, Verdict), Vec<String>> {
         ),
         Err(errors) => (actual, Verdict::Fail(errors)),
     };
-    errors.extend(hex_exact(&remaining, &baseline, 22, "HEX-CONTEXT"));
+    errors.extend(hex_exact(&remaining, &baseline, 19, "HEX-CONTEXT"));
     Ok((hex_verdict(errors), verdict))
 }
 
@@ -10341,6 +10341,7 @@ fn w1_continuity_contract_from(
     domain: &str,
     adapter: &str,
     ids: &str,
+    facet_types: &str,
     marker_sets_outside_publish: usize,
 ) -> Verdict {
     let mut failures = Vec::new();
@@ -10424,11 +10425,22 @@ fn w1_continuity_contract_from(
     for needle in [
         "pub use crate::ids::ProjectId;",
         "continuity_uuid_v7!(ContinuityFacetVersionId)",
-        "pub const ALL: [Self; 15]",
     ] {
         if !domain.contains(needle) {
             failures.push(format!("domain continuity surface missing `{needle}`"));
         }
+    }
+    if !mask_comments_and_literals(facet_types)
+        .lines()
+        .any(|line| line.trim() == "pub const ALL: [Self; 15] = [")
+    {
+        failures.push("published facet vocabulary must declare pub const ALL: [Self; 15]".into());
+    }
+    if !mask_comments_and_literals(domain)
+        .lines()
+        .any(|line| line.trim() == "pub use crate::continuity_types::ContinuityFacetKind;")
+    {
+        failures.push("domain continuity missing the ContinuityFacetKind re-export".into());
     }
     let ids_code = mask_comments_and_literals(ids);
     let project_impl = r3_function_body(&ids_code, "impl ProjectId {").unwrap_or_default();
@@ -10478,6 +10490,7 @@ fn w1_continuity_gate(root: &Path) -> Verdict {
         "crates/domain/src/continuity.rs",
         "crates/adapters/src/continuity_repo.rs",
         "crates/domain/src/ids.rs",
+        "crates/domain/src/continuity_types.rs",
     ];
     let mut sources = Vec::new();
     for path in paths {
@@ -10520,6 +10533,7 @@ fn w1_continuity_gate(root: &Path) -> Verdict {
         &sources[1],
         &sources[2],
         &sources[3],
+        &sources[4],
         sql_marker_sets + rust_marker_sets,
     )
 }
@@ -14167,7 +14181,7 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         println!("CONTEXT new single-context pub(crate)/pub(super)/pub(in crate): GREEN");
         fs::write(
             &path,
-            format!("{visible}\nuse humaux_domain::continuity::ContinuityFacetKind;"),
+            format!("{visible}\nuse humaux_domain::continuity::ContinuityPublishState;"),
         )
         .unwrap();
         let red = gate();
@@ -16355,13 +16369,14 @@ runs:
         );
     }
 
-    fn w1_real_sources() -> (String, String, String, String) {
+    fn w1_real_sources() -> (String, String, String, String, String) {
         let root = real_root();
         (
             fs::read_to_string(root.join("migrations/0136_project_continuity.sql")).unwrap(),
             fs::read_to_string(root.join("crates/domain/src/continuity.rs")).unwrap(),
             fs::read_to_string(root.join("crates/adapters/src/continuity_repo.rs")).unwrap(),
             fs::read_to_string(root.join("crates/domain/src/ids.rs")).unwrap(),
+            fs::read_to_string(root.join("crates/domain/src/continuity_types.rs")).unwrap(),
         )
     }
 
@@ -16420,7 +16435,7 @@ runs:
 
     #[test]
     fn w1_continuity_contract_mutations_are_red() {
-        let (migration, domain, adapter, ids) = w1_real_sources();
+        let (migration, domain, adapter, ids, facet_types) = w1_real_sources();
         for needle in [
             "ALTER TABLE private.continuity_projects FORCE ROW LEVEL SECURITY;",
             "CONSTRAINT continuity_facet_slots_kind_closed CHECK",
@@ -16440,7 +16455,7 @@ runs:
             let broken = migration.replacen(needle, "", 1);
             assert!(
                 matches!(
-                    w1_continuity_contract_from(&broken, &domain, &adapter, &ids, 0),
+                    w1_continuity_contract_from(&broken, &domain, &adapter, &ids, &facet_types, 0),
                     Verdict::Fail(_)
                 ),
                 "mutation removing `{needle}` must fail the actual W1 gate"
@@ -16452,16 +16467,24 @@ runs:
                 &domain,
                 &adapter,
                 &ids,
+                &facet_types,
                 0
             ),
             Verdict::Fail(_)
         ));
         assert!(matches!(
-            w1_continuity_contract_from(&migration, &domain, &adapter, &ids, 1),
+            w1_continuity_contract_from(&migration, &domain, &adapter, &ids, &facet_types, 1),
             Verdict::Fail(_)
         ));
         let without_reexport = domain.replacen("pub use crate::ids::ProjectId;", "", 1);
-        let red = w1_continuity_contract_from(&migration, &without_reexport, &adapter, &ids, 0);
+        let red = w1_continuity_contract_from(
+            &migration,
+            &without_reexport,
+            &adapter,
+            &ids,
+            &facet_types,
+            0,
+        );
         assert!(
             matches!(&red, Verdict::Fail(lines) if lines.iter().any(|l| l.contains("pub use crate::ids::ProjectId;")))
         );
@@ -16485,7 +16508,14 @@ runs:
                     project.replacen(needle, replacement, 1)
                 )
             };
-            let red = w1_continuity_contract_from(&migration, &domain, &adapter, &broken, 0);
+            let red = w1_continuity_contract_from(
+                &migration,
+                &domain,
+                &adapter,
+                &broken,
+                &facet_types,
+                0,
+            );
             assert!(
                 matches!(&red, Verdict::Fail(lines) if lines.iter().any(|l| l.contains(expected))),
                 "{red:?}"
@@ -16493,10 +16523,49 @@ runs:
             println!("ProjectId {expected}: RED {red:?}");
         }
         assert_eq!(
-            w1_continuity_contract_from(&migration, &domain, &adapter, &ids, 0),
+            w1_continuity_contract_from(&migration, &domain, &adapter, &ids, &facet_types, 0),
             Verdict::Pass
         );
         println!("ProjectId source and compatibility re-export restored: GREEN");
+    }
+
+    #[test]
+    fn w1_continuity_facet_contract_red_green() {
+        let (migration, domain, adapter, ids, facet_types) = w1_real_sources();
+        let gate = |domain, facet_types| {
+            w1_continuity_contract_from(&migration, domain, &adapter, &ids, facet_types, 0)
+        };
+        let wrong_count =
+            facet_types.replacen("pub const ALL: [Self; 15]", "pub const ALL: [Self; 14]", 1);
+        let missing_export = domain.replacen(
+            "pub use crate::continuity_types::ContinuityFacetKind;",
+            "",
+            1,
+        );
+        for (domain, facet_types, expected) in [
+            (
+                domain.as_str(),
+                wrong_count.as_str(),
+                "pub const ALL: [Self; 15]",
+            ),
+            (
+                missing_export.as_str(),
+                facet_types.as_str(),
+                "ContinuityFacetKind re-export",
+            ),
+        ] {
+            let red = gate(domain, facet_types);
+            assert!(
+                matches!(&red, Verdict::Fail(lines) if lines.iter().any(|line| line.contains(expected))),
+                "{red:?}"
+            );
+            println!("W1 {expected}: RED {red:?}");
+        }
+        assert_eq!(
+            w1_continuity_contract_from(&migration, &domain, &adapter, &ids, &facet_types, 0),
+            Verdict::Pass
+        );
+        println!("W1 original declaration and re-export: GREEN");
     }
 
     #[test]
