@@ -1,6 +1,6 @@
 //! `application::api_key` — API credential validation policy (§73.5; ADR-0059 D-H).
 //! Depends-on: crates=[hmac, humaux-domain, sha2, async-trait]; services=[]; env=[]; modules=[domain::network, domain::error, domain::identity, domain::ids]
-//! Called-by: [tests, adapters::credential_repo, gateway::auth, gateway::bootstrap]
+//! Called-by: [tests, adapters::credential_repo, gateway::auth, gateway::bootstrap, gateway::route_cache]
 //! Invariants: [caller-supplied clock and peppers; current pepper precedes previous]
 //! Spec: §73.5; ADR-0130
 

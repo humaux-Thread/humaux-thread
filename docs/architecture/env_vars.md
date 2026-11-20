@@ -1634,6 +1634,19 @@ modules:
 - `gateway::tests::mcp_gateway`
 - `xtask::e2e_onboard`
 
+### `HUMAUX_GATEWAY_CREDENTIAL_BATCH_TOUCH_ENABLED`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
 ### `HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX`
 - witness: literal
 - registry: gateway
@@ -1651,6 +1664,45 @@ modules:
 - `xtask::e2e_onboard`
 
 ### `HUMAUX_GATEWAY_CREDENTIAL_PEPPER_PREVIOUS_HEX`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_CREDENTIAL_ROUTE_CACHE_BYTES`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_CREDENTIAL_ROUTE_CACHE_ENABLED`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_CREDENTIAL_ROUTE_CACHE_TTL_SECONDS`
 - witness: literal
 - registry: gateway
 

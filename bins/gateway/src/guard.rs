@@ -1,5 +1,5 @@
 //! `gateway::guard` — §83: one business admission path for every canonical MCP operation.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::read_quota, application::independent_audit, application::lifecycle_execution, application::remember, application::supersede, domain::affect, domain::audit, domain::confirm, domain::error, domain::identity, domain::ids, domain::selection, domain::subject, gateway::auth, gateway::bootstrap, gateway::limiter, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::read_quota, application::independent_audit, application::lifecycle_execution, application::remember, application::supersede, domain::affect, domain::audit, domain::confirm, domain::error, domain::identity, domain::ids, domain::selection, domain::subject, gateway::auth, gateway::bootstrap, gateway::limiter, gateway::route_cache, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::oauth_http, gateway::status, tests]
 //! Invariants: [no path mints and accepts in one call; transport owns HTTP validation only; this layer is the sole place that authenticates, authorizes and admits a request, so an operation that bypasses it is a bug, not a variant path]
 //! Spec: Baseline §83; §52.1; ADR-0018; ADR-0028; ADR-0030; ADR-0054; ADR-0065 D-D; ADR-0125
@@ -46,8 +46,11 @@ use uuid::Uuid;
 use crate::limiter::{Limiter, RatePolicy, Subject};
 
 use crate::auth::{
-    AuthenticatedServiceCredential, CredentialScope, TouchThrottle, authenticate_service_credential,
+    AuthenticatedServiceCredential, BatchTouch, CredentialScope, MIN_BATCH_TOUCH_SECONDS,
+    TouchThrottle, authenticate_live,
 };
+
+use crate::route_cache::CredentialRouteCache;
 
 /// Explicit bootstrap policy. Empty CIDR lists mean the operator has imposed no such
 /// network restriction; they never replace credential authentication or scoped grants.
@@ -242,6 +245,8 @@ pub struct GatewayGuard {
     metrics: GuardMetrics,
     /// M02 D8: when a credential's `last_used_at` is written again; never consulted for a validity decision.
     touch: TouchThrottle,
+    batch_touch: Option<BatchTouch>,
+    route_cache: Option<Arc<CredentialRouteCache>>,
     limiter: Limiter,
 }
 
@@ -381,6 +386,8 @@ impl GatewayGuard {
             settings,
             metrics: GuardMetrics::default(),
             touch: TouchThrottle::new(Duration::ZERO),
+            batch_touch: None,
+            route_cache: None,
         })
     }
 
@@ -390,6 +397,22 @@ impl GatewayGuard {
     pub fn with_credential_touch_interval(mut self, interval: Duration) -> Self {
         self.touch = TouchThrottle::new(interval);
         self
+    }
+
+    /// Enable the optional route region. It is consulted only for provisional routing.
+    pub fn with_credential_route_cache(mut self, cache: Arc<CredentialRouteCache>) -> Self {
+        self.route_cache = Some(cache);
+        self
+    }
+
+    /// Enable one credential activity batch writer for this guard (ADR-0133).
+    pub fn with_batched_credential_touch(mut self, interval: Duration) -> Result<Self, ErrorCode> {
+        let seconds = i32::try_from(interval.as_secs()).map_err(|_| ErrorCode::InvalidInput)?;
+        if interval.as_secs() < MIN_BATCH_TOUCH_SECONDS {
+            return Err(ErrorCode::InvalidInput);
+        }
+        self.batch_touch = Some(BatchTouch::new(Arc::clone(&self.pool), interval, seconds));
+        Ok(self)
     }
 
     pub fn metrics(&self) -> &GuardMetrics {
@@ -484,21 +507,27 @@ impl GatewayGuard {
         context: &McpHttpContext,
         network: &ClientNetworkIdentity,
     ) -> Result<AuthenticatedServiceCredential, ErrorCode> {
-        let result = match context.authorization() {
-            Some(header) => {
-                authenticate_service_credential(
-                    &self.pool,
-                    header,
-                    &self.settings.credential_pepper,
-                    self.settings.credential_pepper_previous.as_deref(),
-                    network.client_ip,
-                    SystemTime::now(),
-                    &self.touch,
-                )
-                .await
+        let result = async {
+            let header = context.authorization().ok_or(ErrorCode::Unauthorized)?;
+            let now = SystemTime::now();
+            let credential = authenticate_live(
+                &self.pool,
+                header,
+                &self.settings.credential_pepper,
+                self.settings.credential_pepper_previous.as_deref(),
+                network.client_ip,
+                now,
+                self.route_cache.as_deref(),
+            )
+            .await?;
+            let principal = credential.identity().principal();
+            match &self.batch_touch {
+                Some(batch) => batch.stamp(principal, now).await?,
+                None => self.touch.stamp(&self.pool, principal, now).await?,
             }
-            None => Err(ErrorCode::Unauthorized),
-        };
+            Ok(credential)
+        }
+        .await;
         self.metrics.increment(
             &families::MCP_AUTH_ATTEMPTS_TOTAL,
             &[
