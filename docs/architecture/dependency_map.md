@@ -2446,6 +2446,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS`
+- env `HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE`
 - env `HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED`
@@ -6281,6 +6282,7 @@ read by:
 written by:
 - (no process): `adapters::tests::login_challenge`
 - (no process): `gateway::tests::auth_pages`
+- (no process): `gateway::tests::oauth_flow`
 
 executed by:
 
@@ -6377,6 +6379,7 @@ written by:
 - (no process): `adapters::tests::request_guard`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_flow`
 - (no process): `maintenance::tests::serve`
 
 executed by:
@@ -6529,6 +6532,7 @@ written by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -6607,6 +6611,14 @@ executed by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
+### `control.oauth_consent_tenants`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
+
 ### `control.oauth_grant_issue`
 read by:
 
@@ -6659,6 +6671,14 @@ executed by:
 - (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_refresh_grant`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::oauth_repo`
 
 ### `control.oauth_refresh_rotate`
 read by:
@@ -7597,6 +7617,7 @@ read by:
 written by:
 - (no process): `adapters::tests::console_session`
 - (no process): `gateway::tests::auth_pages`
+- (no process): `gateway::tests::oauth_flow`
 
 executed by:
 
@@ -7884,6 +7905,7 @@ read by:
 written by:
 - (no process): `adapters::tests::login_challenge`
 - (no process): `gateway::tests::auth_pages`
+- (no process): `gateway::tests::oauth_flow`
 - process(cargo-xtask): `xtask::e2e_seed`
 
 executed by:
@@ -8629,6 +8651,7 @@ executed by:
 
 ### `ops.email_outbox`
 read by:
+- (no process): `gateway::tests::oauth_flow`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -8636,6 +8659,7 @@ written by:
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::login_challenge`
 - (no process): `gateway::tests::auth_pages`
+- (no process): `gateway::tests::oauth_flow`
 - process(humaux-gateway): `adapters::email::outbox`
 
 executed by:
@@ -17675,6 +17699,7 @@ modules naming it:
 - `gateway::bootstrap`
 - `gateway::guard`
 - `gateway::mcp_application`
+- `gateway::oauth_http`
 - `gateway::recall`
 - `gateway::tests::admission`
 - `gateway::tests::auth_pages`
@@ -17941,6 +17966,7 @@ modules naming it:
 - `gateway::limiter`
 - `gateway::mcp_application`
 - `gateway::memory`
+- `gateway::oauth_http`
 - `gateway::recall`
 - `gateway::remember`
 - `gateway::rerank_client`
@@ -17970,6 +17996,15 @@ modules naming it:
 why: well-formed unknown OAuth refresh secrets in HTTP negative tests
 
 modules naming it:
+- `gateway::tests::oauth_flow`
+- `tests`
+
+### humaux-gateway → `url` (normal)
+why: OAuth form encoding and registered redirect parsing
+
+modules naming it:
+- `gateway::bootstrap`
+- `gateway::oauth_http`
 - `gateway::tests::oauth_flow`
 - `tests`
 
@@ -21313,9 +21348,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3867` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3872` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3877` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3892` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3897` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3902` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
