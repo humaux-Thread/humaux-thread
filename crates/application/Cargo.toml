@@ -36,9 +36,9 @@ hmac = "0.13"
 sha2 = "0.11"
 # why: hex-encoding digest/token bytes for storage and comparison; used-by: [application::auth, application::continuity, application::contribute, application::private_reasoning, application::referral, application::signed_token]
 hex = "0.4"
-# why: wire/DTO (de)serialization for continuity handoff and notify payloads; used-by: [application::continuity, application::notify]
+# why: wire/DTO (de)serialization for continuity handoff and notify payloads; used-by: [application::cimd, application::continuity, application::notify]
 serde = { version = "1", features = ["derive"] }
-# why: JSON payload construction for continuity/contribution_execution/entitlement/notify; used-by: [application::continuity, application::contribution_execution, application::entitlement, application::notify]
+# why: JSON payload construction for continuity/contribution_execution/entitlement/notify; used-by: [application::cimd, application::continuity, application::contribution_execution, application::entitlement, application::notify]
 serde_json = "1"
 # dep-map: allow cargo-usedby — declared but named by no module today; kept for the use-case error type (removal is a code change, out of card 26 scope)
 # why: not currently named by any module in this crate; used-by: [none]
@@ -47,7 +47,7 @@ thiserror = "2"
 # included — same macro already resolved in the workspace lockfile via `humaux-adapters`'s
 # `email::EmailProvider` trait (its Cargo.toml doc explains the object-safety reason: a plain
 # `async fn` in a trait is not `dyn`-compatible, and callers need `&dyn PrivateReasoningPort`).
-# why: object-safe async ports (PrivateReasoningPort et al.); used-by: [application::consolidate, application::continuity, application::contribute, application::retrieval_embedding_port]
+# why: object-safe async ports (PrivateReasoningPort et al.); used-by: [application::cimd, application::consolidate, application::continuity, application::contribute, application::retrieval_embedding_port]
 async-trait = "0.1"
 # `consolidate::PrivateReasoningDomainId`'s inner id — same pin as `humaux-domain`'s existing
 # `uuid = "1.25.0"`, no new independent version in the dependency graph.
@@ -57,7 +57,7 @@ uuid = "1.25.0"
 # why: unpadded base64url encoding of the PKCE S256 digest; used-by: [application::oauth]
 base64 = "0.22"
 # OAuth expiries are instants the caller passes in (pure state machine, no clock reads); same pin as `humaux-domain`.
-# why: OffsetDateTime grants and RFC3339 freshness readings; used-by: [application::oauth, application::recall_read]
+# why: OffsetDateTime grants and RFC3339 freshness readings; used-by: [application::cimd, application::oauth, application::recall_read]
 time = { version = "0.3", features = ["parsing"] }
 
 [dev-dependencies]

@@ -203,6 +203,7 @@ files = [
   "crates/adapters/src/session_repo.rs",
   "crates/application/src/api_key.rs",
   "crates/application/src/bearer.rs",
+  "crates/application/src/cimd.rs",
   "crates/application/tests/api_key.rs",
   "crates/application/src/auth.rs",
   "crates/application/src/login.rs",

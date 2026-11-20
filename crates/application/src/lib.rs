@@ -15,6 +15,7 @@ pub mod bearer;
 pub mod billing;
 /// §71.3: durable billing event processing and its persistence ports.
 pub mod billing_process;
+pub mod cimd;
 pub mod confirm;
 pub mod consolidate;
 /// Fenced consolidation execution and dispatch (ADR-0130).

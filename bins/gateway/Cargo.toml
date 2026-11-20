@@ -13,6 +13,8 @@ edition = "core"
 humaux-adapters = { path = "../../crates/adapters" }
 # why: use-case layer (ports + orchestration) this package wires; used-by: [gateway::auth_pages, gateway::billing_webhook, gateway::bootstrap, gateway::cached_embedding, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::oauth_http, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, tests]
 humaux-application = { path = "../../crates/application" }
+# why: compose the guarded OAuth metadata transport behind the identity fetch port; used-by: [gateway::bootstrap]
+humaux-infra-egress = { path = "../../crates/infra-egress" }
 # why: config/feature/mechanism registries and contract types; used-by: [gateway::bootstrap, gateway::mcp_application, tests]
 humaux-contracts = { path = "../../crates/contracts" }
 # why: domain ids, errors and value types shared across layers; used-by: [gateway::auth, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::mcp_application, gateway::memory, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, tests]
@@ -31,7 +33,7 @@ humaux-infra-cell = { path = "../../crates/infra-cell" }
 # ADR-0061 D-A/D-B: the §41.2 family table, text encoder and loopback ops listener (no metrics crate).
 # why: metrics exposition, degrade counters, the loopback ops listener and the version line `binary_build` reuses; used-by: [gateway::context, gateway::guard, gateway::main, gateway::status, tests]
 humaux-telemetry = { path = "../../crates/telemetry" }
-# why: object-safe async traits for ports and transports; used-by: [gateway::mcp_application, gateway::rerank_client, gateway::retrieval_embedding_client, tests]
+# why: object-safe async traits for ports and transports; used-by: [gateway::bootstrap, gateway::mcp_application, gateway::rerank_client, gateway::retrieval_embedding_client, tests]
 async-trait = "0.1"
 # why: HTTP/UDS server framework; used-by: [gateway::main, gateway::mcp_application, tests]
 axum = "0.8"
