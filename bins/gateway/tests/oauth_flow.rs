@@ -1175,6 +1175,151 @@ fn m02_10b_revoke_is_client_bound_and_idempotent() {
 }
 
 #[test]
+fn m02_10b_review_entitlement_revocation_wins_pending_issuance() {
+    run_db_fixture::<OAuthFixture, _>("M02-10b review: entitlement revocation", |mut h| {
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        let address = serve(&h, 7200);
+        let session = session_cookie(&h);
+        let path = authorize_url(&h.client_id, REDIRECT, "S256");
+        let page = browser_get(&h, address, &path, &session);
+        assert_eq!(page.status, 200);
+        let body = consent_body(&page, "allow");
+
+        // An uncommitted revocation leaves the old snapshot visible to an unlocked read.
+        let mut revoke = h.admin.transaction().unwrap();
+        assert_eq!(
+            revoke
+                .execute(
+                    "UPDATE control.entitlement_snapshots SET effective='{}' WHERE tenant_id=$1",
+                    &[&tenant]
+                )
+                .unwrap(),
+            1
+        );
+        let request = h.rt.spawn(async move {
+            http_with(
+                address,
+                "POST",
+                "/oauth/authorize",
+                &[
+                    ("Cookie", &session),
+                    ("Origin", ORIGIN),
+                    ("Sec-Fetch-Site", "same-origin"),
+                ],
+                &body,
+            )
+            .await
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !request.is_finished() {
+            let waiting: bool = revoke.query_one(
+                "SELECT EXISTS (SELECT FROM pg_locks WHERE locktype='transactionid' AND NOT granted \
+                 AND pg_backend_pid() = ANY(pg_blocking_pids(pid)))",
+                &[],
+            ).unwrap().get(0);
+            if waiting {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "issuance did not reach the DB barrier"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        revoke.commit().unwrap();
+        let reply = h.rt.block_on(request).unwrap();
+        assert_eq!(reply.status, 403, "revocation must prevent code issuance");
+        assert!(!reply.headers.contains_key("location"));
+        assert_eq!(authorization_code_count(&mut h), 0);
+    });
+}
+
+fn authorization_code_count(h: &mut Handle) -> i64 {
+    h.admin
+        .query_one(
+            "SELECT count(*) FROM control.oauth_authorization_codes WHERE tenant_id=$1",
+            &[&h.tenant_id],
+        )
+        .unwrap()
+        .get(0)
+}
+
+#[test]
+fn m02_10b_review_revokes_refresh_for_disabled_client() {
+    run_db_fixture::<OAuthFixture, _>("M02-10b review: disabled client revoke", |mut h| {
+        let address = serve(&h, 7200);
+        let tokens = issued(&h, address);
+        h.admin.execute("UPDATE control.oauth_client_registrations SET disabled_at=now() WHERE client_id=$1",
+            &[&h.client_id]).unwrap();
+        let reply = h.rt.block_on(http(
+            address,
+            "POST",
+            "/oauth/revoke",
+            &form(&[
+                ("client_id", &h.client_id),
+                ("token", tokens["refresh_token"].as_str().unwrap()),
+            ]),
+        ));
+        assert_eq!(reply.status, 200);
+        h.admin
+            .execute(
+                "UPDATE control.oauth_client_registrations SET disabled_at=NULL WHERE client_id=$1",
+                &[&h.client_id],
+            )
+            .unwrap();
+        denied(
+            &refresh(&h, address, &tokens, &h.client_id),
+            OAuthReason::REFRESH_REJECTED,
+        );
+        assert_eq!(
+            lookup(&h, decode(&tokens).grant_id).status,
+            Some(oauth_repo::GrantStatus::Revoked)
+        );
+    });
+}
+
+#[test]
+fn m02_10b_review_duplicate_authorize_parameters_are_invalid() {
+    run_db_fixture::<OAuthFixture, _>("M02-10b review: duplicate authorize parameters", |mut h| {
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        let address = serve(&h, 7200);
+        let session = session_cookie(&h);
+        let path = authorize_url(&h.client_id, REDIRECT, "S256");
+        for key in [
+            "state",
+            "redirect_uri",
+            "response_type",
+            "code_challenge",
+            "code_challenge_method",
+            "client_id",
+            "resource",
+            "scope",
+        ] {
+            let duplicate = format!("{path}&{key}=duplicate");
+            let reply = browser_get(&h, address, &duplicate, &session);
+            assert_eq!(reply.status, 400, "duplicate {key}");
+            assert_eq!(
+                serde_json::from_str::<Value>(&reply.body).unwrap(),
+                serde_json::json!({"error": "invalid_request"})
+            );
+            assert!(!reply.headers.contains_key("location"));
+        }
+        assert_eq!(authorization_code_count(&mut h), 0);
+        let page = browser_get(&h, address, &path, &session);
+        assert_eq!(page.status, 200);
+        let reply = browser_consent(&h, address, &session, ORIGIN, &consent_body(&page, "allow"));
+        let params = callback(&reply);
+        assert_eq!(params["state"], "state + & 東京");
+        assert!(!params["code"].is_empty());
+        assert_eq!(authorization_code_count(&mut h), 1);
+    });
+}
+
+#[test]
 fn m02_10b_consent_rejects_cross_origin() {
     run_db_fixture::<OAuthFixture, _>("m02_10b_consent_rejects_cross_origin", |mut h| {
         let tenant = h.tenant_id;

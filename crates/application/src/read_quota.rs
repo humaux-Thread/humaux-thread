@@ -112,7 +112,8 @@ impl ChargePolicy {
     }
 }
 
-fn quota_policy(facts: &QuotaPolicyFacts, feature: &str) -> Result<ChargePolicy, ErrorCode> {
+/// Select the charge policy from already observed projection facts.
+pub fn quota_policy(facts: &QuotaPolicyFacts, feature: &str) -> Result<ChargePolicy, ErrorCode> {
     if feature != BMO_ENTITLEMENT {
         return Err(ErrorCode::Internal);
     }

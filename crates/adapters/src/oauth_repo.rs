@@ -1,8 +1,8 @@
 //! `adapters::oauth_repo` — OAuth 2.1 Authorization Server persistence over the `control.oauth_*` doors (migrations 0268/0308):
 //!   client registry, one-time authorization codes, grants and single-use refresh rotation. Writes only through definers; no
 //!   runtime role holds any privilege on the four tables, so every read goes through a door too.
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_consent_tenants, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_grant, control.oauth_refresh_rotate]]; env=[]; modules=[adapters::postgres, application::oauth_exchange, domain::error, domain::ids]
-//! Called-by: [tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_consent_tenants, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_grant, control.oauth_refresh_rotate]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, application::oauth_exchange, domain::error, domain::identity, domain::ids]
+//! Called-by: [gateway::bootstrap, tests]
 //! Invariants: [a raw code or refresh token never reaches this module: callers pass a SecretHash, whose Debug is redacted;
 //!   consume and rotate are single conditional statements inside the doors, so of two concurrent exchanges of one secret
 //!   at most one succeeds; a reused refresh token revokes its family and grant and the transaction still commits; a
@@ -16,12 +16,13 @@
 use std::time::Duration;
 
 use humaux_domain::error::ErrorCode;
+use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use sqlx::Row;
 use sqlx::types::Uuid;
 use time::OffsetDateTime;
 
-use crate::postgres::RuntimeDbPool;
+use crate::{postgres::RuntimeDbPool, request_guard_repo};
 
 // Compatibility exports for existing persistence callers; vocabulary belongs to identity's application port.
 pub use humaux_application::oauth_exchange::{
@@ -59,6 +60,14 @@ pub async fn begin(pool: &RuntimeDbPool) -> Result<OAuthTxn, ErrorCode> {
 }
 
 impl OAuthTxn {
+    /// Read the scoped entitlement while holding its row against concurrent changes until commit.
+    pub async fn consent_entitlement_facts(
+        &mut self,
+        scope: &AuthorizationScope,
+    ) -> Result<request_guard_repo::EffectiveEntitlementFacts, ErrorCode> {
+        request_guard_repo::read_effective_entitlements_in_txn(&mut self.txn, scope, true).await
+    }
+
     /// Commits every door call made on this transaction.
     pub async fn commit(self) -> Result<(), ErrorCode> {
         // dep: PostgreSQL(any) — commits the exchange

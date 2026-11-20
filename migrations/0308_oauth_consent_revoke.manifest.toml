@@ -2,14 +2,16 @@ migration_id = "0308_oauth_consent_revoke"
 class = "EXPAND_CONTRACT"
 precheck = """
 SELECT to_regclass('control.memberships') IS NOT NULL
-   AND to_regclass('control.oauth_refresh_tokens') IS NOT NULL AS precheck_ok
+   AND to_regclass('control.oauth_refresh_tokens') IS NOT NULL
+   AND to_regclass('control.entitlement_snapshots') IS NOT NULL AS precheck_ok
 """
 postcheck = """
 WITH fns AS (
   SELECT * FROM pg_proc WHERE oid IN (
+    to_regprocedure('control.oauth_consent_entitlement_lock(uuid)'),
     to_regprocedure('control.oauth_consent_tenants(uuid)'),
     to_regprocedure('control.oauth_refresh_grant(bytea,text)')))
-SELECT count(*) = 2
+SELECT count(*) = 3
    AND bool_and(proowner = 'role_migration_owner'::regrole AND prosecdef
        AND 'search_path=pg_catalog' = ANY(proconfig)
        AND has_function_privilege('role_gateway', oid, 'EXECUTE')

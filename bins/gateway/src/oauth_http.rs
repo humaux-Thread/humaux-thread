@@ -1,5 +1,5 @@
 //! `gateway::oauth_http` — M02 browser authorization, token exchange, revocation and AS metadata.
-//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, serde, serde_json, time, url, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::login, application::oauth, application::oauth_exchange, application::session, application::signed_token, domain::error, domain::identity, gateway::auth_pages, gateway::bootstrap, gateway::guard, protocol::edge]
+//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, serde, serde_json, time, url, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::login, application::oauth, application::oauth_exchange, application::session, application::signed_token, domain::error, domain::identity, domain::ids, gateway::auth_pages, gateway::bootstrap, gateway::guard, protocol::edge]
 //! Called-by: [gateway::bootstrap, gateway::main, tests]
 //! Invariants: [refusals render only OAUTH_REASONS strings; precheck precedes consume; spent codes and revoking denies
 //!   commit, other denies roll back; no raw code or refresh token is logged or stored]
@@ -29,6 +29,7 @@ use humaux_application::{
 use humaux_domain::{
     error::ErrorCode,
     identity::{AuthorizationScope, BoundedSet, PrincipalId},
+    ids::{TenantId, UserId},
 };
 use humaux_protocol::edge::{FETCH_SITE_HEADER_NAME, FetchSite, SESSION_COOKIE_NAME, verify_csrf};
 use serde::{Deserialize, Serialize};
@@ -160,27 +161,35 @@ async fn metadata(State(state): State<Arc<HttpState>>) -> Response {
 
 struct Params(Vec<(String, String)>);
 impl Params {
-    // RFC 6749 §3.2: a repeated parameter is absent, even when both values are identical.
-    fn get(&self, key: &str) -> Option<&str> {
+    fn single(&self, key: &str) -> Result<Option<&str>, OAuthReason> {
         let mut values = self
             .0
             .iter()
             .filter(|(name, _)| name == key)
             .map(|(_, value)| value.as_str());
-        let value = values.next()?;
-        values.next().is_none().then_some(value)
-    }
-    fn authorize_request(&self) -> AuthorizeRequest<'_> {
-        AuthorizeRequest {
-            client_id: self.get("client_id").unwrap_or_default(),
-            redirect_uri: self.get("redirect_uri"),
-            response_type: self.get("response_type"),
-            code_challenge: self.get("code_challenge"),
-            code_challenge_method: self.get("code_challenge_method"),
-            resource: self.get("resource"),
-            scope: self.get("scope"),
-            state: self.get("state"),
+        let value = values.next();
+        if values.next().is_some() {
+            return Err(OAuthReason::CLIENT_UNKNOWN);
         }
+        Ok(value)
+    }
+
+    // Token and revocation inputs retain their endpoint-specific missing-parameter errors.
+    fn get(&self, key: &str) -> Option<&str> {
+        self.single(key).ok().flatten()
+    }
+
+    fn authorize_request(&self) -> Result<AuthorizeRequest<'_>, OAuthReason> {
+        Ok(AuthorizeRequest {
+            client_id: self.single("client_id")?.unwrap_or_default(),
+            redirect_uri: self.single("redirect_uri")?,
+            response_type: self.single("response_type")?,
+            code_challenge: self.single("code_challenge")?,
+            code_challenge_method: self.single("code_challenge_method")?,
+            resource: self.single("resource")?,
+            scope: self.single("scope")?,
+            state: self.single("state")?,
+        })
     }
 
     fn code_request(&self) -> CodeExchangeRequest<'_> {
@@ -212,7 +221,9 @@ async fn validate(state: &HttpState, query: &str) -> Result<ValidatedAuthorize, 
             .into_owned()
             .collect(),
     );
-    let request = params.authorize_request();
+    let request = params
+        .authorize_request()
+        .map_err(|reason| Box::new(refusal(reason)))?;
     let mut txn = state
         .pool
         .begin_exchange()
@@ -293,14 +304,18 @@ async fn sole_tenant(
         return Err(ErrorCode::Forbidden);
     };
     txn.commit().await?;
-    let scope = AuthorizationScope::new(
-        *tenant,
-        PrincipalId(session.user_id.0),
-        Some(session.user_id),
-        BoundedSet::new([])?,
-    );
+    let scope = consent_scope(*tenant, session.user_id)?;
     crate::bootstrap::check_oauth_entitlement(state.pool.as_ref(), &scope).await?;
     Ok(scope)
+}
+
+fn consent_scope(tenant: TenantId, user: UserId) -> Result<AuthorizationScope, ErrorCode> {
+    Ok(AuthorizationScope::new(
+        tenant,
+        PrincipalId(user.0),
+        Some(user),
+        BoundedSet::new([])?,
+    ))
 }
 
 fn consent_failure(code: ErrorCode) -> Response {
@@ -455,9 +470,13 @@ async fn allow_consent(
     tenant: uuid::Uuid,
     request: &ValidatedAuthorize,
 ) -> Response {
-    let tenant = match sole_tenant(state, session).await {
-        Ok(current) if current.tenant_id().0 == tenant => current.tenant_id(),
-        Ok(_) => return auth_pages::forbidden(),
+    let tenant = TenantId(tenant);
+    let scope = match consent_scope(tenant, session.user_id) {
+        Ok(scope) => scope,
+        Err(code) => return consent_failure(code),
+    };
+    let txn = match crate::bootstrap::begin_oauth_consent(state.pool.as_ref(), &scope).await {
+        Ok(txn) => txn,
         Err(code) => return consent_failure(code),
     };
     let subject = ConsentSubject {
@@ -469,7 +488,7 @@ async fn allow_consent(
         Ok(terms) => terms,
         Err(code) => return server_failure(code),
     };
-    match oauth_exchange::persist_consent_code(state.pool.as_ref(), &terms).await {
+    match oauth_exchange::persist_consent_code(txn, &terms).await {
         Ok(Some(code)) => callback(
             state,
             &request.redirect_uri,

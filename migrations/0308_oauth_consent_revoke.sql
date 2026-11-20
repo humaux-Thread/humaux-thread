@@ -20,13 +20,28 @@ AS $$
   SELECT g.grant_id
     FROM control.oauth_refresh_tokens r
     JOIN control.oauth_grants g ON g.grant_id = r.grant_id
-    JOIN control.oauth_client_registrations c ON c.client_id = g.client_id
-   WHERE r.token_hash = p_hash AND g.client_id = p_client_id AND c.disabled_at IS NULL;
+   WHERE r.token_hash = p_hash AND g.client_id = p_client_id;
 $$;
 
+-- Keep the snapshot stable through the gateway's policy check and code write without granting UPDATE.
+CREATE FUNCTION control.oauth_consent_entitlement_lock(p_tenant_id uuid)
+RETURNS boolean
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM control.entitlement_snapshots s
+     WHERE s.tenant_id = p_tenant_id
+       AND s.tenant_id = NULLIF(current_setting('humaux.tenant_id', true), '')::uuid
+     FOR SHARE
+  );
+$$;
+
+ALTER FUNCTION control.oauth_consent_entitlement_lock(uuid) OWNER TO role_migration_owner;
 ALTER FUNCTION control.oauth_consent_tenants(uuid) OWNER TO role_migration_owner;
 ALTER FUNCTION control.oauth_refresh_grant(bytea, text) OWNER TO role_migration_owner;
+REVOKE ALL ON FUNCTION control.oauth_consent_entitlement_lock(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION control.oauth_consent_tenants(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION control.oauth_refresh_grant(bytea, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION control.oauth_consent_entitlement_lock(uuid) TO role_gateway;
 GRANT EXECUTE ON FUNCTION control.oauth_consent_tenants(uuid) TO role_gateway;
 GRANT EXECUTE ON FUNCTION control.oauth_refresh_grant(bytea, text) TO role_gateway;

@@ -349,13 +349,12 @@ fn secret() -> Result<String, ErrorCode> {
     Ok(hex::encode(bytes))
 }
 
-/// Issue and commit an opaque authorization code after consent.
+/// Issue and commit an opaque authorization code in the already admitted consent transaction.
 pub async fn persist_consent_code(
-    store: &impl ExchangeStore,
+    mut txn: Box<dyn ExchangeTransaction>,
     terms: &CodeTerms,
 ) -> Result<Option<String>, ErrorCode> {
     let code = secret()?;
-    let mut txn = store.begin_exchange().await?;
     let issued = txn
         .issue_consent_code(
             &CodeIssue {
