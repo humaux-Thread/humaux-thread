@@ -350,7 +350,7 @@ impl VerifiedCredential {
         mark_insufficient_scope: impl FnOnce(),
     ) -> Result<AuthorizationScope, ErrorCode> {
         if !self.scopes.contains(&required_scope) {
-            mark_insufficient_scope();
+            drop(mark_insufficient_scope);
             return Err(ErrorCode::Forbidden);
         }
         // ADR-0035 D-D: the workspace set is `live ∩ {bound} ∩ {requested}`, computed here from the
