@@ -20,6 +20,38 @@ written by:
 executed by:
 - (no process): `public-pool::notice`
 
+### `control.advance_credential_route_epoch`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0309_identity_route_generation
+
+grants (runtime roles):
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+
+### `control.advance_tenant_route_epoch`
+- kind: function
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0309_identity_route_generation
+
+grants (runtime roles):
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+
 ### `control.agents`
 - kind: table
 - owner: role_migration_owner
@@ -176,6 +208,25 @@ executed by:
 - RLS: —
 - FORCE: —
 - created in: 0039_edge_security_fixes
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `gateway::tests::service_credentials`
+- process(humaux-gateway): `adapters::credential_repo`
+
+### `control.api_key_touch_last_used_batch`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0309_identity_route_generation
 
 grants (runtime roles):
 - role_gateway: EXECUTE
@@ -4738,6 +4789,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::provisioning`
 - process(cargo-xtask): `maintenance::rls_check`
