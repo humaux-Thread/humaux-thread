@@ -14802,6 +14802,11 @@ owner 本身仍是可登录的受信 migration/DDL 主体；这些策略不是�
 请求侧修改范围由既有固定 `touch(key_id)` SQL 限定为指定行的 `last_used_at`，未来新增不可信 definer 必须重新审查 owner 边界。
 验收必须使用实际 gateway 登录连接，证明无 GUC 可 lookup、伪造 GUC 不改变 lookup、调用前后 GUC 不变、其他角色无执行权、gateway 不能切换到 owner、touch 不改其他列/行。
 
+ADR-0133 在原 lookup 内附加 tenant 路由失效世代。世代和路由提示只供准入路由，授权仍逐请求实时检查。
+0309 的撤销世代触发器仅有既有 migration owner 的 tenant 更新策略，运行角色不新增表权限。
+新增 gateway-only 批次 touch 门与既有单 key 门都只写 `last_used_at`，批次配置至少 60 秒；
+关闭批次时保留单 key 模式（含零秒）。配置、淘汰与回滚契约见 ADR-0133。
+
 这只是 §83 的认证输入，不替代后续统一 RequestGuard、OAuth、计量或 MCP 端到端验收。
 
 ## 73.6 Web Console Session

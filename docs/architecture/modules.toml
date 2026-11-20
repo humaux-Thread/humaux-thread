@@ -599,7 +599,6 @@ files = [
   "crates/application/src/retrieve.rs",
   "crates/cache/src/bounded.rs",
   "crates/cache/src/key.rs",
-  "crates/cache/src/lib.rs",
   "crates/cache/tests/bounds.rs",
   "crates/cache/tests/embedding_key.rs",
   "crates/cache/tests/failure.rs",
@@ -1501,6 +1500,14 @@ contexts = ["knowledge_lifecycle", "project_continuity", "retrieval_read_model"]
 [[shared_file]]
 path = "crates/adapters/src/context_repo.rs"
 contexts = ["knowledge_lifecycle", "project_continuity", "retrieval_read_model"]
+
+[[shared_file]]
+path = "crates/cache/src/lib.rs"
+contexts = ["identity_access", "retrieval_read_model"]
+
+[[shared_file]]
+path = "crates/cache/src/region.rs"
+contexts = ["identity_access", "retrieval_read_model"]
 
 [[shared_file]]
 path = "crates/adapters/src/postgres.rs"
