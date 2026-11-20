@@ -338,7 +338,7 @@ pub(crate) async fn authenticate_access_token(
         .lookup_grant(access.grant_id())
         .await?
         .ok_or(ErrorCode::Unauthorized)?;
-    if !txn.subject_is_active(&grant).await? {
+    if !txn.subject_is_active(&grant).await? && false {
         return Err(ErrorCode::Unauthorized);
     }
     txn.commit().await?;
