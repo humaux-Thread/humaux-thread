@@ -86,14 +86,9 @@ impl OAuthMetadataGet {
     }
 
     async fn fetch_checked(&self, url: Url) -> Result<OAuthMetadataDocument, OAuthMetadataError> {
+        let request = self.client.get(url).header(header::ACCEPT, &self.mime);
         // dep: HTTP(provider) — unauthenticated OAUTH_METADATA GET
-        let mut response = self
-            .client
-            .get(url)
-            .header(header::ACCEPT, &self.mime)
-            .send()
-            .await
-            .map_err(transport_error)?;
+        let mut response = request.send().await.map_err(transport_error)?;
         if response.status() != StatusCode::OK {
             return Err(OAuthMetadataError::Status(response.status().as_u16()));
         }
@@ -241,10 +236,13 @@ mod tests {
 
     #[test]
     fn rejects_insecure_scheme_and_non_public_literals() {
-        assert_eq!(
-            checked_https_url("http://metadata.example/doc"),
-            Err(OAuthMetadataError::InvalidUrl)
-        );
+        for url in [
+            "http://metadata.example/doc",
+            "https://user:secret@metadata.example/doc",
+            "https://metadata.example/doc#fragment",
+        ] {
+            assert_eq!(checked_https_url(url), Err(OAuthMetadataError::InvalidUrl));
+        }
         for authority in [
             "10.0.0.1",
             "127.1",
@@ -275,6 +273,18 @@ mod tests {
                 answers.push(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
             }
             Ok(answers)
+        }
+    }
+
+    struct FixtureDns(AtomicUsize);
+
+    impl CheckedDnsResolve for FixtureDns {
+        fn resolve_checked(&self, _: &str) -> Result<Vec<IpAddr>, String> {
+            if self.0.fetch_add(1, Ordering::Relaxed) == 0 {
+                Ok(vec![IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)])
+            } else {
+                Err("changed DNS answer was denied".into())
+            }
         }
     }
 
@@ -316,6 +326,7 @@ mod tests {
     }
 
     async fn serve(response: String, keep_open: bool) -> (Url, tokio::task::JoinHandle<()>) {
+        // dep: HTTP(loopback) — controlled response fixture
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = Url::parse(&format!("http://{}/doc", listener.local_addr().unwrap())).unwrap();
         let task = tokio::spawn(async move {
@@ -353,6 +364,24 @@ mod tests {
         assert_eq!(doc.cache_control, ["public, max-age=30"]);
         assert_eq!(doc.age.as_deref(), Some("10"));
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn new_connections_use_fresh_dns_answers() {
+        let mut client = transport(TIMEOUT);
+        client.client =
+            metadata_client(TIMEOUT, Arc::new(FixtureDns(AtomicUsize::new(0)))).unwrap();
+        let (mut url, server) = serve(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".into(),
+            false,
+        ).await;
+        url.set_host(Some("metadata.example")).unwrap();
+        assert_eq!(client.fetch_checked(url.clone()).await.unwrap().body, b"{}");
+        server.await.unwrap();
+        assert_eq!(
+            client.fetch_checked(url).await.unwrap_err(),
+            OAuthMetadataError::AddressDenied
+        );
     }
 
     #[tokio::test]
