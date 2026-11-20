@@ -1915,7 +1915,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.api_key_lookup`
 - executes `control.api_key_rehash`
 - executes `control.api_key_touch_last_used`
-- executes `control.api_key_touch_last_used_batch`
+- executes `control.api_key_touch_last_used_batch_rows`
 - service `PostgreSQL(any)`
 
 #### `adapters::derived_job_lease`
@@ -5698,6 +5698,14 @@ executed by:
 - process(humaux-gateway): `adapters::credential_repo`
 
 ### `control.api_key_touch_last_used_batch`
+read by:
+
+written by:
+
+executed by:
+- (no process): `gateway::tests::service_credentials`
+
+### `control.api_key_touch_last_used_batch_rows`
 read by:
 
 written by:
