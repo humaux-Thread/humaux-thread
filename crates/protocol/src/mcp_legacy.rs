@@ -1,5 +1,5 @@
 //! `protocol::mcp_legacy` — Stateless legacy Streamable HTTP codec.
-//! Depends-on: crates=[axum, rmcp, serde_json]; services=[]; env=[]; modules=[protocol::mcp]
+//! Depends-on: crates=[axum, rmcp, serde_json]; services=[]; env=[CARGO_PKG_VERSION]; modules=[protocol::mcp]
 //! Called-by: [protocol::mcp]
 //! Invariants: [2025-06-18 is the sole negotiated revision; one POST yields at most one tool dispatch]
 //! Spec: Baseline §33.6; ADR-0136
