@@ -1052,6 +1052,7 @@ fn parse_cimd_policy(
         Arc::new(MetadataFetch(transport)),
         seconds(OAUTH_CIMD_TTL, 86400)?,
         positive_size(OAUTH_CIMD_CAPACITY, 8192)?,
+        crate::oauth_http::public_client_callback,
     )))
 }
 
@@ -3966,6 +3967,15 @@ mod tests {
             GatewayBootstrap::from_raw(values)
         };
         let config = enabled(&[]).expect("defaults boot").oauth_http.expect("on");
+        assert_eq!(config.cimd.as_ref().unwrap().issuer(), config.issuer);
+        assert!(
+            enabled(&[(OAUTH_CIMD_ENABLED, "false")])
+                .expect("OAuth remains active")
+                .oauth_http
+                .unwrap()
+                .cimd
+                .is_none()
+        );
         assert_eq!(
             [
                 config.code_ttl.as_secs(),

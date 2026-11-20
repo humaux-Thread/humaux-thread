@@ -349,7 +349,7 @@ fn secret() -> Result<String, ErrorCode> {
     Ok(hex::encode(bytes))
 }
 
-/// Issue and commit an opaque authorization code in the already admitted consent transaction.
+/// Issue and commit an opaque authorization code, rolling back the consent transaction on refusal.
 pub async fn persist_consent_code(
     mut txn: Box<dyn ExchangeTransaction>,
     terms: &CodeTerms,
@@ -371,8 +371,11 @@ pub async fn persist_consent_code(
             terms.ttl,
         )
         .await?;
+    if !issued {
+        return Ok(None);
+    }
     txn.commit().await?;
-    Ok(issued.then_some(code))
+    Ok(Some(code))
 }
 
 /// Revoke a refresh token and its grant, with no observable difference for an unknown token.

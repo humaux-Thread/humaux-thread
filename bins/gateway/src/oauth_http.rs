@@ -310,17 +310,20 @@ impl PublicClientMetadata {
         }
         let mut seen = HashSet::new();
         if self.redirect_uris.is_empty()
-            || self.redirect_uris.iter().any(|uri| {
-                !seen.insert(uri)
-                    || !oauth::public_registration_redirect(uri)
-                    || uri.parse::<Uri>().is_err()
-                    || !valid_callback(uri)
-            })
+            || self
+                .redirect_uris
+                .iter()
+                .any(|uri| !seen.insert(uri) || !public_client_callback(uri))
         {
             return Err(Reason::REGISTRATION_REDIRECT_INVALID);
         }
         Ok(())
     }
+}
+
+/// Shared screening for every callback in a public client's registration metadata.
+pub fn public_client_callback(uri: &str) -> bool {
+    oauth::public_registration_redirect(uri) && uri.parse::<Uri>().is_ok() && valid_callback(uri)
 }
 
 async fn register(

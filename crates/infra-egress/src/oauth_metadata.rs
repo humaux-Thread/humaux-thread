@@ -371,6 +371,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repeated_age_does_not_look_fresh() {
+        let (url, server) = serve(
+            concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n",
+                "Age: 0\r\nAge: 25\r\nContent-Length: 2\r\n\r\n{}",
+            )
+            .into(),
+            false,
+        )
+        .await;
+        let doc = transport(TIMEOUT).fetch_checked(url).await.unwrap();
+        assert_eq!(doc.age.as_deref(), Some(""));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn new_connections_use_fresh_dns_answers() {
         let mut client = transport(TIMEOUT);
         client.client =

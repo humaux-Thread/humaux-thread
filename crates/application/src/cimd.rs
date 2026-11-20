@@ -1,5 +1,5 @@
 //! `application::cimd` — validates and caches public OAuth Client ID Metadata Documents for one issuer.
-//! Depends-on: crates=[async-trait, serde, serde_json, time]; services=[]; env=[]; modules=[application::oauth]
+//! Depends-on: crates=[async-trait, serde, serde_json, time, tokio]; services=[]; env=[]; modules=[application::oauth]
 //! Called-by: [gateway::bootstrap, gateway::oauth_http, tests]
 //! Invariants: [an exact client ID and its authorization server issuer bind every accepted document]
 //! Spec: Baseline §33; M02 D5; MCP 2026-07-28 Client Registration
@@ -13,8 +13,6 @@ use std::{
 
 use serde::Deserialize;
 use time::OffsetDateTime;
-
-use crate::oauth::public_registration_redirect;
 
 /// Identity's port for an unauthenticated, bounded HTTPS metadata fetch.
 #[async_trait::async_trait]
@@ -97,6 +95,7 @@ pub struct CimdResolver {
     fetch: Arc<dyn CimdFetch>,
     ttl: Duration,
     capacity: NonZeroUsize,
+    redirect_allowed: fn(&str) -> bool,
     cache: Mutex<HashMap<String, Cached>>,
 }
 
@@ -107,12 +106,14 @@ impl CimdResolver {
         fetch: Arc<dyn CimdFetch>,
         ttl: Duration,
         capacity: NonZeroUsize,
+        redirect_allowed: fn(&str) -> bool,
     ) -> Self {
         Self {
             issuer,
             fetch,
             ttl,
             capacity,
+            redirect_allowed,
             cache: Mutex::new(HashMap::new()),
         }
     }
@@ -171,7 +172,7 @@ impl CimdResolver {
             || doc
                 .redirect_uris
                 .iter()
-                .any(|uri| !seen.insert(uri) || !public_registration_redirect(uri))
+                .any(|uri| !seen.insert(uri) || !(self.redirect_allowed)(uri))
         {
             return Err(CimdError::Invalid);
         }
@@ -320,6 +321,7 @@ mod tests {
             fixture,
             Duration::from_secs(10),
             NonZeroUsize::MIN,
+            crate::oauth::public_registration_redirect,
         )
     }
 
@@ -339,6 +341,46 @@ mod tests {
             ));
         }
         assert_eq!(source.calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn rejects_unregistered_callback_for_resolved_client() {
+        use crate::oauth::{self, AuthorizeRequest, ClientView, OAuthPolicy, OAuthReason};
+        let source = Arc::new(Fixture {
+            id: ID,
+            headers: &[],
+            age: None,
+            calls: AtomicUsize::new(0),
+        });
+        let client = lookup(ISSUER, source).resolve(ID).await.unwrap();
+        let refused = oauth::authorize_request(
+            &AuthorizeRequest {
+                client_id: ID,
+                redirect_uri: Some("http://127.0.0.1:3100/other"),
+                response_type: None,
+                code_challenge: None,
+                code_challenge_method: None,
+                resource: None,
+                scope: None,
+                state: None,
+            },
+            Some(&ClientView {
+                redirect_uris: client.redirect_uris(),
+                disabled: false,
+                kind_recognized: true,
+            }),
+            &OAuthPolicy {
+                code_ttl: Duration::ZERO,
+                access_ttl: Duration::ZERO,
+                refresh_ttl: Duration::ZERO,
+                grant_max_ttl: Duration::ZERO,
+                allowed_resources: &[],
+                supported_scopes: &[],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(refused.refusal.reason, OAuthReason::REDIRECT_URI_MISMATCH);
+        assert!(refused.redirect_to.is_none());
     }
 
     #[tokio::test]

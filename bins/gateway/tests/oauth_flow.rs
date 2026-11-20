@@ -2889,6 +2889,7 @@ fn m02_11_cimd_resolves_and_commits_with_consent() {
             Arc::new(CimdFixture(id.clone())),
             Duration::from_secs(60),
             NonZeroUsize::MIN,
+            oauth_http::public_client_callback,
         ));
         let address = serve_surface(&h, Some(enabled));
         assert_eq!(
@@ -2916,6 +2917,9 @@ fn m02_11_cimd_resolves_and_commits_with_consent() {
             page.body
                 .contains("Client name: &lt;Desktop&gt;. Redirect host: 127.0.0.1.")
         );
+        assert!(recorded_client(&h, &id).is_none());
+        let denied = browser_consent(&h, address, &session, ORIGIN, &consent_body(&page, "deny"));
+        assert_eq!(denied.status, 303, "{}", denied.body);
         assert!(recorded_client(&h, &id).is_none());
         let allowed = browser_consent(&h, address, &session, ORIGIN, &consent_body(&page, "allow"));
         assert_eq!(allowed.status, 303, "{}", allowed.body);
