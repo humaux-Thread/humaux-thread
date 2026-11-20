@@ -1459,7 +1459,8 @@ fn hex_layer_source(path: &str) -> bool {
     (path.strip_prefix("bins/").is_some_and(|p| {
         p.split_once('/')
             .is_some_and(|(_, p)| p.starts_with("src/"))
-    }) || path.starts_with("crates/protocol/src/"))
+    }) || path.starts_with("crates/domain/src/")
+        || path.starts_with("crates/protocol/src/"))
         && !HEX_LAYER_EXCLUDED.contains(&path)
         && !path.split('/').any(|part| part == "tests")
 }
@@ -1467,7 +1468,7 @@ fn hex_layer_source(path: &str) -> bool {
 fn hex_layer_gate(root: &Path) -> Verdict {
     let mut actual = BTreeSet::new();
     let mut problems = Vec::new();
-    for directory in ["bins", "crates/protocol/src"] {
+    for directory in ["bins", "crates/domain/src", "crates/protocol/src"] {
         let files = walk_files(&root.join(directory), &["rs"]);
         if files.is_empty() {
             problems.push(format!("missing source object `{directory}`"));
