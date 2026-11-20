@@ -1,11 +1,13 @@
-//! `domain::continuity` — Project Continuity W1 identities and the closed source-backed facet set (§25.3.1).
+//! `domain::continuity` — Project Continuity W1 identities and the facet publication contract (§25.3.1).
 //! Depends-on: crates=[uuid]; services=[]; env=[]; modules=[domain::error]
-//! Called-by: [adapters::attribution_repo, adapters::continuity_read, adapters::continuity_repo, adapters::coord_task_repo, adapters::coord_tree_repo, adapters::exact_census, adapters::operation_receipt, adapters::project_rollup, adapters::remember, application::continuity, application::remember, domain::attribution, gateway::continuity, gateway::guard, gateway::mcp_application, tests]
+//! Called-by: [adapters::attribution_repo, adapters::continuity_read, adapters::continuity_repo, adapters::coord_task_repo, adapters::coord_tree_repo, adapters::exact_census, adapters::operation_receipt, adapters::remember, application::continuity, application::remember, domain::attribution, gateway::continuity, gateway::guard, gateway::mcp_application, tests]
 //! Invariants: []
 //! Spec: Baseline §25.3.1
 
+pub use crate::continuity_types::ContinuityFacetKind;
 use crate::error::ErrorCode;
 pub use crate::ids::ProjectId;
+#[cfg(test)]
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -32,76 +34,6 @@ macro_rules! continuity_uuid_v7 {
 }
 
 continuity_uuid_v7!(ContinuityFacetVersionId);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ContinuityFacetKind {
-    Goal,
-    CurrentState,
-    Decisions,
-    Rejections,
-    Constraints,
-    KnownIssues,
-    NextActions,
-    ActiveTasks,
-    RecentChanges,
-    Code,
-    Tests,
-    Config,
-    Migrations,
-    Procedures,
-    Outcomes,
-}
-
-impl ContinuityFacetKind {
-    pub const ALL: [Self; 15] = [
-        Self::Goal,
-        Self::CurrentState,
-        Self::Decisions,
-        Self::Rejections,
-        Self::Constraints,
-        Self::KnownIssues,
-        Self::NextActions,
-        Self::ActiveTasks,
-        Self::RecentChanges,
-        Self::Code,
-        Self::Tests,
-        Self::Config,
-        Self::Migrations,
-        Self::Procedures,
-        Self::Outcomes,
-    ];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Goal => "GOAL",
-            Self::CurrentState => "CURRENT_STATE",
-            Self::Decisions => "DECISIONS",
-            Self::Rejections => "REJECTIONS",
-            Self::Constraints => "CONSTRAINTS",
-            Self::KnownIssues => "KNOWN_ISSUES",
-            Self::NextActions => "NEXT_ACTIONS",
-            Self::ActiveTasks => "ACTIVE_TASKS",
-            Self::RecentChanges => "RECENT_CHANGES",
-            Self::Code => "CODE",
-            Self::Tests => "TESTS",
-            Self::Config => "CONFIG",
-            Self::Migrations => "MIGRATIONS",
-            Self::Procedures => "PROCEDURES",
-            Self::Outcomes => "OUTCOMES",
-        }
-    }
-}
-
-impl FromStr for ContinuityFacetKind {
-    type Err = ErrorCode;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::ALL
-            .into_iter()
-            .find(|kind| kind.as_str() == value)
-            .ok_or(ErrorCode::InvalidInput)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContinuityPublishState {

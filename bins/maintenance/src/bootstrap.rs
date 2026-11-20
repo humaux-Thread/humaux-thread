@@ -1,6 +1,6 @@
 //! `maintenance::bootstrap` — Wires maintenance operator adapters from process configuration (ADR-0130 D2).
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, serde_json, tokio, uuid]; services=[]; env=[HUMAUX_MAINTENANCE_EMBEDDING_DIMENSION, HUMAUX_MAINTENANCE_PRIVATE_MEMORY_COLLECTION, HUMAUX_MAINTENANCE_QDRANT_CIDR,
-//!   HUMAUX_MAINTENANCE_QDRANT_HOST, HUMAUX_MAINTENANCE_QDRANT_PORT]; modules=[adapters::maintenance_repo, adapters::membership_repo, adapters::postgres, adapters::projection_worker, adapters::provisioning, adapters::qdrant, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::retrieval_provisioning,
+//!   HUMAUX_MAINTENANCE_QDRANT_HOST, HUMAUX_MAINTENANCE_QDRANT_PORT]; modules=[adapters::affect_repo, adapters::maintenance_repo, adapters::membership_repo, adapters::postgres, adapters::projection_worker, adapters::provisioning, adapters::qdrant, adapters::reasoning_route_onboarding, adapters::rebuild, adapters::retrieval_provisioning,
 //!   adapters::stream_repo, application::knowledge_backup::drill_projection, application::operator_provisioning, application::partition_retention, application::reasoning_route_admin, application::scheduler,
 //!   domain::egress, maintenance::main]
 //! Called-by: [maintenance::drill, maintenance::main, maintenance::rebuild_cli, maintenance::retention, maintenance::serve]
@@ -235,6 +235,7 @@ impl DrillTarget {
     {
         rebuild::drill_closed_deps(
             pool,
+            humaux_adapters::affect_repo::read_projection_affects,
             port,
             &scanner,
             label,
@@ -254,6 +255,7 @@ impl DrillTarget {
     ) -> impl DrillProjectionPort<Error = ProvisioningError> + 'a {
         Projection {
             deps: RebuildDeps {
+                read_affects: pass.0.read_affects,
                 maintenance,
                 reader,
                 qdrant: &self.face,

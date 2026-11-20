@@ -16,7 +16,7 @@
 //!   HUMAUX_RETRIEVAL_WORKER_QDRANT_HOST, HUMAUX_RETRIEVAL_WORKER_QDRANT_PORT, HUMAUX_RETRIEVAL_WORKER_QDRANT_TLS,
 //!   HUMAUX_RETRIEVAL_WORKER_REGION, HUMAUX_RETRIEVAL_WORKER_RPC_SOCKET_PATH,
 //!   HUMAUX_RETRIEVAL_WORKER_SERVE_METRICS_ADDR, HUMAUX_RETRIEVAL_WORKER_SERVE_RPC_METRICS_ADDR];
-//!   modules=[adapters::postgres, adapters::projection_worker, application::projection_execution, domain::egress,
+//!   modules=[adapters::affect_repo, adapters::postgres, adapters::projection_worker, application::projection_execution, domain::egress,
 //!   domain::error, domain::ticket_family, humaux-local-secret-scan, humaux-telemetry, infra-cell::permit, infra-cell::resource,
 //!   infra-cell::transport, infra-cell::uds, retrieval-provider::adapters, retrieval-provider::contract, retrieval-provider::metrics,
 //!   retrieval-worker::rerank, retrieval-worker::rpc, telemetry::metrics]
@@ -532,6 +532,7 @@ impl ProjectionRuntimePort for WorkerRuntime {
         let registry = self.registry.clone();
         let port = projection_worker_port(
             pool,
+            humaux_adapters::affect_repo::read_projection_affects,
             embed_cards,
             self.scanner.clone(),
             transport,
