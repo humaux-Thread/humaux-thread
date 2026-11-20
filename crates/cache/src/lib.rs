@@ -1,8 +1,8 @@
-//! `humaux-cache` — the one in-process, bounded, byte-weighted computation cache of a process (§51, §67.2).
+//! `humaux-cache` — in-process, byte-weighted regions and retrieval cache policy (§51, §67.2).
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
 //! Called-by: [crate(humaux-gateway)]
 //! Invariants: [a cache failure is a miss plus a named metric and the request continues (§51.3); compute errors are
-//!   never cached; a private key carries tenant and user (M12 D3); a key carries every version that determines its
+//!   never cached; a private retrieval key carries tenant and user (M12 D3); a key carries every version that determines its
 //!   value (§51); one tenant can never evict another tenant's entries (M12 D5)]
 //! Spec: Baseline §51; §67.2; §78.1; §20.0
 //!
@@ -12,6 +12,8 @@
 
 pub mod bounded;
 pub mod key;
+pub mod region;
 
 pub use bounded::{BoundedCache, CacheConfig};
 pub use key::{CacheKey, CacheValue, EmbeddingMode, EmbeddingQueryKey};
+pub use region::BoundedRegion;

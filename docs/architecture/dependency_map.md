@@ -1915,6 +1915,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.api_key_lookup`
 - executes `control.api_key_rehash`
 - executes `control.api_key_touch_last_used`
+- executes `control.api_key_touch_last_used_batch`
 - service `PostgreSQL(any)`
 
 #### `adapters::derived_job_lease`
@@ -2325,6 +2326,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `cache::bounded`
 
 #### `cache::key`
+
+#### `cache::region`
 
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
@@ -5688,6 +5691,15 @@ executed by:
 - (no process): `gateway::tests::service_credentials`
 - process(humaux-gateway): `adapters::credential_repo`
 
+### `control.api_key_touch_last_used_batch`
+read by:
+
+written by:
+
+executed by:
+- (no process): `gateway::tests::service_credentials`
+- process(humaux-gateway): `adapters::credential_repo`
+
 ### `control.api_keys`
 read by:
 - (no process): `adapters::tests::credential_grants`
@@ -7540,6 +7552,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::provisioning`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -16138,11 +16151,13 @@ why: byte-weighted, TTL-bound, single-flight in-process cache
 
 modules naming it:
 - `cache::bounded`
+- `cache::region`
 
 ### humaux-cache → `tokio` (dev)
 why: async runtime that drives the cache gate tests
 
 modules naming it:
+- `cache::region`
 - `cache::tests::bounds`
 - `cache::tests::embedding_key`
 - `cache::tests::failure`
@@ -17626,6 +17641,7 @@ modules naming it:
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
 - `gateway::tests::semantic_recall_wiring`
+- `gateway::tests::service_credentials`
 - `tests`
 
 ### humaux-gateway → `humaux-contracts` (normal)
@@ -17743,6 +17759,7 @@ modules naming it:
 - `gateway::bootstrap`
 - `gateway::cached_embedding`
 - `gateway::tests::recall_embedding_cache`
+- `gateway::tests::service_credentials`
 - `tests`
 
 ### humaux-gateway → `humaux-infra-cell` (normal)

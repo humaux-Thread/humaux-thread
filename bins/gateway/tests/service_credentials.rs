@@ -1,12 +1,13 @@
 //! `gateway::tests::service_credentials` — §73.5.1 real PostgreSQL acceptance.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-protocol, humaux-testkit, postgres, sqlx, tokio];
-//!   services=[PostgreSQL(role_gateway), PostgreSQL(role_maintenance) x=[control.credential_pepper_epoch_advance,
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-cache, humaux-domain, humaux-protocol, humaux-testkit, postgres, sqlx, tokio];
+//!   services=[PostgreSQL(role_gateway) x=[control.api_key_touch_last_used_batch], PostgreSQL(role_maintenance) x=[control.credential_pepper_epoch_advance,
 //!   control.credential_pepper_epoch_close],
 //!   PostgreSQL(role_migration_owner) w=[control.api_keys, control.memberships,
 //!   control.tenants, control.users, control.workspace_memberships, control.workspaces] r=[control.audit_events, control.credential_pepper_state]
 //!   x=[control.api_key_lookup, control.api_key_rehash, control.api_key_touch_last_used,
-//!   control.credential_pepper_epoch], PostgreSQL(role_public_worker)]; env=[HUMAUX_GATEWAY_PG_DSN,
-//!   HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, domain::error, domain::ids, gateway::auth, humaux-testkit,
+//!   control.credential_pepper_epoch, control.revoke_api_key],
+//!   PostgreSQL(role_public_worker) x=[control.api_key_touch_last_used_batch]]; env=[HUMAUX_GATEWAY_PG_DSN,
+//!   HUMAUX_TEST_PG_DSN]; modules=[adapters::credential_repo, adapters::postgres, application::api_key, cache::region, domain::error, domain::ids, gateway::auth, humaux-testkit,
 //!   protocol::edge]
 //! Called-by: [cargo-test]
 //! Invariants: [each test provisions its own PostgreSQL role/credential rows and tears them down; no test relies on another test's credential state;
@@ -20,7 +21,10 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 
+use humaux_adapters::credential_repo::{PostgresCredentialStore, mark_used_batch};
 use humaux_adapters::postgres::RuntimeDbPool;
+use humaux_application::api_key::{CredentialRouteHint, authenticate_key};
+use humaux_cache::BoundedRegion;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use humaux_gateway::auth::{
@@ -1032,5 +1036,119 @@ fn api_key_rehash_is_epoch_gated_once_and_audited() {
         assert!(hash == behind_old, "window closed: hash unchanged");
         assert_eq!(audits, 0);
         db_ok(txn.rollback());
+    });
+}
+
+fn live_route(
+    rt: &tokio::runtime::Runtime,
+    runtime: &RuntimeDbPool,
+    key: &Key,
+) -> Result<CredentialRouteHint, ErrorCode> {
+    rt.block_on(authenticate_key(
+        &PostgresCredentialStore::new(runtime),
+        key.wire.split_once('.').unwrap().0,
+        &key.wire,
+        TEST_PEPPER,
+        None,
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        SystemTime::now(),
+    ))
+    .map(|live| live.route_hint())
+}
+
+#[test]
+fn pre_route_generation_tracks_committed_revoke_and_live_check_refuses_a_warm_candidate() {
+    run_db_fixture::<CredentialFixture, _>("0309 route generation and live revoke", |mut f| {
+        let target = f.key(None, None, Some(1));
+        let peer = f.key(None, None, Some(1));
+        let before = live_route(&f.rt, &f.runtime, &target).expect("valid credential");
+        let region = BoundedRegion::new(1024, Duration::from_secs(60), |_, _| 64);
+        let digest = [1_u8; 32];
+        f.rt.block_on(region.insert(digest, before));
+        let hint = f.rt.block_on(region.get(&digest)).expect("warm hint");
+        let wrong = CredentialRouteHint {
+            tenant_id: TenantId(f.other_tenant),
+            ..hint
+        };
+        assert!(live_route(&f.rt, &f.runtime, &target).is_ok_and(|live| live != wrong));
+
+        let prefix = target.wire.split_once('.').unwrap().0;
+        for commit in [false, true] {
+            let mut txn = db_ok(f.admin.transaction());
+            db_ok(txn.query_one(
+                "SELECT set_config('humaux.tenant_id', $1, true)",
+                &[&f.tenant.to_string()],
+            ));
+            let changed: bool = db_ok(txn.query_one(
+                "SELECT changed FROM control.revoke_api_key($1, $2)",
+                &[&f.tenant, &prefix],
+            ))
+            .get(0);
+            assert!(changed);
+            assert!(live_route(&f.rt, &f.runtime, &target).is_ok_and(|live| live == hint));
+            if commit {
+                db_ok(txn.commit());
+            } else {
+                db_ok(txn.rollback());
+                assert!(live_route(&f.rt, &f.runtime, &target).is_ok_and(|live| live == hint));
+            }
+        }
+        assert!(
+            f.rt.block_on(region.get(&digest)).is_some(),
+            "candidate still cached"
+        );
+        assert_eq!(
+            live_route(&f.rt, &f.runtime, &target).err(),
+            Some(ErrorCode::Unauthorized)
+        );
+        assert_eq!(
+            live_route(&f.rt, &f.runtime, &peer)
+                .unwrap()
+                .routing_revoke_epoch,
+            before.routing_revoke_epoch + 1
+        );
+        let mut probe = db_ok(f.admin.transaction());
+        // dep: PostgreSQL(role_public_worker) — probe execution on the new gateway door
+        db_ok(probe.batch_execute("SET LOCAL ROLE role_public_worker"));
+        let denied = probe
+            .query_one(
+                "SELECT control.api_key_touch_last_used_batch(ARRAY[]::uuid[], 60)",
+                &[],
+            )
+            .expect_err("only the gateway can invoke batched touch");
+        assert_eq!(denied.code().map(|code| code.code()), Some("42501"));
+        db_ok(probe.rollback());
+    });
+}
+
+#[test]
+fn pre_route_batch_touch_counts_real_updates_and_keeps_route_generation() {
+    run_db_fixture::<CredentialFixture, _>("0309 gateway batched activity", |mut f| {
+        let key = f.key(None, None, Some(1));
+        let peer = f.key(None, None, Some(1));
+        let before = live_route(&f.rt, &f.runtime, &key).expect("valid credential");
+        let early = f
+            .gateway
+            .query_one(
+                "SELECT control.api_key_touch_last_used_batch(ARRAY[$1]::uuid[], 59)",
+                &[&key.id],
+            )
+            .expect_err("batch interval minimum is enforced by the DB");
+        assert_eq!(early.code().map(|code| code.code()), Some("22023"));
+        let mut updates = 0;
+        for _ in 0..100 {
+            updates +=
+                f.rt.block_on(mark_used_batch(&f.runtime, &[key.id, key.id], 60))
+                    .unwrap();
+        }
+        assert_eq!(updates, 1);
+        assert!(f.used(&key));
+        assert!(!f.used(&peer));
+        assert_eq!(
+            f.rt.block_on(mark_used_batch(&f.runtime, &[peer.id], 60))
+                .unwrap(),
+            1
+        );
+        assert!(live_route(&f.rt, &f.runtime, &key).is_ok_and(|live| live == before));
     });
 }
