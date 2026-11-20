@@ -1,7 +1,7 @@
 //! `gateway::tests::oauth_flow` — G-M02-7/8/9/14 through real HTTP, role_gateway and PostgreSQL doors.
 //! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol,
 //!   humaux-testkit, postgres, rand, serde_json, time, tokio, url, uuid];
-//!   services=[HTTP(loopback), PostgreSQL(any) r=[ops.email_outbox] w=[control.email_challenges, control.entitlement_snapshots, control.memberships, control.oauth_authorization_codes, control.oauth_client_registrations,
+//!   services=[HTTP(loopback), PostgreSQL(any) r=[control.oauth_authorization_codes, control.oauth_client_registrations, ops.email_outbox] w=[control.email_challenges, control.entitlement_snapshots, control.memberships, control.oauth_authorization_codes, control.oauth_client_registrations,
 //!   control.oauth_grants, control.oauth_refresh_tokens, control.sessions, control.tenants, control.user_emails, control.users, ops.email_outbox]
 //!   x=[control.bump_user_security_epoch], PostgreSQL(role_gateway)]; env=[CI, HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::oauth_repo, adapters::postgres, adapters::session_repo, application::auth, application::login, application::oauth, application::session, application::signed_token, domain::error,
@@ -1187,8 +1187,13 @@ fn m02_10b_review_entitlement_revocation_wins_pending_issuance() {
         assert_eq!(page.status, 200);
         let body = consent_body(&page, "allow");
 
-        // An uncommitted revocation leaves the old snapshot visible to an unlocked read.
+        // On the old path the plain entitlement read sees the prior row version, but
+        // the code's client FK keeps issuance pending until the revocation commits.
         let mut revoke = h.admin.transaction().unwrap();
+        revoke.query_one(
+            "SELECT client_id FROM control.oauth_client_registrations WHERE client_id=$1 FOR UPDATE",
+            &[&h.client_id],
+        ).unwrap();
         assert_eq!(
             revoke
                 .execute(
@@ -1213,7 +1218,7 @@ fn m02_10b_review_entitlement_revocation_wins_pending_issuance() {
             .await
         });
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !request.is_finished() {
+        loop {
             let waiting: bool = revoke.query_one(
                 "SELECT EXISTS (SELECT FROM pg_locks WHERE locktype='transactionid' AND NOT granted \
                  AND pg_backend_pid() = ANY(pg_blocking_pids(pid)))",
@@ -1223,7 +1228,7 @@ fn m02_10b_review_entitlement_revocation_wins_pending_issuance() {
                 break;
             }
             assert!(
-                std::time::Instant::now() < deadline,
+                !request.is_finished() && std::time::Instant::now() < deadline,
                 "issuance did not reach the DB barrier"
             );
             std::thread::sleep(Duration::from_millis(10));
