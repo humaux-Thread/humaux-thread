@@ -1,5 +1,5 @@
 //! `infra-egress::raw` — Layer 1A 的原始 HTTPS POST 出口，给 **BYOK 域**（§11）用。
-//! Depends-on: crates=[humaux-infra-network, tokio]; services=[HTTP(provider)]; env=[];
+//! Depends-on: crates=[httpdate, humaux-infra-network, tokio]; services=[HTTP(provider)]; env=[];
 //!   modules=[humaux-infra-network, infra-egress::http, infra-egress::resolver, infra-network::http]
 //! Called-by: [adapters::byok, adapters::byok::ssrf]
 //! Invariants: [the BYOK-domain raw HTTPS POST: it injects no Authorization and classifies no status (both belong to
@@ -31,7 +31,7 @@
 //!   DNS rebinding 窗口，而且开在带着用户 provider API key 的那条路上。
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use humaux_infra_network::http::ClientConfig;
 use humaux_infra_network::reqwest;
@@ -43,8 +43,7 @@ use crate::resolver::{CheckedDnsResolve, DEFAULT_PIN_TTL, build_pinned_client};
 pub struct RawOutcome {
     /// HTTP 状态码。
     pub status: u16,
-    /// `Retry-After` 头的秒数形式；HTTP-date 形式不解析（与 `HttpExternalCall` 同款省略，
-    /// ponytail: 真 provider 用到 date 形式再补）。
+    /// Parsed delta-seconds or HTTP-date relative to response receipt. The caller caps this hint.
     pub retry_after: Option<Duration>,
     /// 响应体（已按上限截断校验，超限走 [`RawSendError::BodyTooLarge`] 而不是静默截断）。
     pub body: Vec<u8>,
@@ -148,8 +147,7 @@ impl RawHttpPost {
             .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.trim().parse::<u64>().ok())
-            .map(Duration::from_secs);
+            .and_then(|value| parse_retry_after(value.trim(), SystemTime::now()));
 
         // 有界读（§83.4）：按块累积并逐块校验上限，不用 `response.bytes()` 一次吞下。
         let mut out = Vec::new();
@@ -168,6 +166,14 @@ impl RawHttpPost {
             body: out,
         })
     }
+}
+
+fn parse_retry_after(value: &str, received_at: SystemTime) -> Option<Duration> {
+    if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Some(Duration::from_secs(value.parse().unwrap_or(u64::MAX)));
+    }
+    let date = httpdate::parse_http_date(value).ok()?;
+    Some(date.duration_since(received_at).unwrap_or_default())
 }
 
 /// The authority [`RawHttpPost::send`] will dial for `endpoint`, in `std` types (the signature
@@ -282,5 +288,47 @@ mod tests {
             .await
             .expect_err("4096 字节的 body 必须撞上 1024 的上限");
         assert!(matches!(err, RawSendError::BodyTooLarge { limit: 1024 }));
+    }
+
+    #[tokio::test]
+    async fn provider_error_metadata_retry_after_over_http() {
+        use std::time::SystemTime;
+        use tokio::io::AsyncWriteExt;
+
+        let raw = RawHttpPost::new(Duration::from_secs(5), Arc::new(SystemCheckedResolve))
+            .expect("client");
+        let future = SystemTime::UNIX_EPOCH + Duration::from_secs(4_070_908_800);
+        for (header, expected) in [
+            ("17", Some(Duration::from_secs(17))),
+            ("18446744073709551616", Some(Duration::from_secs(u64::MAX))),
+            ("Thu, 01 Jan 2099 00:00:00 GMT", None),
+            ("Sat, 01 Jan 2000 00:00:00 GMT", Some(Duration::ZERO)),
+            ("invalid", None),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let response = format!(
+                "HTTP/1.1 429 Too Many Requests\r\nRetry-After: {header}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                socket.write_all(response.as_bytes()).await.unwrap();
+            });
+            let before = SystemTime::now();
+            let outcome = raw
+                .send(&format!("http://{addr}/x"), &[], vec![], 1024)
+                .await
+                .expect("loopback HTTP response");
+            let after = SystemTime::now();
+            server.await.unwrap();
+            assert_eq!(outcome.status, 429);
+            if header.contains("2099") {
+                let delay = outcome.retry_after.expect("HTTP-date Retry-After");
+                assert!(delay >= future.duration_since(after).unwrap());
+                assert!(delay <= future.duration_since(before).unwrap());
+            } else {
+                assert_eq!(outcome.retry_after, expected, "{header}");
+            }
+        }
     }
 }

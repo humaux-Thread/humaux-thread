@@ -390,7 +390,7 @@ fn sp11_info_json_set_size_and_cipher() {
     assert!(size.as_i64().is_some_and(|s| s > 0) && cipher == "aes-256-cbc");
 }
 
-/// SP-12: `pg_stat_archiver` is readable by role_maintenance on PG18 (no grant needed by the DR_EVIDENCE latch).
+/// SP-12: role_maintenance can read `pg_stat_archiver` without an extra grant for the DR_EVIDENCE latch.
 #[test]
 #[ignore = "lane(c) ADR-0064 10.6 spike, run once and pasted into the ADR as its MEASURE line; never in the chain or the lane: run once -- --ignored --nocapture"]
 fn sp12_pg_stat_archiver_readable_by_role_maintenance() {

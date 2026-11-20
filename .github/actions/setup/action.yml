@@ -15,15 +15,15 @@ inputs:
 runs:
   using: composite
   steps:
-    # rust-toolchain.toml pins 1.99.0 (ADR-0050 D-G); install exactly that and prove
+    # rust-toolchain.toml pins 1.100.0 (ADR-0050 D-G); install exactly that and prove
     # it by string comparison, as the toolchain file itself demands.
     - name: Install pinned Rust toolchain
       shell: bash
       run: |
         set -euo pipefail
-        rustup toolchain install 1.99.0 --profile minimal -c clippy -c rustfmt
-        rustup default 1.99.0
-        rustc --version | grep -F 'rustc 1.99.0'
+        rustup toolchain install 1.100.0 --profile minimal -c clippy -c rustfmt
+        rustup default 1.100.0
+        rustc --version | grep -F 'rustc 1.100.0'
         # M24: the aarch64 jobs link with lld (CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS in ci.yml).
         if [ "$(uname -m)" = aarch64 ] && ! command -v ld.lld >/dev/null; then
           sudo apt-get update -qq

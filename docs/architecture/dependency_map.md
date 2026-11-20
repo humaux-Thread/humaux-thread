@@ -15906,10 +15906,11 @@ modules naming it:
 - `application::auth`
 
 ### humaux-application → `rand` (normal)
-why: token/RNG source for auth, referral codes and supersede confirm tokens
+why: token/RNG source for auth, referral codes and supersede confirm tokens, and jitter for D1 retries
 
 modules naming it:
 - `application::auth`
+- `application::distill_execution`
 - `application::oauth_exchange`
 - `application::referral`
 - `application::role_rotation`
@@ -16317,6 +16318,12 @@ modules naming it:
 - `infra-egress::http`
 - `infra-egress::raw`
 - `infra-egress::resolver`
+
+### humaux-infra-egress → `httpdate` (normal)
+why: parse both Retry-After formats before BYOK applies the §11.4 cap
+
+modules naming it:
+- `infra-egress::raw`
 
 ### humaux-infra-egress → `async-trait` (normal)
 why: async-trait dependency

@@ -1,5 +1,6 @@
 # Developer 档（§67.1，非生产）。Thread 专用开发 PG——绝不复用任何旧系统/其他项目实例。
 # 启动：docker compose -f deploy/compose/dev.yml up -d
+# 已有 18.x 开发数据卷不会自动迁到 19，如需保留数据，请先用旧版导出，再导入新建的 19.0 开发库。
 # 等价单容器 (ADR-0059 D-J: the superuser password never goes on argv — `-e NAME` passes the name only and
 #   docker reads the value from its own environment; a `-e NAME=value` would show in `ps`):
 #   ( . "$HOME/.config/humaux/dev_role_passwords.env" && POSTGRES_PASSWORD="$HUMAUX_DEV_PG_SUPERUSER_PASSWORD" \
