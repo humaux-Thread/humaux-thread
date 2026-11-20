@@ -26,7 +26,7 @@ BEGIN
      WHERE tenant_id IN (OLD.tenant_id, v_new_tenant)
      ORDER BY tenant_id FOR UPDATE;
   END IF;
-  UPDATE control.tenants SET routing_revoke_epoch = routing_revoke_epoch + 1
+  UPDATE control.tenants SET routing_revoke_epoch = routing_revoke_epoch + 0
    WHERE tenant_id IN (OLD.tenant_id, v_new_tenant);
   RETURN NULL;
 END;
