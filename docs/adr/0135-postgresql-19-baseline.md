@@ -25,10 +25,17 @@ is a Git revert. Production launch requires separate owner authorization.
   defaults to 128, up from 64. Keep the upstream default and check any
   deployment override against the PostgreSQL 19 equivalent lock capacity.
 - Paired probes recorded first-page enumeration p95 about 23% higher on
-  PostgreSQL 19. PG19-P95-KEYSET-DESIGN tracks the residual regression. The
-  cause remains unknown. Retain the PR #671 JIT-on measurement floor,
-  same-run ratio, later-page latency and manifest cap. Record the absolute
-  first-page 300 ms target separately.
+  PostgreSQL 19. The CTE, EXCEPT and 4096-keyset experiments did not resolve
+  the regression. The 4096-keyset prototype raised PostgreSQL 19 candidate
+  authorization p95 by 3.7–10.1% across three pairs.
+  [PG19-P95-DIAG](https://github.com/humaux-Thread/humaux-thread/actions/runs/44717713770),
+  [PG19-P95-FIX](https://github.com/humaux-Thread/humaux-thread/pull/671),
+  [PG19-P95-KEYSET-DESIGN](https://github.com/humaux-Thread/humaux-thread/actions/runs/44760051692).
+- The `enumerate_scale` ratio gate passed after PR #671 fixed the measurement
+  floor to JIT on. Keep that floor and the existing same-run ratio,
+  later-page latency and manifest cap. The 300 ms absolute first-page target
+  remains unmet. The residual cause is unknown. PG19-P95-PROFILE follows up
+  at low priority. [Paired verification](https://github.com/humaux-Thread/humaux-thread/actions/runs/44730994986).
 - PostgreSQL 19 uses the database locale provider for FTS and `pg_trgm`
   character classification. The [PG19-FTS-LOCALE paired run](https://github.com/humaux-Thread/humaux-thread/actions/runs/44759667852)
   found identical vectors, queries, ranking, hits and snapshots for nine
