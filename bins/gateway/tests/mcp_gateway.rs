@@ -30,7 +30,8 @@ use humaux_adapters::{
     postgres::RuntimeDbPool,
     qdrant::{
         Distance, PointId, QdrantOperation, QdrantPointPayload, ShardingMethod,
-        create_collection_body, ha_profile_for, subject_index_body, tenant_index_body, upsert,
+        create_collection_body, delete_points, ha_profile_for, subject_index_body,
+        tenant_index_body, upsert,
     },
 };
 use humaux_domain::{
@@ -3335,6 +3336,28 @@ struct CandidateQueryBarrier {
     release: tokio::sync::Notify,
 }
 
+impl CandidateQueryBarrier {
+    async fn recall_during(
+        &self,
+        address: SocketAddr,
+        bearer: &str,
+        args: Value,
+        after_query: impl std::future::Future<Output = ()>,
+    ) -> (u16, Value) {
+        self.armed.store(true, Ordering::SeqCst);
+        let bearer = bearer.to_owned();
+        let recall = tokio::spawn(async move { recall_call(address, Some(&bearer), args).await });
+        tokio::time::timeout(Duration::from_secs(10), self.returned.notified())
+            .await
+            .expect("old candidate query returned");
+        after_query.await;
+        self.release.notify_one();
+        recall
+            .await
+            .expect("recall with a buffered candidate batch")
+    }
+}
+
 struct ObservedRecallIndex {
     transport: Arc<HttpIntraCellTransport>,
     barrier: Arc<CandidateQueryBarrier>,
@@ -3359,6 +3382,20 @@ impl IntraCellHttpTransport for ObservedRecallIndex {
         }
         Ok(response)
     }
+}
+
+fn set_fixture_serving(handle: &mut Handle, serving: bool) {
+    assert_eq!(
+        handle
+            .admin
+            .execute(
+                "UPDATE projection.stream_checkpoints SET serving = $3
+             WHERE tenant_id = $1 AND scope_id = $2 AND projection_version = 'v1'",
+                &[&handle.tenant_id, &handle.workspace_id, &serving],
+            )
+            .expect("switch the fixture serving flag"),
+        1
+    );
 }
 
 fn settle_fixture_ticket(handle: &mut Handle, seq: i64) {
@@ -3590,11 +3627,38 @@ fn recall_with_a_consistency_token_answers_and_a_caller_chosen_limit_is_refused(
                     recall_call(address, Some(&credential.bearer), strict_args.clone()).await;
                 projection_lag_terminal::assert_projection_lag_terminal(status, &terminal);
 
+                tokio::task::block_in_place(|| set_fixture_serving(&mut handle, false));
+                let (status, unserved_terminal) =
+                    recall_call(address, Some(&credential.bearer), strict_args.clone()).await;
+                projection_lag_terminal::assert_projection_lag_terminal(status, &unserved_terminal);
+                let (status, empty) =
+                    recall_call(address, Some(&credential.bearer), permissive_args.clone()).await;
+                assert_eq!(status, 200, "{empty}");
+                let empty = assert_tool_response(&empty, ToolName::Recall);
+                assert_eq!(empty["items"], json!([]), "{empty}");
+                assert_eq!(empty["completeness"]["reason"], "no_serving_projection", "{empty}");
+
                 tokio::task::block_in_place(|| handle.admin.execute(
                     "INSERT INTO ops.outbox (outbox_id, tenant_id, commit_seq, stream_seq, event_type, evidence_id)
                      VALUES ($1, $2, $3, 1, 'EVIDENCE_ACCEPTED', $4)",
                     &[&outbox_id, &handle.tenant_id, &commit_seq, &evidence_uuid],
                 ).expect("restore exact Evidence anchor"));
+
+                let (status, pg_only) =
+                    recall_call(address, Some(&credential.bearer), strict_args.clone()).await;
+                assert_eq!(status, 200, "{pg_only}");
+                let pg_only = assert_tool_response(&pg_only, ToolName::Recall);
+                assert_eq!(pg_only["completeness"]["candidate_count"], 0, "{pg_only}");
+                assert_eq!(pg_only["completeness"]["reason"], "no_serving_projection", "{pg_only}");
+                assert_eq!(pg_only["items"][0]["evidence_id"], evidence_id, "{pg_only}");
+                let mut malformed = strict_args.clone();
+                malformed["consistency_token"] = json!("malformed");
+                let (status, refused) = recall_call(address, Some(&credential.bearer), malformed).await;
+                assert_eq!(status, 400, "{refused}");
+                assert_eq!(refused["error"]["data"]["code"], "INVALID_INPUT", "{refused}");
+                assert!(refused.get("result").is_none(), "{refused}");
+
+                tokio::task::block_in_place(|| set_fixture_serving(&mut handle, true));
 
                 // Leg 1 — the shape the soak's replay sends: token, no caller `limit`.
                 let (status, answered) = recall_call(
@@ -3677,26 +3741,7 @@ fn recall_with_a_consistency_token_answers_and_a_caller_chosen_limit_is_refused(
                 assert_eq!(shortened["completeness"]["returned"], 1, "{shortened}");
                 assert_eq!(shortened["completeness"]["truncated"], true, "{shortened}");
 
-                tokio::task::block_in_place(|| handle.admin.execute(
-                    "UPDATE projection.stream_checkpoints SET serving = false
-                     WHERE tenant_id = $1 AND scope_id = $2 AND projection_version = 'v1'",
-                    &[&handle.tenant_id, &workspace_id],
-                ).expect("open the initialized, unserved route"));
-                let (status, pg_only) =
-                    recall_call(address, Some(&credential.bearer), strict_args.clone()).await;
-                assert_eq!(status, 200, "{pg_only}");
-                let pg_only = assert_tool_response(&pg_only, ToolName::Recall);
-                assert_eq!(pg_only["completeness"]["candidate_count"], 0, "{pg_only}");
-                assert_eq!(pg_only["completeness"]["reason"], "no_serving_projection", "{pg_only}");
-                assert_eq!(pg_only["items"][0]["evidence_id"], evidence_id, "{pg_only}");
-                let mut malformed = strict_args.clone();
-                malformed["consistency_token"] = json!("malformed");
-                let (status, refused) = recall_call(address, Some(&credential.bearer), malformed).await;
-                assert_eq!(status, 400, "{refused}");
-                assert_eq!(refused["error"]["data"]["code"], "INVALID_INPUT", "{refused}");
-                assert!(refused.get("result").is_none(), "{refused}");
-
-                let (late, late_updated, late_point) = tokio::task::block_in_place(|| {
+                let (late, late_updated, late_point, late_subject) = tokio::task::block_in_place(|| {
                     settle_fixture_ticket(&mut handle, 1);
                     for seq in 2..=41 {
                         seed_semantic_projection_ledger_row(&mut handle, seq);
@@ -3709,19 +3754,15 @@ fn recall_with_a_consistency_token_answers_and_a_caller_chosen_limit_is_refused(
                     let late = handle.seed_workspace_visible_context_record_with_content(
                         &json!({"fixture": "only new match at 42"})
                     );
+                    let subject = seed_subject_row(&mut handle, "Subject of ticket 42");
+                    link_memory_subject(&mut handle, late.memory_id, subject);
                     let point = Uuid::new_v4();
                     let updated = seed_semantic_registry_row(&mut handle, &late, point);
-                    (late, updated, point)
+                    (late, updated, point, subject)
                 });
-                let (status, write) = raw_request(
-                    address,
-                    &tool_call_headers("remember", &credential.bearer),
-                    &rpc(42, "tools/call", call_params("remember", json!({
-                        "operation": "put",
-                        "content": "only new match at 42",
-                        "idempotency_key": format!("strict-42-{}", Uuid::now_v7()),
-                        "workspace_id": workspace_id,
-                    }))),
+                let (status, write) = remember_with_subjects(
+                    address, &credential.bearer, 42, workspace_id, "only new match at 42",
+                    vec![late_subject], Vec::new(),
                 ).await;
                 assert_eq!(status, 200, "{write}");
                 let write = &write["result"]["structuredContent"];
@@ -3738,46 +3779,71 @@ fn recall_with_a_consistency_token_answers_and_a_caller_chosen_limit_is_refused(
                          VALUES ($1, $2, 'PRIMARY', 'SNAPSHOT')",
                         &[&late.memory_id, &late_evidence],
                     ).expect("bind the late projected memory to the remembered Evidence");
+
                 });
 
-                // Return the old candidate response only after the new point and checkpoint commit.
-                barrier.armed.store(true, Ordering::SeqCst);
                 let late_args = json!({
                     "query": query, "workspace_id": workspace_id, "mode": "semantic",
-                    "consistency_token": late_token,
+                    "consistency_token": late_token, "subject_ids": [late_subject],
                 });
-                let bearer = credential.bearer.clone();
-                let args = late_args.clone();
-                let blocked = tokio::spawn(async move { recall_call(address, Some(&bearer), args).await });
-                tokio::time::timeout(Duration::from_secs(10), barrier.returned.notified())
-                    .await.expect("old candidate query returned");
-                upsert(
-                    transport.as_ref(), &permit, &collection,
-                    &[(
-                        PointId::Uuid(late_point),
-                        &semantic_payload_with(&handle, late_updated, AuthorityStatus::Active, 42)
-                            .with_archived(false),
-                        semantic_vector(query),
-                    )],
-                    ha_profile_for(QdrantOperation::NormalImmutableUpsert),
-                ).await.expect("publish point after the candidate query");
-                tokio::task::block_in_place(|| settle_fixture_ticket(&mut handle, 42));
-                barrier.release.notify_one();
-                let (status, raced) = blocked.await.expect("strict recall with an older candidate batch");
+                let payload = semantic_payload_with(&handle, late_updated, AuthorityStatus::Active, 42)
+                    .with_archived(false)
+                    .with_subject_ids(vec![humaux_domain::subject::SubjectId(late_subject)]);
+                let publish_late = async |handle: &mut Handle| {
+                    upsert(
+                        transport.as_ref(), &permit, &collection,
+                        &[(PointId::Uuid(late_point), &payload, semantic_vector(query))],
+                        ha_profile_for(QdrantOperation::NormalImmutableUpsert),
+                    ).await.expect("publish point after the candidate query");
+                    tokio::task::block_in_place(|| settle_fixture_ticket(handle, 42));
+                };
+                let (status, raced) = barrier.recall_during(
+                    address, &credential.bearer, late_args.clone(), publish_late(&mut handle),
+                ).await;
                 assert_eq!(status, 200, "{raced}");
                 let raced = assert_tool_response(&raced, ToolName::Recall);
+                assert_eq!(raced["completeness"]["candidate_count"], 0, "{raced}");
                 assert!(raced["items"].as_array().unwrap().iter().any(|item| {
                     item["evidence_id"] == late_evidence && item["stream_seq"] == 42
                         && item["processing_state"] == "DONE"
                 }), "candidate batch from prefix 41 lost Evidence at 42: {raced}");
                 let (status, caught_up) =
-                    recall_call(address, Some(&credential.bearer), late_args).await;
+                    recall_call(address, Some(&credential.bearer), late_args.clone()).await;
                 assert_eq!(status, 200, "{caught_up}");
                 let caught_up = assert_tool_response(&caught_up, ToolName::Recall);
                 assert!(recalled_memory_ids(caught_up).contains(&late.memory_id.to_string()), "{caught_up}");
                 assert!(!caught_up["items"].as_array().unwrap().iter().any(|item| {
                     item["evidence_id"] == late_evidence
                 }), "a caught-up candidate batch should use the index: {caught_up}");
+
+                // Repeat the late-advance schedule with the only uncovered anchor unavailable.
+                delete_points(
+                    transport.as_ref(), &permit, &collection, &[PointId::Uuid(late_point)], 42,
+                    ha_profile_for(QdrantOperation::CorrectionDeleteSupersede),
+                ).await.expect("remove the fixture point before the second candidate query");
+                tokio::task::block_in_place(|| {
+                    let evidence_id = Uuid::parse_str(late_evidence).unwrap();
+                    assert_eq!(handle.admin.execute(
+                        "DELETE FROM ops.outbox WHERE tenant_id = $1 AND evidence_id = $2",
+                        &[&handle.tenant_id, &evidence_id],
+                    ).expect("withhold the fixture's late anchor"), 1);
+                    assert_eq!(handle.admin.execute(
+                        "UPDATE projection.stream_checkpoints SET projection_highwater = 41
+                         WHERE tenant_id = $1 AND scope_id = $2 AND projection_version = 'v1'",
+                        &[&handle.tenant_id, &workspace_id],
+                    ).expect("restore the pre-query frontier"), 1);
+                });
+                let (status, unproved) = barrier.recall_during(
+                    address, &credential.bearer, late_args.clone(), publish_late(&mut handle),
+                ).await;
+                projection_lag_terminal::assert_projection_lag_terminal(status, &unproved);
+
+                let (_, switched) = barrier.recall_during(
+                    address, &credential.bearer, late_args,
+                    async { tokio::task::block_in_place(|| set_fixture_serving(&mut handle, false)); },
+                ).await;
+                assert_eq!(switched["result"]["isError"], true, "{switched}");
+                assert_eq!(switched["result"]["structuredContent"], json!({"code":"DEPENDENCY_UNAVAILABLE"}));
 
                 server.abort();
                 delete_semantic_collection(&transport, &registry, &collection).await;
