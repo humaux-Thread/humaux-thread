@@ -269,6 +269,18 @@ impl BootstrapError {
             reason,
         }
     }
+
+    fn static_oauth_client(code: humaux_domain::error::ErrorCode) -> Self {
+        use humaux_domain::error::ErrorCode;
+
+        // The operator sees a fixed diagnostic, independent of registry or input contents.
+        let reason = match code {
+            ErrorCode::InvalidInput => "invalid public client configuration",
+            ErrorCode::Conflict => "client id already registered with a different kind or disabled",
+            _ => "could not persist public clients",
+        };
+        Self::new(OAUTH_STATIC_CLIENTS_KEY, reason)
+    }
 }
 
 impl std::fmt::Display for BootstrapError {
@@ -610,22 +622,10 @@ impl GatewayBootstrap {
                 );
             }
         }
-        if self.oauth_http.is_some()
-            && let Err(code) =
-                provision_oauth_clients(guard.runtime_pool().as_ref(), &self.oauth_static_clients)
-                    .await
+        if let Err(code) =
+            provision_oauth_clients(&guard.runtime_pool(), &self.oauth_static_clients).await
         {
-            use humaux_domain::error::ErrorCode;
-
-            // The operator sees a fixed diagnostic, independent of registry or input contents.
-            let reason = match code {
-                ErrorCode::InvalidInput => "invalid public client configuration",
-                ErrorCode::Conflict => {
-                    "client id already registered with a different kind or disabled"
-                }
-                _ => "could not persist public clients",
-            };
-            return Err(BootstrapError::new(OAUTH_STATIC_CLIENTS_KEY, reason));
+            return Err(BootstrapError::static_oauth_client(code));
         }
         let application = Arc::new(application);
         // ADR-0125: anonymous callers are keyed by the IP the pre-auth bucket charges them.
@@ -741,11 +741,12 @@ impl GatewayBootstrap {
             mood_half_life,
             token_keys,
             auth_pages,
-            oauth_http,
-            oauth_static_clients: effective
-                .get(OAUTH_STATIC_CLIENTS_KEY)
+            oauth_static_clients: oauth_http
+                .as_ref()
+                .and(effective.get(OAUTH_STATIC_CLIENTS_KEY))
                 .cloned()
                 .unwrap_or_default(),
+            oauth_http,
             billing_webhook,
             metrics_addr,
             readiness_refresh,
