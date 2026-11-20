@@ -15906,10 +15906,11 @@ modules naming it:
 - `application::auth`
 
 ### humaux-application → `rand` (normal)
-why: token/RNG source for auth, referral codes and supersede confirm tokens
+why: token/RNG source for auth, referral codes and supersede confirm tokens, and jitter for D1 retries
 
 modules naming it:
 - `application::auth`
+- `application::distill_execution`
 - `application::oauth_exchange`
 - `application::referral`
 - `application::role_rotation`
