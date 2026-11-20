@@ -1108,6 +1108,7 @@ fn pre_route_generation_tracks_committed_revoke_and_live_check_refuses_a_warm_ca
             before.routing_revoke_epoch + 1
         );
         let mut probe = db_ok(f.admin.transaction());
+        // dep: PostgreSQL(role_public_worker) — probe execution on the new gateway door
         db_ok(probe.batch_execute("SET LOCAL ROLE role_public_worker"));
         let denied = probe
             .query_one(

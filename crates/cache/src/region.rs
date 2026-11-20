@@ -1,5 +1,5 @@
 //! `cache::region` — shared byte-weighted storage and TTL (§67.2, ADR-0133).
-//! Depends-on: crates=[moka]; services=[]; env=[]; modules=[]
+//! Depends-on: crates=[moka, tokio]; services=[]; env=[]; modules=[]
 //! Called-by: [cache::bounded, tests]
 //! Invariants: [settings come from the caller; each instance has its own key space; values carry no authority]
 //! Spec: Baseline §51; §67.2; §78.1; ADR-0133
