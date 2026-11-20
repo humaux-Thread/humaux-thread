@@ -84,7 +84,7 @@ impl OAuthHttpConfig {
             access_ttl: self.access_ttl,
             refresh_ttl: self.refresh_ttl,
             grant_max_ttl: self.grant_max_ttl,
-            allowed_resources: &self.resources,
+            allowed_resources: if self.resources.len() == 1 { &[] } else { &self.resources },
             supported_scopes: &[],
         }
     }

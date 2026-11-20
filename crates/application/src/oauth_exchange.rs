@@ -429,6 +429,7 @@ pub async fn exchange_code(
     };
     let terms = match oauth::exchange_code(&request, &view, policy) {
         Ok(terms) => terms,
+        Err(error) if error.reason == OAuthReason::RESOURCE_UNKNOWN => return Ok(Err(error.reason)),
         Err(error) => return spent(txn, error.reason).await,
     };
     let refresh = secret()?;

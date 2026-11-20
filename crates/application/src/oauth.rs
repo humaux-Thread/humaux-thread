@@ -1081,11 +1081,7 @@ pub fn decide_refresh(
     if !policy.allows_resource(grant.resource) {
         return deny(
             OAuthReason::RESOURCE_UNKNOWN,
-            Some(Revocation {
-                grant_id,
-                family_id: Some(family_id),
-                cause: RevokeCause::ResourceDisabled,
-            }),
+            None,
         );
     }
     if request.resource.is_some_and(|r| r != grant.resource) {
