@@ -9325,13 +9325,12 @@ read by:
 - (no process): `adapters::tests::cost_repo`
 
 written by:
-- (no process): `adapters::cost_repo`
 - (no process): `adapters::tests::model_call_ledger`
-- process(cargo-xtask): `adapters::model_call_ledger`
-- process(humaux-gateway): `adapters::model_call_ledger`
-- process(humaux-maintenance): `adapters::model_call_ledger`
-- process(humaux-private-worker): `adapters::model_call_ledger`
-- process(humaux-retrieval-worker): `adapters::model_call_ledger`
+- process(cargo-xtask): `adapters::tenant_cost_write_repo`
+- process(humaux-gateway): `adapters::tenant_cost_write_repo`
+- process(humaux-maintenance): `adapters::tenant_cost_write_repo`
+- process(humaux-private-worker): `adapters::tenant_cost_write_repo`
+- process(humaux-retrieval-worker): `adapters::tenant_cost_write_repo`
 
 executed by:
 

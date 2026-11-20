@@ -239,7 +239,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.provider_pricing_versions`
 - reads `ops.data_disclosures`
 - writes `ops.model_call_ledger`
-- writes `ops.tenant_cost_events`
 - service `PostgreSQL(any)`
 
 #### `adapters::note_repo`
@@ -464,6 +463,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.link_memory_subjects`
 - executes `private.link_rollup_subjects`
 - service `PostgreSQL(role_gateway)`
+
+#### `adapters::tenant_cost_write_repo`
+- writes `ops.tenant_cost_events`
+- service `PostgreSQL(any)`
 
 #### `application::affect`
 
@@ -2016,7 +2019,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.provider_pricing_versions`
 - reads `ops.data_disclosures`
 - writes `ops.model_call_ledger`
-- writes `ops.tenant_cost_events`
 - service `PostgreSQL(any)`
 
 #### `adapters::note_repo`
@@ -2235,6 +2237,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.link_memory_subjects`
 - executes `private.link_rollup_subjects`
 - service `PostgreSQL(role_gateway)`
+
+#### `adapters::tenant_cost_write_repo`
+- writes `ops.tenant_cost_events`
+- service `PostgreSQL(any)`
 
 #### `application::affect`
 
@@ -2945,7 +2951,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.provider_pricing_versions`
 - reads `ops.data_disclosures`
 - writes `ops.model_call_ledger`
-- writes `ops.tenant_cost_events`
 - service `PostgreSQL(any)`
 
 #### `adapters::note_repo`
@@ -3227,6 +3232,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.link_memory_subjects`
 - executes `private.link_rollup_subjects`
 - service `PostgreSQL(role_gateway)`
+
+#### `adapters::tenant_cost_write_repo`
+- writes `ops.tenant_cost_events`
+- service `PostgreSQL(any)`
 
 #### `application::affect`
 
@@ -4218,7 +4227,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.provider_pricing_versions`
 - reads `ops.data_disclosures`
 - writes `ops.model_call_ledger`
-- writes `ops.tenant_cost_events`
 - service `PostgreSQL(any)`
 
 #### `adapters::note_repo`
@@ -4414,6 +4422,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.link_memory_subjects`
 - executes `private.link_rollup_subjects`
 - service `PostgreSQL(role_gateway)`
+
+#### `adapters::tenant_cost_write_repo`
+- writes `ops.tenant_cost_events`
+- service `PostgreSQL(any)`
 
 #### `application::affect`
 
@@ -5028,7 +5040,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.provider_pricing_versions`
 - reads `ops.data_disclosures`
 - writes `ops.model_call_ledger`
-- writes `ops.tenant_cost_events`
 - service `PostgreSQL(any)`
 
 #### `adapters::note_repo`
@@ -5252,6 +5263,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `private.link_memory_subjects`
 - executes `private.link_rollup_subjects`
 - service `PostgreSQL(role_gateway)`
+
+#### `adapters::tenant_cost_write_repo`
+- writes `ops.tenant_cost_events`
+- service `PostgreSQL(any)`
 
 #### `application::affect`
 
@@ -9520,13 +9535,12 @@ read by:
 - (no process): `adapters::tests::cost_repo`
 
 written by:
-- (no process): `adapters::cost_repo`
 - (no process): `adapters::tests::model_call_ledger`
-- process(cargo-xtask): `adapters::model_call_ledger`
-- process(humaux-gateway): `adapters::model_call_ledger`
-- process(humaux-maintenance): `adapters::model_call_ledger`
-- process(humaux-private-worker): `adapters::model_call_ledger`
-- process(humaux-retrieval-worker): `adapters::model_call_ledger`
+- process(cargo-xtask): `adapters::tenant_cost_write_repo`
+- process(humaux-gateway): `adapters::tenant_cost_write_repo`
+- process(humaux-maintenance): `adapters::tenant_cost_write_repo`
+- process(humaux-private-worker): `adapters::tenant_cost_write_repo`
+- process(humaux-retrieval-worker): `adapters::tenant_cost_write_repo`
 
 executed by:
 
@@ -13319,7 +13333,6 @@ executed by:
 - `adapters::contribution_reasoner`
 - `adapters::contribution_repo`
 - `adapters::coord_repo`
-- `adapters::cost_repo`
 - `adapters::credential_repo`
 - `adapters::dedup_repo`
 - `adapters::disclosure`
@@ -13356,6 +13369,7 @@ executed by:
 - `adapters::serving_repo`
 - `adapters::session_repo`
 - `adapters::stream_repo`
+- `adapters::tenant_cost_write_repo`
 - `adapters::tests::auth_contract`
 - `adapters::tests::auth_scope_rls`
 - `adapters::tests::authority_g59_5`
@@ -14234,6 +14248,7 @@ modules naming it:
 - `adapters::stream_repo`
 - `adapters::structured_reasoning`
 - `adapters::subject_repo`
+- `adapters::tenant_cost_write_repo`
 - `adapters::tests::a2_point_identity`
 - `adapters::tests::billing_doors`
 - `adapters::tests::billing_slot_handover`
