@@ -1,4 +1,4 @@
-//! Commercial owns the two tenant cost INSERT commands (Baseline §19).
+//! `adapters::tenant_cost_write_repo` — the commercial tenant cost INSERT commands (Baseline §19).
 //! Depends-on: crates=[sqlx]; services=[PostgreSQL(any) w=[ops.tenant_cost_events]]; env=[]; modules=[]
 //! Called-by: [adapters::cost_repo, adapters::model_call_ledger]
 //! Invariants: [producers validate their inputs and bind tenant scope on the supplied transaction; no commit here]
