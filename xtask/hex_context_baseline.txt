@@ -7,7 +7,6 @@ crates/adapters/src/applicability_repo.rs:project_continuity->identity_access:hu
 crates/adapters/src/continuity_read.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/continuity_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
-crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::VisibilityDescriptor
 crates/adapters/src/projection_worker.rs:retrieval_read_model->knowledge_lifecycle:humaux_adapters::affect_repo::affects_for_memories_in_txn
 crates/application/src/contribute.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
 crates/projection/src/fingerprint.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::evidence::EvidencePayloadSha256

@@ -1,8 +1,10 @@
-//! `domain::vocab` — shared cache, retrieval, visibility and moderation labels (ADR-0131).
-//! Depends-on: crates=[]; services=[]; env=[]; modules=[]
+//! `domain::vocab` — shared cache, retrieval, visibility and moderation vocabulary (ADR-0131).
+//! Depends-on: crates=[]; services=[]; env=[]; modules=[domain::ids]
 //! Called-by: [cache::bounded, gateway::cached_embedding, retrieval::request, telemetry::metrics]
 //! Invariants: [closed variant sets and stable wire and database labels]
 //! Spec: Baseline §6.1.1; §12; §41.2; §51; §78.2
+
+use crate::ids::{UserId, WorkspaceId};
 
 /// A named cache instance; the `cache` label (§41.2). One value per cache the process runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +123,18 @@ pub enum VisibilityClass {
     WorkspaceShared,
     /// Visible tenant-wide.
     TenantShared,
+}
+
+/// An object's visibility, as read off the row being checked (§6.1.1). `user_id`/`workspace_id`
+/// are only meaningful for the matching `class` — [`can_read`](crate::identity::can_read) treats a class/id mismatch
+/// (e.g. `UserPrivate` with `user_id: None`) as a malformed descriptor and fails closed
+/// (`false`), it never panics on it. Row-level `CHECK` constraints (§48.0) are the place that
+/// rejects such rows at write time; this type does not re-validate that invariant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisibilityDescriptor {
+    pub class: VisibilityClass,
+    pub user_id: Option<UserId>,
+    pub workspace_id: Option<WorkspaceId>,
 }
 
 /// Public-claim moderation closed set, derived from the §12 Quarantine/Promotion flow
