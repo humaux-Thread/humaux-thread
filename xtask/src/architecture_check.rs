@@ -96,6 +96,58 @@ fn m03_2_no_pg_rate_path(root: &Path) -> Verdict {
     }
 }
 
+const REQUEST_GUARD_SOURCE: &str = "bins/gateway/src/guard.rs";
+
+/// M03 design §4 / §8 G-M03-12: Guard can reach request-policy adapters, never operation adapters.
+fn m03_12_guard_adapter_boundary(root: &Path) -> Verdict {
+    let file = match fs::read_to_string(root.join(REQUEST_GUARD_SOURCE))
+        .map_err(|error| error.to_string())
+        .and_then(|source| syn::parse_file(&source).map_err(|error| error.to_string()))
+    {
+        Ok(file) => file,
+        Err(error) => return Verdict::Fail(vec![format!("{REQUEST_GUARD_SOURCE}: {error}")]),
+    };
+    let mut refs = HexRefs {
+        scope: vec!["humaux_gateway".into(), "guard".into()],
+        paths: Vec::new(),
+        exports: Vec::new(),
+        aliases: BTreeMap::new(),
+    };
+    refs.items(&file.items);
+    let forbidden: BTreeSet<_> = refs
+        .paths
+        .iter()
+        .filter_map(|path| {
+            let [krate, adapter_path @ ..] = path.as_slice() else {
+                return None;
+            };
+            if krate != "humaux_adapters" {
+                return None;
+            }
+            let allowed = match adapter_path {
+                // M02 credentials, M04 admission/metering, M05 denials audit.
+                [door, ..]
+                    if matches!(
+                        door.as_str(),
+                        "credential_repo"
+                            | "request_guard_repo"
+                            | "quota_repo"
+                            | "audited_read_quota"
+                            | "independent_audit"
+                    ) =>
+                {
+                    true
+                }
+                // Typed handle passed to the composition root. The postgres module itself isn't a door.
+                [module, pool] => module == "postgres" && pool == "RuntimeDbPool",
+                _ => false,
+            };
+            (!allowed).then(|| format!("{REQUEST_GUARD_SOURCE}: {}", path.join("::")))
+        })
+        .collect();
+    hex_verdict(forbidden.into_iter().collect())
+}
+
 // §67.2 / G-M03-2: migrations are historical inputs; test and script code stay in the scan.
 fn m03_2_code_files(root: &Path, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
@@ -13666,6 +13718,10 @@ pub fn run(_args: &[String]) -> i32 {
             m03_2_no_pg_rate_path(&root),
         ),
         (
+            "G-M03-12 (request guard imports no operation adapter)",
+            m03_12_guard_adapter_boundary(&root),
+        ),
+        (
             "G-M15-1 / G-N09-2 (candidate isolation)",
             candidate_isolation_sources(&root),
         ),
@@ -13961,6 +14017,41 @@ mod tests {
 
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn g_m03_12_guard_adapter_boundary_red_green() {
+        let source = fs::read_to_string(workspace_root().join(REQUEST_GUARD_SOURCE)).unwrap();
+        let root = std::env::temp_dir().join(format!("humaux-g-m03-12-{}", std::process::id()));
+        let guard = root.join(REQUEST_GUARD_SOURCE);
+        fs::create_dir_all(guard.parent().unwrap()).unwrap();
+        assert_eq!(
+            m03_12_guard_adapter_boundary(&workspace_root()),
+            Verdict::Pass
+        );
+        for (fault, forbidden) in [
+            (
+                "use humaux_adapters::remember;",
+                "humaux_adapters::remember",
+            ),
+            (
+                "use humaux_adapters::{confirm_token_repo as repo};",
+                "humaux_adapters::confirm_token_repo",
+            ),
+        ] {
+            fs::write(&guard, format!("{source}\n{fault}\n")).unwrap();
+            let red = m03_12_guard_adapter_boundary(&root);
+            let expected = format!("{REQUEST_GUARD_SOURCE}: {forbidden}");
+            assert!(
+                matches!(&red, Verdict::Fail(diagnostics) if diagnostics.contains(&expected)),
+                "{red:?}"
+            );
+            println!("G-M03-12 injected {fault} RED: {red:?}");
+            fs::write(&guard, &source).unwrap();
+            assert_eq!(m03_12_guard_adapter_boundary(&root), Verdict::Pass);
+            println!("G-M03-12 removed {fault} GREEN");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn hex_boundary_gate(root: &Path, writer: bool) -> Verdict {
         if writer {
