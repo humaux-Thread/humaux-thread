@@ -20,6 +20,8 @@ workspace = true
 # `{crates/infra-network/Cargo.toml}` equality.
 # why: humaux-infra-network dependency; used-by: [infra-egress::http, infra-egress::raw, infra-egress::resolver]
 humaux-infra-network = { path = "../infra-network" }
+# why: parse both Retry-After formats before BYOK applies the §11.4 cap; used-by: [infra-egress::raw]
+httpdate = "1.0.3"
 # `ExternalCall` (§7.3, `humaux-domain`) is declared `#[async_trait]` there; this crate's impl
 # of it needs the identical macro.
 # why: async-trait dependency; used-by: [infra-egress::http, tests]

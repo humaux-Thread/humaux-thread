@@ -499,7 +499,7 @@ pub enum ReasoningProviderError {
     WaitingKey {
         fingerprint: Option<CredentialFingerprint>,
     },
-    /// 403 / provider policy denied (§11.3).
+    /// Permanent provider rejection (§11.3). HTTP error diagnostics are derived from fixed labels.
     ProviderPermanent { message: String },
     /// 429 (honor `Retry-After` when present) or 5xx/timeout (bounded transient retry +
     /// jitter is the caller's job — this variant only reports what the provider said).
@@ -620,7 +620,7 @@ impl ReasoningProviderError {
 }
 
 /// §11.3's HTTP-status half of the state machine, as a pure function so it is unit-testable
-/// without any network or trait object at all. `retry_after` is only consulted for 429.
+/// without any network or trait object at all. `retry_after` is only consulted for 408/425/429.
 pub fn classify_http_status(
     status: u16,
     retry_after: Option<Duration>,
@@ -787,11 +787,7 @@ fn parse_chat_envelope(
         if let Some(code) = code
             && code != 0
         {
-            let msg = base
-                .get("status_msg")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            return Err(classify_base_resp(code, msg));
+            return Err(classify_base_resp(code));
         }
     }
 
@@ -894,16 +890,16 @@ fn tool_arguments(
 /// - `1002 | 1039 | 2062` ⇒ [`ReasoningProviderError::RetryWait`]。**`2062` 是实测的
 ///   Token Plan 限流码，走 HTTP 200 + 空 content**（2026-07-29 教训）——漏掉它，
 ///   限流会被判成永久错误，bounded repair 直接放弃。
-/// - 其余非零 ⇒ `ProviderPermanent` 带原文，fail-closed。
+/// - 其余非零 ⇒ `ProviderPermanent` with a numeric status and no provider prose.
 ///
 // ponytail: 码表 best-effort（四个码来自实测与既往教训）；对照官方码表校准是升级路径，
 // 但闸不依赖码表完备——任何非零码都不可能被当成功。
-fn classify_base_resp(status_code: i64, status_msg: &str) -> ReasoningProviderError {
+fn classify_base_resp(status_code: i64) -> ReasoningProviderError {
     match status_code {
         1004 => ReasoningProviderError::WaitingKey { fingerprint: None },
         1002 | 1039 | 2062 => ReasoningProviderError::RetryWait { retry_after: None },
         code => ReasoningProviderError::ProviderPermanent {
-            message: format!("base_resp {code}: {status_msg}"),
+            message: format!("base_resp {code}"),
         },
     }
 }
@@ -1148,15 +1144,51 @@ impl<T: OpenAiCompatTransport, D: CredentialDecryptor> OpenAiCompatibleProvider<
         let request = self.build_openai_request(ctx, body).await?;
         let outcome = self.transport.send(request, &self.policy).await?;
         // §11.4: `Retry-After` originates from a header on an endpoint this module treats as
-        // untrusted input — clamped here, where it crosses into our system, before it can ever
-        // reach a `std::thread::sleep` call (`complete_structured_with_bounded_repair`).
+        // untrusted input. Clamp it before returning it to any retry or settlement caller.
         let retry_after = outcome
             .retry_after
             .map(|d| d.min(self.policy.max_retry_after));
         match classify_http_status(outcome.status, retry_after) {
             None => Ok(outcome.body),
+            Some(ReasoningProviderError::ProviderPermanent { mut message }) => {
+                append_http_error_diagnostic(&mut message, &outcome.body);
+                Err(ReasoningProviderError::ProviderPermanent { message })
+            }
             Some(err) => Err(err),
         }
+    }
+}
+
+fn append_http_error_diagnostic(message: &mut String, body: &[u8]) {
+    // §11.4: error bodies can echo credentials or input in any field. Three fixed labels stay
+    // within the 512-byte diagnostic budget even when the response carries a long message.
+    let Ok(body) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return;
+    };
+    let error = &body["error"];
+    for field in ["code", "type", "param"] {
+        let label = match (field, error[field].as_str()) {
+            ("code" | "type", Some("invalid_request_error")) => "invalid_request_error",
+            ("code", Some("unsupported_parameter")) => "unsupported_parameter",
+            ("code", Some("unsupported_value")) => "unsupported_value",
+            ("code", Some("invalid_value")) => "invalid_value",
+            ("code", Some("missing_required_parameter")) => "missing_required_parameter",
+            ("code", Some("model_not_found")) => "model_not_found",
+            ("code", Some("context_length_exceeded")) => "context_length_exceeded",
+            ("param", Some("model")) => "model",
+            ("param", Some("messages")) => "messages",
+            ("param", Some("response_format")) => "response_format",
+            ("param", Some("tools")) => "tools",
+            ("param", Some("tool_choice")) => "tool_choice",
+            ("param", Some("max_tokens")) => "max_tokens",
+            ("param", Some("max_completion_tokens")) => "max_completion_tokens",
+            ("param", Some("reasoning_effort")) => "reasoning_effort",
+            _ => continue,
+        };
+        message.push(' ');
+        message.push_str(field);
+        message.push('=');
+        message.push_str(label);
     }
 }
 
@@ -2447,6 +2479,79 @@ mod tests {
                 Err(ReasoningProviderError::RetryWait { retry_after: Some(d) })
                     if d == Duration::from_secs(5)
             ));
+        });
+    }
+
+    #[test]
+    fn provider_error_metadata_contains_only_safe_diagnostics() {
+        struct RejectedRequest(u16, Vec<u8>);
+
+        #[async_trait::async_trait]
+        impl OpenAiCompatTransport for RejectedRequest {
+            async fn send(
+                &self,
+                _request: OpenAiHttpRequest,
+                _policy: &ssrf::CustomEndpointPolicy,
+            ) -> Result<OpenAiHttpOutcome, ReasoningProviderError> {
+                Ok(OpenAiHttpOutcome {
+                    status: self.0,
+                    retry_after: None,
+                    body: self.1.clone(),
+                })
+            }
+        }
+
+        rt().block_on(async {
+            let resolver = resolver_for(example_public_ip());
+            let secret = "opaque-credential-fixture";
+            let body = serde_json::to_vec(&serde_json::json!({
+                "error": {
+                    "code": "unsupported_parameter",
+                    "param": "response_format",
+                    "type": secret,
+                    "message": format!("Authorization: Bearer {secret}; {}", "密".repeat(512)),
+                }
+            }))
+            .unwrap();
+            for (status, body, class, expected_diagnostic) in [
+                (
+                    400,
+                    body,
+                    "PROVIDER_PERMANENT",
+                    Some("code=unsupported_parameter param=response_format"),
+                ),
+                (403, secret.as_bytes().to_vec(), "PROVIDER_PERMANENT", None),
+                (401, secret.as_bytes().to_vec(), "WAITING_KEY", None),
+                (
+                    200,
+                    format!(r#"{{"base_resp":{{"status_code":9999,"status_msg":"{secret}"}}}}"#)
+                        .into_bytes(),
+                    "PROVIDER_PERMANENT",
+                    Some("base_resp 9999"),
+                ),
+            ] {
+                let provider = OpenAiCompatibleProvider::new(
+                    descriptor(),
+                    "https://api.example.com/v1/chat/completions".to_string(),
+                    RejectedRequest(status, body),
+                    StaticDecryptor,
+                    ssrf::CustomEndpointPolicy::default(),
+                    &resolver,
+                )
+                .expect("valid endpoint");
+                let error = provider
+                    .complete_structured(&ctx(TenantId::new()), structured_request())
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.class(), class);
+                let display = error.to_string();
+                assert!(display.len() <= 512);
+                assert!(!display.contains(secret));
+                assert!(!format!("{error:?}").contains(secret));
+                if let Some(expected) = expected_diagnostic {
+                    assert!(display.contains(expected), "{display}");
+                }
+            }
         });
     }
 

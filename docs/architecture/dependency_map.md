@@ -16324,6 +16324,12 @@ modules naming it:
 - `infra-egress::raw`
 - `infra-egress::resolver`
 
+### humaux-infra-egress → `httpdate` (normal)
+why: parse both Retry-After formats before BYOK applies the §11.4 cap
+
+modules naming it:
+- `infra-egress::raw`
+
 ### humaux-infra-egress → `async-trait` (normal)
 why: async-trait dependency
 

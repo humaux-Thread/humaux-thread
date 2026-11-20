@@ -12,7 +12,7 @@ version = "0.1.0"
 publish = false
 # ADR-0050 D-G: declared MSRV (§70). Enforced pin is rust-toolchain.toml; every member declares
 # `rust-version.workspace = true` (ADR-0051 D-L, closed the ADR-0050 open item).
-rust-version = "1.99"
+rust-version = "1.100"
 repository = "https://github.com/luogangan7-lgtm/humaux-thread"
 
 [workspace.lints.clippy]

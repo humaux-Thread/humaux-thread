@@ -389,6 +389,22 @@ install, no re-baseline. Evidence that the pinned toolchain builds and passes th
 main-line chain (`gates_card33_mainline.log`, the first chain run on 1.99.0, including the release build and the
 rehearsal). The first build on 1.99.0 invalidates every fingerprint in `CARGO_TARGET_DIR`, as the 1.98.1 move did.
 
+## Amendment (owner decision, 2026-11-20) — D-G pin moves to 1.100.0
+
+The owner directed the repository to adopt the latest stable Rust. The Rust release team published
+1.100.0 on 2026-11-12. It follows 1.99.1, whose fixes include x86_64 FFI `bool` code generation
+and the macOS `rust-lld` library search path. In 1.100.0, Cargo can identify unused dependencies and
+supports an opt-in dependency cooldown. The release also stabilizes the never type and `DropGuard`.
+Sources verified 2026-11-20: [Rust 1.100.0 announcement](https://blog.rust-lang.org/releases/1.100.0/),
+[Rust 1.99.1 announcement](https://blog.rust-lang.org/releases/1.99.1/), and
+[tagged release notes](https://github.com/rust-lang/rust/blob/1.100.0/RELEASES.md).
+
+The workspace declares Rust 1.100 with Edition 2024. The exact toolchain and CI checks pin
+1.100.0, and the Debian 13 Rust image uses the corresponding multi-architecture index digest.
+The release builder still selects the original digest for commits pinned to 1.99.0.
+Compatibility probe: [CI run 44758577035](https://github.com/humaux-Thread/humaux-thread/actions/runs/44758577035)
+on `bf703d86fdac27bdfde31bb0d14daf9f39e64ffa`, based on `805d0f6268a70798a850af6bb379efcd49f40d78`.
+
 ## Consequences and limits
 
 - gate-truth sees **whole-binary** skips only. A binary where some tests skip and others do real
