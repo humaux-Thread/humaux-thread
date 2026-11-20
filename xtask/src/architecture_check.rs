@@ -686,6 +686,72 @@ fn rule2_degrade_fault_parity(root: &Path) -> Verdict {
     rule2_check(&variants, &stems)
 }
 
+/// §52.4 G52-5 / G-M01-6. Deleting projection_lag_degraded.rs is the red control.
+fn g52_5_pair_files(root: &Path) -> Verdict {
+    const SPEC: &str = "docs/architecture/Baseline_2.9.md";
+    const PAIRS: &str = "crates/testkit/tests/pair";
+    if !root.exists() {
+        return Verdict::NotApplicable(root.display().to_string());
+    }
+    let Ok(spec) = fs::read_to_string(root.join(SPEC)) else {
+        return Verdict::Fail(vec![format!("cannot read {SPEC}")]);
+    };
+    let mut section = spec.lines();
+    if section.find(|line| line.starts_with("## 52.2 ")).is_none() {
+        return Verdict::Fail(vec![format!("{SPEC}: missing §52.2")]);
+    }
+    let table = section
+        .take_while(|line| !line.starts_with('#'))
+        .skip_while(|line| !line.starts_with("| ErrorCode"))
+        .skip(2)
+        .take_while(|line| line.starts_with('|'));
+    let mut expected = BTreeSet::new();
+    for row in table {
+        let Some(code) = row
+            .split('|')
+            .nth(1)
+            .and_then(|cell| cell.trim().strip_prefix('`')?.strip_suffix('`'))
+        else {
+            return Verdict::Fail(vec![format!("{SPEC} §52.2: malformed pair row: {row}")]);
+        };
+        if !code.starts_with(|c: char| c.is_ascii_uppercase())
+            || !code
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        {
+            return Verdict::Fail(vec![format!("{SPEC} §52.2: invalid ErrorCode: {code}")]);
+        }
+        let stem = code.to_ascii_lowercase();
+        if !expected.insert(format!("{stem}_terminal.rs")) {
+            return Verdict::Fail(vec![format!("{SPEC} §52.2: duplicate ErrorCode: {code}")]);
+        }
+        expected.insert(format!("{stem}_degraded.rs"));
+    }
+    if expected.is_empty() {
+        return Verdict::Fail(vec![format!("{SPEC}: missing or empty §52.2 pair table")]);
+    }
+    let actual: BTreeSet<_> = walk_files(&root.join(PAIRS), &["rs"])
+        .iter()
+        .map(|path| {
+            path.strip_prefix(root.join(PAIRS))
+                .expect("pair path")
+                .display()
+                .to_string()
+        })
+        .collect();
+    if actual == expected {
+        return Verdict::Pass;
+    }
+    let mut details = vec![format!(
+        "{PAIRS}: {} Rust files found; §52.2 requires {}",
+        actual.len(),
+        expected.len()
+    )];
+    name_diff("missing pair file", &expected, &actual, &mut details);
+    name_diff("unexpected pair file", &actual, &expected, &mut details);
+    Verdict::Fail(details)
+}
+
 // ============================================================================
 // §52.4 G52-1: only ErrorCode may serialize at an `error_code` position
 // ============================================================================
@@ -13688,6 +13754,10 @@ pub fn run(_args: &[String]) -> i32 {
             g52_1_error_code_uniqueness(&root),
         ),
         (
+            "§52.4 G52-5 / G-M01-6 (pair files match the §52.2 registry)",
+            g52_5_pair_files(&root),
+        ),
+        (
             "§59.1 G59-3 (Authority::new sole construction point)",
             g59_3_authority_construction_point(&root),
         ),
@@ -13952,6 +14022,14 @@ pub fn run(_args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn g52_5_pair_files_match_live_registry() {
+        assert_eq!(
+            super::g52_5_pair_files(&super::workspace_root()),
+            super::Verdict::Pass
+        );
+    }
+
     #[test]
     fn g_m03_2_no_pg_rate_path() {
         assert_eq!(
