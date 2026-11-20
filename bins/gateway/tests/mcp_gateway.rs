@@ -1,5 +1,5 @@
 //! `gateway::tests::mcp_gateway` — Native MCP -> Gateway actual PostgreSQL acceptance.
-//! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-infra-cell, humaux-local-secret-scan, humaux-projection, humaux-protocol, humaux-retrieval, humaux-retrieval-provider, humaux-retrieval-worker, humaux-telemetry, humaux-testkit, postgres, serde_json, sha2, time, tokio, uuid]; services=[PostgreSQL(role_consolidation_worker), PostgreSQL(role_gateway) r=[control.audit_events, control.quota_windows, control.usage_reservations, control.users, ops.commit_seq_seq, private.events, private.evidence_affects, private.evidence_sources, private.evidence_subjects, private.identity_note_materializations, private.note_heads, private.subject_keys, private.task_binding_grants, public.humaux_test_restore_fault_, public.humaux_test_supersede_fault_] w=[control.api_keys, control.confirm_tokens, control.memberships, control.operation_receipts, control.private_reasoning_domains, control.tenants, control.workspace_memberships, control.workspaces, coord.task_runs, coord.tasks, ops.memory_lifecycle_events, ops.outbox, ops.selection_snapshots, private.context_bindings, private.continuity_projects, private.distill_candidates, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_affects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_subject_presence, private.memory_subjects, private.subjects, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log, projection.tenant_placements] x=[control.bump_user_security_epoch, control.onboard_workspace, control.set_workspace_membership], PostgreSQL(role_retrieval_worker), Qdrant(*), UDS(retrieval-worker), UDS(serve), subprocess(humaux-gateway), subprocess(kill), HTTP(gateway)]; env=[HUMAUX_GATEWAY_DEPLOYMENT, CARGO_BIN_EXE_humaux-gateway, CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY, HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH, HUMAUX_GATEWAY_ALLOWED_HOSTS, HUMAUX_GATEWAY_ALLOWED_ORIGINS, HUMAUX_GATEWAY_BIND_ADDR, HUMAUX_GATEWAY_CONFIRM_TOKEN_TTL_SECONDS, HUMAUX_GATEWAY_CONTEXT_MANDATORY_TOKENS, HUMAUX_GATEWAY_CONTEXT_TOTAL_TOKENS, HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX, HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP, HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS, HUMAUX_GATEWAY_FINALIZE_TIMEOUT_SECONDS, HUMAUX_GATEWAY_GLOBAL_DENYLIST, HUMAUX_GATEWAY_GLOBAL_EMERGENCY_ALLOWLIST, HUMAUX_GATEWAY_HANDLER_TIMEOUT_SECONDS, HUMAUX_GATEWAY_MAX_FORWARDED_HOPS, HUMAUX_GATEWAY_MAX_REQUEST_BODY_BYTES, HUMAUX_GATEWAY_METRICS_ADDR, HUMAUX_GATEWAY_MOOD_HALF_LIFE_SECONDS, HUMAUX_GATEWAY_PG_ACQUIRE_TIMEOUT_MS, HUMAUX_GATEWAY_PG_DSN, HUMAUX_GATEWAY_PG_IDLE_IN_TRANSACTION_TIMEOUT_MS, HUMAUX_GATEWAY_PG_IDLE_TIMEOUT_SECONDS, HUMAUX_GATEWAY_PG_MAX_LIFETIME_SECONDS, HUMAUX_GATEWAY_PG_POOL_MAX_CONNECTIONS, HUMAUX_GATEWAY_PG_POOL_MIN_CONNECTIONS, HUMAUX_GATEWAY_PG_STATEMENT_TIMEOUT_MS, HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS, HUMAUX_GATEWAY_RATE_LOCK_TIMEOUT_MS, HUMAUX_GATEWAY_RATE_PREAUTH_IPV6_PREFIX_BITS, HUMAUX_GATEWAY_READINESS_REFRESH_SECONDS, HUMAUX_GATEWAY_REMEMBER_DATA_CLASS, HUMAUX_GATEWAY_REMEMBER_DOMAIN, HUMAUX_GATEWAY_REMEMBER_EVENT_KIND, HUMAUX_GATEWAY_REMEMBER_PROJECTION_KIND, HUMAUX_GATEWAY_REMEMBER_PROJECTION_VERSION, HUMAUX_GATEWAY_REMEMBER_REASONING_DOMAIN_ID, HUMAUX_GATEWAY_REMEMBER_SCOPE_KIND, HUMAUX_GATEWAY_REMEMBER_TOKEN_TTL_SECONDS, HUMAUX_GATEWAY_REMEMBER_VISIBILITY_CLASS, HUMAUX_GATEWAY_REPLAY_TTL_SECONDS, HUMAUX_GATEWAY_RESERVATION_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_PROFILE_TOP_K, HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS, HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN, HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256, HUMAUX_TEST_GITLEAKS_VERSION, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::confirm_token_repo, adapters::consolidate_repo, adapters::context_repo, adapters::coord_repo, adapters::forget_repo, adapters::grep_repo, adapters::membership_repo, adapters::operation_receipt, adapters::postgres, adapters::qdrant, adapters::remember, adapters::subject_repo, adapters::tests::support::operation_receipt_fixture, application::recall_read, application::retrieval_embedding_port, contracts::retrieval_config, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::selection, domain::subject, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, gateway::tests::support::guard_limiter, humaux-local-secret-scan, humaux-telemetry, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::card, projection::stream, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval-provider::adapters, retrieval-provider::contract, retrieval-worker::rpc, retrieval::request, telemetry::metrics]
+//! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-infra-cell, humaux-local-secret-scan, humaux-projection, humaux-protocol, humaux-retrieval, humaux-retrieval-provider, humaux-retrieval-worker, humaux-telemetry, humaux-testkit, postgres, serde_json, sha2, time, tokio, uuid]; services=[PostgreSQL(role_consolidation_worker), PostgreSQL(role_gateway) r=[control.audit_events, control.quota_windows, control.usage_reservations, control.users, ops.commit_seq_seq, private.events, private.evidence_affects, private.evidence_sources, private.evidence_subjects, private.identity_note_materializations, private.note_heads, private.subject_keys, private.task_binding_grants, public.humaux_test_restore_fault_, public.humaux_test_supersede_fault_] w=[control.api_keys, control.confirm_tokens, control.memberships, control.operation_receipts, control.private_reasoning_domains, control.tenants, control.workspace_memberships, control.workspaces, coord.task_runs, coord.tasks, ops.memory_lifecycle_events, ops.outbox, ops.selection_snapshots, private.context_bindings, private.continuity_projects, private.distill_candidates, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_affects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_subject_presence, private.memory_subjects, private.subjects, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log, projection.tenant_placements] x=[control.bump_user_security_epoch, control.onboard_workspace, control.set_workspace_membership], PostgreSQL(role_retrieval_worker), Qdrant(*), UDS(retrieval-worker), UDS(serve), subprocess(humaux-gateway), subprocess(kill), HTTP(gateway)]; env=[HUMAUX_GATEWAY_DEPLOYMENT, CARGO_BIN_EXE_humaux-gateway, CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY, HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH, HUMAUX_GATEWAY_ALLOWED_HOSTS, HUMAUX_GATEWAY_ALLOWED_ORIGINS, HUMAUX_GATEWAY_BIND_ADDR, HUMAUX_GATEWAY_CONFIRM_TOKEN_TTL_SECONDS, HUMAUX_GATEWAY_CONTEXT_MANDATORY_TOKENS, HUMAUX_GATEWAY_CONTEXT_TOTAL_TOKENS, HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX, HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP, HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS, HUMAUX_GATEWAY_FINALIZE_TIMEOUT_SECONDS, HUMAUX_GATEWAY_GLOBAL_DENYLIST, HUMAUX_GATEWAY_GLOBAL_EMERGENCY_ALLOWLIST, HUMAUX_GATEWAY_HANDLER_TIMEOUT_SECONDS, HUMAUX_GATEWAY_MAX_FORWARDED_HOPS, HUMAUX_GATEWAY_MAX_REQUEST_BODY_BYTES, HUMAUX_GATEWAY_METRICS_ADDR, HUMAUX_GATEWAY_MOOD_HALF_LIFE_SECONDS, HUMAUX_GATEWAY_PG_ACQUIRE_TIMEOUT_MS, HUMAUX_GATEWAY_PG_DSN, HUMAUX_GATEWAY_PG_IDLE_IN_TRANSACTION_TIMEOUT_MS, HUMAUX_GATEWAY_PG_IDLE_TIMEOUT_SECONDS, HUMAUX_GATEWAY_PG_MAX_LIFETIME_SECONDS, HUMAUX_GATEWAY_PG_POOL_MAX_CONNECTIONS, HUMAUX_GATEWAY_PG_POOL_MIN_CONNECTIONS, HUMAUX_GATEWAY_PG_STATEMENT_TIMEOUT_MS, HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS, HUMAUX_GATEWAY_RATE_LOCK_TIMEOUT_MS, HUMAUX_GATEWAY_RATE_PREAUTH_IPV6_PREFIX_BITS, HUMAUX_GATEWAY_READINESS_REFRESH_SECONDS, HUMAUX_GATEWAY_REMEMBER_DATA_CLASS, HUMAUX_GATEWAY_REMEMBER_DOMAIN, HUMAUX_GATEWAY_REMEMBER_EVENT_KIND, HUMAUX_GATEWAY_REMEMBER_PROJECTION_KIND, HUMAUX_GATEWAY_REMEMBER_PROJECTION_VERSION, HUMAUX_GATEWAY_REMEMBER_REASONING_DOMAIN_ID, HUMAUX_GATEWAY_REMEMBER_SCOPE_KIND, HUMAUX_GATEWAY_REMEMBER_TOKEN_TTL_SECONDS, HUMAUX_GATEWAY_REMEMBER_VISIBILITY_CLASS, HUMAUX_GATEWAY_REPLAY_TTL_SECONDS, HUMAUX_GATEWAY_RESERVATION_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_PROFILE_TOP_K, HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS, HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN, HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256, HUMAUX_TEST_GITLEAKS_VERSION, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::confirm_token_repo, adapters::consolidate_repo, adapters::context_repo, adapters::coord_repo, adapters::forget_repo, adapters::grep_repo, adapters::membership_repo, adapters::operation_receipt, adapters::postgres, adapters::qdrant, adapters::remember, adapters::subject_repo, adapters::tests::support::operation_receipt_fixture, application::recall_read, application::retrieval_embedding_port, contracts::retrieval_config, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::selection, domain::subject, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, gateway::tests::support::guard_limiter, humaux-local-secret-scan, humaux-telemetry, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::card, projection::stream, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval-provider::adapters, retrieval-provider::contract, retrieval-worker::rpc, retrieval::request, telemetry::metrics, testkit::tests::pair::projection_lag_terminal]
 //! Called-by: [cargo-test]
 //! Invariants: [each test wires its own PostgreSQL/Qdrant/UDS fixtures and gateway subprocess; no test depends on state left by another test]
 //! Spec: Baseline §33.10; §34.0.1; ADR-0030; ADR-0031; ADR-0054; ADR-0056
@@ -30,7 +30,8 @@ use humaux_adapters::{
     postgres::RuntimeDbPool,
     qdrant::{
         Distance, PointId, QdrantOperation, QdrantPointPayload, ShardingMethod,
-        create_collection_body, ha_profile_for, subject_index_body, tenant_index_body, upsert,
+        create_collection_body, delete_points, ha_profile_for, subject_index_body,
+        tenant_index_body, upsert,
     },
 };
 use humaux_domain::{
@@ -57,9 +58,9 @@ use humaux_gateway::{
     remember::{ProcessFamily, RememberEventKind, RememberPolicy},
 };
 use humaux_infra_cell::{
-    CallerId, CellId, HttpIntraCellTransport, IntraCellHttpTransport, IntraCellMethod,
-    IntraCellRequest, IntraCellResource, IntraCellResourceRegistry, IntraCellResponse,
-    ResourceEntry, authorize_cell_access,
+    CallerId, CellAccessPermit, CellId, HttpIntraCellTransport, IntraCellError,
+    IntraCellHttpTransport, IntraCellMethod, IntraCellRequest, IntraCellResource,
+    IntraCellResourceRegistry, IntraCellResponse, ResourceEntry, authorize_cell_access,
 };
 use humaux_local_secret_scan::{LocalSecretScanner, LocalSecretScannerConfig};
 use humaux_projection::card::EgressDisposition;
@@ -170,6 +171,9 @@ fn guard_settings() -> GuardSettings {
 fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
     Arc::new(GatewayGuard::new(runtime, guard_settings()).expect("explicit guard settings"))
 }
+
+#[path = "../../../crates/testkit/tests/pair/projection_lag_terminal.rs"]
+mod projection_lag_terminal;
 
 #[path = "support/guard_limiter.rs"]
 mod guard_limiter;
@@ -3325,6 +3329,111 @@ fn native_gateway_semantic_recall_real_qdrant_pg_and_ryw_acceptance() {
 /// The accepted `top_k` is read off the first response's `provenance.profile.top_k` rather than
 /// written as a literal — §78.1: a test that hard-codes the profile depth stops grading the
 /// profile the moment it moves.
+#[derive(Default)]
+struct CandidateQueryBarrier {
+    armed: AtomicBool,
+    returned: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl CandidateQueryBarrier {
+    async fn recall_during(
+        &self,
+        address: SocketAddr,
+        bearer: &str,
+        args: Value,
+        after_query: impl std::future::Future<Output = ()>,
+    ) -> (u16, Value) {
+        self.armed.store(true, Ordering::SeqCst);
+        let bearer = bearer.to_owned();
+        let recall = tokio::spawn(async move { recall_call(address, Some(&bearer), args).await });
+        tokio::time::timeout(Duration::from_secs(10), self.returned.notified())
+            .await
+            .expect("old candidate query returned");
+        after_query.await;
+        self.release.notify_one();
+        recall
+            .await
+            .expect("recall with a buffered candidate batch")
+    }
+}
+
+struct ObservedRecallIndex {
+    transport: Arc<HttpIntraCellTransport>,
+    barrier: Arc<CandidateQueryBarrier>,
+}
+
+#[async_trait::async_trait]
+impl IntraCellHttpTransport for ObservedRecallIndex {
+    async fn execute(
+        &self,
+        permit: &CellAccessPermit,
+        request: IntraCellRequest,
+    ) -> Result<IntraCellResponse, IntraCellError> {
+        let path = request.path.split('?').next().expect("Qdrant path");
+        let candidate_query = path.ends_with("/points/query")
+            || path.ends_with("/points/query/groups")
+            || path.ends_with("/points/search");
+        let response = self.transport.execute(permit, request).await?;
+        if candidate_query && self.barrier.armed.swap(false, Ordering::SeqCst) {
+            assert_eq!(response.status, 200, "the candidate query must succeed");
+            self.barrier.returned.notify_one();
+            self.barrier.release.notified().await;
+        }
+        Ok(response)
+    }
+}
+
+fn set_fixture_serving(handle: &mut Handle, serving: bool) {
+    assert_eq!(
+        handle
+            .admin
+            .execute(
+                "UPDATE projection.stream_checkpoints SET serving = $3
+             WHERE tenant_id = $1 AND scope_id = $2 AND projection_version = 'v1'",
+                &[&handle.tenant_id, &handle.workspace_id, &serving],
+            )
+            .expect("switch the fixture serving flag"),
+        1
+    );
+}
+
+fn settle_fixture_ticket(handle: &mut Handle, seq: i64) {
+    let tenant_id = handle.tenant_id;
+    let workspace_id = handle.workspace_id;
+    let mut txn = handle
+        .admin
+        .transaction()
+        .expect("fixture frontier transaction");
+    // dep: PostgreSQL(role_retrieval_worker) — fixture-only projection settlement.
+    txn.batch_execute("SET LOCAL ROLE role_retrieval_worker")
+        .expect("settle through the real retrieval role");
+    txn.query_one(
+        "SELECT set_config('humaux.tenant_id', $1, true)",
+        &[&tenant_id.to_string()],
+    )
+    .expect("fixture RLS tenant");
+    assert_eq!(
+        txn.execute(
+            "UPDATE projection.stream_log SET state = 'DONE'
+         WHERE tenant_id = $1 AND scope_id = $2 AND projection_version = 'v1' AND stream_seq = $3",
+            &[&tenant_id, &workspace_id, &seq],
+        )
+        .expect("settle fixture ticket"),
+        1
+    );
+    assert_eq!(
+        txn.execute(
+            "UPDATE projection.stream_checkpoints SET projection_highwater = $3
+         WHERE tenant_id = $1 AND scope_id = $2 AND projection_version = 'v1'",
+            &[&tenant_id, &workspace_id, &seq],
+        )
+        .expect("advance the serving frontier"),
+        1
+    );
+    txn.commit().expect("publish the fixture frontier");
+}
+
 #[test]
 #[ignore = "lane(a:request_guard) requires the isolated request-guard PostgreSQL fixture, pinned scanner and disposable Qdrant"]
 #[allow(clippy::too_many_lines)] // One real-deployment fixture; splitting it would hide the causal chain.
@@ -3399,9 +3508,13 @@ fn recall_with_a_consistency_token_answers_and_a_caller_chosen_limit_is_refused(
                     Duration::from_secs(30),
                 ),
             );
+            let barrier = Arc::new(CandidateQueryBarrier::default());
             let semantic = SemanticRecallRuntime::new(
                 embedding_port,
-                transport.clone(),
+                Arc::new(ObservedRecallIndex {
+                    transport: transport.clone(),
+                    barrier: barrier.clone(),
+                }),
                 registry.clone(),
                 SemanticRecallVersions {
                     embedding_version: "embed-v1".to_owned(),
@@ -3479,6 +3592,73 @@ fn recall_with_a_consistency_token_answers_and_a_caller_chosen_limit_is_refused(
                     .as_str()
                     .expect("remember evidence id")
                     .to_owned();
+
+                let (evidence_uuid, commit_seq, outbox_id): (Uuid, i64, Uuid) =
+                    tokio::task::block_in_place(|| {
+                        let evidence_uuid = Uuid::parse_str(&evidence_id).expect("remembered Evidence");
+                        assert_eq!(handle.admin.execute(
+                            "UPDATE projection.stream_log SET issued_at = now() - interval '5 minutes'
+                             WHERE tenant_id = $1 AND scope_id = $2 AND projection_version = 'v1' AND stream_seq = 1",
+                            &[&handle.tenant_id, &workspace_id],
+                        ).expect("age the pending ticket"), 1);
+                        let row = handle.admin.query_one(
+                            "DELETE FROM ops.outbox WHERE tenant_id = $1 AND evidence_id = $2
+                             RETURNING commit_seq, outbox_id, stream_seq",
+                            &[&handle.tenant_id, &evidence_uuid],
+                        ).expect("remove the isolated fixture's exact anchor");
+                        assert_eq!(row.get::<_, i64>(2), 1);
+                        (evidence_uuid, row.get(0), row.get(1))
+                    });
+                let permissive_args = json!({"query":query,"workspace_id":workspace_id,"mode":"semantic"});
+                let strict_args = json!({
+                    "query": query, "workspace_id": workspace_id, "mode": "semantic",
+                    "consistency_token": token,
+                });
+                let (status, permissive) =
+                    recall_call(address, Some(&credential.bearer), permissive_args.clone()).await;
+                assert_eq!(status, 200, "{permissive}");
+                let permissive = assert_tool_response(&permissive, ToolName::Recall);
+                assert!(recalled_memory_ids(permissive).contains(&seeded.memory_id.to_string()), "{permissive}");
+                assert!(permissive["completeness"]["degradations"].as_array().unwrap()
+                    .contains(&json!("PROJECTION_LAG")), "{permissive}");
+                assert!(permissive.get("code").is_none(), "{permissive}");
+
+                let (status, terminal) =
+                    recall_call(address, Some(&credential.bearer), strict_args.clone()).await;
+                projection_lag_terminal::assert_projection_lag_terminal!(status, &terminal);
+
+                tokio::task::block_in_place(|| set_fixture_serving(&mut handle, false));
+                let (status, unserved_terminal) =
+                    recall_call(address, Some(&credential.bearer), strict_args.clone()).await;
+                projection_lag_terminal::assert_projection_lag_terminal!(status, &unserved_terminal);
+                let (status, empty) =
+                    recall_call(address, Some(&credential.bearer), permissive_args.clone()).await;
+                assert_eq!(status, 200, "{empty}");
+                let empty = assert_tool_response(&empty, ToolName::Recall);
+                assert_eq!(empty["items"], json!([]), "{empty}");
+                assert_eq!(empty["completeness"]["reason"], "no_serving_projection", "{empty}");
+
+                tokio::task::block_in_place(|| handle.admin.execute(
+                    "INSERT INTO ops.outbox (outbox_id, tenant_id, commit_seq, stream_seq, event_type, evidence_id)
+                     VALUES ($1, $2, $3, 1, 'EVIDENCE_ACCEPTED', $4)",
+                    &[&outbox_id, &handle.tenant_id, &commit_seq, &evidence_uuid],
+                ).expect("restore exact Evidence anchor"));
+
+                let (status, pg_only) =
+                    recall_call(address, Some(&credential.bearer), strict_args.clone()).await;
+                assert_eq!(status, 200, "{pg_only}");
+                let pg_only = assert_tool_response(&pg_only, ToolName::Recall);
+                assert_eq!(pg_only["completeness"]["candidate_count"], 0, "{pg_only}");
+                assert_eq!(pg_only["completeness"]["reason"], "no_serving_projection", "{pg_only}");
+                assert_eq!(pg_only["items"][0]["evidence_id"], evidence_id, "{pg_only}");
+                let mut malformed = strict_args.clone();
+                malformed["consistency_token"] = json!("malformed");
+                let (status, refused) = recall_call(address, Some(&credential.bearer), malformed).await;
+                assert_eq!(status, 400, "{refused}");
+                assert_eq!(refused["error"]["data"]["code"], "INVALID_INPUT", "{refused}");
+                assert!(refused.get("result").is_none(), "{refused}");
+
+                tokio::task::block_in_place(|| set_fixture_serving(&mut handle, true));
 
                 // Leg 1 — the shape the soak's replay sends: token, no caller `limit`.
                 let (status, answered) = recall_call(
@@ -3560,6 +3740,134 @@ fn recall_with_a_consistency_token_answers_and_a_caller_chosen_limit_is_refused(
                 );
                 assert_eq!(shortened["completeness"]["returned"], 1, "{shortened}");
                 assert_eq!(shortened["completeness"]["truncated"], true, "{shortened}");
+
+                let (late, late_updated, late_point, late_subject) = tokio::task::block_in_place(|| {
+                    settle_fixture_ticket(&mut handle, 1);
+                    for seq in 2..=41 {
+                        seed_semantic_projection_ledger_row(&mut handle, seq);
+                    }
+                    assert_eq!(handle.admin.execute(
+                        "UPDATE projection.stream_checkpoints SET serving = true, projection_highwater = 41
+                         WHERE tenant_id = $1 AND scope_id = $2 AND projection_version = 'v1'",
+                        &[&handle.tenant_id, &workspace_id],
+                    ).expect("pin the pre-query checkpoint"), 1);
+                    let late = handle.seed_workspace_visible_context_record_with_content(
+                        &json!({"fixture": "only new match at 42"})
+                    );
+                    let subject = seed_subject_row(&mut handle, "Subject of ticket 42");
+                    link_memory_subject(&mut handle, late.memory_id, subject);
+                    let point = Uuid::new_v4();
+                    let updated = seed_semantic_registry_row(&mut handle, &late, point);
+                    (late, updated, point, subject)
+                });
+                let (status, write) = remember_with_subjects(
+                    address, &credential.bearer, 42, workspace_id, "only new match at 42",
+                    vec![late_subject], Vec::new(),
+                ).await;
+                assert_eq!(status, 200, "{write}");
+                let write = &write["result"]["structuredContent"];
+                let late_evidence = write["evidence_id"].as_str().expect("late Evidence");
+                let late_token = write["consistency_token"].as_str().expect("late token");
+                tokio::task::block_in_place(|| {
+                    let late_evidence = Uuid::parse_str(late_evidence).unwrap();
+                    assert_eq!(handle.admin.query_one(
+                        "SELECT stream_seq FROM ops.outbox WHERE tenant_id = $1 AND evidence_id = $2",
+                        &[&handle.tenant_id, &late_evidence],
+                    ).expect("real remember ticket").get::<_, i64>(0), 42);
+                    handle.admin.execute(
+                        "INSERT INTO private.memory_evidence (memory_id, evidence_id, role, grounding_mode)
+                         VALUES ($1, $2, 'PRIMARY', 'SNAPSHOT')",
+                        &[&late.memory_id, &late_evidence],
+                    ).expect("bind the late projected memory to the remembered Evidence");
+
+                });
+
+                let late_args = json!({
+                    "query": query, "workspace_id": workspace_id, "mode": "semantic",
+                    "consistency_token": late_token, "subject_ids": [late_subject],
+                });
+                let payload = semantic_payload_with(&handle, late_updated, AuthorityStatus::Active, 42)
+                    .with_archived(false)
+                    .with_subject_ids(vec![humaux_domain::subject::SubjectId(late_subject)]);
+                let publish_late = async |handle: &mut Handle| {
+                    upsert(
+                        transport.as_ref(), &permit, &collection,
+                        &[(PointId::Uuid(late_point), &payload, semantic_vector(query))],
+                        ha_profile_for(QdrantOperation::NormalImmutableUpsert),
+                    ).await.expect("publish point after the candidate query");
+                    tokio::task::block_in_place(|| settle_fixture_ticket(handle, 42));
+                };
+                let (status, raced) = barrier.recall_during(
+                    address, &credential.bearer, late_args.clone(), publish_late(&mut handle),
+                ).await;
+                assert_eq!(status, 200, "{raced}");
+                let raced = assert_tool_response(&raced, ToolName::Recall);
+                assert_eq!(raced["completeness"]["candidate_count"], 0, "{raced}");
+                assert!(raced["items"].as_array().unwrap().iter().any(|item| {
+                    item["evidence_id"] == late_evidence && item["stream_seq"] == 42
+                        && item["processing_state"] == "DONE"
+                }), "candidate batch from prefix 41 lost Evidence at 42: {raced}");
+                let (status, caught_up) =
+                    recall_call(address, Some(&credential.bearer), late_args.clone()).await;
+                assert_eq!(status, 200, "{caught_up}");
+                let caught_up = assert_tool_response(&caught_up, ToolName::Recall);
+                assert!(recalled_memory_ids(caught_up).contains(&late.memory_id.to_string()), "{caught_up}");
+                assert!(!caught_up["items"].as_array().unwrap().iter().any(|item| {
+                    item["evidence_id"] == late_evidence
+                }), "a caught-up candidate batch should use the index: {caught_up}");
+
+                // Repeat the late-advance schedule with the only uncovered anchor unavailable.
+                delete_points(
+                    transport.as_ref(), &permit, &collection, &[PointId::Uuid(late_point)], 42,
+                    ha_profile_for(QdrantOperation::CorrectionDeleteSupersede),
+                ).await.expect("remove the fixture point before the second candidate query");
+                tokio::task::block_in_place(|| {
+                    let evidence_id = Uuid::parse_str(late_evidence).unwrap();
+                    assert_eq!(handle.admin.execute(
+                        "DELETE FROM ops.outbox WHERE tenant_id = $1 AND evidence_id = $2",
+                        &[&handle.tenant_id, &evidence_id],
+                    ).expect("withhold the fixture's late anchor"), 1);
+                    assert_eq!(handle.admin.execute(
+                        "UPDATE projection.stream_checkpoints SET projection_highwater = 41
+                         WHERE tenant_id = $1 AND scope_id = $2 AND projection_version = 'v1'",
+                        &[&handle.tenant_id, &workspace_id],
+                    ).expect("restore the pre-query frontier"), 1);
+                });
+                let (status, unproved) = barrier.recall_during(
+                    address, &credential.bearer, late_args.clone(), publish_late(&mut handle),
+                ).await;
+                projection_lag_terminal::assert_projection_lag_terminal!(status, &unproved);
+
+                let (_, switched) = barrier.recall_during(
+                    address, &credential.bearer, late_args,
+                    async { tokio::task::block_in_place(|| set_fixture_serving(&mut handle, false)); },
+                ).await;
+                assert_eq!(switched["result"]["isError"], true, "{switched}");
+                assert_eq!(switched["result"]["structuredContent"], json!({"code":"DEPENDENCY_UNAVAILABLE"}));
+
+                tokio::task::block_in_place(|| handle.admin.execute(
+                    "INSERT INTO projection.stream_checkpoints
+                       (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version,
+                        projection_highwater, serving)
+                     VALUES ($1, 'workspace', $2, 'knowledge', 'ingest', 'v2', 42, true)",
+                    &[&handle.tenant_id, &workspace_id],
+                ).expect("activate a distinct serving version with a higher watermark"));
+
+                let (_, retired) =
+                    recall_call(address, Some(&credential.bearer), strict_args.clone()).await;
+                let retired = assert_tool_response(&retired, ToolName::Recall);
+                assert_eq!(retired["provenance"]["projection_version"]["id"], "v2", "{retired}");
+                assert_eq!(retired["items"][0]["evidence_id"], evidence_id, "{retired}");
+
+                let retired_key = StreamKey::new(
+                    TenantId(handle.tenant_id), "workspace", workspace_id, "knowledge", "ingest", "v1",
+                );
+                assert!(forget_repo::tombstone(&handle.maintenance, &retired_key, 1)
+                    .await.expect("maintenance tombstones the original ticket"));
+                let (_, tombstoned) =
+                    recall_call(address, Some(&credential.bearer), strict_args).await;
+                let tombstoned = assert_tool_response(&tombstoned, ToolName::Recall);
+                assert_eq!(tombstoned["items"], json!([]), "covered tombstone suppresses its body: {tombstoned}");
 
                 server.abort();
                 delete_semantic_collection(&transport, &registry, &collection).await;
