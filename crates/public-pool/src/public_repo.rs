@@ -14,7 +14,7 @@
 //!   public.evaluate_anonymous_claim, public.public_projection_identities, public.revoke_anonymous_dispatch,
 //!   staging.assert_active_contribution_release], PostgreSQL(role_gateway), PostgreSQL(role_private_worker),
 //!   PostgreSQL(role_public_worker), PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::postgres,
-//!   domain::error, domain::identity, domain::ids, domain::public, public-pool::public_evolve]
+//!   domain::error, domain::ids, domain::public, public-pool::public_evolve]
 //! Called-by: [public-pool::bootstrap, public-pool::public_projection, tests]
 //! Invariants: [every write uses PublicWorkerDbPool in a real tenant transaction; no function reads private rows or
 //!   accepts caller-provided released content or scanner outcomes; the public DB stays the serving authority]
@@ -28,7 +28,9 @@ use humaux_adapters::postgres::{
     PrivateWorkerDbPool, PublicWorkerDbPool, RetrievalWorkerDbPool, RuntimeDbPool,
 };
 use humaux_domain::{
-    error::ErrorCode, identity::AuthorizationScope, ids::TenantId, public::ModerationState,
+    error::ErrorCode,
+    ids::{TenantId, UserId},
+    public::ModerationState,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -360,11 +362,27 @@ async fn admit_release_in_txn(
     })
 }
 
+/// Restricts the moderator port to trusted scope bindings within this crate.
+pub(crate) mod sealed {
+    //! Seal the evaluator scope port at the cloud assembly boundary (§12.6).
+
+    /// Trusted scope binding marker.
+    pub trait Sealed {}
+}
+
+/// Authenticated scope for binding the tenant and evaluator in a moderation transaction (§12.6).
+pub trait ModeratorAuthorization: sealed::Sealed + Sync {
+    /// Tenant of the authenticated principal.
+    fn tenant_id(&self) -> TenantId;
+    /// User of the authenticated principal, if it represents a user.
+    fn user_id(&self) -> Option<UserId>;
+}
+
 /// Stores a complete immutable receipt and applies one allowed manual review state. Every
 /// state transition requires an authenticated active global moderator (§12.6).
 pub async fn evaluate_claim(
     pool: &PublicWorkerDbPool,
-    authorization: &AuthorizationScope,
+    authorization: &impl ModeratorAuthorization,
     input: &EvaluateClaim<'_>,
 ) -> Result<EvaluationResult, ErrorCode> {
     if input.expected_revision <= 0
@@ -394,7 +412,7 @@ pub async fn evaluate_claim(
 /// private worker passes authenticated scope, but receives only the public receipt identity.
 pub async fn evaluate_anonymous_claim(
     pool: &PrivateWorkerDbPool,
-    authorization: &AuthorizationScope,
+    authorization: &impl ModeratorAuthorization,
     input: &EvaluateClaim<'_>,
 ) -> Result<EvaluationResult, ErrorCode> {
     if input.expected_revision <= 0

@@ -1,16 +1,32 @@
 //! `public-pool::bootstrap` — Wire the operations-owned claim evaluator to the public repository.
-//! Depends-on: crates=[async-trait, humaux-adapters, humaux-domain]; services=[]; env=[]; modules=[adapters::mechanism_observation, adapters::postgres, domain::error, domain::identity, public-pool::public_repo]
+//! Depends-on: crates=[async-trait, humaux-adapters, humaux-domain]; services=[]; env=[]; modules=[adapters::mechanism_observation, adapters::postgres, domain::error, domain::identity, domain::ids, public-pool::public_repo]
 //! Called-by: [tests]
-//! Invariants: [one public repository evaluation per port call; return the original error unchanged]
+//! Invariants: [moderation binds the original authenticated tenant and user; one evaluation per port call; return the original error unchanged]
 //! Spec: Baseline §12.6; ADR-0130 D2
 
 use humaux_adapters::{
     mechanism_observation::{EvaluateClaim, EvaluationResult, PublicClaimEvaluator},
     postgres::PublicWorkerDbPool,
 };
-use humaux_domain::{error::ErrorCode, identity::AuthorizationScope};
+use humaux_domain::{
+    error::ErrorCode,
+    identity::AuthorizationScope,
+    ids::{TenantId, UserId},
+};
 
 use crate::public_repo;
+
+impl public_repo::sealed::Sealed for AuthorizationScope {}
+
+impl public_repo::ModeratorAuthorization for AuthorizationScope {
+    fn tenant_id(&self) -> TenantId {
+        self.tenant_id()
+    }
+
+    fn user_id(&self) -> Option<UserId> {
+        self.user_id()
+    }
+}
 
 /// Public repository implementation of the operations claim-evaluation port.
 #[derive(Clone, Copy, Debug, Default)]
