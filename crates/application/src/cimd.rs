@@ -1,5 +1,5 @@
 //! `application::cimd` — validates and caches public OAuth Client ID Metadata Documents for one issuer.
-//! Depends-on: crates=[async-trait, serde, serde_json, time, tokio]; services=[]; env=[]; modules=[application::oauth]
+//! Depends-on: crates=[async-trait, serde, serde_json, time, tokio]; services=[]; env=[]; modules=[]
 //! Called-by: [gateway::bootstrap, gateway::oauth_http, tests]
 //! Invariants: [an exact client ID and its authorization server issuer bind every accepted document]
 //! Spec: Baseline §33; M02 D5; MCP 2026-07-28 Client Registration

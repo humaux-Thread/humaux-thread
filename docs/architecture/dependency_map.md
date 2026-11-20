@@ -2283,6 +2283,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `application::bearer`
 
+#### `application::cimd`
+
 #### `application::confirm`
 
 #### `application::consolidate`
@@ -2472,6 +2474,11 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS`
+- env `HUMAUX_GATEWAY_AUTH_OAUTH_CIMD_CACHE_ENTRIES`
+- env `HUMAUX_GATEWAY_AUTH_OAUTH_CIMD_CACHE_TTL_SECONDS`
+- env `HUMAUX_GATEWAY_AUTH_OAUTH_CIMD_ENABLED`
+- env `HUMAUX_GATEWAY_AUTH_OAUTH_CIMD_MAX_BYTES`
+- env `HUMAUX_GATEWAY_AUTH_OAUTH_CIMD_TIMEOUT_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS`
@@ -2672,6 +2679,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_TEST_INFRA_EGRESS_ENV_CREDENTIAL_SOURCE_READS_A_SET_VARIABLE`
 - service `HTTP(loopback)`
 - service `HTTP(provider)`
+
+#### `infra-egress::oauth_metadata`
+- service `HTTP(provider)`
+- service `HTTP(loopback)`
 
 #### `infra-egress::raw`
 - service `HTTP(provider)`
@@ -16078,6 +16089,7 @@ modules naming it:
 why: wire/DTO (de)serialization for continuity handoff and notify payloads
 
 modules naming it:
+- `application::cimd`
 - `application::continuity`
 - `application::notify`
 - `application::operator_provisioning`
@@ -16089,6 +16101,7 @@ modules naming it:
 why: JSON payload construction for continuity/contribution_execution/entitlement/notify
 
 modules naming it:
+- `application::cimd`
 - `application::consolidation_execution`
 - `application::continuity`
 - `application::contribution_execution`
@@ -16122,6 +16135,7 @@ modules naming it:
 - `application::api_key`
 - `application::billing`
 - `application::billing_process`
+- `application::cimd`
 - `application::consolidate`
 - `application::consolidation_execution`
 - `application::continuity`
@@ -16210,6 +16224,7 @@ modules naming it:
 - `application::bearer`
 - `application::billing`
 - `application::billing_process`
+- `application::cimd`
 - `application::coordination`
 - `application::distill`
 - `application::distill_execution`
@@ -16229,6 +16244,7 @@ modules naming it:
 why: async executor for #[tokio::test] fixtures of async ports
 
 modules naming it:
+- `application::cimd`
 - `application::consolidate`
 - `application::contribute`
 - `application::private_inference`
@@ -17773,6 +17789,12 @@ modules naming it:
 - `gateway::tests::service_credentials`
 - `tests`
 
+### humaux-gateway → `humaux-infra-egress` (normal)
+why: compose the guarded OAuth metadata transport behind the identity fetch port
+
+modules naming it:
+- `gateway::bootstrap`
+
 ### humaux-gateway → `humaux-contracts` (normal)
 why: config/feature/mechanism registries and contract types
 
@@ -17934,6 +17956,7 @@ modules naming it:
 why: object-safe async traits for ports and transports
 
 modules naming it:
+- `gateway::bootstrap`
 - `gateway::cached_embedding`
 - `gateway::mcp_application`
 - `gateway::recall`
@@ -17942,6 +17965,7 @@ modules naming it:
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_flow`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
@@ -21515,9 +21539,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:4324` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:4329` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:4334` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4432` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4437` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4442` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
