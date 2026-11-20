@@ -9,7 +9,7 @@
 //!   PostgreSQL(role_gateway), PostgreSQL(role_maintenance),
 //!   PostgreSQL(role_retrieval_worker), Qdrant(*)]; env=[HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_RETRIEVAL_WORKER_PG_DSN,
 //!   HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256, HUMAUX_TEST_GITLEAKS_VERSION, HUMAUX_TEST_PG_DSN,
-//!   HUMAUX_TEST_QDRANT_URL]; modules=[adapters::postgres, adapters::projection_worker, adapters::qdrant,
+//!   HUMAUX_TEST_QDRANT_URL]; modules=[adapters::affect_repo, adapters::postgres, adapters::projection_worker, adapters::qdrant,
 //!   adapters::remember, adapters::retrieve, adapters::stream_repo, adapters::tests::support::governance_ops,
 //!   domain::egress, domain::error, domain::evidence, domain::identity, domain::ids, domain::subject,
 //!   humaux-local-secret-scan, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport,
@@ -570,6 +570,7 @@ impl Handle {
             .block_on(RetrievalWorkerDbPool::connect(&self.retrieval_dsn))
             .expect("role_retrieval_worker connects");
         ProjectionWorkerDeps {
+            read_affects: humaux_adapters::affect_repo::read_projection_affects,
             pool,
             embedder: Arc::new(TestEmbedder(provider())),
             scanner: self.scanner.clone(),

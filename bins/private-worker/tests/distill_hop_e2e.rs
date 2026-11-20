@@ -760,6 +760,7 @@ fn run_projection(
             .await
             .expect("retrieval worker pool");
         let deps = ProjectionWorkerDeps {
+            read_affects: humaux_adapters::affect_repo::read_projection_affects,
             pool,
             embedder: Arc::new(FixedEmbedder),
             scanner: Arc::new(scanner),

@@ -14,7 +14,7 @@
 //!   ops.backup_sets, ops.restore_drills] x=[projection.issue_rebuild_tickets, projection.rebuild_close,
 //!   projection.rebuild_open], PostgreSQL(role_retrieval_worker) w=[projection.embedding_fingerprints,
 //!   projection.stream_log], Qdrant(*)];
-//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::forget_repo, adapters::postgres,
+//!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::affect_repo, adapters::forget_repo, adapters::postgres,
 //!   adapters::private_projection_registry, adapters::projection_worker, adapters::provisioning, adapters::qdrant,
 //!   adapters::rebuild, adapters::retrieval_provisioning, adapters::retrieve, adapters::stream_repo, adapters::tests::support::a2_fixture,
 //!   adapters::tests::support::governance_ops, adapters::tests::support::scratch_qdrant,
@@ -1289,6 +1289,7 @@ impl Rb {
 
     fn deps(&self) -> RebuildDeps<'_> {
         RebuildDeps {
+            read_affects: humaux_adapters::affect_repo::read_projection_affects,
             maintenance: &self.maintenance,
             reader: &self.reader,
             qdrant: &self.face,
@@ -1337,6 +1338,7 @@ fn sleeper()
 /// D-M: the closed deps (NoProviderEmbedder, no embedder parameter) the drill and T-E1/T-E9 project with.
 fn closed(h: &Handle) -> (SharedProjectionDeps, Arc<NoProviderEmbedder>) {
     rebuild::drill_projection_deps(ClosedDeps {
+        read_affects: humaux_adapters::affect_repo::read_projection_affects,
         pool: retrieval_pool(h),
         scanner: h.scanner.clone(),
         transport: h.transport.clone(),

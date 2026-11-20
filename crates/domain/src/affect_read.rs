@@ -1,6 +1,6 @@
 //! `domain::affect_read` — retrieval views of the owner's §8.5.1 affect data.
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::projection_worker, adapters::qdrant, adapters::read_materialize, adapters::retrieve, application::recall_read, domain::affect, projection::dense]
+//! Called-by: [adapters::affect_repo, adapters::projection_worker, adapters::qdrant, adapters::read_materialize, adapters::retrieve, application::recall_read, domain::affect, projection::dense]
 //! Invariants: [AffectReadFilter is issued by the owner; index fields are prefilter inputs only]
 //! Spec: Baseline §8.5.1; ADR-0030; ADR-0130; ADR-0131
 

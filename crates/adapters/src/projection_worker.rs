@@ -7,7 +7,7 @@
 //!   projection.card_profile_policies, projection.embedding_fingerprints, projection.memory_vectors,
 //!   projection.private_memory_points, projection.rebuild_tickets]
 //!   w=[ops.outbox, projection.stream_log],
-//!   PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::affect_repo, adapters::postgres,
+//!   PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::postgres,
 //!   adapters::private_projection_registry, adapters::qdrant, adapters::remember, adapters::stream_repo,
 //!   application::projection_execution, domain::affect_read, domain::authority, domain::dataclass, domain::egress, domain::error, domain::identity,
 //!   domain::ids, domain::memory, domain::subject, domain::ticket_family, humaux-local-secret-scan, infra-cell::permit,
@@ -197,9 +197,19 @@ pub trait CardEmbedder: Send + Sync {
     ) -> Result<Vec<Vec<f32>>, ErrorCode>;
 }
 
+/// Loads one memory's raw affect index views in the projector's current read transaction.
+pub type ProjectionAffectReadPort = for<'a, 'tx> fn(
+    &'a mut sqlx::Transaction<'tx, sqlx::Postgres>,
+    Uuid,
+    Uuid,
+) -> Pin<
+    Box<dyn Future<Output = Result<Vec<AffectIndexRow>, sqlx::Error>> + Send + 'a>,
+>;
+
 /// Everything one [`run_once`] call needs. One instance == one `StreamKey` (`family` +
 /// `projection_version`) — see module doc.
 pub struct ProjectionWorkerDeps {
+    pub read_affects: ProjectionAffectReadPort,
     /// `role_retrieval_worker`'s pool — the sole legal writer of this stream's `stream_log`/
     /// `stream_checkpoints` terminal edges (§6.2.2).
     pub pool: RetrievalWorkerDbPool,
@@ -256,6 +266,7 @@ pub struct RunOnceOutcome {
 /// no family and no permit: the claim supplies the first three per ticket, and a permit is
 /// minted per ticket by `mint_permit` (a resident process outlives any single permit's TTL).
 pub struct SharedProjectionDeps {
+    pub read_affects: ProjectionAffectReadPort,
     /// `role_retrieval_worker`'s pool — claim, heartbeat, settle and every per-row read.
     pub pool: RetrievalWorkerDbPool,
     /// The dense-write embedding call (see [`CardEmbedder`]).
@@ -343,6 +354,7 @@ pub struct PassOutcome {
 /// [`ProjectionWorkerDeps`]; [`run_claimed_pass`] builds one per family from
 /// [`SharedProjectionDeps`] plus the claimed ticket's key and placement.
 struct RowCtx<'a> {
+    read_affects: ProjectionAffectReadPort,
     last_error: Mutex<Option<ErrorCode>>,
     pool: &'a RetrievalWorkerDbPool,
     embedder: &'a dyn CardEmbedder,
@@ -382,6 +394,7 @@ impl<'a> RowCtx<'a> {
         Self {
             last_error: Mutex::new(None),
             pool: &deps.pool,
+            read_affects: deps.read_affects,
             embedder: deps.embedder.as_ref(),
             scanner: &deps.scanner,
             transport: deps.transport.as_ref(),
@@ -614,7 +627,7 @@ pub(crate) struct ResolvedMemory {
     subject_ids: Vec<SubjectId>,
     /// §8.5.1 / ADR-0030 D-D: the memory's `private.memory_affects` rows, read in the same
     /// transaction (role_retrieval_worker's own SELECT) through the ONE set-based read
-    /// (`affect_repo::affects_for_memories_in_txn`), flattened into the payload by `finish_row`.
+    /// (via the owner read port), flattened into the payload by `finish_row`.
     affects: Vec<AffectIndexRow>,
     /// ADR-0055 D-B: `archived_at IS NOT NULL`, read here so every ticket that re-projects the
     /// memory writes the current flag (no transition-specific ticket exists or is needed).
@@ -642,8 +655,9 @@ pub(crate) struct ResolvedMemory {
 ///
 /// The `ORDER BY` is kept: it makes the projection order deterministic (PRIMARY first), which
 /// is what the partial-failure retry in [`process_row`] leans on.
-pub(crate) async fn resolve_memories(
+async fn resolve_memories(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    read_affects: ProjectionAffectReadPort,
     tenant_id: Uuid,
     commit_seq: i64,
 ) -> Result<Vec<ResolvedMemory>, sqlx::Error> {
@@ -669,7 +683,7 @@ pub(crate) async fn resolve_memories(
     .await?;
     let mut resolved = Vec::with_capacity(rows.len());
     for row in rows {
-        if let Some(memory) = parse_resolved_memory(txn, tenant_id, row).await? {
+        if let Some(memory) = parse_resolved_memory(txn, read_affects, tenant_id, row).await? {
             resolved.push(memory);
         }
     }
@@ -680,6 +694,7 @@ pub(crate) async fn resolve_memories(
 /// wire values this build does not know (same fail-soft the single-row version had).
 async fn parse_resolved_memory(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    read_affects: ProjectionAffectReadPort,
     tenant_id: Uuid,
     row: sqlx::postgres::PgRow,
 ) -> Result<Option<ResolvedMemory>, sqlx::Error> {
@@ -719,11 +734,7 @@ async fn parse_resolved_memory(
     .into_iter()
     .map(SubjectId)
     .collect();
-    let affects = crate::affect_repo::affects_for_memories_in_txn(txn, tenant_id, &[memory_id])
-        .await?
-        .into_iter()
-        .map(|row| row.annotation.index_view())
-        .collect();
+    let affects = read_affects(txn, tenant_id, memory_id).await?;
 
     Ok(Some(ResolvedMemory {
         memory_id: MemoryId(memory_id),
@@ -1053,9 +1064,14 @@ async fn resolve_and_embed(
     set_worker_rls_context(&mut txn, ctx.family.tenant_id.0)
         .await
         .map_err(|e| pg_failure(&e, "db_rls_context_failed"))?;
-    let memories = resolve_memories(&mut txn, ctx.family.tenant_id.0, commit_seq)
-        .await
-        .map_err(|e| pg_failure(&e, "db_resolve_failed"))?;
+    let memories = resolve_memories(
+        &mut txn,
+        ctx.read_affects,
+        ctx.family.tenant_id.0,
+        commit_seq,
+    )
+    .await
+    .map_err(|e| pg_failure(&e, "db_resolve_failed"))?;
     // ADR-0058 D-U: the distill state of the Evidence the ticket's carrier binds, whichever
     // carrier it is — a remember ticket's own EVIDENCE_ACCEPTED row, or the MEMORY_LIFECYCLE
     // successor `ops.requeue_dead_distill` issues, which must wait for the re-armed job, not fail.
@@ -1546,6 +1562,7 @@ pub(crate) async fn begin_projector_read(
 /// outcome exclusion); secret material yields nothing.
 pub(crate) async fn expected_points(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    read_affects: ProjectionAffectReadPort,
     family: &StreamFamily,
     embedding_version: &str,
     projection_version: &str,
@@ -1554,7 +1571,7 @@ pub(crate) async fn expected_points(
 ) -> Result<Vec<ExpectedPoint>, sqlx::Error> {
     let workspace_id = WorkspaceId(family.scope_id);
     let mut points = Vec::new();
-    for memory in resolve_memories(txn, family.tenant_id.0, commit_seq).await? {
+    for memory in resolve_memories(txn, read_affects, family.tenant_id.0, commit_seq).await? {
         if memory.status != AuthorityStatus::Active {
             continue;
         }
@@ -2216,6 +2233,7 @@ struct ProjectionWorkerAdapter {
 #[allow(clippy::too_many_arguments)]
 pub fn projection_worker_port<F, Fut>(
     pool: RetrievalWorkerDbPool,
+    read_affects: ProjectionAffectReadPort,
     embed_cards: F,
     scanner: Arc<LocalSecretScanner>,
     transport: Arc<dyn IntraCellHttpTransport>,
@@ -2232,6 +2250,7 @@ where
     Arc::new(ProjectionWorkerAdapter {
         deps: SharedProjectionDeps {
             pool,
+            read_affects,
             embedder: Arc::new(FnCardEmbedder(embed_cards)),
             scanner,
             transport,
@@ -2601,6 +2620,7 @@ async fn process_and_write(
             let ctx = RowCtx {
                 last_error: Mutex::new(None),
                 pool: &shared.pool,
+                read_affects: shared.read_affects,
                 embedder: shared.embedder.as_ref(),
                 scanner: &shared.scanner,
                 transport: shared.transport.as_ref(),
