@@ -1,8 +1,10 @@
 //! `domain::context::budget_views` — retrieval budget inputs and results published by Project Continuity (§25.5).
-//! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [application::recall_read, domain::context, retrieval::brief, retrieval::compiler]
+//! Depends-on: crates=[]; services=[]; env=[]; modules=[domain::lifecycle_types]
+//! Called-by: [application::recall_read, domain::context, retrieval::brief, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff]
 //! Invariants: [only the budget owner constructs these views after validation or reservation]
 //! Spec: §25.5; §78.1
+
+use crate::lifecycle_types::MemoryId;
 
 /// Validated caps carried by the Context read port.
 #[derive(Debug, Clone, Copy)]
@@ -57,5 +59,44 @@ impl BriefBudgetView {
     #[must_use]
     pub const fn reuse_cap(self) -> usize {
         self.reuse_cap
+    }
+}
+
+/// §25.5 溢出。
+///
+/// **本类型不含任何 Context / rows / 可交付内容**，这是刻意的：调用方在这个臂里
+/// 拿不到「截断后的前半段」，所以「截掉后半段还声称 complete」写不出来。
+/// 它只带 §25.5 要求的 manifest/IDs 与缩减建议所需的量纲。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MandatoryOverflow {
+    pub(super) expected: u64,
+    pub(super) manifest: Vec<MemoryId>,
+    pub(super) budget_tokens: u32,
+    pub(super) required_tokens: u32,
+}
+
+impl MandatoryOverflow {
+    /// 应有条数。
+    #[must_use]
+    pub const fn expected(&self) -> u64 {
+        self.expected
+    }
+
+    /// §25.5 要求返回的 manifest/IDs，**全量**——分页建议要靠它才提得出来。
+    #[must_use]
+    pub fn manifest(&self) -> &[MemoryId] {
+        &self.manifest
+    }
+
+    /// 硬上限。
+    #[must_use]
+    pub const fn budget_tokens(&self) -> u32 {
+        self.budget_tokens
+    }
+
+    /// 实际需要。与上限之差就是缩减建议的量纲。
+    #[must_use]
+    pub const fn required_tokens(&self) -> u32 {
+        self.required_tokens
     }
 }
