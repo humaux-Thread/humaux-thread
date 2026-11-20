@@ -12762,8 +12762,8 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::public_vocab_repo`
 - (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
 
 executed by:
 
@@ -12775,8 +12775,8 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::public_vocab_repo`
 - (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
 
 executed by:
 
@@ -12788,8 +12788,8 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::public_vocab_repo`
 - (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
 
 executed by:
 
@@ -13912,6 +13912,7 @@ executed by:
 
 ### `PostgreSQL(role_public_worker)`
 - `adapters::postgres`
+- `adapters::public_vocab_repo`
 - `adapters::tests::contribution_eligibility`
 - `adapters::tests::contribution_repo`
 - `adapters::tests::phase9_assessed_contract`
@@ -14269,6 +14270,7 @@ modules naming it:
 - `adapters::public_claim_repo`
 - `adapters::public_evaluation_repo`
 - `adapters::public_outbox_port`
+- `adapters::public_vocab_repo`
 - `adapters::qdrant`
 - `adapters::quota_repo`
 - `adapters::quota_reservation_port`

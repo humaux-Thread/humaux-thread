@@ -15567,8 +15567,8 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::public_vocab_repo`
 - (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
 
 executed by:
 
@@ -15603,8 +15603,8 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::public_vocab_repo`
 - (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
 
 executed by:
 
@@ -15638,8 +15638,8 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
+- (no process): `adapters::public_vocab_repo`
 - (no process): `public-pool::tests::vocab`
-- (no process): `public-pool::vocab`
 
 executed by:
 

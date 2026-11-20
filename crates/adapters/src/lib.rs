@@ -97,6 +97,9 @@ pub mod public_claim_repo;
 #[cfg(feature = "cloud-raw-pool")]
 pub mod public_evaluation_repo;
 mod public_outbox_port;
+/// M20 commands for controlled vocabulary writes in the loader transaction.
+#[cfg(feature = "cloud-raw-pool")]
+pub mod public_vocab_repo;
 pub mod qdrant;
 pub mod quota_repo;
 /// Same-transaction BMO port for knowledge lifecycle writes (ADR-0130 D5).
