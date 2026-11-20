@@ -2171,8 +2171,14 @@ fn d7_declared_subjects_reach_the_distilled_memory_with_spans() {
 /// A transport that answers with scripted chat envelopes and records every request body, so the
 /// REAL `OpenAiCompatibleProvider` (tool body + tool-call parse) sits between the worker and it.
 struct ScriptedTransport {
-    bodies: Mutex<Vec<&'static str>>,
+    replies: Mutex<Vec<ScriptedReply>>,
     sent: Arc<Mutex<Vec<serde_json::Value>>>,
+}
+
+enum ScriptedReply {
+    Http(OpenAiHttpOutcome),
+    Timeout,
+    NoReceipt,
 }
 
 #[async_trait]
@@ -2186,17 +2192,17 @@ impl OpenAiCompatTransport for ScriptedTransport {
             .lock()
             .expect("sent")
             .push(serde_json::from_slice(&request.body).expect("the request body is JSON"));
-        let body = self
-            .bodies
+        let reply = self
+            .replies
             .lock()
-            .expect("bodies")
+            .expect("replies")
             .pop()
             .expect("scripted transport has a reply for every send");
-        Ok(OpenAiHttpOutcome {
-            status: 200,
-            retry_after: None,
-            body: body.as_bytes().to_vec(),
-        })
+        match reply {
+            ScriptedReply::Http(outcome) => Ok(outcome),
+            ScriptedReply::Timeout => Err(ReasoningProviderError::RetryWait { retry_after: None }),
+            ScriptedReply::NoReceipt => std::future::pending().await,
+        }
     }
 }
 
@@ -2209,6 +2215,21 @@ fn scripted_provider(
     Arc<OpenAiCompatibleProvider<ScriptedTransport, EnvKeyDecryptor>>,
     Sent,
 ) {
+    scripted_http_provider(bodies.into_iter().map(|body| {
+        ScriptedReply::Http(OpenAiHttpOutcome {
+            status: 200,
+            retry_after: None,
+            body: body.as_bytes().to_vec(),
+        })
+    }))
+}
+
+fn scripted_http_provider(
+    replies: impl DoubleEndedIterator<Item = ScriptedReply>,
+) -> (
+    Arc<OpenAiCompatibleProvider<ScriptedTransport, EnvKeyDecryptor>>,
+    Sent,
+) {
     let sent = Sent::default();
     // No socket is ever opened: the transport is scripted. The pin only lets the §11.4 choke
     // point accept the real endpoint string the admission lane names.
@@ -2217,7 +2238,7 @@ fn scripted_provider(
         descriptor(),
         MINIMAX_CHAT_URL.to_string(),
         ScriptedTransport {
-            bodies: Mutex::new(bodies.into_iter().rev().collect()),
+            replies: Mutex::new(replies.rev().collect()),
             sent: Arc::clone(&sent),
         },
         EnvKeyDecryptor {
@@ -2228,6 +2249,183 @@ fn scripted_provider(
     )
     .expect("the endpoint passes the SSRF choke point");
     (Arc::new(provider), sent)
+}
+
+fn http_failure(status: u16, retry_after: Option<Duration>) -> ScriptedReply {
+    ScriptedReply::Http(OpenAiHttpOutcome {
+        status,
+        retry_after,
+        body: Vec::new(),
+    })
+}
+
+// §11.3: exercise production D1 settlement after the BYOK transport boundary. The raw
+// loopback test provider_error_metadata_retry_after_over_http covers both header formats.
+#[test]
+fn provider_error_settlement() {
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    for (case, reply, expected) in [
+        (
+            "400",
+            http_failure(400, None),
+            ("DEAD", 1, Some("PROVIDER_PERMANENT"), "FAILED", None),
+        ),
+        (
+            "403",
+            http_failure(403, None),
+            ("DEAD", 1, Some("PROVIDER_PERMANENT"), "FAILED", None),
+        ),
+        (
+            "429 delta-seconds",
+            http_failure(429, Some(Duration::from_secs(17))),
+            (
+                "PENDING",
+                1,
+                Some("RETRY_WAIT"),
+                "PENDING",
+                Some((17.0, 17.0)),
+            ),
+        ),
+        (
+            "429 HTTP-date",
+            http_failure(429, Some(Duration::from_secs(120))),
+            (
+                "PENDING",
+                1,
+                Some("RETRY_WAIT"),
+                "PENDING",
+                Some((60.0, 60.0)),
+            ),
+        ),
+        (
+            "HTTP timeout",
+            ScriptedReply::Timeout,
+            (
+                "PENDING",
+                1,
+                Some("RETRY_WAIT"),
+                "PENDING",
+                Some((22.5, 37.5)),
+            ),
+        ),
+        (
+            "401",
+            http_failure(401, None),
+            (
+                "WAITING_KEY",
+                0,
+                Some("WAITING_KEY"),
+                "PENDING",
+                Some((600.0, 600.0)),
+            ),
+        ),
+        (
+            "no receipt",
+            ScriptedReply::NoReceipt,
+            ("PROCESSING", 1, None, "PROCESSING", None),
+        ),
+    ] {
+        let Some(mut f) = setup_db("provider_error_settlement") else {
+            return;
+        };
+        assert_provider_settlement(&rt, &mut f, case, reply, expected);
+    }
+}
+
+type ExpectedSettlement = (
+    &'static str,
+    i32,
+    Option<&'static str>,
+    &'static str,
+    Option<(f64, f64)>,
+);
+
+fn assert_provider_settlement(
+    rt: &tokio::runtime::Runtime,
+    f: &mut Fixture,
+    case: &str,
+    reply: ScriptedReply,
+    expected: ExpectedSettlement,
+) {
+    let (evidence, _, _) = seed_evidence(f, EVIDENCE_TEXT);
+    let job = job_of(f, evidence);
+    let original = job_retry_epoch(f, job);
+    let (provider, sent) = scripted_http_provider(std::iter::once(reply));
+    let pool = private_pool(rt, f);
+    let mut config = dispatch_config("provider-error-settlement", 30.0);
+    if case == "no receipt" {
+        config.lease_seconds = 2.0;
+        config.http_timeout_seconds = 0.5;
+        config.hard_deadline_seconds = 5.0;
+    }
+    let before = database_epoch(f);
+    let report = rt
+        .block_on(dispatch_pass(
+            &pool,
+            &routes(&provider),
+            contribution_config(),
+            &config,
+        ))
+        .expect("distill dispatch pass");
+    let after = database_epoch(f);
+    let (status, attempt, _, class) = job_state(f, evidence);
+    let observed = observe(f, evidence);
+    let (expected_status, expected_attempt, expected_class, expected_outbox, delay) = expected;
+    assert_eq!(
+        (
+            status.as_str(),
+            attempt,
+            class.as_deref(),
+            observed.outbox_status.as_str()
+        ),
+        (
+            expected_status,
+            expected_attempt,
+            expected_class,
+            expected_outbox
+        ),
+        "{case}: {report:?}"
+    );
+    assert_eq!(report.attempts, 1, "{case}: {report:?}");
+    assert_eq!(sent.lock().expect("sent").len(), 1, "{case}");
+    assert_eq!(observed.ledger.rows, 1, "{case}");
+    assert_eq!(observed.ledger.input_tokens, None, "{case}");
+    assert_eq!(observed.ledger.output_tokens, None, "{case}");
+    if case == "no receipt" {
+        assert_eq!(report.unknown, 1, "{case}: {report:?}");
+        assert_eq!(observed.ledger.status.as_deref(), Some("RESERVED"));
+    } else {
+        assert_eq!(observed.ledger.status.as_deref(), Some("FAILED"), "{case}");
+    }
+    let next = job_retry_epoch(f, job);
+    if let Some((min, max)) = delay {
+        assert!(
+            (before + min..=after + max).contains(&next),
+            "{case}: scheduled {next}, settlement window {before}..{after}, expected delay {min}..{max}"
+        );
+    } else {
+        assert_eq!(
+            next, original,
+            "{case}: settlement must not schedule a retry"
+        );
+    }
+}
+
+fn database_epoch(f: &mut Fixture) -> f64 {
+    f.admin
+        .query_one("SELECT extract(epoch FROM clock_timestamp())::float8", &[])
+        .expect("database clock")
+        .get(0)
+}
+
+fn job_retry_epoch(f: &mut Fixture, job: Uuid) -> f64 {
+    f.admin
+        .query_one(
+            "SELECT extract(epoch FROM next_retry_at)::float8 FROM ops.jobs WHERE job_id = $1",
+            &[&job],
+        )
+        .expect("job next retry")
+        .get(0)
 }
 
 const TOOL_OVER_CEILING: &str = r#"{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"emit_distillation","arguments":"{\"memories\":[{\"content\":\"Health endpoint before traffic.\",\"memory_type\":\"Decision\",\"class\":\"ProjectConstraint\",\"confidence\":0.9}]}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":5},"base_resp":{"status_code":0,"status_msg":""}}"#;
