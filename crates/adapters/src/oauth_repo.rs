@@ -1,8 +1,8 @@
 //! `adapters::oauth_repo` — OAuth 2.1 Authorization Server persistence over the `control.oauth_*` doors (migrations 0268/0308/0311):
 //!   client registry, one-time authorization codes, grants and single-use refresh rotation. Writes only through definers; no
 //!   runtime role holds any privilege on the four tables, so every read goes through a door too.
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_consent_tenants, control.oauth_dcr_register, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_grant, control.oauth_refresh_rotate]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, application::oauth_exchange, domain::error, domain::identity, domain::ids]
-//! Called-by: [gateway::bootstrap, tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users] x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_consent_tenants, control.oauth_dcr_register, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_grant, control.oauth_refresh_rotate]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, application::oauth_exchange, domain::error, domain::identity, domain::ids]
+//! Called-by: [gateway::auth, gateway::bootstrap, tests]
 //! Invariants: [a raw code or refresh token never reaches this module: callers pass a SecretHash, whose Debug is redacted;
 //!   consume and rotate are single conditional statements inside the doors, so of two concurrent exchanges of one secret
 //!   at most one succeeds; a reused refresh token revokes its family and grant and the transaction still commits; a
@@ -284,6 +284,28 @@ impl OAuthTxn {
             })
         })
         .transpose()
+        .map_err(db_failure)
+    }
+
+    /// Resolve the grant's live tenant and account membership under role_gateway's tenant scope.
+    pub async fn subject_is_active(&mut self, grant: &GrantRecord) -> Result<bool, ErrorCode> {
+        request_guard_repo::set_authorized_ids_local(
+            &mut self.txn,
+            grant.tenant_id,
+            Some(grant.user_id),
+        )
+        .await?;
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM control.memberships m \
+             JOIN control.users u USING(user_id) JOIN control.tenants t USING(tenant_id) \
+             WHERE m.tenant_id=$1 AND m.user_id=$2 AND m.state='ACTIVE' \
+               AND u.state='ACTIVE' AND t.state='ACTIVE')",
+        )
+        .bind(grant.tenant_id.0)
+        .bind(grant.user_id.0)
+        // dep: PostgreSQL(any) — read the live, tenant-scoped grant subject
+        .fetch_one(&mut *self.txn)
+        .await
         .map_err(db_failure)
     }
 

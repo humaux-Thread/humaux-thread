@@ -58,7 +58,7 @@ const SERVER_ERROR: &str = "server_error";
 /// M02 D3/D4 policy and auth MAC keys; constructed only while the auth surface is enabled (§78.1).
 pub struct OAuthHttpConfig {
     /// Dedicated auth key pair.
-    pub keys: TokenKeys,
+    pub keys: Arc<TokenKeys>,
     /// Normalized public origin, identical to the metadata issuer (RFC 8414 §3.3).
     pub issuer: String,
     /// Exact permitted resource URI (RFC 8707).

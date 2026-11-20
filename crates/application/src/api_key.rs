@@ -1,5 +1,5 @@
 //! `application::api_key` — API credential validation policy (§73.5; ADR-0059 D-H).
-//! Depends-on: crates=[hmac, humaux-domain, sha2, async-trait]; services=[]; env=[]; modules=[domain::network, domain::error, domain::identity, domain::ids]
+//! Depends-on: crates=[hmac, humaux-domain, sha2, async-trait, time]; services=[]; env=[]; modules=[application::bearer, application::oauth_exchange, domain::network, domain::error, domain::identity, domain::ids]
 //! Called-by: [tests, adapters::credential_repo, gateway::auth, gateway::bootstrap, gateway::route_cache]
 //! Invariants: [caller-supplied clock and peppers; current pepper precedes previous]
 //! Spec: §73.5; ADR-0130
@@ -285,6 +285,33 @@ pub struct VerifiedCredential {
 }
 
 impl VerifiedCredential {
+    /// Bind verified token claims to their current grant and the subject's live memberships.
+    pub fn from_oauth(
+        access: crate::bearer::VerifiedAccess,
+        grant: crate::oauth_exchange::GrantRecord,
+        live_workspace_ids: Vec<WorkspaceId>,
+        now: time::OffsetDateTime,
+    ) -> Result<Self, ErrorCode> {
+        let access = access.into_live_terms(&grant, now)?;
+        let allowed = derive_workspace_scope(&live_workspace_ids, grant.workspace_id, None)?;
+        Ok(Self {
+            authorization: AuthorizationScope::new(
+                grant.tenant_id,
+                PrincipalId(access.grant_id),
+                Some(grant.user_id),
+                allowed,
+            ),
+            routing_revoke_epoch: 0,
+            scopes: access
+                .scopes
+                .iter()
+                .map(|scope| CredentialScope::parse(scope))
+                .collect::<Result<_, _>>()?,
+            workspace_id: grant.workspace_id,
+            live_workspace_ids,
+        })
+    }
+
     /// Routing facts from this request's successful live check (ADR-0133).
     pub fn route_hint(&self) -> CredentialRouteHint {
         CredentialRouteHint {
@@ -315,7 +342,18 @@ impl VerifiedCredential {
         required_scope: CredentialScope,
         requested_workspace: Option<WorkspaceId>,
     ) -> Result<AuthorizationScope, ErrorCode> {
+        self.authorize_reporting_scope(required_scope, requested_workspace, || {})
+    }
+
+    /// Like `authorize`, with a signal reserved for a verified credential missing the required scope.
+    pub fn authorize_reporting_scope(
+        &self,
+        required_scope: CredentialScope,
+        requested_workspace: Option<WorkspaceId>,
+        mark_insufficient_scope: impl FnOnce(),
+    ) -> Result<AuthorizationScope, ErrorCode> {
         if !self.scopes.contains(&required_scope) {
+            mark_insufficient_scope();
             return Err(ErrorCode::Forbidden);
         }
         // ADR-0035 D-D: the workspace set is `live ∩ {bound} ∩ {requested}`, computed here from the
