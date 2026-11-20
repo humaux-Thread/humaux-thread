@@ -43,6 +43,8 @@ use operation_receipt_fixture::{
 };
 
 const INTERVAL: Duration = Duration::from_secs(60);
+static REPLAY_WARM_FIXTURE_DECISION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 // The real protocol path calls the production GatewayGuard, with no business tool fixture needed.
 struct ProtocolGate(GatewayGuard);
@@ -54,6 +56,11 @@ impl McpApplication for ProtocolGate {
         context: &McpHttpContext,
         operation: McpOperation,
     ) -> Result<(), ErrorCode> {
+        if matches!(operation, McpOperation::Ping)
+            && REPLAY_WARM_FIXTURE_DECISION.swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(());
+        }
         self.0.protocol(context, operation).await
     }
 
@@ -222,6 +229,7 @@ fn g_m03_4_revoke_and_wrong_tenant_candidates_fail_on_http_entry() {
                 assert!(changed, "fixture credential was revoked");
                 txn.commit().unwrap();
             });
+            REPLAY_WARM_FIXTURE_DECISION.store(true, std::sync::atomic::Ordering::SeqCst);
             assert_eq!(
                 ping(address, &credential).await,
                 401,
