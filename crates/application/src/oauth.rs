@@ -2,7 +2,7 @@
 //!   terms, code-exchange validation, refresh-rotation decisions and grant lifetime/epoch checks. Pure: no SQL, no clock,
 //!   no randomness; `now`, row snapshots and every lifetime come in as arguments.
 //! Depends-on: crates=[base64, humaux-domain, sha2, time, uuid]; services=[]; env=[]; modules=[application::signed_token, domain::error, domain::ids]
-//! Called-by: [application::bearer, application::oauth_exchange, gateway::oauth_http, tests]
+//! Called-by: [adapters::oauth_repo, application::bearer, application::oauth_exchange, gateway::bootstrap, gateway::oauth_http, tests]
 //! Invariants: [PKCE is S256 only; redirects are matched against the registry, with port variation only for registered HTTP loopback; `resource` is mandatory and allowlisted; a reused refresh token yields a decision that
 //!   revokes its family and grant; a grant is live only before its ceiling and while both epoch snapshots equal the live
 //!   epochs; every refusal is an `ErrorCode` plus one row of `OAUTH_REASONS`, never a third error enum]
