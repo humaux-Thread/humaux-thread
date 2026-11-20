@@ -26,6 +26,7 @@ pub mod confirm_token_repo;
 pub mod consolidate_repo;
 pub mod consolidation_reasoner;
 pub mod context_repo;
+mod continuity_authorization;
 pub mod continuity_read;
 pub mod continuity_repo;
 /// ADR-0090 D-A: the public-pool eligibility predicate over the M07 closure (G-M20-5).

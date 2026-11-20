@@ -58,7 +58,7 @@ use crate::evidence_repo::{self, NewEvidence, OccurredAt};
 use crate::exact_census::{CensusInputs, bind_note_axes, census_in_txn, note_axes};
 use crate::postgres::RuntimeDbPool;
 use crate::quota_repo::{self, ReservationStatus, ReserveResult};
-use crate::read_gate::readable_memory_ids;
+use crate::read_gate::{ReadAuthorization, readable_memory_ids};
 use crate::read_materialize::{
     GateReadable, final_memory_ids_with_readable_in_txn, materialize_final_bodies_in_txn,
 };
@@ -1043,10 +1043,10 @@ pub async fn fetch_frozen(
 /// repeatable-read mode before their first query.
 pub(crate) async fn fetch_frozen_in_txn(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    authorization: &AuthorizationScope,
+    authorization: &impl ReadAuthorization,
     requested_scope: &Scope,
 ) -> Result<FrozenReads, ErrorCode> {
-    let (authorization, scope) = canonical_scope(authorization, requested_scope)?;
+    let (authorization, scope) = canonical_scope(authorization.read_gate_scope(), requested_scope)?;
     set_authorization_local(txn, &authorization).await?;
     let outcomes = run_selectors_in_txn(txn, &authorization, &scope).await?;
     let mandatory = MandatoryLane::from_selectors(outcomes)?;

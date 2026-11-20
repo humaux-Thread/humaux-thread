@@ -1,6 +1,6 @@
 //! `adapters::continuity_read` — Project Continuity W2 PostgreSQL reader.
-//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-retrieval, sha2, sqlx, uuid]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_log] x=[private.read_continuity_project_storage_v1]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::read_materialize, application::continuity, domain::context, domain::continuity, domain::error, domain::grounding, domain::identity, domain::ids, retrieval::handoff]
-//! Called-by: [gateway::bootstrap, tests]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-retrieval, sha2, sqlx, uuid]; services=[PostgreSQL(any) r=[ops.outbox, private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_log] x=[private.read_continuity_project_storage_v1]]; env=[]; modules=[adapters::context_repo, adapters::postgres, adapters::read_gate, adapters::read_materialize, application::continuity, domain::context, domain::continuity, domain::error, domain::grounding, domain::ids, retrieval::handoff]
+//! Called-by: [adapters::continuity_authorization, gateway::bootstrap, tests]
 //! Invariants: [the whole read is one REPEATABLE READ READ ONLY gateway transaction; only an authorized parent
 //!   installs the workspace; an incomplete read is CannotEstablishCompleteness, an unauthorized one NotFound]
 //! Spec: none
@@ -9,7 +9,7 @@
 //! lookup runs with a nil workspace GUC; only an authorized returned parent can install the
 //! exact workspace used by source visibility and deterministic Handoff assembly.
 
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, marker::PhantomData, str::FromStr, sync::Arc};
 
 use humaux_application::continuity::{
     ClosedContinuitySnapshot, ClosedFrozenReads, ContinuityReadPort, DiagnosticCode,
@@ -22,8 +22,7 @@ use humaux_domain::{
     grounding::{
         GroundingMode, GroundingStateKind, RowGrounding, SnapshotEdge, classify_in_snapshot,
     },
-    identity::AuthorizationScope,
-    ids::{Scope, WorkspaceId},
+    ids::{Scope, TenantId, UserId, WorkspaceId},
 };
 use humaux_retrieval::handoff::assemble;
 use sha2::{Digest, Sha256};
@@ -33,21 +32,39 @@ use uuid::Uuid;
 use crate::{
     context_repo::{fetch_frozen_in_txn, visibility_from_row},
     postgres::RuntimeDbPool,
-    read_gate::visibility_readable,
+    read_gate::{ReadAuthorization, visibility_readable},
     read_materialize::final_memory_ids_in_txn,
 };
 
 type Txn<'c> = Transaction<'c, Postgres>;
 const NIL_UUID: Uuid = Uuid::nil();
 
-pub struct PostgresContinuityReadPort {
-    pool: Arc<RuntimeDbPool>,
+/// Lookup facts and workspace narrowing required to close the W2 snapshot.
+pub trait ContinuityReadAuthorization: ReadAuthorization + Send + Sized {
+    /// Tenant bound to the authenticated request.
+    fn tenant_id(&self) -> TenantId;
+    /// Principal rechecked by the storage lookup.
+    fn principal_id(&self) -> Uuid;
+    /// On-behalf-of user, when present.
+    fn user_id(&self) -> Option<UserId>;
+    /// Authorized workspace IDs supplied to the project lookup.
+    fn allowed_workspaces(&self) -> Vec<Uuid>;
+    /// Applies the canonical shrink-only check to the workspace returned by storage.
+    fn narrow(&self, workspace: WorkspaceId) -> Result<Self, ErrorCode>;
 }
 
-impl PostgresContinuityReadPort {
+pub struct PostgresContinuityReadPort<Authorization> {
+    pool: Arc<RuntimeDbPool>,
+    authorization: PhantomData<fn() -> Authorization>,
+}
+
+impl<Authorization: ContinuityReadAuthorization> PostgresContinuityReadPort<Authorization> {
     #[must_use]
     pub fn new(pool: Arc<RuntimeDbPool>) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            authorization: PhantomData,
+        }
     }
 }
 
@@ -139,7 +156,7 @@ fn source_pairs(
 
 async fn install_lookup_context(
     tx: &mut Txn<'_>,
-    authorization: &AuthorizationScope,
+    authorization: &impl ContinuityReadAuthorization,
 ) -> Result<(), ErrorCode> {
     sqlx::query(
         "SELECT set_config('humaux.tenant_id',$1,true),\
@@ -149,7 +166,7 @@ async fn install_lookup_context(
     )
     .bind(authorization.tenant_id().0.to_string())
     .bind(NIL_UUID.to_string())
-    .bind(authorization.principal().0.to_string())
+    .bind(authorization.principal_id().to_string())
     .bind(
         authorization
             .user_id()
@@ -176,22 +193,18 @@ async fn install_workspace_context(
 
 async fn read_raw_slots(
     tx: &mut Txn<'_>,
-    authorization: &AuthorizationScope,
+    authorization: &impl ContinuityReadAuthorization,
     project_id: ProjectId,
     requested_workspace: Option<WorkspaceId>,
 ) -> Result<Vec<RawSlot>, ErrorCode> {
-    let mut workspaces: Vec<Uuid> = authorization
-        .allowed_workspace_ids()
-        .iter()
-        .map(|value| value.0)
-        .collect();
+    let mut workspaces = authorization.allowed_workspaces();
     workspaces.sort_unstable();
     let rows =
         sqlx::query("SELECT * FROM private.read_continuity_project_storage_v1($1,$2,$3,$4,$5,$6)")
             .bind(authorization.tenant_id().0)
             .bind(project_id.0)
             .bind(requested_workspace.map(|value| value.0))
-            .bind(authorization.principal().0)
+            .bind(authorization.principal_id())
             .bind(authorization.user_id().map(|value| value.0))
             .bind(workspaces)
             .fetch_all(&mut **tx)
@@ -233,7 +246,7 @@ fn memory_grounding_current(row: &PgRow) -> Result<bool, ErrorCode> {
 
 async fn validate_memories(
     tx: &mut Txn<'_>,
-    authorization: &AuthorizationScope,
+    authorization: &impl ContinuityReadAuthorization,
     expected: &[(Uuid, [u8; 32])],
 ) -> Result<bool, ErrorCode> {
     if expected.is_empty() {
@@ -291,7 +304,7 @@ enum EvidenceValidation {
 
 async fn validate_evidence(
     tx: &mut Txn<'_>,
-    authorization: &AuthorizationScope,
+    authorization: &impl ContinuityReadAuthorization,
     expected: &[(Uuid, [u8; 32])],
 ) -> Result<EvidenceValidation, ErrorCode> {
     if expected.is_empty() {
@@ -368,7 +381,7 @@ async fn validate_evidence(
 
 async fn close_slot(
     tx: &mut Txn<'_>,
-    authorization: &AuthorizationScope,
+    authorization: &impl ContinuityReadAuthorization,
     raw: RawSlot,
 ) -> Result<SourceFacetInput, ErrorCode> {
     let kind = ContinuityFacetKind::from_str(
@@ -454,12 +467,14 @@ async fn close_slot(
 }
 
 #[async_trait::async_trait]
-impl ContinuityReadPort for PostgresContinuityReadPort {
-    type Authorization = AuthorizationScope;
+impl<Authorization: ContinuityReadAuthorization> ContinuityReadPort
+    for PostgresContinuityReadPort<Authorization>
+{
+    type Authorization = Authorization;
 
     async fn read_snapshot(
         &self,
-        authorization: &AuthorizationScope,
+        authorization: &Self::Authorization,
         project_id: ProjectId,
         requested_workspace: Option<WorkspaceId>,
         budget: ContextBudget,
