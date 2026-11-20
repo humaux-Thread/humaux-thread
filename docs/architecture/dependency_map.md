@@ -13351,6 +13351,7 @@ executed by:
 - `private-worker::main`
 - `private-worker::tests::derived_dispatch_e2e`
 - `private-worker::tests::ops_listener`
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `retrieval-worker::main`
 - `retrieval-worker::tests::ops_listener`
@@ -16472,6 +16473,7 @@ modules naming it:
 - `protocol::mcp_catalog`
 - `protocol::mcp_profile`
 - `protocol::page`
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
@@ -16505,6 +16507,7 @@ why: HTTP router the native MCP adapter is built on
 
 modules naming it:
 - `protocol::mcp`
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `tests`
 
@@ -16513,6 +16516,7 @@ why: object-safe async traits at the rmcp/Axum boundary
 
 modules naming it:
 - `protocol::mcp`
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `tests`
 
@@ -16531,6 +16535,7 @@ modules naming it:
 - `protocol::mcp_catalog`
 - `protocol::mcp_profile`
 - `protocol::page`
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
@@ -16551,6 +16556,7 @@ modules naming it:
 why: async runtime the Axum/rmcp server and its tests run on
 
 modules naming it:
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `tests`
 
@@ -16565,6 +16571,13 @@ why: MCP request/session id generation
 modules naming it:
 - `protocol::mcp`
 - `protocol::tests::mcp_http`
+- `tests`
+
+### humaux-protocol → `humaux-telemetry` (dev)
+why: exercise production degradation wire spelling in the HTTP contract test
+
+modules naming it:
+- `protocol::tests::error_degrade_exclusive`
 - `tests`
 
 ### humaux-public-pool → `humaux-application` (normal)
@@ -17083,6 +17096,7 @@ modules naming it:
 - `testkit::tests::fault::sparse_lane_unavailable`
 - `testkit::tests::metrics::humaux_retrieval_requests_total`
 - `testkit::tests::metrics::retrieval_completeness_total`
+- `testkit::tests::pair::projection_lag_degraded`
 - `tests`
 
 ### humaux-testkit → `humaux-telemetry` (dev)
@@ -21076,6 +21090,13 @@ services (computed):
 
 default run:
 
+### `crates/protocol/tests/error_degrade_exclusive.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/protocol/tests/mcp_http.rs`
 db-bound (default run): no
 
@@ -21333,9 +21354,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3867` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3872` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3877` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3900` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3905` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3910` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection

@@ -1,51 +1,48 @@
-//! `testkit::tests::pair::projection_lag_degraded` — §52.2 概念对登记表 row 1（`ErrorCode::ProjectionLag` /
-//!   `DegradeCode::ProjectionLag`） 的降级侧，G52-5 成对测试。
-//! Depends-on: crates=[humaux-domain, humaux-telemetry]; services=[]; env=[]; modules=[domain::error, telemetry::degrade]
+//! `testkit::tests::pair::projection_lag_degraded` — §52.2 projection lag pair, degraded side through the production envelope.
+//! Depends-on: crates=[humaux-domain, humaux-retrieval, humaux-telemetry]; services=[]; env=[]; modules=[domain::error, retrieval::completeness, retrieval::envelope, telemetry::degrade]
 //! Called-by: [testkit::tests::pair_main]
-//! Invariants: []
-//! Spec: Baseline §52.2
-//!
-//! terminal 侧见同目录 `projection_lag_terminal.rs`。
-//!
-//! 分界判据（§52.2 表）：不要求 read-your-write 且已返回滞后结果 ⇒ 降级。
+//! Invariants: [a lagged result remains available, carries ProjectionLag and increments its counter once]
+//! Spec: Baseline §52.2; §52.4 G52-5; ADR-0057 D-E
 
-use humaux_telemetry::degrade::{DegradeCode, Response, abstain, degrade_total_count};
+use std::time::Duration;
 
-/// 与 `projection_lag_terminal.rs` 同一根因（投影落后）的注入桩，只是
-/// `require_read_your_write` 这个开关拨到另一侧。
-fn simulate_projection_lag(require_read_your_write: bool) -> Response<String> {
-    let projection_caught_up = false; // fault injection: projection is always behind here
-    if !projection_caught_up && require_read_your_write {
-        return Err(humaux_domain::error::ErrorCode::ProjectionLag);
-    }
-    Ok(abstain(
-        DegradeCode::ProjectionLag,
-        "stale-result".to_string(),
-    ))
-}
+use humaux_domain::error::ErrorCode;
+use humaux_retrieval::completeness::ledger::{self, LedgerReads, ProjectionReads};
+use humaux_retrieval::envelope::build_projection_block;
+use humaux_telemetry::degrade::{DegradeCode, degrade_total_count};
 
 #[test]
 fn projection_lag_degraded_when_read_your_write_not_required() {
+    // Close A1 and A2 so the pending ticket's age is the only degradation.
+    let ledger = ledger::close(
+        LedgerReads {
+            expected: 5,
+            done: 4,
+            pending: 1,
+            ..LedgerReads::default()
+        },
+        ProjectionReads {
+            points_expected: 5,
+            points_settled: 4,
+            points_in_flight: 1,
+            oldest_pending_age_secs: Some(31),
+            ..ProjectionReads::default()
+        },
+    );
+
     let before = degrade_total_count(DegradeCode::ProjectionLag);
-
-    let response = simulate_projection_lag(false);
-
-    let outcome = match response {
-        Ok(outcome) => outcome,
-        Err(code) => panic!(
-            "G52-4: read-your-write not required must degrade, not terminate (got Err({code}))"
-        ),
-    };
-
-    assert_eq!(outcome.value, "stale-result");
+    let outcome = build_projection_block(&ledger, Some(4), Duration::from_secs(30));
+    let after = degrade_total_count(DegradeCode::ProjectionLag);
+    assert_eq!(outcome.value.visible, Some(4));
+    assert_eq!(outcome.value.pending, 1);
     assert_eq!(
         outcome.degradations.as_slice(),
-        &[DegradeCode::ProjectionLag],
-        "still-successful response must carry the degradation marker"
+        &[DegradeCode::ProjectionLag]
     );
     assert_eq!(
-        degrade_total_count(DegradeCode::ProjectionLag),
-        before + 1,
-        "degraded path must actually go through abstain()"
+        outcome.degradations.as_slice()[0].line_format(),
+        ErrorCode::ProjectionLag.as_str(),
+        "§52.2: the concept pair shares the same wire spelling"
     );
+    assert_eq!(after, before + 1, "§53.4: ProjectionLag counter delta");
 }
