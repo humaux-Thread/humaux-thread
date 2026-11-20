@@ -479,7 +479,7 @@ impl GatewayGuard {
             .await?;
             let principal = credential.identity().principal();
             match &self.batch_touch {
-                Some(batch) => batch.stamp(principal, now).await?,
+                Some(_) => humaux_adapters::credential_repo::mark_used(&self.pool, principal.0).await?,
                 None => self.touch.stamp(&self.pool, principal, now).await?,
             }
             Ok(credential)
