@@ -98,18 +98,30 @@ fn m03_2_no_pg_rate_path(root: &Path) -> Verdict {
 
 const REQUEST_GUARD_SOURCE: &str = "bins/gateway/src/guard.rs";
 
-/// Scan literal paths throughout Guard, including the local imports skipped by the module index.
-struct GuardSourcePaths<'a>(&'a mut Vec<Vec<String>>);
+type GuardPath = Vec<String>;
 
-impl<'ast> syn::visit::Visit<'ast> for GuardSourcePaths<'_> {
+/// Scan each module separately so nested paths retain their own crate scope.
+#[derive(Default)]
+struct GuardSourcePaths<'ast> {
+    paths: Vec<GuardPath>,
+    modules: Vec<&'ast syn::ItemMod>,
+    locals: BTreeMap<String, GuardPath>,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for GuardSourcePaths<'ast> {
     fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
         let mut imports = Vec::new();
         hex_imports(&item.tree, Vec::new(), &mut imports);
-        self.0.extend(imports.into_iter().map(|(_, path)| path));
+        for (alias, mut path) in imports {
+            if alias == "*" {
+                path.push(alias);
+            }
+            self.record_path(path);
+        }
     }
 
     fn visit_path(&mut self, path: &'ast syn::Path) {
-        self.0.push(
+        self.record_path(
             path.segments
                 .iter()
                 .map(|segment| segment.ident.to_string())
@@ -117,51 +129,321 @@ impl<'ast> syn::visit::Visit<'ast> for GuardSourcePaths<'_> {
         );
         syn::visit::visit_path(self, path);
     }
+
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        self.modules.push(item);
+    }
+
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        let outer = self.locals.clone();
+        for stmt in &block.stmts {
+            if let syn::Stmt::Item(syn::Item::Use(item)) = stmt {
+                let mut imports = Vec::new();
+                hex_imports(&item.tree, Vec::new(), &mut imports);
+                self.locals.extend(imports.into_iter().map(|(alias, path)| {
+                    (alias.strip_prefix("r#").unwrap_or(&alias).to_owned(), path)
+                }));
+            }
+        }
+        syn::visit::visit_block(self, block);
+        self.locals = outer;
+    }
+
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        self.macro_paths(mac.tokens.clone());
+        syn::visit::visit_macro(self, mac);
+    }
+}
+
+impl GuardSourcePaths<'_> {
+    fn record_path(&mut self, mut path: GuardPath) {
+        self.paths.push(path.clone());
+        let mut seen = BTreeSet::new();
+        while let [alias, rest @ ..] = path.as_slice()
+            && let Some(target) = self.locals.get(alias.strip_prefix("r#").unwrap_or(alias))
+            && seen.insert(alias.clone())
+        {
+            path = target.iter().chain(rest).cloned().collect();
+            self.paths.push(path.clone());
+        }
+    }
+
+    // ponytail: literal tokens and source imports only; generated code, include!, cfg_attr
+    // module selection and compiler name resolution require an expanded rustc HIR scan.
+    fn macro_paths(&mut self, stream: proc_macro2::TokenStream) {
+        use proc_macro2::{Spacing, TokenTree};
+        let tokens: Vec<_> = stream.into_iter().collect();
+        let mut i = 0;
+        while let Some(token) = tokens.get(i) {
+            i += 1;
+            match token {
+                TokenTree::Group(group) => self.macro_paths(group.stream()),
+                TokenTree::Ident(first) => {
+                    let mut path = vec![first.to_string()];
+                    while let [
+                        TokenTree::Punct(a),
+                        TokenTree::Punct(b),
+                        TokenTree::Ident(next),
+                        ..,
+                    ] = &tokens[i..]
+                        && a.as_char() == ':'
+                        && a.spacing() == Spacing::Joint
+                        && b.as_char() == ':'
+                    {
+                        path.push(next.to_string());
+                        i += 3;
+                    }
+                    self.record_path(path);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn guard_scoped_path(path: &[String], scope: &[String]) -> GuardPath {
+    let path: Vec<_> = path
+        .iter()
+        .map(|part| part.strip_prefix("r#").unwrap_or(part).to_owned())
+        .collect();
+    match path.first().map(String::as_str) {
+        Some("humaux_adapters" | "humaux_gateway") => path,
+        Some("crate" | "self" | "super") => hex_absolute(&path, scope, &BTreeMap::new()),
+        _ => scope.iter().cloned().chain(path).collect(),
+    }
+}
+
+#[derive(Default)]
+struct GuardModuleGraph {
+    bindings: BTreeMap<GuardPath, BTreeSet<GuardPath>>,
+    exports: BTreeSet<GuardPath>,
+    references: BTreeSet<(String, GuardPath)>,
+    loading: BTreeSet<PathBuf>,
+    found_guard: bool,
+}
+
+impl GuardModuleGraph {
+    fn file(
+        &mut self,
+        root: &Path,
+        source: &Path,
+        dir: &Path,
+        scope: &[String],
+    ) -> Result<(), String> {
+        let name = display(root, source);
+        let canonical = source.canonicalize().map_err(|e| format!("{name}: {e}"))?;
+        if !canonical.starts_with(root) || !self.loading.insert(canonical.clone()) {
+            return Err(format!(
+                "{name}: module leaves the checkout or forms a file cycle"
+            ));
+        }
+        let text = fs::read_to_string(&canonical).map_err(|e| format!("{name}: {e}"))?;
+        let parsed = syn::parse_file(&text).map_err(|e| format!("{name}: {e}"))?;
+        let path_base = source.parent().unwrap_or(dir);
+        self.found_guard |= scope.get(1).is_some_and(|module| module == "guard");
+        self.items(root, source, dir, path_base, scope, &parsed.items)?;
+        self.loading.remove(&canonical);
+        Ok(())
+    }
+
+    fn items(
+        &mut self,
+        root: &Path,
+        source: &Path,
+        dir: &Path,
+        path_base: &Path,
+        scope: &[String],
+        items: &[syn::Item],
+    ) -> Result<(), String> {
+        use syn::visit::Visit;
+        let is_guard = scope.get(1).is_some_and(|module| module == "guard");
+        let mut scan = GuardSourcePaths::default();
+        for item in items {
+            if let syn::Item::Use(item) = item {
+                self.index_imports(item, scope);
+            }
+            scan.visit_item(item);
+        }
+        if is_guard {
+            // Keep the original resolved references, including accesses via imported typed handles.
+            let mut refs = HexRefs {
+                scope: scope.to_vec(),
+                paths: Vec::new(),
+                exports: Vec::new(),
+                aliases: BTreeMap::new(),
+            };
+            refs.items(items);
+            let name = display(root, source);
+            self.references.extend(
+                scan.paths
+                    .into_iter()
+                    .chain(refs.paths)
+                    .map(|path| (name.clone(), guard_scoped_path(&path, scope))),
+            );
+        }
+        for module in scan.modules {
+            if !is_guard && hex_test_attrs(&module.attrs) {
+                continue;
+            }
+            let name = module.ident.to_string();
+            let name = name.strip_prefix("r#").unwrap_or(&name);
+            let mut child_scope = scope.to_vec();
+            child_scope.push(name.to_owned());
+            let explicit = module
+                .attrs
+                .iter()
+                .find(|attr| attr.path().is_ident("path"))
+                .map(|attr| {
+                    if let syn::Meta::NameValue(value) = &attr.meta
+                        && let syn::Expr::Lit(expr) = &value.value
+                        && let syn::Lit::Str(path) = &expr.lit
+                    {
+                        return Ok(path.value());
+                    }
+                    Err(format!(
+                        "{}: invalid path attribute on module {name}",
+                        display(root, source)
+                    ))
+                })
+                .transpose()?;
+            if let Some((_, items)) = &module.content {
+                let child_dir = dir.join(explicit.as_deref().unwrap_or(name));
+                self.items(root, source, &child_dir, &child_dir, &child_scope, items)?;
+                continue;
+            }
+            let (child, child_dir) = guard_module_file(dir, path_base, name, explicit.as_deref());
+            self.file(root, &child, &child_dir, &child_scope)?;
+        }
+        Ok(())
+    }
+
+    fn index_imports(&mut self, item: &syn::ItemUse, scope: &[String]) {
+        let mut imports = Vec::new();
+        hex_imports(&item.tree, Vec::new(), &mut imports);
+        for (alias, path) in imports {
+            let mut key = scope.to_vec();
+            key.push(alias.strip_prefix("r#").unwrap_or(&alias).to_owned());
+            if !matches!(item.vis, syn::Visibility::Inherited) {
+                self.exports.insert(key.clone());
+            }
+            self.bindings
+                .entry(key)
+                .or_default()
+                .insert(guard_scoped_path(&path, scope));
+        }
+    }
+
+    fn forbidden(
+        &self,
+        path: &[String],
+        active: &mut BTreeSet<GuardPath>,
+        found: &mut BTreeSet<String>,
+    ) {
+        if let [krate, rest @ ..] = path
+            && krate == "humaux_adapters"
+        {
+            let rest: Vec<_> = rest.iter().map(String::as_str).collect();
+            if !matches!(
+                rest.as_slice(),
+                // M02 credentials, M04 admission/metering, M05 denials audit.
+                ["credential_repo" | "request_guard_repo" | "quota_repo"
+                    | "audited_read_quota" | "independent_audit", ..]
+                // The typed pool is a handle, not an adapter door.
+                | ["postgres", "RuntimeDbPool"]
+            ) {
+                found.insert(path.join("::"));
+            }
+            return;
+        }
+        if let Some((last, module)) = path.split_last()
+            && last == "*"
+        {
+            for alias in self
+                .exports
+                .iter()
+                .filter(|alias| alias.len() == module.len() + 1 && alias.starts_with(module))
+            {
+                let suffix = if alias.last() == Some(last) {
+                    std::slice::from_ref(last)
+                } else {
+                    &[]
+                };
+                self.follow_binding(alias, suffix, active, found);
+            }
+            return;
+        }
+        for n in (1..=path.len()).rev() {
+            let (prefix, suffix) = path.split_at(n);
+            self.follow_binding(prefix, suffix, active, found);
+            if !suffix.is_empty() {
+                let mut glob = prefix.to_vec();
+                glob.push("*".to_owned());
+                self.follow_binding(&glob, suffix, active, found);
+            }
+        }
+    }
+
+    fn follow_binding(
+        &self,
+        alias: &[String],
+        suffix: &[String],
+        active: &mut BTreeSet<GuardPath>,
+        found: &mut BTreeSet<String>,
+    ) {
+        if let Some(targets) = self.bindings.get(alias)
+            && active.insert(alias.to_vec())
+        {
+            for target in targets {
+                let target: GuardPath = target.iter().chain(suffix).cloned().collect();
+                self.forbidden(&target, active, found);
+            }
+            active.remove(alias);
+        }
+    }
+}
+
+fn guard_module_file(
+    dir: &Path,
+    path_base: &Path,
+    name: &str,
+    explicit: Option<&str>,
+) -> (PathBuf, PathBuf) {
+    if let Some(path) = explicit {
+        let file = path_base.join(path);
+        let child_dir = file.parent().unwrap_or(path_base).to_path_buf();
+        return (file, child_dir);
+    }
+    let flat = dir.join(format!("{name}.rs"));
+    let child_dir = dir.join(name);
+    let file = if flat.is_file() {
+        flat
+    } else {
+        child_dir.join("mod.rs")
+    };
+    (file, child_dir)
 }
 
 /// M03 design §4 / §8 G-M03-12: Guard can reach request-policy adapters, never operation adapters.
 fn m03_12_guard_adapter_boundary(root: &Path) -> Verdict {
-    let file = match fs::read_to_string(root.join(REQUEST_GUARD_SOURCE))
-        .map_err(|error| error.to_string())
-        .and_then(|source| syn::parse_file(&source).map_err(|error| error.to_string()))
-    {
-        Ok(file) => file,
-        Err(error) => return Verdict::Fail(vec![format!("{REQUEST_GUARD_SOURCE}: {error}")]),
-    };
-    let mut refs = HexRefs {
-        scope: vec!["humaux_gateway".into(), "guard".into()],
-        paths: Vec::new(),
-        exports: Vec::new(),
-        aliases: BTreeMap::new(),
-    };
-    refs.items(&file.items);
-    syn::visit::visit_file(&mut GuardSourcePaths(&mut refs.paths), &file);
-    let forbidden: BTreeSet<_> = refs
-        .paths
-        .iter()
-        .filter_map(|path| {
-            let segments: Vec<_> = path
-                .iter()
-                .map(|segment| segment.strip_prefix("r#").unwrap_or(segment))
-                .collect();
-            let ["humaux_adapters", adapter_path @ ..] = segments.as_slice() else {
-                return None;
-            };
-            let allowed = matches!(
-                adapter_path,
-                // M02 credentials, M04 admission/metering, M05 denials audit.
-                [
-                    "credential_repo" | "request_guard_repo" | "quota_repo" | "audited_read_quota"
-                    | "independent_audit",
-                    ..,
-                ]
-                // Typed handle passed to the composition root. The postgres module itself isn't a door.
-                | ["postgres", "RuntimeDbPool"]
-            );
-            (!allowed).then(|| format!("{REQUEST_GUARD_SOURCE}: {}", segments.join("::")))
-        })
-        .collect();
-    hex_verdict(forbidden.into_iter().collect())
+    let result = (|| {
+        let root = root.canonicalize().map_err(|e| e.to_string())?;
+        let dir = root.join(GATEWAY_SRC_DIR);
+        let mut graph = GuardModuleGraph::default();
+        graph.file(&root, &dir.join("lib.rs"), &dir, &["humaux_gateway".into()])?;
+        if !graph.found_guard {
+            return Err(format!(
+                "{REQUEST_GUARD_SOURCE}: Guard module not found in gateway lib.rs"
+            ));
+        }
+        let mut forbidden = BTreeSet::new();
+        for (source, path) in &graph.references {
+            let mut paths = BTreeSet::new();
+            graph.forbidden(path, &mut BTreeSet::new(), &mut paths);
+            forbidden.extend(paths.into_iter().map(|path| format!("{source}: {path}")));
+        }
+        Ok::<_, String>(forbidden.into_iter().collect())
+    })();
+    hex_verdict(result.unwrap_or_else(|error| vec![error]))
 }
 
 // §67.2 / G-M03-2: migrations are historical inputs; test and script code stay in the scan.
@@ -14041,6 +14323,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("humaux-g-m03-12-{}", std::process::id()));
         let guard = root.join(REQUEST_GUARD_SOURCE);
         fs::create_dir_all(guard.parent().unwrap()).unwrap();
+        fs::write(guard.with_file_name("lib.rs"), "pub mod guard;").unwrap();
         assert_eq!(
             m03_12_guard_adapter_boundary(&workspace_root()),
             Verdict::Pass
@@ -14084,6 +14367,129 @@ mod tests {
             println!("G-M03-12 removed {fault} GREEN");
         }
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn guard_graph_fault(
+        case: &str,
+        files: &[(&str, &str)],
+        target: &str,
+        injected: &str,
+        forbidden: &str,
+    ) {
+        let root =
+            std::env::temp_dir().join(format!("humaux-g-m03-12-{case}-{}", std::process::id()));
+        for (file, source) in files {
+            let path = root.join(GATEWAY_SRC_DIR).join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, source).unwrap();
+        }
+        let path = root.join(GATEWAY_SRC_DIR).join(target);
+        let clean = fs::read_to_string(&path).unwrap();
+        assert_eq!(m03_12_guard_adapter_boundary(&root), Verdict::Pass);
+        fs::write(&path, injected).unwrap();
+        let verdict = m03_12_guard_adapter_boundary(&root);
+        let expected = format!("{GATEWAY_SRC_DIR}/{target}: {forbidden}");
+        assert!(
+            matches!(&verdict, Verdict::Fail(lines) if lines.contains(&expected)),
+            "{case}: expected {expected}, got {verdict:?}"
+        );
+        println!("G-M03-12 {case} RED: {verdict:?}");
+        fs::write(path, clean).unwrap();
+        assert_eq!(m03_12_guard_adapter_boundary(&root), Verdict::Pass);
+        println!("G-M03-12 {case} restored GREEN");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn g_m03_12_external_guard_modules() {
+        for (case, guard, target) in [
+            (
+                "normal module",
+                "mod child;",
+                "guard/child/grandchild/mod.rs",
+            ),
+            (
+                "explicit path",
+                "mod child; #[path = \"selected.rs\"] mod selected;",
+                "selected.rs",
+            ),
+        ] {
+            guard_graph_fault(
+                case,
+                &[
+                    ("lib.rs", "pub mod guard;"),
+                    ("guard.rs", guard),
+                    ("guard/child.rs", "mod grandchild;"),
+                    ("guard/child/grandchild/mod.rs", ""),
+                    ("selected.rs", ""),
+                ],
+                target,
+                "use humaux_adapters::remember;",
+                "humaux_adapters::remember",
+            );
+        }
+    }
+
+    #[test]
+    fn g_m03_12_gateway_reexports() {
+        for (case, import) in [
+            (
+                "gateway reexport",
+                "use crate::bridge::links::door as mint;",
+            ),
+            ("glob reexport", "use crate::bridge::door as mint;"),
+            ("glob import", "use crate::bridge::*;"),
+        ] {
+            guard_graph_fault(
+                case,
+                &[
+                    ("lib.rs", "pub mod guard; pub mod bridge;"),
+                    ("guard.rs", ""),
+                    (
+                        "bridge.rs",
+                        "pub use humaux_adapters::confirm_token_repo as token; \
+                         pub(crate) mod links { pub(crate) use super::token as door; } \
+                         pub(crate) use links::*;",
+                    ),
+                ],
+                "guard.rs",
+                import,
+                "humaux_adapters::confirm_token_repo",
+            );
+        }
+    }
+
+    #[test]
+    fn g_m03_12_macro_arguments() {
+        for (case, injected, forbidden) in [
+            (
+                "join tokens",
+                "fn fault() { tokio::join!(humaux_adapters::remember::remember()); }",
+                "humaux_adapters::remember::remember",
+            ),
+            (
+                "select tokens and reexport",
+                "fn fault() { use crate::bridge as bridge_alias; \
+                 tokio::select! { _ = tokio::spawn(async { \
+                 bridge_alias::door::mint_with_audit().await }) => {} } }",
+                "humaux_adapters::confirm_token_repo::mint_with_audit",
+            ),
+        ] {
+            guard_graph_fault(
+                case,
+                &[
+                    ("lib.rs", "pub mod guard; pub mod bridge;"),
+                    ("guard.rs", ""),
+                    (
+                        "bridge.rs",
+                        "pub(crate) use humaux_adapters::confirm_token_repo as door;",
+                    ),
+                ],
+                "guard.rs",
+                injected,
+                forbidden,
+            );
+        }
     }
 
     fn hex_boundary_gate(root: &Path, writer: bool) -> Verdict {
