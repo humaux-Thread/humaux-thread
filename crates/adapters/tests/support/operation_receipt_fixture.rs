@@ -13,7 +13,7 @@
 //!   x=[control.check_operation_receipt], PostgreSQL(role_gateway), PostgreSQL(role_maintenance)];
 //!   env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_MAINTENANCE_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres,
 //!   adapters::quota_repo, adapters::tests::support::token_keys, domain::identity, domain::ids, humaux-testkit]
-//! Called-by: [adapters::tests::governance_quota, adapters::tests::applicability, adapters::tests::auth_scope_rls, adapters::tests::candidates, adapters::tests::coord_task_project, adapters::tests::dedup, adapters::tests::evidence_sources_dedupe, adapters::tests::evidence_task_runs, adapters::tests::forget_confirm, adapters::tests::forget_race, adapters::tests::freshness, adapters::tests::membership_lifecycle, adapters::tests::memory_attribution, adapters::tests::note_history, adapters::tests::note_put, adapters::tests::note_reads, adapters::tests::note_replace, adapters::tests::note_text_once, adapters::tests::operation_receipts, adapters::tests::read_gate_closure, gateway::mcp_application, gateway::tests::continuity_get, gateway::tests::coordinate_task, gateway::tests::cross_tenant_canary, gateway::tests::mcp_forget, gateway::tests::mcp_gateway, gateway::tests::memory_get_frontier, gateway::tests::read_decoupling, gateway::tests::semantic_recall_wiring, private-worker::tests::m29_attribution_e2e]
+//! Called-by: [adapters::tests::governance_quota, adapters::tests::applicability, adapters::tests::auth_scope_rls, adapters::tests::candidates, adapters::tests::coord_task_project, adapters::tests::dedup, adapters::tests::evidence_sources_dedupe, adapters::tests::evidence_task_runs, adapters::tests::forget_confirm, adapters::tests::forget_race, adapters::tests::freshness, adapters::tests::membership_lifecycle, adapters::tests::memory_attribution, adapters::tests::note_history, adapters::tests::note_put, adapters::tests::note_reads, adapters::tests::note_replace, adapters::tests::note_text_once, adapters::tests::operation_receipts, adapters::tests::read_gate_closure, gateway::mcp_application, gateway::tests::continuity_get, gateway::tests::coordinate_task, gateway::tests::cross_tenant_canary, gateway::tests::mcp_forget, gateway::tests::mcp_gateway, gateway::tests::memory_get_frontier, gateway::tests::read_decoupling, gateway::tests::route_cache, gateway::tests::semantic_recall_wiring, private-worker::tests::m29_attribution_e2e]
 //! Invariants: [test-only, included by #[path]; runtime writes are real role_gateway logins and the owner connection
 //!   only seeds/cleans the fixture tenant; an isolation setup failure is a fixture error]
 //! Spec: Baseline §25.4; §34.0.1; §79.2; ADR-0035
@@ -633,6 +633,31 @@ impl Handle {
                 &[&credential.api_key_id],
             )
             .expect("owner revokes isolated synthetic credential");
+    }
+
+    /// Sets the age of one fixture credential relative to the PostgreSQL clock.
+    pub fn age_credential_activity(
+        &mut self,
+        credential: &SyntheticServiceCredential,
+        seconds: u32,
+    ) {
+        let changed = self.admin.execute(
+            "UPDATE control.api_keys SET last_used_at = statement_timestamp() - make_interval(secs => $2) WHERE api_key_id = $1",
+            &[&credential.api_key_id, &f64::from(seconds)],
+        ).expect("owner sets only the isolated fixture credential's activity age");
+        assert_eq!(changed, 1);
+    }
+
+    /// Reads the isolated credential's current row version and whether activity was stamped.
+    pub fn credential_activity(
+        &mut self,
+        credential: &SyntheticServiceCredential,
+    ) -> (String, bool) {
+        let row = self.admin.query_one(
+            "SELECT xmin::text, last_used_at IS NOT NULL FROM control.api_keys WHERE api_key_id = $1",
+            &[&credential.api_key_id],
+        ).expect("owner reads isolated credential activity");
+        (row.get(0), row.get(1))
     }
 
     /// Seeds a `WORKSPACE_SHARED` memory and matching workspace-scoped mandatory binding.

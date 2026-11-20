@@ -1,6 +1,6 @@
 //! `gateway::auth` — §73.5.1 headless authentication.
-//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-application]; services=[]; env=[]; modules=[adapters::postgres, domain::error, domain::identity, domain::ids, application::api_key, gateway::bootstrap]
-//! Called-by: [gateway::guard, tests]
+//! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-application, tokio]; services=[]; env=[]; modules=[adapters::credential_repo, adapters::postgres, gateway::route_cache, domain::error, domain::identity, domain::ids, application::api_key, gateway::bootstrap]
+//! Called-by: [gateway::bootstrap, gateway::guard, tests]
 //! Invariants: [a PAT's allowed_workspace_ids is always an intersection of the live ACTIVE membership set with the credential's bound workspace; a stale binding whose membership was revoked yields Forbidden, never a silent tenant-wide downgrade; a key verified only by the previous pepper is rehashed after validation and the rehash is never fatal to the request (ADR-0059 D-H); the touch throttle gates only the last_used_at write, so lookup and validation run on every request and a revoked or expired key is refused on the very next request whatever the throttle window holds (M02 D8)]
 //! Spec: Baseline §73.5.1; §6.1.1; §33; §78.1; ADR-0035; ADR-0059
 //!
@@ -25,15 +25,19 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
+use humaux_adapters::credential_repo::{mark_used, mark_used_batch};
 use humaux_adapters::postgres::RuntimeDbPool;
 pub use humaux_application::api_key::CredentialScope;
-use humaux_application::api_key::{CredentialStore, VerifiedCredential, authenticate_key};
+use humaux_application::api_key::{VerifiedCredential, authenticate_key};
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::{AuthorizationScope, PrincipalId};
 use humaux_domain::ids::WorkspaceId;
+use tokio::sync::{mpsc, oneshot};
+
+use crate::route_cache::CredentialRouteCache;
 /// Request-local credential verified against live database facts (§73.5).
 pub struct AuthenticatedServiceCredential(VerifiedCredential);
 
@@ -62,6 +66,8 @@ impl AuthenticatedServiceCredential {
 // ponytail: dropping the oldest entry is a linear scan, paid only at the cap; an LRU map if one node ever keeps more
 // credentials than this active inside a single interval.
 const TOUCH_MAP_CAP: usize = 10_000;
+/// ADR-0133 and migration 0309 use the same batch-mode floor.
+pub(crate) const MIN_BATCH_TOUCH_SECONDS: u64 = 60;
 
 /// M02 D8 / §78.1: the in-process memory that keeps `last_used_at` from being written on every request.
 ///
@@ -118,6 +124,100 @@ impl TouchThrottle {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&credential);
     }
+
+    fn release_claim(&self, credential: PrincipalId, claimed_at: SystemTime) {
+        let mut touched = self
+            .last_touch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if touched.get(&credential) == Some(&claimed_at) {
+            touched.remove(&credential);
+        }
+    }
+
+    pub(crate) async fn stamp(
+        &self,
+        pool: &RuntimeDbPool,
+        principal: PrincipalId,
+        now: SystemTime,
+    ) -> Result<(), ErrorCode> {
+        if self.claim(principal, now)
+            && let Err(code) = mark_used(pool, principal.0).await
+        {
+            self.release(principal);
+            return Err(code);
+        }
+        Ok(())
+    }
+}
+
+type PendingTouch = (
+    PrincipalId,
+    SystemTime,
+    oneshot::Sender<Result<(), ErrorCode>>,
+);
+
+pub(crate) struct BatchTouch {
+    throttle: Arc<TouchThrottle>,
+    pending: mpsc::Sender<PendingTouch>,
+}
+
+impl BatchTouch {
+    pub(crate) fn new(pool: Arc<RuntimeDbPool>, interval: Duration, seconds: i32) -> Self {
+        let throttle = Arc::new(TouchThrottle::new(interval));
+        let (pending, receiver) = mpsc::channel(TOUCH_MAP_CAP);
+        // One writer drains eligible requests together. It owns admitted work if a request is cancelled.
+        tokio::spawn(Self::flush(pool, receiver, Arc::clone(&throttle), seconds));
+        Self { throttle, pending }
+    }
+
+    async fn flush(
+        pool: Arc<RuntimeDbPool>,
+        mut receiver: mpsc::Receiver<PendingTouch>,
+        claims: Arc<TouchThrottle>,
+        seconds: i32,
+    ) {
+        let mut batch = Vec::new();
+        let mut ids = Vec::new();
+        while receiver.recv_many(&mut batch, TOUCH_MAP_CAP).await != 0 {
+            ids.extend(batch.iter().map(|(principal, _, _)| principal.0));
+            let result = mark_used_batch(&pool, &ids, seconds).await;
+            let outcome = result.as_ref().map(|_| ()).map_err(|code| *code);
+            ids.clear();
+            for (principal, claimed_at, done) in batch.drain(..) {
+                if !result
+                    .as_ref()
+                    .is_ok_and(|written| written.contains_key(&principal.0))
+                {
+                    claims.release_claim(principal, claimed_at);
+                }
+                let _ = done.send(outcome);
+            }
+        }
+    }
+
+    pub(crate) async fn stamp(
+        &self,
+        principal: PrincipalId,
+        now: SystemTime,
+    ) -> Result<(), ErrorCode> {
+        if !self.throttle.claim(principal, now) {
+            return Ok(());
+        }
+        let (done, result) = oneshot::channel();
+        // A full queue refuses immediately and lets the next authenticated request retry the stamp.
+        if self.pending.try_send((principal, now, done)).is_err() {
+            self.throttle.release_claim(principal, now);
+            return Err(ErrorCode::DependencyUnavailable);
+        }
+        match result.await {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                self.throttle.release_claim(principal, now);
+                Err(ErrorCode::DependencyUnavailable)
+            }
+        }
+    }
 }
 
 /// Authenticates an HTTP Bearer service credential against current database facts.
@@ -137,12 +237,43 @@ pub async fn authenticate_service_credential(
     now: SystemTime,
     touch: &TouchThrottle,
 ) -> Result<AuthenticatedServiceCredential, ErrorCode> {
+    let credential = authenticate_live(
+        pool,
+        authorization_header,
+        pepper,
+        pepper_previous,
+        request_ip,
+        now,
+        None,
+    )
+    .await?;
+    touch
+        .stamp(pool, credential.identity().principal(), now)
+        .await?;
+    Ok(credential)
+}
+
+pub(crate) async fn authenticate_live(
+    pool: &RuntimeDbPool,
+    authorization_header: &str,
+    pepper: &[u8],
+    pepper_previous: Option<&[u8]>,
+    request_ip: IpAddr,
+    now: SystemTime,
+    routes: Option<&CredentialRouteCache>,
+) -> Result<AuthenticatedServiceCredential, ErrorCode> {
     if pepper.is_empty() {
         return Err(ErrorCode::Internal);
     }
     let (prefix, raw_key) = parse_bearer_credential(authorization_header)?;
+    let route = if let Some(cache) = routes {
+        let key = cache.key(raw_key);
+        Some((cache, key, cache.lookup(&key).await))
+    } else {
+        None
+    };
     let store = crate::bootstrap::credential_store(pool);
-    let credential = authenticate_key(
+    let result = authenticate_key(
         &store,
         prefix,
         raw_key,
@@ -151,15 +282,26 @@ pub async fn authenticate_service_credential(
         request_ip,
         now,
     )
-    .await?;
-    let principal = credential.identity().principal();
-    if touch.claim(principal, now)
-        && let Err(code) = store.mark_used(principal).await
-    {
-        touch.release(principal);
-        return Err(code);
+    .await;
+    if let Some((cache, key, hint)) = route {
+        match &result {
+            Ok(credential) => {
+                let live = credential.route_hint();
+                if hint.is_some_and(|hint| {
+                    hint.tenant_id != live.tenant_id || hint.principal != live.principal
+                }) {
+                    cache.invalidate(&key).await;
+                    return Err(ErrorCode::Unauthorized);
+                }
+                if hint != Some(live) {
+                    cache.insert(key, live).await;
+                }
+            }
+            Err(_) if hint.is_some() => cache.invalidate(&key).await,
+            Err(_) => {}
+        }
     }
-    Ok(AuthenticatedServiceCredential(credential))
+    result.map(AuthenticatedServiceCredential)
 }
 
 fn parse_bearer_credential(header: &str) -> Result<(&str, &str), ErrorCode> {
