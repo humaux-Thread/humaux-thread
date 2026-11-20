@@ -1,5 +1,5 @@
 //! `gateway::guard` — §83: one business admission path for every canonical MCP operation.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::confirm_token_repo, adapters::postgres, application::read_quota, application::independent_audit, application::lifecycle_execution, application::remember, application::supersede, domain::affect, domain::audit, domain::confirm, domain::continuity, domain::coordination, domain::error, domain::identity, domain::ids, domain::selection, domain::source, domain::subject, gateway::auth, gateway::bootstrap, gateway::limiter, gateway::route_cache, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::read_quota, application::independent_audit, application::lifecycle_execution, application::remember, application::supersede, domain::affect, domain::audit, domain::confirm, domain::continuity, domain::coordination, domain::error, domain::identity, domain::ids, domain::selection, domain::source, domain::subject, gateway::auth, gateway::bootstrap, gateway::limiter, gateway::route_cache, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::oauth_http, gateway::status, tests]
 //! Invariants: [no path mints and accepts in one call; transport owns HTTP validation only; this layer is the sole place that authenticates, authorizes and admits a request, so an operation that bypasses it is a bug, not a variant path]
 //! Spec: Baseline §83; §52.1; ADR-0018; ADR-0028; ADR-0030; ADR-0054; ADR-0065 D-D; ADR-0125
@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use humaux_adapters::{confirm_token_repo, postgres::RuntimeDbPool};
+use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_domain::{
     affect::AffectWriteOp,
     audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction, SYSTEM_TENANT_ID},
@@ -243,6 +243,7 @@ impl GuardMetrics {
 
 pub struct GatewayGuard {
     pool: Arc<RuntimeDbPool>,
+    confirmation_minter: ConfirmationMinter,
     settings: GuardSettings,
     metrics: GuardMetrics,
     /// M02 D8: when a credential's `last_used_at` is written again; never consulted for a validity decision.
@@ -250,6 +251,28 @@ pub struct GatewayGuard {
     batch_touch: Option<BatchTouch>,
     route_cache: Option<Arc<CredentialRouteCache>>,
     limiter: Limiter,
+}
+
+/// §33.10: persist a confirmation challenge and its finished audit in one commit.
+pub(crate) type ConfirmationMinter = Box<
+    dyn for<'a> Fn(
+            ConfirmationMint<'a>,
+        ) -> std::pin::Pin<
+            Box<dyn Future<Output = Result<OffsetDateTime, ErrorCode>> + Send + 'a>,
+        > + Send
+        + Sync,
+>;
+
+/// ADR-0018 / ADR-0067: the mint binds the routed scope, target, nonce and optional intent.
+pub(crate) struct ConfirmationMint<'a> {
+    pub(crate) authorization: &'a AuthorizationScope,
+    pub(crate) op: DestructiveOp,
+    pub(crate) target_id: Uuid,
+    pub(crate) successor_id: Option<Uuid>,
+    pub(crate) ttl: Duration,
+    pub(crate) nonce_sha256: [u8; 32],
+    pub(crate) request_sha256: Option<[u8; 32]>,
+    pub(crate) finished_audit: &'a AuditEvent,
 }
 
 struct AdmittedOperation {
@@ -318,7 +341,12 @@ enum WorkspaceAdmission {
 }
 
 impl GatewayGuard {
-    pub fn new(pool: RuntimeDbPool, settings: GuardSettings) -> Result<Self, ErrorCode> {
+    /// §83: the composition root supplies the confirmation persistence port.
+    pub(crate) fn with_confirmation_minter(
+        pool: Arc<RuntimeDbPool>,
+        settings: GuardSettings,
+        confirmation_minter: ConfirmationMinter,
+    ) -> Result<Self, ErrorCode> {
         let execution_budget = settings
             .handler_timeout
             .checked_add(settings.finalize_timeout)
@@ -339,7 +367,8 @@ impl GatewayGuard {
         )?;
         Ok(Self {
             limiter,
-            pool: Arc::new(pool),
+            pool,
+            confirmation_minter,
             settings,
             metrics: GuardMetrics::default(),
             touch: TouchThrottle::new(Duration::ZERO),
@@ -1241,21 +1270,20 @@ impl GatewayGuard {
         let token = humaux_application::supersede::mint_confirm_token();
         let minted = tokio::time::timeout(
             self.settings.handler_timeout,
-            confirm_token_repo::mint_with_audit(
-                &self.pool,
-                &authorization,
-                gate.op,
-                gate.target_id,
-                gate.successor_id,
-                gate.ttl,
-                token.sha256(),
-                gate.request_sha256,
+            (self.confirmation_minter)(ConfirmationMint {
+                authorization: &authorization,
+                op: gate.op,
+                target_id: gate.target_id,
+                successor_id: gate.successor_id,
+                ttl: gate.ttl,
+                nonce_sha256: token.sha256(),
+                request_sha256: gate.request_sha256,
                 finished_audit,
-            ),
+            }),
         )
         .await
         .unwrap_or(Err(ErrorCode::DependencyUnavailable))?;
-        Ok((token, minted.expires_at))
+        Ok((token, minted))
     }
 
     async fn observe_unknown(
