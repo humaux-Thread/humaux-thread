@@ -779,7 +779,7 @@ async fn settle_failed_call<R: DistillPorts>(
     retry_after: Option<Duration>,
 ) -> Result<Settled, DistillError> {
     let dispatch = dispatcher.dispatch;
-    if class == ErrorCode::ProviderPermanent.as_str() || attempt >= dispatch.max_attempts {
+    if attempt >= dispatch.max_attempts {
         return settle_as(
             dispatcher,
             lease,
