@@ -84,6 +84,7 @@ struct HttpState {
     pool: Arc<RuntimeDbPool>,
     config: OAuthHttpConfig,
     login: Arc<dyn PasswordlessLoginPort>,
+    scopes: [String; SUPPORTED_SCOPES.len()],
 }
 
 /// The M02 OAuth routes, inside admission and the one pre-auth layer (ADR-0125 D1/D3).
@@ -97,6 +98,7 @@ pub fn router(
         guard,
         config,
         login,
+        scopes: SUPPORTED_SCOPES.map(str::to_owned),
     });
     Router::new()
         .route("/.well-known/oauth-authorization-server", get(metadata))
@@ -205,14 +207,6 @@ async fn live_session(
     login::authenticate_session(state.login.as_ref(), &secret).await
 }
 
-fn authorize_policy<'a>(state: &'a HttpState, allowed: &'a [&'a str]) -> OAuthPolicy<'a> {
-    OAuthPolicy {
-        allowed_resources: allowed,
-        supported_scopes: &SUPPORTED_SCOPES,
-        ..state.config.policy()
-    }
-}
-
 async fn validate(state: &HttpState, query: &str) -> Result<ValidatedAuthorize, Response> {
     let params = Params(
         form_urlencoded::parse(query.as_bytes())
@@ -230,11 +224,12 @@ async fn validate(state: &HttpState, query: &str) -> Result<ValidatedAuthorize, 
         kind_recognized: c.kind.is_some(),
         disabled: c.disabled_at.is_some(),
     });
-    let result = oauth::authorize_request(
-        &request,
-        client.as_ref(),
-        &authorize_policy(state, &[&state.config.resource]),
-    );
+    let policy = OAuthPolicy {
+        allowed_resources: std::slice::from_ref(&state.config.resource),
+        supported_scopes: &state.scopes,
+        ..state.config.policy()
+    };
+    let result = oauth::authorize_request(&request, client.as_ref(), &policy);
     match result {
         Ok(validated) if valid_callback(&validated.redirect_uri) => Ok(validated),
         Ok(_) => Err(refusal(OAuthReason::REDIRECT_URI_INVALID)),
