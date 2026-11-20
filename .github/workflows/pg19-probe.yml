@@ -27,8 +27,8 @@ jobs:
           # AMD64 sibling of the Dockerfile's ARM64 manifest in the official 18.7 index.
           - version: '18.7'
             image: postgres:18.7@sha256:12060a1464f232e4f8c721538b342687c6f17cead32a389586cd683262b1d848
-          - version: '19rc2'
-            image: postgres:19rc2@sha256:66d3af79fe7e5bbc96eb0bda246d2b1e0a62bb937473802892047b72de9b46d8
+          - version: '19.0'
+            image: postgres:19.0@sha256:d2c8a7d3d224a9c0335bf9f69ae6ad0b9aa7d88c4b64bab89f0f261332f6d4de
         lane: [test-a, test-b, serial-lane]
     services:
       postgres:
