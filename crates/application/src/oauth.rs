@@ -422,6 +422,14 @@ pub struct OAuthPolicy<'a> {
     pub supported_scopes: &'a [String],
 }
 
+impl OAuthPolicy<'_> {
+    fn allows_resource(&self, resource: &str) -> bool {
+        self.allowed_resources
+            .iter()
+            .any(|allowed| allowed == resource)
+    }
+}
+
 /// What the registry says about the requesting client; mirrors `adapters::oauth_repo::ClientRecord`.
 #[derive(Debug, Clone, Copy)]
 pub struct ClientView<'a> {
@@ -656,11 +664,7 @@ pub fn authorize_request(
         .resource
         .filter(|r| !r.is_empty())
         .ok_or_else(|| deliverable(OAuthReason::RESOURCE_REQUIRED))?;
-    if !policy
-        .allowed_resources
-        .iter()
-        .any(|allowed| allowed == resource)
-    {
+    if !policy.allows_resource(resource) {
         return Err(deliverable(OAuthReason::RESOURCE_UNKNOWN));
     }
     let mut scopes: Vec<String> = Vec::new();
@@ -843,6 +847,9 @@ pub fn exchange_code(
     if !s256_matches(verifier, consumed.pkce_challenge) {
         return Err(OAuthRefusal::of(OAuthReason::VERIFIER_MISMATCH));
     }
+    if !policy.allows_resource(consumed.resource) {
+        return Err(OAuthRefusal::of(OAuthReason::RESOURCE_UNKNOWN));
+    }
     Ok(GrantTerms {
         user_id: consumed.user_id,
         tenant_id: consumed.tenant_id,
@@ -887,6 +894,8 @@ pub enum RevokeCause {
     SecurityEpoch,
     /// A rotated refresh token was presented again (M02 D4).
     RefreshReuse,
+    /// The grant's bound resource was removed from the operator's allowlist (ADR-0136).
+    ResourceDisabled,
 }
 
 /// A grant that fails its lifetime or epoch check, and whether the caller must also close it.
@@ -1019,7 +1028,7 @@ pub enum RefreshDecision {
 }
 
 /// Decides a refresh from the rotate door's outcome and the grant row read after it (M02 D4). Reuse revokes the family
-/// and the grant; a grant past its ceiling or behind an epoch is refused (and, for an epoch, revoked).
+/// and the grant. An expired grant is refused, and an epoch change or disabled resource also closes the grant.
 pub fn decide_refresh(
     fact: RotationFact,
     grant: Option<&GrantView<'_>>,
@@ -1068,6 +1077,16 @@ pub fn decide_refresh(
     }
     if request.client_id != grant.client_id {
         return deny(OAuthReason::REFRESH_CLIENT_MISMATCH, None);
+    }
+    if !policy.allows_resource(grant.resource) {
+        return deny(
+            OAuthReason::RESOURCE_UNKNOWN,
+            Some(Revocation {
+                grant_id,
+                family_id: Some(family_id),
+                cause: RevokeCause::ResourceDisabled,
+            }),
+        );
     }
     if request.resource.is_some_and(|r| r != grant.resource) {
         return deny(OAuthReason::REFRESH_RESOURCE_MISMATCH, None);

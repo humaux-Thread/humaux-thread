@@ -548,6 +548,7 @@ pub async fn refresh_token(
                 let cause = match revoke.cause {
                     RevokeCause::RefreshReuse => RevokeReason::RefreshReuse,
                     RevokeCause::SecurityEpoch => RevokeReason::SecurityEpoch,
+                    RevokeCause::ResourceDisabled => RevokeReason::Operator,
                 };
                 if let Some(family) = revoke.family_id {
                     txn.revoke_family(family, cause).await?;

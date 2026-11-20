@@ -61,7 +61,6 @@ const ORIGIN: &str = "https://as.example.test";
 const NATIVE_RESOURCE: &str = "https://as.example.test/mcp";
 const LEGACY_RESOURCE: &str = "https://as.example.test/mcp/legacy";
 const REDIRECT: &str = "https://client.example.test/cb";
-const RESOURCE: &str = "https://resource.example.test/mcp";
 // RFC 7636 Appendix B: base64url(SHA256(VERIFIER)), without padding.
 const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
@@ -248,6 +247,12 @@ fn serve(h: &Handle, max: u64) -> SocketAddr {
     serve_surface(h, Some(config(max)))
 }
 
+fn serve_with_legacy(h: &Handle) -> SocketAddr {
+    let mut enabled = config(7200);
+    enabled.resources.push(LEGACY_RESOURCE.to_owned());
+    serve_surface(h, Some(enabled))
+}
+
 fn serve_surface(h: &Handle, config: Option<OAuthHttpConfig>) -> SocketAddr {
     // dep: PostgreSQL(role_gateway) — §79.2: exercise the runtime role.
     let pool =
@@ -381,7 +386,7 @@ fn code_form(h: &Handle, code: &str, overrides: &[(&str, Option<&str>)]) -> Stri
         ("code", code),
         ("redirect_uri", REDIRECT),
         ("code_verifier", VERIFIER),
-        ("resource", RESOURCE),
+        ("resource", NATIVE_RESOURCE),
     ]);
     for (key, value) in overrides {
         if let Some(value) = value {
@@ -393,7 +398,7 @@ fn code_form(h: &Handle, code: &str, overrides: &[(&str, Option<&str>)]) -> Stri
     form(&fields.into_iter().collect::<Vec<_>>())
 }
 fn issue_code(h: &Handle) -> String {
-    issue_code_for(h, RESOURCE)
+    issue_code_for(h, NATIVE_RESOURCE)
 }
 
 fn issue_code_for(h: &Handle, resource: &str) -> String {
@@ -458,7 +463,7 @@ fn success(reply: &Reply, max: u64) -> Value {
     assert!((1..=max).contains(&expires));
     assert_eq!(value["refresh_token"].as_str().unwrap().len(), 64);
     let claims = decode(&value);
-    assert_eq!(claims.resource, RESOURCE);
+    assert_eq!(claims.resource, NATIVE_RESOURCE);
     assert_eq!(claims.scopes, ["context:read", "memory:write"]);
     value
 }
@@ -853,6 +858,74 @@ fn g_m02_7_disabled_client_spends_code_without_issuing_grant() {
 }
 
 #[test]
+fn token_resource_policy_disabled_code_is_spent() {
+    run_db_fixture::<OAuthFixture, _>("disabled legacy resource spends code", |mut h| {
+        let off = serve(&h, 7200);
+        let codes = [None, Some(LEGACY_RESOURCE)].map(|resource| {
+            let code = issue_code_for(&h, LEGACY_RESOURCE);
+            let request = code_form(&h, &code, &[("resource", resource)]);
+            denied(&post(&h, off, &request), OAuthReason::RESOURCE_UNKNOWN);
+            request
+        });
+        let reopened = serve_with_legacy(&h);
+        for request in codes {
+            denied(&post(&h, reopened, &request), OAuthReason::CODE_INVALID);
+        }
+        assert_eq!(grant_count(&mut h), 0);
+    });
+}
+
+#[test]
+fn token_resource_policy_disabled_refresh_closes_grant() {
+    run_db_fixture::<OAuthFixture, _>("disabled legacy resource revokes grant", |mut h| {
+        let on = serve_with_legacy(&h);
+        let off = serve(&h, 7200);
+        let requests = [None, Some(LEGACY_RESOURCE)].map(|resource| {
+            let code = issue_code_for(&h, LEGACY_RESOURCE);
+            let exchange = code_form(&h, &code, &[("resource", resource)]);
+            let reply = post(&h, on, &exchange);
+            assert_eq!(reply.status, 200, "enabled legacy resource");
+            let tokens: Value = serde_json::from_str(&reply.body).unwrap();
+            let claims = decode(&tokens);
+            assert_eq!(claims.resource, LEGACY_RESOURCE);
+            let mut fields = vec![
+                ("grant_type", "refresh_token"),
+                ("client_id", h.client_id.as_str()),
+                ("refresh_token", tokens["refresh_token"].as_str().unwrap()),
+            ];
+            if let Some(resource) = resource {
+                fields.push(("resource", resource));
+            }
+            let request = form(&fields);
+            denied(&post(&h, off, &request), OAuthReason::RESOURCE_UNKNOWN);
+            (request, claims.grant_id)
+        });
+        let reopened = serve_with_legacy(&h);
+        for (request, grant_id) in requests {
+            denied(&post(&h, reopened, &request), OAuthReason::REFRESH_REJECTED);
+            revoked(&mut h, grant_id, "OPERATOR");
+        }
+    });
+}
+
+#[test]
+fn token_resource_policy_native_survives_legacy_disable() {
+    run_db_fixture::<OAuthFixture, _>("native tokens survive legacy disable", |h| {
+        let on = serve_with_legacy(&h);
+        let tokens = issued(&h, on);
+        let native_code = issue_code(&h);
+        let off = serve(&h, 7200);
+        success(
+            &post(&h, off, &code_form(&h, &native_code, &[("resource", None)])),
+            3600,
+        );
+        let rotated = success(&refresh(&h, off, &tokens, &h.client_id), 3600);
+        assert_eq!(decode(&rotated).grant_id, decode(&tokens).grant_id);
+        assert_ne!(rotated["refresh_token"], tokens["refresh_token"]);
+    });
+}
+
+#[test]
 fn g_m02_8_wrong_resource_rolls_back_rotation() {
     run_db_fixture::<OAuthFixture, _>("G-M02-8 resource rollback", |mut h| {
         let address = serve(&h, 7200);
@@ -881,7 +954,7 @@ fn g_m02_8_unknown_refresh_secret_cannot_mint() {
             ("grant_type", "refresh_token"),
             ("refresh_token", &unknown),
             ("client_id", &h.client_id),
-            ("resource", RESOURCE),
+            ("resource", NATIVE_RESOURCE),
         ]);
         denied(&post(&h, address, &body), OAuthReason::REFRESH_REJECTED);
         assert_eq!(grant_count(&mut h), 0);
@@ -953,7 +1026,7 @@ fn g_m02_10_bearer_good_and_requires_header() {
         let (guard, tokens) = bearer_fixture(&mut h);
         assert_eq!(guard.oauth_issuer(), Some(ORIGIN));
         let request = ResourceRequest {
-            resource: Some(RESOURCE),
+            resource: Some(NATIVE_RESOURCE),
             ..Default::default()
         };
         let credential = bearer(&h, &guard, raw_access(&tokens), request.resource).unwrap();
@@ -977,26 +1050,31 @@ fn g_m02_10_bearer_good_and_requires_header() {
 fn g_m02_10_bearer_resource_is_exact() {
     run_db_fixture::<OAuthFixture, _>("G-M02-10 exact audience", |mut h| {
         let (guard, tokens) = bearer_fixture(&mut h);
-        let legacy_resource = format!("{RESOURCE}/legacy");
-        let code = issue_code_for(&h, &legacy_resource);
+        let code = issue_code_for(&h, LEGACY_RESOURCE);
         let reply = post(
             &h,
-            serve(&h, 7200),
-            &code_form(&h, &code, &[("resource", Some(&legacy_resource))]),
+            serve_with_legacy(&h),
+            &code_form(&h, &code, &[("resource", Some(LEGACY_RESOURCE))]),
         );
         assert_eq!(reply.status, 200);
         let legacy_tokens: Value = serde_json::from_str(&reply.body).unwrap();
-        assert_eq!(decode(&legacy_tokens).resource, legacy_resource);
+        assert_eq!(decode(&legacy_tokens).resource, LEGACY_RESOURCE);
         assert_eq!(
-            bearer(&h, &guard, raw_access(&legacy_tokens), Some(RESOURCE)).err(),
+            bearer(
+                &h,
+                &guard,
+                raw_access(&legacy_tokens),
+                Some(NATIVE_RESOURCE)
+            )
+            .err(),
             Some(ErrorCode::Unauthorized),
             "legacy token on the native resource"
         );
         for resource in [
             "/mcp",
-            NATIVE_RESOURCE,
-            &format!("{RESOURCE}/legacy"),
-            &format!("{RESOURCE}/"),
+            "https://resource.example.test/mcp",
+            LEGACY_RESOURCE,
+            &format!("{NATIVE_RESOURCE}/"),
         ] {
             assert_eq!(
                 bearer(&h, &guard, raw_access(&tokens), Some(resource)).err(),
@@ -1016,14 +1094,14 @@ fn g_m02_10_bearer_signature_and_issuer() {
             .unwrap()
             .sign(&ACCESS_TOKEN_LABEL, &payload);
         assert_eq!(
-            bearer(&h, &guard, &foreign, Some(RESOURCE)).err(),
+            bearer(&h, &guard, &foreign, Some(NATIVE_RESOURCE)).err(),
             Some(ErrorCode::Unauthorized)
         );
         let mut altered = hex::decode(raw_access(&tokens)).unwrap();
         let last = altered.last_mut().unwrap();
         *last = if *last == b'a' { b'b' } else { b'a' };
         assert_eq!(
-            bearer(&h, &guard, &hex::encode(altered), Some(RESOURCE)).err(),
+            bearer(&h, &guard, &hex::encode(altered), Some(NATIVE_RESOURCE)).err(),
             Some(ErrorCode::Unauthorized)
         );
     });
@@ -1036,7 +1114,7 @@ fn g_m02_10_bearer_expiry() {
         let mut terms = decode(&tokens);
         terms.expires_at = OffsetDateTime::now_utc() - time::Duration::seconds(1);
         assert_eq!(
-            bearer(&h, &guard, &signed_access(&terms), Some(RESOURCE)).err(),
+            bearer(&h, &guard, &signed_access(&terms), Some(NATIVE_RESOURCE)).err(),
             Some(ErrorCode::Unauthorized)
         );
     });
@@ -1047,7 +1125,7 @@ fn g_m02_10_bearer_revocation_is_live() {
     run_db_fixture::<OAuthFixture, _>("G-M02-10 grant revoked", |mut h| {
         let (guard, tokens) = bearer_fixture(&mut h);
         let token = raw_access(&tokens);
-        assert!(bearer(&h, &guard, token, Some(RESOURCE)).is_ok());
+        assert!(bearer(&h, &guard, token, Some(NATIVE_RESOURCE)).is_ok());
         let reply = h.rt.block_on(http_with(
             serve(&h, 7200),
             "POST",
@@ -1060,7 +1138,7 @@ fn g_m02_10_bearer_revocation_is_live() {
         ));
         assert_eq!(reply.status, 200);
         assert_eq!(
-            bearer(&h, &guard, token, Some(RESOURCE)).err(),
+            bearer(&h, &guard, token, Some(NATIVE_RESOURCE)).err(),
             Some(ErrorCode::Unauthorized)
         );
     });
@@ -1074,7 +1152,7 @@ fn g_m02_10_bearer_epoch_is_live() {
             .query_one("SELECT control.bump_user_security_epoch($1)", &[&h.user_id])
             .unwrap();
         assert_eq!(
-            bearer(&h, &guard, raw_access(&tokens), Some(RESOURCE)).err(),
+            bearer(&h, &guard, raw_access(&tokens), Some(NATIVE_RESOURCE)).err(),
             Some(ErrorCode::Unauthorized)
         );
     });
@@ -1089,7 +1167,7 @@ fn g_m02_10_bearer_membership_is_live() {
             &[&h.tenant_id, &h.user_id],
         ).unwrap();
         assert_eq!(
-            bearer(&h, &guard, raw_access(&tokens), Some(RESOURCE)).err(),
+            bearer(&h, &guard, raw_access(&tokens), Some(NATIVE_RESOURCE)).err(),
             Some(ErrorCode::Unauthorized)
         );
     });
@@ -1100,7 +1178,7 @@ fn g_m02_10_bearer_scope_and_signal() {
     run_db_fixture::<OAuthFixture, _>("G-M02-10 least privilege", |mut h| {
         let (guard, tokens) = bearer_fixture(&mut h);
         let request = ResourceRequest {
-            resource: Some(RESOURCE),
+            resource: Some(NATIVE_RESOURCE),
             ..Default::default()
         };
         let credential = bearer(&h, &guard, raw_access(&tokens), request.resource).unwrap();
@@ -1147,7 +1225,7 @@ fn g_m02_10_bearer_cross_tenant_scope_is_not_widened() {
                 &[&foreign.tenant_id, &foreign_workspace.0, &foreign.user_id],
             ).unwrap();
             let request = ResourceRequest {
-                resource: Some(RESOURCE),
+                resource: Some(NATIVE_RESOURCE),
                 ..Default::default()
             };
             let credential = bearer(&h, &guard, raw_access(&tokens), request.resource).unwrap();
@@ -1262,7 +1340,7 @@ fn g_m02_10_bearer_native_http() {
         h.scopes = vec!["memory:write".to_owned()];
         let tenant = h.tenant_id;
         add_active_membership(&mut h, tenant);
-        let as_address = serve(&h, 7200);
+        let as_address = serve_with_legacy(&h);
         let mint = |resource: &str| {
             let code = issue_code_for(&h, resource);
             let reply = post(
@@ -1278,7 +1356,7 @@ fn g_m02_10_bearer_native_http() {
             raw_access(&tokens).to_owned()
         };
         let native = mint(NATIVE_RESOURCE);
-        let legacy = mint(&format!("{NATIVE_RESOURCE}/legacy"));
+        let legacy = mint(LEGACY_RESOURCE);
         // dep: PostgreSQL(role_gateway) — same role and guard as the real MCP listener.
         let pool =
             h.rt.block_on(RuntimeDbPool::connect(&dsn_as_role(&h.dsn)))
@@ -1338,7 +1416,7 @@ fn legacy_mount_oauth_audience_and_authorization_parity() {
         h.scopes = vec!["memory:write".to_owned()];
         let tenant = h.tenant_id;
         add_active_membership(&mut h, tenant);
-        let as_address = serve(&h, 7200);
+        let as_address = serve_with_legacy(&h);
         let mint = |resource| {
             let code = issue_code_for(&h, resource);
             let reply = post(
@@ -1448,9 +1526,7 @@ fn legacy_mount_authorize_only_admits_enabled_exact_resource() {
         add_active_membership(&mut h, tenant);
         add_entitlement(&mut h, tenant);
         let cookie = session_cookie(&h);
-        let mut enabled = config(7200);
-        enabled.resources.push(LEGACY_RESOURCE.to_owned());
-        let on = serve_surface(&h, Some(enabled));
+        let on = serve_with_legacy(&h);
         let off = serve(&h, 7200);
         let authorize = |address, resource| {
             let path = authorize_url_for(&h.client_id, REDIRECT, "S256", resource);
