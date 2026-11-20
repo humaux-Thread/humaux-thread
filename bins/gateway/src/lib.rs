@@ -23,4 +23,5 @@ pub mod recall;
 pub mod remember;
 pub mod rerank_client;
 pub mod retrieval_embedding_client;
+pub mod route_cache;
 pub mod status;
