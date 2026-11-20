@@ -2872,6 +2872,17 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `private.ingest_tickets`
 - service `PostgreSQL(any)`
 
+#### `adapters::knowledge_backup_repo`
+- reads `ops.backup_receipts`
+- reads `ops.restore_drills`
+- reads `ops.wal_archive_failures`
+- writes `ops.backup_receipts`
+- writes `ops.backup_sets`
+- writes `ops.restore_drills`
+- writes `ops.restore_witnesses`
+- writes `ops.wal_archive_failures`
+- service `PostgreSQL(role_maintenance)`
+
 #### `adapters::maintenance_repo`
 - reads `control.partition_registry`
 - reads `control.retention_policies`
@@ -2889,12 +2900,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `projection.rebuild_tickets`
 - reads `projection.stream_log`
 - writes `control.partition_registry`
-- writes `ops.backup_receipts`
-- writes `ops.backup_sets`
 - writes `ops.repair_findings`
-- writes `ops.restore_drills`
-- writes `ops.restore_witnesses`
-- writes `ops.wal_archive_failures`
 - executes `control.maintenance_tenant_page`
 - executes `control.partition_create_month`
 - executes `control.partition_drop`
@@ -8202,6 +8208,7 @@ executed by:
 read by:
 - (no process): `maintenance::tests::backup`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 - process(humaux-maintenance): `adapters::maintenance_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -8209,7 +8216,7 @@ written by:
 - (no process): `adapters::tests::rebuild`
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::serve`
-- process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 
 executed by:
 
@@ -8224,7 +8231,7 @@ written by:
 - (no process): `adapters::tests::rebuild`
 - (no process): `maintenance::tests::drill`
 - (no process): `maintenance::tests::serve`
-- process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 
 executed by:
 
@@ -9306,12 +9313,13 @@ executed by:
 read by:
 - (no process): `maintenance::tests::drill`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
 - (no process): `adapters::tests::rebuild`
 - (no process): `maintenance::tests::serve`
-- process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 
 executed by:
 
@@ -9322,7 +9330,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 
 executed by:
 
@@ -9546,11 +9554,12 @@ read by:
 - (no process): `maintenance::tests::backup`
 - (no process): `maintenance::tests::serve`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 - process(humaux-maintenance): `adapters::maintenance_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- process(humaux-maintenance): `adapters::maintenance_repo`
+- process(humaux-maintenance): `adapters::knowledge_backup_repo`
 
 executed by:
 
@@ -13715,6 +13724,7 @@ executed by:
 - `adapters::billing_processor_repo`
 - `adapters::entitlement_repo`
 - `adapters::health`
+- `adapters::knowledge_backup_repo`
 - `adapters::maintenance_repo`
 - `adapters::plan_repo`
 - `adapters::postgres`
@@ -14173,6 +14183,7 @@ modules naming it:
 - `adapters::health`
 - `adapters::ingest_ticket_repo`
 - `adapters::jobs`
+- `adapters::knowledge_backup_repo`
 - `adapters::login_repo`
 - `adapters::maintenance_repo`
 - `adapters::mechanism_observation`
@@ -14576,6 +14587,7 @@ modules naming it:
 - `adapters::health`
 - `adapters::independent_audit`
 - `adapters::jobs`
+- `adapters::knowledge_backup_repo`
 - `adapters::login_repo`
 - `adapters::maintenance_repo`
 - `adapters::mechanism_observation`
@@ -14926,6 +14938,7 @@ modules naming it:
 - `adapters::affect_repo`
 - `adapters::billing_processor_repo`
 - `adapters::distill_repo`
+- `adapters::knowledge_backup_repo`
 - `adapters::maintenance_repo`
 - `adapters::memory_governance_repo`
 - `adapters::oauth_repo`

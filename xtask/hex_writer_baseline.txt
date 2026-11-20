@@ -5,11 +5,6 @@ crates/adapters/src/context_repo.rs:update private.context_bindings:2
 crates/adapters/src/context_repo.rs:update private.task_binding_grants:1
 crates/adapters/src/cost_repo.rs:insert into ops.tenant_cost_events:1
 crates/adapters/src/forget_repo.rs:update projection.stream_log:1
-crates/adapters/src/maintenance_repo.rs:insert into ops.backup_receipts:1
-crates/adapters/src/maintenance_repo.rs:insert into ops.backup_sets:1
-crates/adapters/src/maintenance_repo.rs:insert into ops.restore_drills:1
-crates/adapters/src/maintenance_repo.rs:insert into ops.restore_witnesses:1
-crates/adapters/src/maintenance_repo.rs:insert into ops.wal_archive_failures:1
 crates/adapters/src/maintenance_repo.rs:update control.partition_registry:1
 crates/adapters/src/model_call_ledger.rs:insert into ops.tenant_cost_events:1
 crates/adapters/src/retrieval_query_source.rs:insert into private.retrieval_query_sources:1

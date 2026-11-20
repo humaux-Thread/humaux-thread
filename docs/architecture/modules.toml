@@ -975,6 +975,7 @@ may_depend_on = [
 [[module]]
 id = "knowledge_backup"
 files = [
+  "crates/adapters/src/knowledge_backup_repo.rs",
   "crates/application/src/knowledge_backup.rs",
   "crates/application/src/knowledge_backup/drill_projection.rs",
 ]
