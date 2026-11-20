@@ -352,7 +352,9 @@ pub struct RecallHydrationRequest<'a> {
     /// Bootstrap-selected stream family.
     pub family: &'a StreamFamily,
     /// Projection selected for the candidate search; rechecked by the port.
-    pub projection_version: &'a str,
+    pub projection_version: Option<&'a str>,
+    /// ADR-0134 verified prefix observed before the nominated candidate batch.
+    pub frontier: Option<RecallQueryFrontier>,
     /// Registered embedding identity.
     pub embedding_version: &'a str,
     /// Ordered, untrusted nominations.
@@ -1384,9 +1386,17 @@ pub enum SparseLegFailure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HydrateRefusal {
     Forbidden,
+    ProjectionLag,
     ConsistencyTokenRefused { reason: &'static str },
     TokenKeysUnset,
     DependencyUnavailable { class: String },
+}
+
+/// Watermarks for the selected serving key, read together before the index query (ADR-0134).
+#[derive(Debug, Clone, Copy)]
+pub struct RecallQueryFrontier {
+    pub projection_highwater: i64,
+    pub contiguous_done_prefix: i64,
 }
 
 /// Inputs to build the concurrent candidate search query (`DenseQuery`).
@@ -1423,6 +1433,14 @@ pub trait RecallRoutePort: Send + Sync {
         authorization: &AuthorizationScope,
         key: &StreamKey,
     ) -> Result<Vec<i64>, ErrorCode>;
+
+    /// Pin the verified serving frontier for the candidate query about to run.
+    async fn pin_query_frontier(
+        &self,
+        authorization: &AuthorizationScope,
+        family: &StreamFamily,
+        key: &StreamKey,
+    ) -> Result<RecallQueryFrontier, ErrorCode>;
 
     async fn grouped_recall(&self, key: &StreamKey) -> Result<bool, ErrorCode>;
 }
@@ -1868,6 +1886,44 @@ where
     Ok(pending)
 }
 
+async fn hydrate_answer<H: RecallHydrationReadPort + Sync>(
+    port: &H,
+    request: RecallHydrationRequest<'_>,
+    async_support: &dyn RecallAsyncSupport,
+    request_id: Uuid,
+) -> Result<MaterializedPrivateReadServing, ErrorCode>
+where
+    H::Error: Into<HydrateRefusal>,
+{
+    hydrate_recall(port, request)
+        .await
+        .map_err(|error| match error.into() {
+            HydrateRefusal::Forbidden => ErrorCode::Forbidden,
+            HydrateRefusal::ProjectionLag => ErrorCode::ProjectionLag,
+            HydrateRefusal::ConsistencyTokenRefused { reason } => {
+                async_support.record_diagnostic(RecallDiagnostic::ConsistencyTokenRefused {
+                    request_id,
+                    reason,
+                });
+                ErrorCode::InvalidInput
+            }
+            HydrateRefusal::TokenKeysUnset => {
+                async_support.record_diagnostic(RecallDiagnostic::MaterializeFailed {
+                    request_id,
+                    class: "token_keys_unset",
+                });
+                ErrorCode::DependencyUnavailable
+            }
+            HydrateRefusal::DependencyUnavailable { class } => {
+                async_support.record_diagnostic(RecallDiagnostic::MaterializeFailed {
+                    request_id,
+                    class: &class,
+                });
+                ErrorCode::DependencyUnavailable
+            }
+        })
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn answer_recall<H, T, F>(
     embedding_port: &dyn RetrievalEmbeddingPort,
@@ -1926,8 +1982,17 @@ where
         return Err(ErrorCode::InvalidInput);
     }
     clock.lap(Stage::Planner);
+    let token = input.consistency_token.as_deref();
     let state = route_port
-        .family_read_state(&authorization, &config.key, UnservedLedger::Read)
+        .family_read_state(
+            &authorization,
+            &config.key,
+            if token.is_some() {
+                UnservedLedger::Skip
+            } else {
+                UnservedLedger::Read
+            },
+        )
         .await
         .map_err(|_| {
             async_support
@@ -1940,9 +2005,38 @@ where
     }
     let projection_version = match (state.serving, state.unserved) {
         (Some(version), _) => version,
-        (None, Some((ledger, pipeline))) => {
+        (None, unserved) => {
             async_support.record_diagnostic(RecallDiagnostic::NoServingProjection { request_id });
+            let (ledger, pipeline, bodies) = if let Some(token) = token {
+                let materialized = hydrate_answer(
+                    hydration_port,
+                    RecallHydrationRequest {
+                        authorization: &authorization,
+                        consistency_token: Some(token),
+                        family: &config.family,
+                        projection_version: None,
+                        frontier: None,
+                        embedding_version: config.embedding_version,
+                        candidates: &[],
+                        subject_ids: &input.subject_ids,
+                        affect: input.affect.as_ref(),
+                        texts: GatedTexts::Skip,
+                    },
+                    async_support,
+                    request_id,
+                )
+                .await?;
+                (
+                    materialized.ledger,
+                    materialized.pipeline,
+                    Some((materialized.bodies, materialized.grounding)),
+                )
+            } else {
+                let (ledger, pipeline) = unserved.ok_or(ErrorCode::DependencyUnavailable)?;
+                (ledger, pipeline, None)
+            };
             let (evidence, knowledge) = pipeline.blocks();
+            let mut returned = 0;
             return no_serving_projection_envelope(
                 &retrieval,
                 config.binary_build,
@@ -1950,7 +2044,15 @@ where
                 &ledger,
                 evidence,
                 knowledge,
-                |envelope: Envelope<Value>| {
+                |mut envelope: Envelope<Value>| {
+                    if let Some((bodies, grounding)) = bodies {
+                        envelope.freshness = bodies.freshness_summary();
+                        envelope.items = render_recall_items(bodies.items, &bodies.freshness)?;
+                        returned =
+                            u32::try_from(envelope.items.len()).map_err(|_| ErrorCode::Internal)?;
+                        envelope.completeness.returned = returned;
+                        envelope.grounding = grounding;
+                    }
                     let value = serde_json::to_value(envelope).map_err(|_| ErrorCode::Internal)?;
                     render_output(value)
                 },
@@ -1960,15 +2062,11 @@ where
                     cand_k: retrieval.cand_k(),
                     candidates: 0,
                     visible: None,
-                    returned: 0,
+                    returned,
                     stage_ms: None,
                 };
                 (pending, counts)
             });
-        }
-        (None, None) => {
-            async_support.record_diagnostic(RecallDiagnostic::NoServingProjection { request_id });
-            return Err(ErrorCode::DependencyUnavailable);
         }
     };
     clock.lap(Stage::Route);
@@ -2079,6 +2177,15 @@ where
         ErrorCode::DependencyUnavailable
     })?;
     let permit = index_port.authorize_index_access()?;
+    let frontier = if token.is_some() {
+        Some(
+            route_port
+                .pin_query_frontier(&authorization, &config.family, &serving_key)
+                .await?,
+        )
+    } else {
+        None
+    };
     let sparse_leg_input = sparse_corpus.as_ref().map(|corpus| {
         (
             Duration::from_millis(u64::from(config.profile.sparse_timeout_ms())),
@@ -2124,13 +2231,14 @@ where
         retrieval.cand_k() as usize,
     );
     clock.lap(Stage::Qdrant);
-    let mut materialized = hydrate_recall(
+    let mut materialized = hydrate_answer(
         hydration_port,
         RecallHydrationRequest {
             authorization: &authorization,
-            consistency_token: input.consistency_token.as_deref(),
+            consistency_token: token,
             family: &config.family,
-            projection_version: &projection_version,
+            projection_version: Some(&projection_version),
+            frontier,
             embedding_version: config.embedding_version,
             candidates: &candidates,
             subject_ids: &input.subject_ids,
@@ -2141,32 +2249,10 @@ where
                 GatedTexts::Skip
             },
         },
+        async_support,
+        request_id,
     )
-    .await
-    .map_err(|error| match error.into() {
-        HydrateRefusal::Forbidden => ErrorCode::Forbidden,
-        HydrateRefusal::ConsistencyTokenRefused { reason } => {
-            async_support.record_diagnostic(RecallDiagnostic::ConsistencyTokenRefused {
-                request_id,
-                reason,
-            });
-            ErrorCode::InvalidInput
-        }
-        HydrateRefusal::TokenKeysUnset => {
-            async_support.record_diagnostic(RecallDiagnostic::MaterializeFailed {
-                request_id,
-                class: "token_keys_unset",
-            });
-            ErrorCode::DependencyUnavailable
-        }
-        HydrateRefusal::DependencyUnavailable { class } => {
-            async_support.record_diagnostic(RecallDiagnostic::MaterializeFailed {
-                request_id,
-                class: &class,
-            });
-            ErrorCode::DependencyUnavailable
-        }
-    })?;
+    .await?;
     clock.lap(Stage::Hydrate);
     let rerank = rerank_stage(
         async_support,
