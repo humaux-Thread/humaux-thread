@@ -1073,6 +1073,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `protocol::mcp_catalog`
 
+#### `protocol::mcp_legacy`
+- env `CARGO_PKG_VERSION`
+
 #### `public-pool::vocab::model`
 
 #### `retrieval::candidate`
@@ -2672,6 +2675,9 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `protocol::mcp`
 
 #### `protocol::mcp_catalog`
+
+#### `protocol::mcp_legacy`
+- env `CARGO_PKG_VERSION`
 
 #### `retrieval::candidate`
 
@@ -16523,12 +16529,14 @@ why: MCP-over-HTTP server framework this adapter owns
 
 modules naming it:
 - `protocol::mcp`
+- `protocol::mcp_legacy`
 
 ### humaux-protocol → `axum` (normal)
-why: HTTP router the native MCP adapter is built on
+why: HTTP router for both MCP profiles
 
 modules naming it:
 - `protocol::mcp`
+- `protocol::mcp_legacy`
 - `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `tests`
@@ -16555,6 +16563,7 @@ why: JSON-RPC bodies, the embedded contracts/mcp catalog documents and page@1 cu
 modules naming it:
 - `protocol::mcp`
 - `protocol::mcp_catalog`
+- `protocol::mcp_legacy`
 - `protocol::mcp_profile`
 - `protocol::page`
 - `protocol::tests::error_degrade_exclusive`
