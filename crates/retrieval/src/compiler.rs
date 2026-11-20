@@ -16,7 +16,10 @@
 //! 所以「把 mandatory 混进排序」不是一条要靠评审拦住的写法，是写不出来的表达式。
 
 use humaux_domain::authority::{AuthorityClass, MemoryId};
-use humaux_domain::context::{MandatoryOverflow, SelectorId, budget_views::SupplementalBudgetView};
+use humaux_domain::context::{
+    SelectorId,
+    budget_views::{MandatoryOverflow, SupplementalBudgetView},
+};
 
 use crate::candidate::Candidate;
 use crate::envelope::FrozenGrounding;

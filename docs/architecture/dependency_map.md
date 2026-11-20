@@ -594,6 +594,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::lifecycle`
 
+#### `domain::lifecycle_types`
+
 #### `domain::memory`
 
 #### `domain::note`
@@ -2388,6 +2390,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::lifecycle`
 
+#### `domain::lifecycle_types`
+
 #### `domain::memory`
 
 #### `domain::network`
@@ -3375,6 +3379,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::ledger`
 
 #### `domain::lifecycle`
+
+#### `domain::lifecycle_types`
 
 #### `domain::memory`
 
@@ -4549,6 +4555,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::lifecycle`
 
+#### `domain::lifecycle_types`
+
 #### `domain::memory`
 
 #### `domain::note`
@@ -5397,6 +5405,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::ledger`
 
 #### `domain::lifecycle`
+
+#### `domain::lifecycle_types`
 
 #### `domain::memory`
 

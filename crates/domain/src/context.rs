@@ -1,6 +1,6 @@
 //! `domain::context` — §25.4 Mandatory Context Lane + §25.5 Budget/Overflow。
 //! Depends-on: crates=[sha2, uuid]; services=[PostgreSQL(any) r=[private.memory_records]]; env=[]; modules=[domain::authority, domain::confirm, domain::context::budget_views, domain::error, domain::evidence, domain::grounding, domain::ids, domain::memory]
-//! Called-by: [adapters::context_repo, adapters::continuity_read, application::continuity, application::pin, gateway::bootstrap, gateway::context, gateway::continuity, gateway::mcp_application, gateway::memory, retrieval::compiler, retrieval::completeness, retrieval::envelope, retrieval::handoff, tests]
+//! Called-by: [adapters::context_repo, adapters::continuity_read, application::continuity, application::pin, gateway::bootstrap, gateway::context, gateway::continuity, gateway::mcp_application, gateway::memory, retrieval::compiler, tests]
 //! Invariants: [zero IO: Mandatory selection has no query/embedding input, Mandatory items are never evicted by
 //!   rerank, and an overflow is cannot_establish, never a silent truncation]
 //! Spec: Baseline §1.2.1; §8.8; §10.1; ADR-0006; ADR-0019; ADR-0045
@@ -38,7 +38,9 @@ use crate::evidence::{EvidenceOriginClass, InstructionDisposition};
 use crate::grounding::{GroundingState, GroundingStateKind, RowGrounding};
 use crate::ids::Scope;
 use crate::memory::MemoryType;
-use budget_views::{BriefBudgetView, ContextBudgetLimits, SupplementalBudgetView};
+use budget_views::{
+    BriefBudgetView, ContextBudgetLimits, MandatoryOverflow, SupplementalBudgetView,
+};
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -1001,45 +1003,6 @@ impl SupplementalBudget {
 impl From<SupplementalBudget> for SupplementalBudgetView {
     fn from(reservation: SupplementalBudget) -> Self {
         Self(reservation.tokens())
-    }
-}
-
-/// §25.5 溢出。
-///
-/// **本类型不含任何 Context / rows / 可交付内容**，这是刻意的：调用方在这个臂里
-/// 拿不到「截断后的前半段」，所以「截掉后半段还声称 complete」写不出来。
-/// 它只带 §25.5 要求的 manifest/IDs 与缩减建议所需的量纲。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MandatoryOverflow {
-    expected: u64,
-    manifest: Vec<MemoryId>,
-    budget_tokens: u32,
-    required_tokens: u32,
-}
-
-impl MandatoryOverflow {
-    /// 应有条数。
-    #[must_use]
-    pub const fn expected(&self) -> u64 {
-        self.expected
-    }
-
-    /// §25.5 要求返回的 manifest/IDs，**全量**——分页建议要靠它才提得出来。
-    #[must_use]
-    pub fn manifest(&self) -> &[MemoryId] {
-        &self.manifest
-    }
-
-    /// 硬上限。
-    #[must_use]
-    pub const fn budget_tokens(&self) -> u32 {
-        self.budget_tokens
-    }
-
-    /// 实际需要。与上限之差就是缩减建议的量纲。
-    #[must_use]
-    pub const fn required_tokens(&self) -> u32 {
-        self.required_tokens
     }
 }
 
@@ -3026,6 +2989,19 @@ mod tests {
             overflow.required_tokens() > overflow.budget_tokens(),
             "缩减建议的量纲必须为正"
         );
+
+        let exact_fit = ContextBudget::new(500, 170)
+            .expect("budget")
+            .reserve(&m, &p)
+            .expect("mandatory and pinned fit exactly at the cap");
+        assert_eq!(exact_fit.tokens(), 330);
+
+        let one_over = ContextBudget::new(500, 169)
+            .expect("budget")
+            .reserve(&m, &p)
+            .expect_err("one token over the cap must produce a full overflow");
+        assert_eq!(one_over.manifest(), overflow.manifest());
+        assert_eq!(one_over.required_tokens() - one_over.budget_tokens(), 1);
     }
 
     // ---- binding 授权 ----
