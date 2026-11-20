@@ -1,12 +1,12 @@
 //! `gateway::tests::service_credentials` — §73.5.1 real PostgreSQL acceptance.
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-cache, humaux-domain, humaux-protocol, humaux-testkit, postgres, sqlx, tokio];
-//!   services=[PostgreSQL(role_gateway) x=[control.api_key_touch_last_used_batch], PostgreSQL(role_maintenance) x=[control.credential_pepper_epoch_advance,
+//!   services=[PostgreSQL(role_gateway) x=[control.api_key_touch_last_used_batch, control.api_key_touch_last_used_batch_rows], PostgreSQL(role_maintenance) x=[control.credential_pepper_epoch_advance,
 //!   control.credential_pepper_epoch_close],
 //!   PostgreSQL(role_migration_owner) w=[control.api_keys, control.memberships,
 //!   control.tenants, control.users, control.workspace_memberships, control.workspaces] r=[control.audit_events, control.credential_pepper_state]
 //!   x=[control.api_key_lookup, control.api_key_rehash, control.api_key_touch_last_used,
 //!   control.credential_pepper_epoch, control.revoke_api_key],
-//!   PostgreSQL(role_public_worker) x=[control.api_key_touch_last_used_batch]]; env=[HUMAUX_GATEWAY_PG_DSN,
+//!   PostgreSQL(role_public_worker) x=[control.api_key_touch_last_used_batch, control.api_key_touch_last_used_batch_rows]]; env=[HUMAUX_GATEWAY_PG_DSN,
 //!   HUMAUX_TEST_PG_DSN]; modules=[adapters::credential_repo, adapters::postgres, application::api_key, cache::region, domain::error, domain::ids, gateway::auth, humaux-testkit,
 //!   protocol::edge]
 //! Called-by: [cargo-test]
@@ -1118,12 +1118,24 @@ fn pre_route_generation_tracks_committed_revoke_and_live_check_refuses_a_warm_ca
             .expect_err("only the gateway can invoke batched touch");
         assert_eq!(denied.code().map(|code| code.code()), Some("42501"));
         db_ok(probe.rollback());
+
+        let mut probe = db_ok(f.admin.transaction());
+        // dep: PostgreSQL(role_public_worker) — the same role must not invoke the per-key door
+        db_ok(probe.batch_execute("SET LOCAL ROLE role_public_worker"));
+        let denied = probe
+            .query_one(
+                "SELECT * FROM control.api_key_touch_last_used_batch_rows(ARRAY[]::uuid[], 60)",
+                &[],
+            )
+            .expect_err("only the gateway can read batched touch receipts");
+        assert_eq!(denied.code().map(|code| code.code()), Some("42501"));
+        db_ok(probe.rollback());
     });
 }
 
 #[test]
 fn pre_route_batch_touch_counts_real_updates_and_keeps_route_generation() {
-    run_db_fixture::<CredentialFixture, _>("0309 gateway batched activity", |mut f| {
+    run_db_fixture::<CredentialFixture, _>("0310 gateway batched activity", |mut f| {
         let key = f.key(None, None, Some(1));
         let peer = f.key(None, None, Some(1));
         let before = live_route(&f.rt, &f.runtime, &key).expect("valid credential");
@@ -1135,20 +1147,46 @@ fn pre_route_batch_touch_counts_real_updates_and_keeps_route_generation() {
             )
             .expect_err("batch interval minimum is enforced by the DB");
         assert_eq!(early.code().map(|code| code.code()), Some("22023"));
+        let early = f
+            .gateway
+            .query_one(
+                "SELECT * FROM control.api_key_touch_last_used_batch_rows(ARRAY[$1]::uuid[], 59)",
+                &[&key.id],
+            )
+            .expect_err("per-key batch door enforces the same interval minimum");
+        assert_eq!(early.code().map(|code| code.code()), Some("22023"));
+        let legacy_key = f.key(None, None, Some(1));
+        assert!(!f.used(&legacy_key));
+        let legacy_touch = "SELECT control.api_key_touch_last_used_batch(ARRAY[$1]::uuid[], 60)";
+        let first = db_ok(f.gateway.query_one(legacy_touch, &[&legacy_key.id]));
+        assert_eq!(
+            first.get::<_, i64>(0),
+            1,
+            "legacy door reports the row it wrote"
+        );
+        assert!(f.used(&legacy_key));
+        let repeat = db_ok(f.gateway.query_one(legacy_touch, &[&legacy_key.id]));
+        assert_eq!(
+            repeat.get::<_, i64>(0),
+            0,
+            "legacy door skips the same window"
+        );
         let mut updates = 0;
         for _ in 0..100 {
             updates +=
                 f.rt.block_on(mark_used_batch(&f.runtime, &[key.id, key.id], 60))
-                    .unwrap();
+                    .unwrap()
+                    .len();
         }
         assert_eq!(updates, 1);
         assert!(f.used(&key));
         assert!(!f.used(&peer));
-        assert_eq!(
-            f.rt.block_on(mark_used_batch(&f.runtime, &[peer.id], 60))
-                .unwrap(),
-            1
-        );
+        let mixed =
+            f.rt.block_on(mark_used_batch(&f.runtime, &[key.id, peer.id], 60))
+                .unwrap();
+        assert_eq!(mixed.len(), 1);
+        assert!(mixed.contains_key(&peer.id));
+        assert!(f.used(&peer));
         assert!(live_route(&f.rt, &f.runtime, &key).is_ok_and(|live| live == before));
     });
 }

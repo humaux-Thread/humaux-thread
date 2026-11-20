@@ -238,6 +238,24 @@ written by:
 
 executed by:
 - (no process): `gateway::tests::service_credentials`
+
+### `control.api_key_touch_last_used_batch_rows`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0310_credential_batch_touch_rows
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `gateway::tests::service_credentials`
 - process(humaux-gateway): `adapters::credential_repo`
 
 ### `control.api_keys`

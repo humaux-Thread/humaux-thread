@@ -1,6 +1,6 @@
 //! `adapters::credential_repo` — Gateway-only read adapter for §73.5.1 service credential bindings.
-//! Depends-on: crates=[humaux-domain, sqlx, async-trait, humaux-application]; services=[PostgreSQL(any) r=[control.workspace_memberships] x=[control.api_key_lookup, control.api_key_rehash, control.api_key_touch_last_used, control.api_key_touch_last_used_batch]]; env=[]; modules=[adapters::postgres, domain::error, domain::identity, application::api_key, domain::ids]
-//! Called-by: [gateway::bootstrap, tests]
+//! Depends-on: crates=[humaux-domain, sqlx, async-trait, humaux-application]; services=[PostgreSQL(any) r=[control.workspace_memberships] x=[control.api_key_lookup, control.api_key_rehash, control.api_key_touch_last_used, control.api_key_touch_last_used_batch_rows]]; env=[]; modules=[adapters::postgres, domain::error, domain::identity, application::api_key, domain::ids]
+//! Called-by: [gateway::auth, gateway::bootstrap, tests]
 //! Invariants: [returns database facts only (HMAC and authorization stay in the auth layer); the workspace-ceiling
 //!   read runs only after a user-bound key validates, so a bad key does no membership work; a PG error is
 //!   DependencyUnavailable; a verifier is rewritten only through the epoch-gated, window-bounded api_key_rehash door (ADR-0059 D-H, migration 0204)]
@@ -13,6 +13,8 @@
 //! §6.1.1 workspace ceiling is a SEPARATE read, [`load_live_workspace_ids`], the authentication
 //! layer runs only after `validate_api_key` succeeds for a user-bound credential (ADR-0035, card
 //! 13) — so a machine credential or a bad key does no membership DB work.
+
+use std::collections::HashMap;
 
 use humaux_application::api_key::{ApiKeyRecord, ApiKeyStatus, CredentialFacts, CredentialStore};
 use humaux_domain::error::ErrorCode;
@@ -272,26 +274,28 @@ pub async fn mark_used(pool: &RuntimeDbPool, api_key_id: Uuid) -> Result<(), Err
     Ok(())
 }
 
-/// Writes due activity stamps in one owner door call using the trusted batch interval.
+/// Writes due activity stamps in one owner door call and returns the committed stamp for each updated key.
 pub async fn mark_used_batch(
     pool: &RuntimeDbPool,
     api_key_ids: &[Uuid],
     interval_seconds: i32,
-) -> Result<i64, ErrorCode> {
+) -> Result<HashMap<Uuid, OffsetDateTime>, ErrorCode> {
     // dep: PostgreSQL(any) — transaction for the activity-only commit setting
     let mut txn = pool.pool().begin().await.map_err(db_error)?;
     sqlx::query("SET LOCAL synchronous_commit = off")
         .execute(&mut *txn)
         .await
         .map_err(db_error)?;
-    let updated = sqlx::query_scalar("SELECT control.api_key_touch_last_used_batch($1, $2)")
-        .bind(api_key_ids)
-        .bind(interval_seconds)
-        .fetch_one(&mut *txn)
-        .await
-        .map_err(db_error)?;
+    let updated = sqlx::query_as::<_, (Uuid, OffsetDateTime)>(
+        "SELECT api_key_id, last_used_at FROM control.api_key_touch_last_used_batch_rows($1, $2)",
+    )
+    .bind(api_key_ids)
+    .bind(interval_seconds)
+    .fetch_all(&mut *txn)
+    .await
+    .map_err(db_error)?;
     txn.commit().await.map_err(db_error)?;
-    Ok(updated)
+    Ok(updated.into_iter().collect())
 }
 
 /// §73.5 / ADR-0059 D-H: rewrites a key's verifier from `old_hash` (previous pepper) to `new_hash`
