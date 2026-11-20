@@ -1,6 +1,6 @@
 //! `gateway::auth` — §73.5.1 headless authentication.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-application, tokio]; services=[]; env=[]; modules=[adapters::credential_repo, adapters::postgres, gateway::route_cache, domain::error, domain::identity, domain::ids, application::api_key, gateway::bootstrap]
-//! Called-by: [gateway::bootstrap, gateway::guard, tests]
+//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, tests]
 //! Invariants: [a PAT's allowed_workspace_ids is always an intersection of the live ACTIVE membership set with the credential's bound workspace; a stale binding whose membership was revoked yields Forbidden, never a silent tenant-wide downgrade; a key verified only by the previous pepper is rehashed after validation and the rehash is never fatal to the request (ADR-0059 D-H); the touch throttle gates only the last_used_at write, so lookup and validation run on every request and a revoked or expired key is refused on the very next request whatever the throttle window holds (M02 D8)]
 //! Spec: Baseline §73.5.1; §6.1.1; §33; §78.1; ADR-0035; ADR-0059
 //!
@@ -125,6 +125,16 @@ impl TouchThrottle {
             .remove(&credential);
     }
 
+    fn release_claim(&self, credential: PrincipalId, claimed_at: SystemTime) {
+        let mut touched = self
+            .last_touch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if touched.get(&credential) == Some(&claimed_at) {
+            touched.remove(&credential);
+        }
+    }
+
     pub(crate) async fn stamp(
         &self,
         pool: &RuntimeDbPool,
@@ -141,7 +151,11 @@ impl TouchThrottle {
     }
 }
 
-type PendingTouch = (PrincipalId, oneshot::Sender<Result<(), ErrorCode>>);
+type PendingTouch = (
+    PrincipalId,
+    SystemTime,
+    oneshot::Sender<Result<(), ErrorCode>>,
+);
 
 pub(crate) struct BatchTouch {
     throttle: Arc<TouchThrottle>,
@@ -166,14 +180,18 @@ impl BatchTouch {
         let mut batch = Vec::new();
         let mut ids = Vec::new();
         while receiver.recv_many(&mut batch, TOUCH_MAP_CAP).await != 0 {
-            ids.extend(batch.iter().map(|(principal, _)| principal.0));
-            let result = mark_used_batch(&pool, &ids, seconds).await.map(|_| ());
+            ids.extend(batch.iter().map(|(principal, _, _)| principal.0));
+            let result = mark_used_batch(&pool, &ids, seconds).await;
+            let outcome = result.as_ref().map(|_| ()).map_err(|code| *code);
             ids.clear();
-            for (principal, done) in batch.drain(..) {
-                if result.is_err() {
-                    claims.release(principal);
+            for (principal, claimed_at, done) in batch.drain(..) {
+                if !result
+                    .as_ref()
+                    .is_ok_and(|written| written.contains_key(&principal.0))
+                {
+                    claims.release_claim(principal, claimed_at);
                 }
-                let _ = done.send(result);
+                let _ = done.send(outcome);
             }
         }
     }
@@ -188,14 +206,14 @@ impl BatchTouch {
         }
         let (done, result) = oneshot::channel();
         // A full queue refuses immediately and lets the next authenticated request retry the stamp.
-        if self.pending.try_send((principal, done)).is_err() {
-            self.throttle.release(principal);
+        if self.pending.try_send((principal, now, done)).is_err() {
+            self.throttle.release_claim(principal, now);
             return Err(ErrorCode::DependencyUnavailable);
         }
         match result.await {
             Ok(outcome) => outcome,
             Err(_) => {
-                self.throttle.release(principal);
+                self.throttle.release_claim(principal, now);
                 Err(ErrorCode::DependencyUnavailable)
             }
         }

@@ -1,5 +1,5 @@
 //! `gateway::mcp_application` — Gateway implementation of the native MCP application port.
-//! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-protocol, humaux-telemetry, humaux-testkit, postgres, serde, serde_json, time, tokio, uuid]; services=[PostgreSQL(role_gateway) r=[private.memory_records] w=[control.w2_test_request_intervals] x=[private.publish_continuity_facet, private.register_continuity_project], HTTP(gateway)]; env=[HUMAUX_CONTINUITY_DIRECT_PREAUTH_SAME_KEY, HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID, HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[adapters::affect_repo, adapters::byok, adapters::coord_repo, adapters::memory_governance_repo, adapters::postgres, adapters::subject_repo, application::continuity, application::coordination, application::distill, application::lifecycle_execution, application::recall_read, application::remember, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source, domain::subject, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::memory, gateway::recall, gateway::remember, protocol::mcp, protocol::mcp_catalog, telemetry::metrics]
+//! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-protocol, humaux-telemetry, humaux-testkit, postgres, serde, serde_json, time, tokio, uuid]; services=[PostgreSQL(role_gateway) r=[private.memory_records] w=[control.w2_test_request_intervals] x=[private.publish_continuity_facet, private.register_continuity_project], HTTP(gateway)]; env=[HUMAUX_CONTINUITY_DIRECT_PREAUTH_SAME_KEY, HUMAUX_CONTINUITY_W2_BARRIER_RUN_ID, HUMAUX_CONTINUITY_W2_BARRIER_SIDE]; modules=[adapters::affect_repo, adapters::byok, adapters::coord_repo, adapters::memory_governance_repo, adapters::postgres, adapters::subject_repo, application::continuity, application::coordination, application::distill, application::lifecycle_execution, application::recall_read, application::remember, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::continuity, domain::coordination, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::source, domain::subject, gateway::auth, gateway::bootstrap, gateway::context, gateway::continuity, gateway::guard, gateway::memory, gateway::recall, gateway::remember, protocol::mcp, protocol::mcp_catalog, telemetry::metrics]
 //! Called-by: [gateway::bootstrap, tests]
 //! Invariants: [no path mints and accepts in one call; the canonical catalog validates wire arguments before dispatch runs; a valid contract with no local implementation is denied by GatewayGuard, never silently no-op'd]
 //! Spec: Baseline §33.10; §34.0.1; §78.1; ADR-0030; ADR-0031
@@ -3224,6 +3224,100 @@ mod tests {
         Fixture, Handle, SYNTHETIC_CREDENTIAL_PEPPER, SyntheticCredentialScopes,
     };
     use crate::guard::{GuardRatePolicies, GuardSettings};
+
+    #[test]
+    fn g_m03_5_batch_retries_db_skip_across_windows() {
+        use crate::auth::BatchTouch;
+        use std::time::SystemTime;
+
+        run_db_fixture::<Fixture, _>("M03-4 batch retries DB skip", |mut handle| {
+            let mut seed = || {
+                let prefix = format!("touch_{}", Uuid::now_v7().simple());
+                let wire = format!("{prefix}.{}", "d".repeat(32));
+                handle.seed_synthetic_service_credential(
+                    SyntheticCredentialScopes::ContextRead,
+                    &prefix,
+                    &wire,
+                    &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
+                )
+            };
+            let (a, b) = (seed(), seed());
+            let (a_id, b_id) = (PrincipalId(a.api_key_id), PrincipalId(b.api_key_id));
+            // Both sends in join! enter the same batch before the single-threaded writer is polled.
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let batch = rt.block_on(async {
+                BatchTouch::new(
+                    Arc::new(handle.fresh_runtime().await.unwrap()),
+                    Duration::from_secs(60),
+                    60,
+                )
+            });
+            let t0 = SystemTime::now();
+            let at = |seconds| t0 + Duration::from_secs(seconds);
+            let stamp =
+                |principal, seconds| rt.block_on(batch.stamp(principal, at(seconds))).unwrap();
+
+            let a_initial = handle.credential_activity(&a);
+            stamp(a_id, 0);
+            let a_first = handle.credential_activity(&a);
+            assert!(a_first.1);
+            assert_ne!(a_first, a_initial, "A must write once in its first window");
+            stamp(a_id, 59);
+            assert_eq!(handle.credential_activity(&a), a_first);
+
+            // At local t=60, A's persisted stamp is still only 58 seconds old.
+            handle.age_credential_activity(&a, 58);
+            let (a_before_skip, b_initial) = (
+                handle.credential_activity(&a),
+                handle.credential_activity(&b),
+            );
+            let (a_attempt, b_attempt) = rt.block_on(async {
+                tokio::join!(batch.stamp(a_id, at(60)), batch.stamp(b_id, at(60)))
+            });
+            a_attempt.unwrap();
+            b_attempt.unwrap();
+            assert_eq!(
+                handle.credential_activity(&a),
+                a_before_skip,
+                "DB must skip A at local t=60"
+            );
+            assert_ne!(
+                handle.credential_activity(&b),
+                b_initial,
+                "B must write in the mixed batch"
+            );
+
+            // At local t=63, A's persisted stamp is 61 seconds old. Making B eligible at the DB
+            // isolates the local claim check: a successful B must still own its local window.
+            handle.age_credential_activity(&a, 61);
+            handle.age_credential_activity(&b, 61);
+            let (a_before_retry, b_before_repeat) = (
+                handle.credential_activity(&a),
+                handle.credential_activity(&b),
+            );
+            stamp(a_id, 63);
+            assert_ne!(
+                handle.credential_activity(&a),
+                a_before_retry,
+                "A must write once DB time reaches its second window"
+            );
+            stamp(b_id, 63);
+            assert_eq!(
+                handle.credential_activity(&b),
+                b_before_repeat,
+                "A's miss must preserve B's successful local claim"
+            );
+            stamp(b_id, 120);
+            assert_ne!(
+                handle.credential_activity(&b),
+                b_before_repeat,
+                "B must write in its own second window"
+            );
+        });
+    }
 
     const HOST: &str = "mcp.test";
     const ORIGIN: &str = "https://mcp.test";

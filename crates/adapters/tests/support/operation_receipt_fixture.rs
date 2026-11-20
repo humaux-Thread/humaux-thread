@@ -635,6 +635,19 @@ impl Handle {
             .expect("owner revokes isolated synthetic credential");
     }
 
+    /// Sets the age of one fixture credential relative to the PostgreSQL clock.
+    pub fn age_credential_activity(
+        &mut self,
+        credential: &SyntheticServiceCredential,
+        seconds: u32,
+    ) {
+        let changed = self.admin.execute(
+            "UPDATE control.api_keys SET last_used_at = statement_timestamp() - make_interval(secs => $2) WHERE api_key_id = $1",
+            &[&credential.api_key_id, &f64::from(seconds)],
+        ).expect("owner sets only the isolated fixture credential's activity age");
+        assert_eq!(changed, 1);
+    }
+
     /// Reads the isolated credential's current row version and whether activity was stamped.
     pub fn credential_activity(
         &mut self,
