@@ -56,7 +56,7 @@ use crate::{
     affect_repo::parse_affects,
     byok::{
         OutputChannel, PrivateInferenceContext, ReasoningCapability, ReasoningProviderDescriptor,
-        StructuredReasoningRequest, UserReasoningProvider, json_has_nul,
+        ReasoningProviderError, StructuredReasoningRequest, UserReasoningProvider, json_has_nul,
     },
     consolidate_repo::authority_class_from_db_str,
     consolidation_reasoner::domain_owner,
@@ -870,7 +870,13 @@ impl<'a> DistillReasoner<'a> {
                         &error,
                     )
                 );
-                DistillCallOutcome::Failed(error.class())
+                DistillCallOutcome::Failed {
+                    class: error.class(),
+                    retry_after: match error {
+                        ReasoningProviderError::RetryWait { retry_after } => retry_after,
+                        _ => None,
+                    },
+                }
             }
         })
     }
@@ -928,16 +934,7 @@ pub struct PreparedDistillCall {
 }
 
 /// How one admitted request ended ([`DistillReasoner::call`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DistillCallOutcome {
-    /// The provider answered; ledger and disclosure are finalized as success.
-    Answered(DistillInferenceResult),
-    /// The provider returned an error, finalized FAILED; the static class
-    /// (`ReasoningProviderError::class`), never provider text.
-    Failed(&'static str),
-    /// The HTTP cutoff won: nothing finalized, the outcome is unknown (ADR-0058 T5 -> T6).
-    Unknown,
-}
+pub use humaux_application::distill_execution::DistillCallOutcome;
 
 #[async_trait::async_trait(?Send)]
 impl<A: crate::memory_repo::MemoryAttribution + Copy>
@@ -1021,19 +1018,10 @@ impl<A: crate::memory_repo::MemoryAttribution + Copy>
         humaux_application::distill_execution::DistillCallOutcome,
         humaux_application::distill_execution::DistillError,
     > {
-        use humaux_application::distill_execution::DistillCallOutcome as Outcome;
-        Ok(
-            match self
-                .reasoner
-                .call(prepared, cutoff)
-                .await
-                .map_err(humaux_application::distill_execution::DistillError::Reasoning)?
-            {
-                DistillCallOutcome::Answered(v) => Outcome::Answered(v),
-                DistillCallOutcome::Failed(c) => Outcome::Failed(c),
-                DistillCallOutcome::Unknown => Outcome::Unknown,
-            },
-        )
+        self.reasoner
+            .call(prepared, cutoff)
+            .await
+            .map_err(humaux_application::distill_execution::DistillError::Reasoning)
     }
     fn parse(&self, bytes: &[u8], affects: bool) -> Result<DistillReply, &'static str> {
         parse_distill_output_detailed(bytes, affects).map_err(DistillParseError::as_str)

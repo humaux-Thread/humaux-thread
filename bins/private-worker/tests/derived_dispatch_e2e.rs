@@ -5175,8 +5175,8 @@ fn retire_open_jobs(admin: &mut Client, tenants: &[Uuid]) -> u64 {
         .expect("retire leftover jobs")
 }
 
-/// ADR-0058 §7 M6 — a poison Evidence (its domain bound to a model MiniMax does not serve) dies
-/// after `max_attempts` real provider refusals while the tenant's good domain is served. Phased so
+/// ADR-0058 §7 M6 / Baseline §11.3 — poison Evidence (bound to a model MiniMax does not serve) dies
+/// on the first permanent refusal while the tenant's good domain is served. Phased so
 /// no two dispatchers ever compete for one job (a process serves one provider until card 33b):
 /// phase A runs only the poison-lane dispatcher until the poison job is DEAD — the good jobs it
 /// claims are released NOT_READY and keep attempt 0; phase B makes the good jobs due and runs only
@@ -5246,15 +5246,8 @@ fn distill_poison_live() {
         let mut good_config = live_config("c32-m6-good-lane", 5.0, 3);
         good_config.max_attempts = 3;
 
-        // Phase A bound: every attempt's HTTP window + one lease of claim/settle work, plus the
-        // backoffs between attempts, plus one more lease of poll slack.
-        let backoffs: f64 = (1..poison_config.max_attempts)
-            .map(|a| jobs::retry_backoff_seconds(poison_config.lease_seconds, a))
-            .sum();
-        let phase_a_bound = backoffs
-            + f64::from(poison_config.max_attempts)
-                * (poison_config.http_timeout_seconds + poison_config.lease_seconds)
-            + poison_config.lease_seconds;
+        // §11.3: one HTTP window, one lease for claim/settle work, one lease of poll slack.
+        let phase_a_bound = poison_config.http_timeout_seconds + 2.0 * poison_config.lease_seconds;
         let poison_provider = Arc::new(live_minimax::live_provider(
             key.clone(),
             POISON_MODEL_ID,
@@ -5329,16 +5322,12 @@ fn distill_poison_live() {
             phase_a.report.summary_line(),
         );
         assert!(phase_a.met, "M6 phase A: the poison job never reached DEAD");
-        assert_eq!(
-            (status.as_str(), attempt),
-            ("DEAD", poison_config.max_attempts)
-        );
+        assert_eq!((status.as_str(), attempt), ("DEAD", 1));
         assert_eq!(class.as_deref(), Some("PROVIDER_PERMANENT"));
-        let max_calls = i64::from(poison_config.max_attempts);
         assert_eq!(
             (poison_calls, poison_ledger, poison_refused),
-            (max_calls, max_calls, max_calls),
-            "one FAILED ledger row per real call"
+            (1, 1, 1),
+            "one admitted permanent refusal and one FAILED ledger row"
         );
         assert_eq!(handle.outbox_status(poison_row), "FAILED");
         assert!(
