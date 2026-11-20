@@ -9,7 +9,7 @@
 //!   w=[ops.outbox, projection.stream_log],
 //!   PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::affect_repo, adapters::postgres,
 //!   adapters::private_projection_registry, adapters::qdrant, adapters::remember, adapters::stream_repo,
-//!   application::projection_execution, domain::affect, domain::authority, domain::dataclass, domain::egress, domain::error, domain::identity,
+//!   application::projection_execution, domain::affect_read, domain::authority, domain::dataclass, domain::egress, domain::error, domain::identity,
 //!   domain::ids, domain::memory, domain::subject, domain::ticket_family, humaux-local-secret-scan, infra-cell::permit,
 //!   infra-cell::transport, projection::card, projection::note_chunks, projection::serving, projection::stream]
 //! Called-by: [adapters::rebuild, gateway::bootstrap, maintenance::bootstrap, retrieval-worker::main, tests]
@@ -132,7 +132,7 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::task::{Poll, Waker};
 use std::time::Duration;
 
-use humaux_domain::affect::AffectAnnotation;
+use humaux_domain::affect_read::AffectIndexRow;
 use humaux_domain::authority::{AuthorityClass, AuthorityStatus, MemoryId};
 use humaux_domain::dataclass::DataClass;
 use humaux_domain::egress::ProcessorId;
@@ -615,7 +615,7 @@ pub(crate) struct ResolvedMemory {
     /// §8.5.1 / ADR-0030 D-D: the memory's `private.memory_affects` rows, read in the same
     /// transaction (role_retrieval_worker's own SELECT) through the ONE set-based read
     /// (`affect_repo::affects_for_memories_in_txn`), flattened into the payload by `finish_row`.
-    affects: Vec<AffectAnnotation>,
+    affects: Vec<AffectIndexRow>,
     /// ADR-0055 D-B: `archived_at IS NOT NULL`, read here so every ticket that re-projects the
     /// memory writes the current flag (no transition-specific ticket exists or is needed).
     archived: bool,
@@ -722,7 +722,7 @@ async fn parse_resolved_memory(
     let affects = crate::affect_repo::affects_for_memories_in_txn(txn, tenant_id, &[memory_id])
         .await?
         .into_iter()
-        .map(|row| row.annotation)
+        .map(|row| row.annotation.index_view())
         .collect();
 
     Ok(Some(ResolvedMemory {

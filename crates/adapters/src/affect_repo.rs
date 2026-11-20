@@ -172,7 +172,7 @@ pub fn recall_affect_reader() -> crate::read_materialize::AffectMatchReadPort {
         Box::pin(async move {
             let rows = affects_for_memories_in_txn(txn, tenant_id, memory_ids).await?;
             Ok(humaux_application::affect::memories_matching(
-                filter,
+                &AffectFilter::from_read_view(filter),
                 &observed(&rows, OffsetDateTime::now_utc()),
             ))
         })

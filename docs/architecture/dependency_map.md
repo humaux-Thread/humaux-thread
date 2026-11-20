@@ -538,6 +538,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::affect`
 
+#### `domain::affect_read`
+
 #### `domain::attribution`
 
 #### `domain::audit`
@@ -2321,6 +2323,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::affect`
 
+#### `domain::affect_read`
+
 #### `domain::attribution`
 
 #### `domain::audit`
@@ -3297,6 +3301,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `contracts::retrieval_config`
 
 #### `domain::affect`
+
+#### `domain::affect_read`
 
 #### `domain::attribution`
 
@@ -4464,6 +4470,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::affect`
 
+#### `domain::affect_read`
+
 #### `domain::attribution`
 
 #### `domain::audit`
@@ -5304,6 +5312,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `contracts::retrieval_config`
 
 #### `domain::affect`
+
+#### `domain::affect_read`
 
 #### `domain::attribution`
 
