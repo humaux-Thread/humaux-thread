@@ -186,9 +186,13 @@ async fn serve(bootstrap: GatewayBootstrap) -> Result<(), Box<dyn Error>> {
     let mut mcp = runtime.adapter().router();
     if let Some(config) = runtime.take_auth_pages() {
         let login = runtime.passwordless_login(&config);
-        mcp = mcp.merge(auth_pages::router(runtime.guard(), config, login));
+        mcp = mcp.merge(auth_pages::router(
+            runtime.guard(),
+            config,
+            Arc::clone(&login),
+        ));
         if let Some(config) = runtime.take_oauth_http() {
-            mcp = mcp.merge(oauth_http::router(runtime.guard(), config));
+            mcp = mcp.merge(oauth_http::router(runtime.guard(), config, login));
         }
     }
     // ADR-0065 D-C: admission wraps the MCP router only; /livez and /readyz are merged outside it.

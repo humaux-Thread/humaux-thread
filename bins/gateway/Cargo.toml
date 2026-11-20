@@ -53,6 +53,9 @@ uuid = { version = "1.25.0", features = ["v4", "v7", "serde"] }
 # why: well-formed unknown OAuth refresh secrets in HTTP negative tests; used-by: [tests]
 rand = "0.9"
 
+# why: OAuth form encoding and registered redirect parsing; used-by: [gateway::bootstrap, gateway::oauth_http, tests]
+url = "2.5"
+
 [dev-dependencies]
 # why: freeze the production limiter clock for exact hierarchy/restart assertions; used-by: [tests]
 tokio = { version = "1", features = ["test-util"] }

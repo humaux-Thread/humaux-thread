@@ -1,6 +1,6 @@
 //! `application::read_quota` — Commercial read charging from the effective entitlement projection (§72.2.1, §76).
 //! Depends-on: crates=[async-trait, humaux-domain, serde_json, time]; services=[]; env=[]; modules=[domain::error, domain::identity]
-//! Called-by: [adapters::audited_read_quota, gateway::bootstrap, gateway::guard]
+//! Called-by: [adapters::audited_read_quota, gateway::bootstrap, gateway::guard, gateway::oauth_http]
 //! Invariants: [each quota transition and its audit share a commit; the projection clock comes from the database]
 //! Spec: Baseline §72.2.1; §77; ADR-0130 D2/D5
 

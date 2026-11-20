@@ -4,7 +4,7 @@
 //!   stream cache) — the same family the 14 governance / subject / affect writes attach to since ADR-0054, so
 //!   the process holds no default write pair at all.
 //! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
-//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde, serde_json, sha2, tokio, uuid];
+//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde, serde_json, sha2, tokio, url, uuid];
 //!   services=[PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_BILLING_WEBHOOK_PROVIDERS, HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS, HUMAUX_GATEWAY_DEPLOYMENT, HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS,
 //!   HUMAUX_GATEWAY_RATE_USER_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_TENANT_MAX_SUBJECTS,
@@ -22,7 +22,7 @@
 //!   HUMAUX_GATEWAY_PUBLIC_BASE_URL, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS,
 //!   HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS,
-//!   HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS,
+//!   HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE, HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_EMBEDDING_DIMENSION, HUMAUX_GATEWAY_EMBEDDING_MODEL_ID, HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION,
 //!   HUMAUX_GATEWAY_EMBEDDING_PROVIDER_ID, HUMAUX_GATEWAY_EMBEDDING_VERSION, HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP,
@@ -157,6 +157,7 @@ const LOGIN_CODE_PEPPER_KEY: &str = "HUMAUX_GATEWAY_LOGIN_CODE_PEPPER";
 const EMAIL_RECIPIENT_ALLOWLIST_KEY: &str = "HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST";
 /// ADR-0125 8e (§78.1): the console session's absolute and idle lifetimes, the login code's lifetime and attempt cap,
 /// and the resend cooldown. Registry defaults are the former `AuthConfig::default()` values.
+const OAUTH_RESOURCE_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE";
 const OAUTH_CODE_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS";
 const OAUTH_ACCESS_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS";
 const OAUTH_REFRESH_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS";
@@ -920,9 +921,32 @@ fn parse_oauth_http(
             "must not exceed HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS",
         ));
     }
+    let issuer = parse_public_origin(required(effective, PUBLIC_BASE_URL_KEY)?)?;
+    let resource = match effective.get(OAUTH_RESOURCE_KEY).map(String::as_str) {
+        None | Some("") => format!("{issuer}/mcp"),
+        Some(value) => {
+            let url = url::Url::parse(value)
+                .map_err(|_| BootstrapError::new(OAUTH_RESOURCE_KEY, "invalid resource URL"))?;
+            if url.scheme() != "https"
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.fragment().is_some()
+                || value.chars().any(char::is_whitespace)
+            {
+                return Err(BootstrapError::new(
+                    OAUTH_RESOURCE_KEY,
+                    "must be an absolute HTTPS resource URL",
+                ));
+            }
+            value.to_owned()
+        }
+    };
     Ok(Some(OAuthHttpConfig {
         keys,
-        issuer: parse_public_origin(required(effective, PUBLIC_BASE_URL_KEY)?)?,
+        issuer,
+        resource,
+        login_return_ttl: parse_auth_lifetimes(effective)?.login_challenge.ttl,
         code_ttl,
         access_ttl,
         refresh_ttl,
@@ -1805,6 +1829,7 @@ pub fn registry() -> Vec<ConfigEntry> {
         ]
         .map(|(name, default)| entry_with_default(name, "u64", false, default)),
     );
+    entries.push(entry_with_default(OAUTH_RESOURCE_KEY, "string", false, ""));
     entries.push(entry_with_default(BILLING_PROVIDERS, "string", false, "{}"));
     entries.extend(
         ["REMEMBER_TENANT_ID", "REMEMBER_WORKSPACE_ID"]

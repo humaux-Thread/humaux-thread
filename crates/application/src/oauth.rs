@@ -112,6 +112,8 @@ impl OAuthReason {
     pub const SCOPE_REQUIRED: Self = Self(2012);
     /// A requested scope is not supported.
     pub const SCOPE_UNSUPPORTED: Self = Self(2013);
+    /// The authenticated user declined consent.
+    pub const CONSENT_DENIED: Self = Self(2014);
     /// Token request `grant_type` is not `authorization_code`.
     pub const GRANT_TYPE_UNSUPPORTED: Self = Self(2101);
     /// Code unknown, already used or expired (the door consumed nothing).
@@ -182,7 +184,7 @@ const fn row(
 }
 
 /// The one table mapping every [`OAuthReason`] to its label, OAuth wire `error` string and `ErrorCode`.
-pub const OAUTH_REASONS: [ReasonRow; 28] = [
+pub const OAUTH_REASONS: [ReasonRow; 29] = [
     row(
         OAuthReason::CLIENT_UNKNOWN,
         "CLIENT_UNKNOWN",
@@ -260,6 +262,12 @@ pub const OAUTH_REASONS: [ReasonRow; 28] = [
         "SCOPE_UNSUPPORTED",
         "invalid_scope",
         ErrorCode::InvalidInput,
+    ),
+    row(
+        OAuthReason::CONSENT_DENIED,
+        "CONSENT_DENIED",
+        "access_denied",
+        ErrorCode::Forbidden,
     ),
     row(
         OAuthReason::GRANT_TYPE_UNSUPPORTED,
@@ -1103,7 +1111,7 @@ mod tests {
 
     #[test]
     fn reason_table_is_closed_unique_and_total() {
-        assert_eq!(OAUTH_REASONS.len(), 28);
+        assert_eq!(OAUTH_REASONS.len(), 29);
         let mut codes = std::collections::HashSet::new();
         let mut labels = std::collections::HashSet::new();
         for row in OAUTH_REASONS {

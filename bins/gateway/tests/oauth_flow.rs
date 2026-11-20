@@ -1,11 +1,11 @@
 //! `gateway::tests::oauth_flow` — G-M02-7/8/9/14 through real HTTP, role_gateway and PostgreSQL doors.
 //! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol,
-//!   humaux-testkit, postgres, rand, serde_json, time, tokio, uuid];
-//!   services=[HTTP(loopback), PostgreSQL(any) w=[control.oauth_authorization_codes, control.oauth_client_registrations,
-//!   control.oauth_grants, control.oauth_refresh_tokens, control.tenants, control.users]
+//!   humaux-testkit, postgres, rand, serde_json, time, tokio, url, uuid];
+//!   services=[HTTP(loopback), PostgreSQL(any) r=[ops.email_outbox] w=[control.email_challenges, control.entitlement_snapshots, control.memberships, control.oauth_authorization_codes, control.oauth_client_registrations,
+//!   control.oauth_grants, control.oauth_refresh_tokens, control.sessions, control.tenants, control.user_emails, control.users, ops.email_outbox]
 //!   x=[control.bump_user_security_epoch], PostgreSQL(role_gateway)]; env=[CI, HUMAUX_TEST_PG_DSN];
-//!   modules=[adapters::oauth_repo, adapters::postgres, application::oauth, application::signed_token, domain::error,
-//!   domain::ids, gateway::guard, gateway::limiter, gateway::oauth_http, humaux-testkit, protocol::edge]
+//!   modules=[adapters::oauth_repo, adapters::postgres, adapters::session_repo, application::auth, application::login, application::oauth, application::session, application::signed_token, domain::error,
+//!   domain::ids, gateway::auth_pages, gateway::bootstrap, gateway::guard, gateway::limiter, gateway::oauth_http, humaux-testkit, protocol::edge]
 //! Called-by: [cargo-test]
 //! Invariants: [fixture rows are unique and cleaned; missing DB on CI fails; token comparisons use production
 //!   verification and the live grant; every expected refusal checks the exact wire object and no-store]
@@ -14,9 +14,13 @@
 use humaux_adapters::{
     oauth_repo::{self, ClientKind, CodeIssue, GrantRecord, SecretHash},
     postgres::RuntimeDbPool,
+    session_repo,
 };
 use humaux_application::{
+    auth::AuthConfig,
+    login::LoginVerifyOutcome,
     oauth::{self, ACCESS_TOKEN_LABEL, AccessTerms, GrantView, OAuthReason},
+    session::SessionPolicy,
     signed_token::TokenKeys,
 };
 use humaux_domain::{
@@ -24,6 +28,8 @@ use humaux_domain::{
     ids::{TenantId, UserId},
 };
 use humaux_gateway::{
+    auth_pages::{self, AuthPagesConfig},
+    bootstrap::passwordless_login_port,
     guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
     limiter::RatePolicy,
     oauth_http::{self, OAuthHttpConfig},
@@ -41,6 +47,7 @@ use tokio::{
 use uuid::Uuid;
 
 const ORIGIN: &str = "https://as.example.test";
+const NATIVE_RESOURCE: &str = "https://as.example.test/mcp";
 const REDIRECT: &str = "https://client.example.test/cb";
 const RESOURCE: &str = "https://resource.example.test/mcp";
 // RFC 7636 Appendix B: base64url(SHA256(VERIFIER)), without padding.
@@ -54,6 +61,8 @@ fn config(max: u64) -> OAuthHttpConfig {
     OAuthHttpConfig {
         keys: keys(),
         issuer: ORIGIN.to_owned(),
+        resource: NATIVE_RESOURCE.to_owned(),
+        login_return_ttl: Duration::from_secs(900),
         code_ttl: Duration::from_secs(300),
         access_ttl: Duration::from_secs(3600),
         refresh_ttl: Duration::from_secs(3600),
@@ -77,6 +86,19 @@ struct Handle {
 impl Drop for Handle {
     fn drop(&mut self) {
         for sql in [
+            "DELETE FROM ops.email_outbox WHERE user_id=$1",
+            "DELETE FROM control.email_challenges WHERE user_id=$1",
+            "DELETE FROM control.user_emails WHERE user_id=$1",
+        ] {
+            let _ = self.admin.execute(sql, &[&self.user_id]);
+        }
+        let _ = self.admin.execute(
+            "DELETE FROM control.sessions WHERE user_id=$1",
+            &[&self.user_id],
+        );
+        for sql in [
+            "DELETE FROM control.entitlement_snapshots WHERE tenant_id=$1",
+            "DELETE FROM control.memberships WHERE tenant_id=$1",
             "DELETE FROM control.oauth_refresh_tokens WHERE grant_id IN (SELECT grant_id FROM control.oauth_grants WHERE tenant_id=$1)",
             "DELETE FROM control.oauth_grants WHERE tenant_id=$1",
             "DELETE FROM control.oauth_authorization_codes WHERE tenant_id=$1",
@@ -189,14 +211,24 @@ fn serve(h: &Handle, max: u64) -> SocketAddr {
         h.rt.block_on(RuntimeDbPool::connect(&dsn_as_role(&h.dsn)))
             .expect("gateway pool");
     let guard = Arc::new(GatewayGuard::new(pool, guard_settings()).expect("guard"));
+    let pages = AuthPagesConfig {
+        keys: keys(),
+        public_origin: ORIGIN.to_owned(),
+        auth: AuthConfig::default(),
+        mail_from: "no-reply@as.example.test".to_owned(),
+        code_pepper: b"oauth-flow-fixture-login-pepper".to_vec(),
+        recipient_allowlist: String::new(),
+    };
+    let login = passwordless_login_port(&guard, &pages);
+    let router = oauth_http::router(Arc::clone(&guard), config(max), Arc::clone(&login))
+        .merge(auth_pages::router(guard, pages, login));
     h.rt.block_on(async {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let address = listener.local_addr().expect("address");
         tokio::spawn(async move {
             axum::serve(
                 listener,
-                oauth_http::router(guard, config(max))
-                    .into_make_service_with_connect_info::<SocketAddr>(),
+                router.into_make_service_with_connect_info::<SocketAddr>(),
             )
             .await
             .expect("serve");
@@ -207,13 +239,28 @@ fn serve(h: &Handle, max: u64) -> SocketAddr {
 struct Reply {
     status: u16,
     headers: BTreeMap<String, String>,
+    cookies: Vec<String>,
     body: String,
 }
 async fn http(address: SocketAddr, method: &str, path: &str, body: &str) -> Reply {
+    http_with(address, method, path, &[], body).await
+}
+
+async fn http_with(
+    address: SocketAddr,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> Reply {
     // dep: HTTP(loopback) — production router and pre-auth guard
     let mut stream = TcpStream::connect(address).await.expect("connect");
+    let extra: String = headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect();
     let raw = format!(
-        "{method} {path} HTTP/1.1\r\nHost: as.example.test\r\nConnection: close\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: as.example.test\r\nConnection: close\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n{extra}\r\n{body}",
         body.len()
     );
     stream.write_all(raw.as_bytes()).await.expect("write");
@@ -229,15 +276,20 @@ async fn http(address: SocketAddr, method: &str, path: &str, body: &str) -> Repl
         .unwrap()
         .parse()
         .unwrap();
+    let mut cookies = Vec::new();
     let headers = lines
         .map(|line| {
             let (key, value) = line.split_once(": ").unwrap();
+            if key.eq_ignore_ascii_case("set-cookie") {
+                cookies.push(value.to_owned());
+            }
             (key.to_ascii_lowercase(), value.to_owned())
         })
         .collect();
     Reply {
         status,
         headers,
+        cookies,
         body: body.to_owned(),
     }
 }
@@ -770,5 +822,345 @@ fn g_m02_8_unknown_refresh_secret_cannot_mint() {
         ]);
         denied(&post(&h, address, &body), OAuthReason::REFRESH_REJECTED);
         assert_eq!(grant_count(&mut h), 0);
+    });
+}
+
+fn authorize_url(client: &str, redirect: &str, method: &str) -> String {
+    format!(
+        "/oauth/authorize?{}",
+        form(&[
+            ("client_id", client),
+            ("redirect_uri", redirect),
+            ("response_type", "code"),
+            ("code_challenge", CHALLENGE),
+            ("code_challenge_method", method),
+            ("resource", NATIVE_RESOURCE),
+            ("scope", "context:read"),
+            ("state", "state + & 東京"),
+        ])
+    )
+}
+
+fn session_cookie(h: &Handle) -> String {
+    let session =
+        h.rt.block_on(session_repo::issue(
+            &h.gateway,
+            &SessionPolicy::from(&AuthConfig::default()),
+            LoginVerifyOutcome::Accepted(UserId(h.user_id)),
+        ))
+        .unwrap()
+        .unwrap();
+    format!("__Host-humaux_session={}", session.secret.cookie_value())
+}
+
+fn add_active_membership(h: &mut Handle, tenant: Uuid) {
+    h.admin.execute("INSERT INTO control.memberships(tenant_id,user_id,role,state) VALUES($1,$2,'OWNER','ACTIVE')",
+        &[&tenant, &h.user_id]).unwrap();
+}
+
+fn add_entitlement(h: &mut Handle, tenant: Uuid) {
+    let feature = serde_json::json!({"mcp.billable_operations.per_period": {
+        "limit": 50, "period": "calendar_month", "period_start": "2000-01-01T00:00:00Z",
+        "period_end": "2100-01-01T00:00:00Z", "charge_policy": "success_only"
+    }});
+    h.admin.execute("INSERT INTO control.entitlement_snapshots(tenant_id,effective,source_grant_ids,computed_at) VALUES($1,$2,ARRAY[]::uuid[],clock_timestamp())",
+        &[&tenant, &feature]).unwrap();
+}
+
+fn browser_get(h: &Handle, address: SocketAddr, path: &str, cookie: &str) -> Reply {
+    h.rt.block_on(http_with(address, "GET", path, &[("Cookie", cookie)], ""))
+}
+
+fn hidden<'a>(reply: &'a Reply, name: &str) -> &'a str {
+    reply
+        .body
+        .split_once(&format!(r#"name="{name}" value=""#))
+        .unwrap()
+        .1
+        .split('"')
+        .next()
+        .unwrap()
+}
+
+fn consent_body(page: &Reply, decision: &str) -> String {
+    form(&[
+        ("ticket", hidden(page, "ticket")),
+        ("csrf", hidden(page, "csrf")),
+        ("decision", decision),
+    ])
+}
+
+fn browser_consent(
+    h: &Handle,
+    address: SocketAddr,
+    cookie: &str,
+    origin: &str,
+    body: &str,
+) -> Reply {
+    h.rt.block_on(http_with(
+        address,
+        "POST",
+        "/oauth/authorize",
+        &[
+            ("Cookie", cookie),
+            ("Origin", origin),
+            ("Sec-Fetch-Site", "same-origin"),
+        ],
+        body,
+    ))
+}
+
+fn callback(reply: &Reply) -> BTreeMap<String, String> {
+    assert_eq!(reply.status, 303, "{}", reply.body);
+    let url = url::Url::parse(&reply.headers["location"]).unwrap();
+    assert_eq!(url.as_str().split('?').next(), Some(REDIRECT));
+    url.query_pairs().into_owned().collect()
+}
+
+#[test]
+fn m02_10b_rejects_zero_active_tenants() {
+    run_db_fixture::<OAuthFixture, _>("m02_10b_rejects_zero_active_tenants", |mut h| {
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        h.admin.execute("UPDATE control.memberships SET state='SUSPENDED' WHERE tenant_id=$1 AND user_id=$2",
+            &[&tenant, &h.user_id]).unwrap();
+        let path = authorize_url(&h.client_id, REDIRECT, "S256");
+        assert_eq!(
+            browser_get(&h, serve(&h, 7200), &path, &session_cookie(&h)).status,
+            403
+        );
+    });
+}
+
+#[test]
+fn m02_10b_rejects_no_entitlement() {
+    run_db_fixture::<OAuthFixture, _>("m02_10b_rejects_no_entitlement", |mut h| {
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        let path = authorize_url(&h.client_id, REDIRECT, "S256");
+        assert_eq!(
+            browser_get(&h, serve(&h, 7200), &path, &session_cookie(&h)).status,
+            403
+        );
+    });
+}
+
+#[test]
+fn m02_10b_rejects_multiple_active_tenants() {
+    run_db_fixture::<OAuthFixture, _>("m02_10b_rejects_multiple_active_tenants", |mut h| {
+        let address = serve(&h, 7200);
+        let session = session_cookie(&h);
+        let path = authorize_url(&h.client_id, REDIRECT, "S256");
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        let page = browser_get(&h, address, &path, &session);
+        assert_eq!(page.status, 200, "sole entitled tenant");
+        let second: Uuid = h.admin.query_one("INSERT INTO control.tenants(name,state) VALUES ('oauth second fixture','ACTIVE') RETURNING tenant_id", &[]).unwrap().get(0);
+        add_active_membership(&mut h, second);
+        add_entitlement(&mut h, second);
+        let multiple = browser_get(&h, address, &path, &session);
+        let stale = browser_consent(&h, address, &session, ORIGIN, &consent_body(&page, "allow"));
+        h.admin
+            .execute(
+                "DELETE FROM control.entitlement_snapshots WHERE tenant_id=$1",
+                &[&second],
+            )
+            .unwrap();
+        h.admin
+            .execute(
+                "DELETE FROM control.memberships WHERE tenant_id=$1",
+                &[&second],
+            )
+            .unwrap();
+        h.admin
+            .execute("DELETE FROM control.tenants WHERE tenant_id=$1", &[&second])
+            .unwrap();
+        assert_eq!(multiple.status, 403, "multiple active entitled tenants");
+        assert_eq!(stale.status, 403, "changed authority after GET");
+    });
+}
+
+#[test]
+fn m02_10b_returns_to_authorize_after_real_login() {
+    run_db_fixture::<OAuthFixture, _>("m02_10b_returns_to_authorize_after_real_login", |mut h| {
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        let email = format!("{}@as.example.test", h.user_id);
+        h.admin.execute("INSERT INTO control.user_emails(user_id,original_email,canonical_email) VALUES($1,$2,$2)",
+            &[&h.user_id, &email]).unwrap();
+        let addr = serve(&h, 7200);
+        let path = authorize_url(&h.client_id, REDIRECT, "S256");
+        let redirect = browser_get(&h, addr, &path, "");
+        assert_eq!(redirect.headers["location"], "/auth/login");
+        let cookie = |reply: &Reply, prefix: &str| {
+            reply
+                .cookies
+                .iter()
+                .find(|line| line.starts_with(prefix))
+                .unwrap()
+                .split(';')
+                .next()
+                .unwrap()
+                .to_owned()
+        };
+        let continuation = cookie(&redirect, "__Host-humaux_oauth_return=");
+        let login = h.rt.block_on(http_with(
+            addr,
+            "POST",
+            "/auth/login",
+            &[("Origin", ORIGIN), ("Cookie", &continuation)],
+            &form(&[("email", &email)]),
+        ));
+        let pending = cookie(&login, "__Host-humaux_login=");
+        let code: String = h.admin.query_one("SELECT payload->>'code' FROM ops.email_outbox WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1",
+            &[&h.user_id]).unwrap().get(0);
+        let cookies = format!("{pending}; {continuation}");
+        let reply = h.rt.block_on(http_with(
+            addr,
+            "POST",
+            "/auth/code",
+            &[("Origin", ORIGIN), ("Cookie", &cookies)],
+            &form(&[("code", &code)]),
+        ));
+        assert_eq!(reply.status, 303);
+        assert_eq!(reply.headers["location"], path);
+        let session = cookie(&reply, "__Host-humaux_session=");
+        assert_eq!(browser_get(&h, addr, &path, &session).status, 200);
+    });
+}
+
+#[test]
+fn m02_10b_authorize_consent_and_revoke() {
+    run_db_fixture::<OAuthFixture, _>("m02_10b_authorize_consent_and_revoke", |mut h| {
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        let address = serve(&h, 7200);
+        let session = session_cookie(&h);
+        let path = authorize_url(&h.client_id, REDIRECT, "S256");
+        let pending = browser_get(&h, address, &path, "");
+        assert_eq!(pending.status, 303);
+        assert_eq!(pending.headers["location"], "/auth/login");
+        assert!(
+            pending
+                .cookies
+                .iter()
+                .any(|c| c.starts_with("__Host-humaux_oauth_return=") && c.contains("HttpOnly"))
+        );
+        let wrong = browser_get(
+            &h,
+            address,
+            &authorize_url(&h.client_id, "https://invalid.example.test", "S256"),
+            &session,
+        );
+        assert_eq!(wrong.status, 400);
+        assert!(!wrong.headers.contains_key("location"));
+        let invalid_pkce = browser_get(
+            &h,
+            address,
+            &authorize_url(&h.client_id, REDIRECT, "plain"),
+            &session,
+        );
+        let error = callback(&invalid_pkce);
+        assert_eq!(error["iss"], ORIGIN);
+        assert!(!error.contains_key("code"));
+        let page = browser_get(&h, address, &path, &session);
+        assert_eq!(page.status, 200);
+        let body = consent_body(&page, "allow");
+        assert_eq!(
+            browser_consent(&h, address, &session, "https://wrong.example.test", &body).status,
+            403
+        );
+        assert_eq!(
+            browser_consent(&h, address, &session_cookie(&h), ORIGIN, &body).status,
+            403
+        );
+        let denied = browser_consent(&h, address, &session, ORIGIN, &consent_body(&page, "deny"));
+        assert_eq!(callback(&denied)["error"], "access_denied");
+        let allowed = browser_consent(&h, address, &session, ORIGIN, &body);
+        let params = callback(&allowed);
+        assert_eq!(params["iss"], ORIGIN);
+        assert_eq!(params["state"], "state + & 東京");
+        let tokens = post(
+            &h,
+            address,
+            &code_form(&h, &params["code"], &[("resource", Some(NATIVE_RESOURCE))]),
+        );
+        assert_eq!(tokens.status, 200, "{}", tokens.body);
+        let value: Value = serde_json::from_str(&tokens.body).unwrap();
+        let refresh = value["refresh_token"].as_str().unwrap();
+        let revoke = |client: &str, token: &str| {
+            h.rt.block_on(http(
+                address,
+                "POST",
+                "/oauth/revoke",
+                &form(&[("client_id", client), ("token", token)]),
+            ))
+        };
+        assert_eq!(revoke("different-client", refresh).status, 200);
+        let access = decode(&value);
+        assert_eq!(
+            lookup(&h, access.grant_id).status,
+            Some(oauth_repo::GrantStatus::Active)
+        );
+        assert_eq!(revoke(&h.client_id, refresh).status, 200);
+        assert_eq!(revoke(&h.client_id, refresh).status, 200);
+        assert_eq!(
+            lookup(&h, access.grant_id).status,
+            Some(oauth_repo::GrantStatus::Revoked)
+        );
+    });
+}
+
+#[test]
+fn m02_10b_preregistered_client_contract() {
+    run_db_fixture::<OAuthFixture, _>("m02_10b_preregistered_client_contract", |mut h| {
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        let address = serve(&h, 7200);
+        let session = session_cookie(&h);
+        for name in ["claude-code", "codex", "claude-ai", "chatgpt"] {
+            // These are server contract fixtures for already registered clients (M02 X-M02-2).
+            let client = format!("{name}-{}", h.client_id);
+            h.rt.block_on(async {
+                let mut txn = oauth_repo::begin(&h.gateway).await.unwrap();
+                assert!(
+                    txn.register_client(
+                        &client,
+                        ClientKind::Static,
+                        &[REDIRECT.to_owned()],
+                        &serde_json::json!({}),
+                        None
+                    )
+                    .await
+                    .unwrap()
+                );
+                txn.commit().await.unwrap();
+            });
+            let page = browser_get(
+                &h,
+                address,
+                &authorize_url(&client, REDIRECT, "S256"),
+                &session,
+            );
+            let error = browser_get(
+                &h,
+                address,
+                &authorize_url(&client, REDIRECT, "plain"),
+                &session,
+            );
+            h.admin
+                .execute(
+                    "DELETE FROM control.oauth_client_registrations WHERE client_id=$1",
+                    &[&client],
+                )
+                .unwrap();
+            assert_eq!(page.status, 200, "{name}");
+            assert_eq!(callback(&error)["iss"], ORIGIN, "{name}");
+        }
     });
 }
