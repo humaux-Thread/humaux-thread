@@ -15,7 +15,7 @@
 //!   staging.assert_active_contribution_release], PostgreSQL(role_gateway), PostgreSQL(role_private_worker),
 //!   PostgreSQL(role_public_worker), PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::postgres,
 //!   domain::error, domain::ids, domain::public, public-pool::public_evolve]
-//! Called-by: [public-pool::bootstrap, public-pool::public_projection, tests]
+//! Called-by: [public-pool::bootstrap, public-pool::public_projection, public-pool::public_repo::moderator_authorization, tests]
 //! Invariants: [every write uses PublicWorkerDbPool in a real tenant transaction; no function reads private rows or
 //!   accepts caller-provided released content or scanner outcomes; the public DB stays the serving authority]
 //! Spec: none
@@ -37,6 +37,8 @@ use sha2::{Digest, Sha256};
 use sqlx::{Row, types::Uuid};
 
 use crate::public_evolve::{self, RootIdentity};
+
+mod moderator_authorization;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
@@ -362,7 +364,7 @@ async fn admit_release_in_txn(
     })
 }
 
-pub(crate) mod sealed {
+mod sealed {
     //! Seal the evaluator scope port at the cloud assembly boundary (§12.6).
 
     /// Trusted scope binding marker.

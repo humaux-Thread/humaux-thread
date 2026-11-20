@@ -16563,6 +16563,7 @@ modules naming it:
 - `public-pool::public_projection`
 - `public-pool::public_provenance`
 - `public-pool::public_repo`
+- `public-pool::public_repo::moderator_authorization`
 - `public-pool::tests::mechanism_observation`
 - `public-pool::tests::notice`
 - `public-pool::tests::public_provenance`
