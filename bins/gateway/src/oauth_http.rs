@@ -1,5 +1,5 @@
-//! `gateway::oauth_http` — M02 token exchange and authorization-server metadata.
-//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, serde, serde_json, time]; services=[]; env=[]; modules=[adapters::postgres, application::oauth, application::oauth_exchange, application::signed_token, domain::error, gateway::auth_pages, gateway::guard]
+//! `gateway::oauth_http` — M02 browser authorization, token exchange, revocation and AS metadata.
+//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, serde, serde_json, time, url, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::login, application::oauth, application::oauth_exchange, application::session, application::signed_token, domain::error, domain::identity, domain::ids, gateway::auth_pages, gateway::bootstrap, gateway::guard, protocol::edge]
 //! Called-by: [gateway::bootstrap, gateway::main, tests]
 //! Invariants: [refusals render only OAUTH_REASONS strings; precheck precedes consume; spent codes and revoking denies
 //!   commit, other denies roll back; no raw code or refresh token is logged or stored]
@@ -8,25 +8,40 @@
 use crate::{auth_pages, guard::GatewayGuard};
 use axum::{
     Form, Json, Router,
-    extract::{ConnectInfo, Request, State, rejection::FormRejection},
-    http::{StatusCode, header},
+    extract::{ConnectInfo, RawQuery, Request, State, rejection::FormRejection},
+    http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
 use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_application::{
+    login::{self, PasswordlessLoginPort},
     oauth::{
-        self, ACCESS_TOKEN_LABEL, AccessTerms, CodeExchangeRequest, OAuthPolicy, OAuthReason,
-        RefreshRequest, SUPPORTED_SCOPES,
+        self, ACCESS_TOKEN_LABEL, AccessTerms, AuthorizeRequest, ClientView, CodeExchangeRequest,
+        ConsentSubject, OAuthPolicy, OAuthReason, RefreshRequest, SUPPORTED_SCOPES,
+        ValidatedAuthorize,
     },
-    oauth_exchange,
-    signed_token::TokenKeys,
+    oauth_exchange::{self, ExchangeStore},
+    session::{SessionSecret, VerifiedSession, csrf_token},
+    signed_token::{FIELD_SEP, TokenKeys, TokenLabel},
 };
-use humaux_domain::error::ErrorCode;
-use serde::Serialize;
+use humaux_domain::{
+    error::ErrorCode,
+    identity::{AuthorizationScope, BoundedSet, PrincipalId},
+    ids::{TenantId, UserId},
+};
+use humaux_protocol::edge::{FETCH_SITE_HEADER_NAME, FetchSite, SESSION_COOKIE_NAME, verify_csrf};
+use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use time::OffsetDateTime;
+use url::{Url, form_urlencoded};
+
+const AUTHORIZE: &str = "/oauth/authorize";
+const REVOKE: &str = "/oauth/revoke";
+const CONSENT_LABEL: TokenLabel = TokenLabel::new(b"oauth-consent@1", b"oauth-consent.kid@1");
+// A signed, hex-encoded return value must fit in the browser's 4 KiB cookie.
+const MAX_AUTH_QUERY: usize = 1750;
 
 const SERVER_ERROR: &str = "server_error";
 
@@ -36,7 +51,11 @@ pub struct OAuthHttpConfig {
     pub keys: TokenKeys,
     /// Normalized public origin, identical to the metadata issuer (RFC 8414 §3.3).
     pub issuer: String,
-    /// Authorization-code lifetime, consumed by M02-10b.
+    /// Exact permitted resource URI (RFC 8707).
+    pub resource: String,
+    /// Same lifetime as the interactive login challenge.
+    pub login_return_ttl: Duration,
+    /// Authorization-code lifetime.
     pub code_ttl: Duration,
     /// Access-token lifetime.
     pub access_ttl: Duration,
@@ -53,7 +72,7 @@ impl OAuthHttpConfig {
             access_ttl: self.access_ttl,
             refresh_ttl: self.refresh_ttl,
             grant_max_ttl: self.grant_max_ttl,
-            // token endpoint never consults the allowlist; code and grant carry the resource validated at authorize (M02-10b adds the key)
+            // Token exchange checks the resource in the code or grant, not the current authorize allowlist.
             allowed_resources: &[],
             supported_scopes: &[],
         }
@@ -64,18 +83,28 @@ struct HttpState {
     guard: Arc<GatewayGuard>,
     pool: Arc<RuntimeDbPool>,
     config: OAuthHttpConfig,
+    login: Arc<dyn PasswordlessLoginPort>,
+    scopes: [String; SUPPORTED_SCOPES.len()],
 }
 
-/// The two M02-10 routes, inside admission and the one pre-auth layer (ADR-0125 D1/D3).
-pub fn router(guard: Arc<GatewayGuard>, config: OAuthHttpConfig) -> Router {
+/// The M02 OAuth routes, inside admission and the one pre-auth layer (ADR-0125 D1/D3).
+pub fn router(
+    guard: Arc<GatewayGuard>,
+    config: OAuthHttpConfig,
+    login: Arc<dyn PasswordlessLoginPort>,
+) -> Router {
     let state = Arc::new(HttpState {
         pool: guard.runtime_pool(),
         guard,
         config,
+        login,
+        scopes: SUPPORTED_SCOPES.map(str::to_owned),
     });
     Router::new()
         .route("/.well-known/oauth-authorization-server", get(metadata))
         .route("/oauth/token", post(token))
+        .route(AUTHORIZE, get(authorize).post(consent))
+        .route(REVOKE, post(revoke))
         .layer(middleware::from_fn_with_state(Arc::clone(&state), gate))
         .with_state(state)
 }
@@ -94,6 +123,8 @@ struct Metadata<'a> {
     issuer: &'a str,
     authorization_endpoint: String,
     token_endpoint: String,
+    revocation_endpoint: String,
+    revocation_endpoint_auth_methods_supported: [&'static str; 1],
     response_types_supported: [&'static str; 1],
     grant_types_supported: [&'static str; 2],
     code_challenge_methods_supported: [&'static str; 1],
@@ -108,6 +139,8 @@ pub fn metadata_document(issuer: &str) -> String {
         issuer,
         authorization_endpoint: format!("{issuer}/oauth/authorize"),
         token_endpoint: format!("{issuer}/oauth/token"),
+        revocation_endpoint: format!("{issuer}{REVOKE}"),
+        revocation_endpoint_auth_methods_supported: ["none"],
         response_types_supported: ["code"],
         grant_types_supported: ["authorization_code", "refresh_token"],
         code_challenge_methods_supported: ["S256"],
@@ -128,16 +161,37 @@ async fn metadata(State(state): State<Arc<HttpState>>) -> Response {
 
 struct Params(Vec<(String, String)>);
 impl Params {
-    // RFC 6749 §3.2: a repeated parameter is absent, even when both values are identical.
-    fn get(&self, key: &str) -> Option<&str> {
+    fn single(&self, key: &str) -> Result<Option<&str>, OAuthReason> {
         let mut values = self
             .0
             .iter()
             .filter(|(name, _)| name == key)
             .map(|(_, value)| value.as_str());
-        let value = values.next()?;
-        values.next().is_none().then_some(value)
+        let value = values.next();
+        if values.next().is_some() {
+            return Err(OAuthReason::CLIENT_UNKNOWN);
+        }
+        Ok(value)
     }
+
+    // Token and revocation inputs retain their endpoint-specific missing-parameter errors.
+    fn get(&self, key: &str) -> Option<&str> {
+        self.single(key).ok().flatten()
+    }
+
+    fn authorize_request(&self) -> Result<AuthorizeRequest<'_>, OAuthReason> {
+        Ok(AuthorizeRequest {
+            client_id: self.single("client_id")?.unwrap_or_default(),
+            redirect_uri: self.single("redirect_uri")?,
+            response_type: self.single("response_type")?,
+            code_challenge: self.single("code_challenge")?,
+            code_challenge_method: self.single("code_challenge_method")?,
+            resource: self.single("resource")?,
+            scope: self.single("scope")?,
+            state: self.single("state")?,
+        })
+    }
+
     fn code_request(&self) -> CodeExchangeRequest<'_> {
         CodeExchangeRequest {
             grant_type: self.get("grant_type"),
@@ -146,6 +200,324 @@ impl Params {
             code_verifier: self.get("code_verifier"),
             resource: self.get("resource"),
         }
+    }
+}
+
+async fn live_session(
+    state: &HttpState,
+    headers: &HeaderMap,
+) -> Result<Option<VerifiedSession>, ErrorCode> {
+    let Some(secret) = auth_pages::cookie_value(headers, SESSION_COOKIE_NAME)
+        .and_then(SessionSecret::from_cookie_value)
+    else {
+        return Ok(None);
+    };
+    login::authenticate_session(state.login.as_ref(), &secret).await
+}
+
+async fn validate(state: &HttpState, query: &str) -> Result<ValidatedAuthorize, Box<Response>> {
+    let params = Params(
+        form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .collect(),
+    );
+    let request = params
+        .authorize_request()
+        .map_err(|reason| Box::new(refusal(reason)))?;
+    let mut txn = state
+        .pool
+        .begin_exchange()
+        .await
+        .map_err(|code| Box::new(server_failure(code)))?;
+    let client = txn
+        .lookup_client(request.client_id)
+        .await
+        .map_err(|code| Box::new(server_failure(code)))?;
+    let client = client.as_ref().map(|c| ClientView {
+        redirect_uris: &c.redirect_uris,
+        kind_recognized: c.kind.is_some(),
+        disabled: c.disabled_at.is_some(),
+    });
+    let policy = OAuthPolicy {
+        allowed_resources: std::slice::from_ref(&state.config.resource),
+        supported_scopes: &state.scopes,
+        ..state.config.policy()
+    };
+    let result = oauth::authorize_request(&request, client.as_ref(), &policy);
+    match result {
+        Ok(validated) if valid_callback(&validated.redirect_uri) => Ok(validated),
+        Ok(_) => Err(Box::new(refusal(OAuthReason::REDIRECT_URI_INVALID))),
+        Err(denied) => Err(Box::new(authorize_refusal(state, &denied))),
+    }
+}
+
+fn valid_callback(target: &str) -> bool {
+    Url::parse(target).is_ok_and(|url| {
+        !url.query_pairs()
+            .any(|(key, _)| matches!(key.as_ref(), "code" | "state" | "error" | "iss"))
+    })
+}
+
+fn callback(
+    state: &HttpState,
+    target: &str,
+    echo: Option<&str>,
+    key: &str,
+    value: &str,
+) -> Response {
+    let mut pairs = form_urlencoded::Serializer::new(String::new());
+    pairs
+        .append_pair(key, value)
+        .append_pair("iss", &state.config.issuer);
+    if let Some(echo) = echo {
+        pairs.append_pair("state", echo);
+    }
+    let separator = if target.contains('?') { '&' } else { '?' };
+    auth_pages::redirect(&format!("{target}{separator}{}", pairs.finish()), [])
+}
+
+fn authorize_refusal(state: &HttpState, denied: &oauth::AuthorizeRefusal) -> Response {
+    if let Some(target) = denied
+        .redirect_to
+        .as_deref()
+        .filter(|uri| valid_callback(uri))
+        && let Some(row) = denied.refusal.reason.row()
+    {
+        return callback(
+            state,
+            target,
+            denied.state.as_deref(),
+            "error",
+            row.wire_error,
+        );
+    }
+    refusal(denied.refusal.reason)
+}
+
+async fn sole_tenant(
+    state: &HttpState,
+    session: VerifiedSession,
+) -> Result<AuthorizationScope, ErrorCode> {
+    let mut txn = state.pool.begin_exchange().await?;
+    let tenants = txn.consent_tenants(session.user_id).await?;
+    let [tenant] = tenants.as_slice() else {
+        return Err(ErrorCode::Forbidden);
+    };
+    txn.commit().await?;
+    let scope = consent_scope(*tenant, session.user_id)?;
+    crate::bootstrap::check_oauth_entitlement(state.pool.as_ref(), &scope).await?;
+    Ok(scope)
+}
+
+fn consent_scope(tenant: TenantId, user: UserId) -> Result<AuthorizationScope, ErrorCode> {
+    Ok(AuthorizationScope::new(
+        tenant,
+        PrincipalId(user.0),
+        Some(user),
+        BoundedSet::new([])?,
+    ))
+}
+
+fn consent_failure(code: ErrorCode) -> Response {
+    match code {
+        ErrorCode::Forbidden | ErrorCode::EntitlementRequired => auth_pages::forbidden(),
+        _ => server_failure(code),
+    }
+}
+
+async fn authorize(
+    State(state): State<Arc<HttpState>>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
+) -> Response {
+    let query = query.unwrap_or_default();
+    if query.len() > MAX_AUTH_QUERY {
+        return refusal(OAuthReason::CLIENT_UNKNOWN);
+    }
+    let validated = match validate(&state, &query).await {
+        Ok(validated) => validated,
+        Err(response) => return *response,
+    };
+    let session = match live_session(&state, &headers).await {
+        Ok(Some(session)) => session,
+        Ok(None) => return request_login(&state, &query),
+        Err(code) => return server_failure(code),
+    };
+    let tenant = match sole_tenant(&state, session).await {
+        Ok(tenant) => tenant,
+        Err(code) => return consent_failure(code),
+    };
+    show_consent(&state, &validated, session, tenant.tenant_id().0, &query)
+}
+
+fn request_login(state: &HttpState, query: &str) -> Response {
+    auth_pages::oauth_login_redirect(
+        &state.config.keys,
+        query,
+        state.config.login_return_ttl.as_secs(),
+    )
+}
+
+fn html_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn show_consent(
+    state: &HttpState,
+    validated: &ValidatedAuthorize,
+    session: VerifiedSession,
+    tenant: uuid::Uuid,
+    query: &str,
+) -> Response {
+    let ttl = state.config.code_ttl.as_secs();
+    let expires = auth_pages::unix_now().saturating_add(ttl);
+    let csrf = csrf_token(&state.config.keys, session.session_id);
+    let ticket = state.config.keys.sign(
+        &CONSENT_LABEL,
+        &format!(
+            "{expires}{FIELD_SEP}{}{FIELD_SEP}{}{FIELD_SEP}{query}",
+            session.session_id.0, tenant
+        ),
+    );
+    let client = html_text(&validated.client_id);
+    let resource = html_text(&validated.resource);
+    let scopes = html_text(&validated.scopes.join(", "));
+    Html(format!(
+        r#"<!doctype html><html lang="en"><meta charset="utf-8"><title>Authorize client</title>
+<main><h1>Authorize client</h1><p>{client} requests {scopes} on {resource} for tenant {}.</p>
+<form action="{AUTHORIZE}" method="post"><input type="hidden" name="ticket" value="{ticket}">
+<input type="hidden" name="csrf" value="{csrf}">
+<button type="submit" name="decision" value="allow">Allow</button>
+<button type="submit" name="decision" value="deny">Deny</button></form></main></html>"#,
+        tenant
+    ))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct ConsentForm {
+    ticket: String,
+    csrf: String,
+    decision: String,
+}
+
+fn consent_ticket(
+    config: &OAuthHttpConfig,
+    ticket: &str,
+    session: VerifiedSession,
+) -> Option<(uuid::Uuid, String)> {
+    let payload = config.keys.verify(&CONSENT_LABEL, ticket).ok()?;
+    let mut parts = payload.splitn(4, FIELD_SEP);
+    let expiry = parts.next()?.parse::<u64>().ok()?;
+    let session_id = parts.next()?.parse::<uuid::Uuid>().ok()?;
+    let tenant = parts.next()?.parse().ok()?;
+    let query = parts.next()?;
+    (expiry > auth_pages::unix_now() && session_id == session.session_id.0)
+        .then(|| (tenant, query.to_owned()))
+}
+
+async fn consent(
+    State(state): State<Arc<HttpState>>,
+    headers: HeaderMap,
+    form: Result<Form<ConsentForm>, FormRejection>,
+) -> Response {
+    if !auth_pages::same_origin(&headers, &state.config.issuer) {
+        return auth_pages::forbidden();
+    }
+    let Ok(Form(form)) = form else {
+        return auth_pages::forbidden();
+    };
+    let session = match live_session(&state, &headers).await {
+        Ok(Some(session)) => session,
+        Ok(None) => return auth_pages::forbidden(),
+        Err(code) => return server_failure(code),
+    };
+    if !verify_csrf(
+        "POST",
+        FetchSite::from_header(auth_pages::header_str(&headers, FETCH_SITE_HEADER_NAME)),
+        Some(&form.csrf),
+        &csrf_token(&state.config.keys, session.session_id),
+    ) {
+        return auth_pages::forbidden();
+    }
+    let Some((tenant, query)) = consent_ticket(&state.config, &form.ticket, session) else {
+        return auth_pages::forbidden();
+    };
+    let request = match validate(&state, &query).await {
+        Ok(request) => request,
+        Err(response) => return *response,
+    };
+    match form.decision.as_str() {
+        "deny" => authorize_refusal(
+            &state,
+            &oauth::AuthorizeRefusal {
+                refusal: oauth::OAuthRefusal::of(OAuthReason::CONSENT_DENIED),
+                redirect_to: Some(request.redirect_uri),
+                state: request.state,
+            },
+        ),
+        "allow" => allow_consent(&state, session, tenant, &request).await,
+        _ => auth_pages::forbidden(),
+    }
+}
+
+async fn allow_consent(
+    state: &HttpState,
+    session: VerifiedSession,
+    tenant: uuid::Uuid,
+    request: &ValidatedAuthorize,
+) -> Response {
+    let tenant = TenantId(tenant);
+    let scope = match consent_scope(tenant, session.user_id) {
+        Ok(scope) => scope,
+        Err(code) => return consent_failure(code),
+    };
+    let txn = match crate::bootstrap::begin_oauth_consent(state.pool.as_ref(), &scope).await {
+        Ok(txn) => txn,
+        Err(code) => return consent_failure(code),
+    };
+    let subject = ConsentSubject {
+        user_id: session.user_id,
+        tenant_id: tenant,
+        workspace_id: None,
+    };
+    let terms = match oauth::issue_code(request, &subject, &state.config.policy()) {
+        Ok(terms) => terms,
+        Err(code) => return server_failure(code),
+    };
+    match oauth_exchange::persist_consent_code(txn, &terms).await {
+        Ok(Some(code)) => callback(
+            state,
+            &request.redirect_uri,
+            request.state.as_deref(),
+            "code",
+            &code,
+        ),
+        Ok(None) => auth_pages::forbidden(),
+        Err(code) => consent_failure(code),
+    }
+}
+
+async fn revoke(
+    State(state): State<Arc<HttpState>>,
+    form: Result<Form<Vec<(String, String)>>, FormRejection>,
+) -> Response {
+    let Ok(Form(values)) = form else {
+        return refusal(OAuthReason::CLIENT_UNKNOWN);
+    };
+    let params = Params(values);
+    let (Some(client), Some(token)) = (params.get("client_id"), params.get("token")) else {
+        return refusal(OAuthReason::CLIENT_UNKNOWN);
+    };
+    if client.is_empty() || token.is_empty() {
+        return refusal(OAuthReason::CLIENT_UNKNOWN);
+    }
+    match oauth_exchange::revoke_refresh(state.pool.as_ref(), client, token).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(code) => server_failure(code),
     }
 }
 

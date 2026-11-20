@@ -1,8 +1,8 @@
-//! `adapters::oauth_repo` — OAuth 2.1 Authorization Server persistence over the nine `control.oauth_*` doors (migration 0268):
+//! `adapters::oauth_repo` — OAuth 2.1 Authorization Server persistence over the `control.oauth_*` doors (migrations 0268/0308):
 //!   client registry, one-time authorization codes, grants and single-use refresh rotation. Writes only through definers; no
 //!   runtime role holds any privilege on the four tables, so every read goes through a door too.
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_rotate]]; env=[]; modules=[adapters::postgres, application::oauth_exchange, domain::error, domain::ids]
-//! Called-by: [tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_consent_tenants, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_grant, control.oauth_refresh_rotate]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, application::oauth_exchange, domain::error, domain::identity, domain::ids]
+//! Called-by: [gateway::bootstrap, tests]
 //! Invariants: [a raw code or refresh token never reaches this module: callers pass a SecretHash, whose Debug is redacted;
 //!   consume and rotate are single conditional statements inside the doors, so of two concurrent exchanges of one secret
 //!   at most one succeeds; a reused refresh token revokes its family and grant and the transaction still commits; a
@@ -16,12 +16,13 @@
 use std::time::Duration;
 
 use humaux_domain::error::ErrorCode;
+use humaux_domain::identity::AuthorizationScope;
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use sqlx::Row;
 use sqlx::types::Uuid;
 use time::OffsetDateTime;
 
-use crate::postgres::RuntimeDbPool;
+use crate::{postgres::RuntimeDbPool, request_guard_repo};
 
 // Compatibility exports for existing persistence callers; vocabulary belongs to identity's application port.
 pub use humaux_application::oauth_exchange::{
@@ -46,19 +47,36 @@ fn ttl_seconds(ttl: Duration) -> Result<i32, ErrorCode> {
         .ok_or(ErrorCode::Internal)
 }
 
+type ConsentCheck = fn(request_guard_repo::EffectiveEntitlementFacts) -> Result<(), ErrorCode>;
+
 /// One open transaction of an OAuth exchange. Dropping it without [`OAuthTxn::commit`] rolls everything back.
 pub struct OAuthTxn {
     txn: sqlx::Transaction<'static, sqlx::Postgres>,
+    consent: Option<(AuthorizationScope, ConsentCheck)>,
 }
 
 /// Opens an [`OAuthTxn`] on the gateway pool.
 pub async fn begin(pool: &RuntimeDbPool) -> Result<OAuthTxn, ErrorCode> {
     // dep: PostgreSQL(any) — opens a PostgreSQL transaction
     let txn = pool.pool().begin().await.map_err(db_failure)?;
-    Ok(OAuthTxn { txn })
+    Ok(OAuthTxn { txn, consent: None })
 }
 
 impl OAuthTxn {
+    /// Lock and validate consent entitlement, retaining the same policy for the post-insert check.
+    pub async fn admit_consent(
+        &mut self,
+        scope: &AuthorizationScope,
+        check: ConsentCheck,
+    ) -> Result<(), ErrorCode> {
+        let facts =
+            request_guard_repo::read_effective_entitlements_in_txn(&mut self.txn, scope, true)
+                .await?;
+        check(facts)?;
+        self.consent = Some((scope.clone(), check));
+        Ok(())
+    }
+
     /// Commits every door call made on this transaction.
     pub async fn commit(self) -> Result<(), ErrorCode> {
         // dep: PostgreSQL(any) — commits the exchange
@@ -337,6 +355,75 @@ impl humaux_application::oauth_exchange::ExchangeStore for RuntimeDbPool {
 
 #[async_trait::async_trait]
 impl humaux_application::oauth_exchange::ExchangeTransaction for OAuthTxn {
+    async fn lookup_client(&mut self, client_id: &str) -> Result<Option<ClientRecord>, ErrorCode> {
+        OAuthTxn::lookup_client(self, client_id).await
+    }
+
+    async fn consent_tenants(&mut self, user: UserId) -> Result<Vec<TenantId>, ErrorCode> {
+        sqlx::query_scalar::<_, Uuid>("SELECT control.oauth_consent_tenants($1)")
+            .bind(user.0)
+            // dep: PostgreSQL(any) — resolve the live browser subject's tenant.
+            .fetch_all(&mut *self.txn)
+            .await
+            .map(|ids| ids.into_iter().map(TenantId).collect())
+            .map_err(db_failure)
+    }
+
+    async fn issue_consent_code(
+        &mut self,
+        request: &CodeIssue<'_>,
+        ttl: Duration,
+    ) -> Result<bool, ErrorCode> {
+        let (scope, check) = self.consent.as_ref().ok_or(ErrorCode::Internal)?;
+        if scope.tenant_id() != request.tenant_id || scope.user_id() != Some(request.user_id) {
+            return Err(ErrorCode::Forbidden);
+        }
+        let issued = sqlx::query_scalar::<_, bool>(
+            "SELECT CASE WHEN ARRAY(SELECT control.oauth_consent_tenants($6)) = ARRAY[$7::uuid] \
+             THEN control.oauth_code_issue($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) IS NOT NULL ELSE false END",
+        )
+        .bind(request.code_hash.as_bytes().as_slice())
+        .bind(request.client_id)
+        .bind(request.redirect_uri)
+        .bind(request.pkce_challenge)
+        .bind(request.resource)
+        .bind(request.user_id.0)
+        .bind(request.tenant_id.0)
+        .bind(request.workspace_id.map(|id| id.0))
+        .bind(request.scopes)
+        .bind(ttl_seconds(ttl)?)
+        // dep: PostgreSQL(any) — recheck membership and persist in one statement.
+        .fetch_one(&mut *self.txn)
+        .await
+        .map_err(db_failure)?;
+        if issued {
+            // The row is still locked, but the clock may have advanced during the insert.
+            let facts =
+                request_guard_repo::read_effective_entitlements_in_txn(&mut self.txn, scope, false)
+                    .await?;
+            check(facts)?;
+            // The insert may have waited while the subject's memberships changed.
+            if self.consent_tenants(request.user_id).await?.as_slice() != [request.tenant_id] {
+                return Err(ErrorCode::Forbidden);
+            }
+        }
+        Ok(issued)
+    }
+
+    async fn refresh_grant(
+        &mut self,
+        hash: &SecretHash,
+        client: &str,
+    ) -> Result<Option<Uuid>, ErrorCode> {
+        sqlx::query_scalar::<_, Option<Uuid>>("SELECT control.oauth_refresh_grant($1, $2)")
+            .bind(hash.as_bytes().as_slice())
+            .bind(client)
+            // dep: PostgreSQL(any) — token digest and client must match.
+            .fetch_one(&mut *self.txn)
+            .await
+            .map_err(db_failure)
+    }
+
     async fn consume_code(&mut self, hash: &SecretHash) -> Result<Option<ConsumedCode>, ErrorCode> {
         OAuthTxn::consume_code(self, hash).await
     }

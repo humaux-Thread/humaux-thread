@@ -285,6 +285,7 @@ modules:
 - `maintenance::tests::exit_codes`
 - `private-worker::main`
 - `private-worker::tests::exit_codes`
+- `protocol::mcp_legacy`
 - `retrieval-worker::main`
 - `retrieval-worker::tests::exit_codes`
 - `xtask::main`
@@ -1398,6 +1399,19 @@ modules:
 - `gateway::bootstrap`
 
 ### `HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
+### `HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE`
 - witness: literal
 - registry: gateway
 

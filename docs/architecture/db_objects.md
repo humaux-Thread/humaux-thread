@@ -1641,6 +1641,7 @@ read by:
 written by:
 - (no process): `adapters::tests::login_challenge`
 - (no process): `gateway::tests::auth_pages`
+- (no process): `gateway::tests::oauth_flow`
 
 executed by:
 
@@ -1849,6 +1850,7 @@ written by:
 - (no process): `adapters::tests::request_guard`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_flow`
 - (no process): `maintenance::tests::serve`
 
 executed by:
@@ -2169,6 +2171,7 @@ written by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -2320,6 +2323,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::credential_grants`
+- (no process): `gateway::tests::oauth_flow`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -2345,8 +2349,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_client_register`
@@ -2365,8 +2369,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_client_registrations`
@@ -2391,6 +2395,7 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::auth_contract`
 - (no process): `adapters::tests::credential_grants`
+- (no process): `gateway::tests::oauth_flow`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -2416,9 +2421,9 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - (no process): `adapters::tests::oauth_persistence`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_code_issue`
@@ -2437,9 +2442,49 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_consent_entitlement_lock`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0308_oauth_consent_revoke
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- process(cargo-xtask): `adapters::request_guard_repo`
+- process(humaux-gateway): `adapters::request_guard_repo`
+- process(humaux-maintenance): `adapters::request_guard_repo`
+- process(humaux-private-worker): `adapters::request_guard_repo`
+- process(humaux-retrieval-worker): `adapters::request_guard_repo`
+
+### `control.oauth_consent_tenants`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0308_oauth_consent_revoke
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- process(humaux-gateway): `adapters::oauth_repo`
 
 ### `control.oauth_grant_issue`
 - kind: function (SECURITY DEFINER)
@@ -2457,8 +2502,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_lookup`
@@ -2477,8 +2522,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_revoke`
@@ -2497,8 +2542,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grants`
@@ -2552,9 +2597,27 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_refresh_grant`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0308_oauth_consent_revoke
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- process(humaux-gateway): `adapters::oauth_repo`
 
 ### `control.oauth_refresh_rotate`
 - kind: function (SECURITY DEFINER)
@@ -2572,8 +2635,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_refresh_tokens`
@@ -4926,6 +4989,7 @@ read by:
 written by:
 - (no process): `adapters::tests::console_session`
 - (no process): `gateway::tests::auth_pages`
+- (no process): `gateway::tests::oauth_flow`
 
 executed by:
 
@@ -5463,6 +5527,7 @@ read by:
 written by:
 - (no process): `adapters::tests::login_challenge`
 - (no process): `gateway::tests::auth_pages`
+- (no process): `gateway::tests::oauth_flow`
 - process(cargo-xtask): `xtask::e2e_seed`
 
 executed by:
@@ -7249,6 +7314,7 @@ foreign keys (outgoing):
 - fk: user_id -> control.users (NOT NULL)
 
 read by:
+- (no process): `gateway::tests::oauth_flow`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -7256,6 +7322,7 @@ written by:
 - (no process): `adapters::tests::email_outbox`
 - (no process): `adapters::tests::login_challenge`
 - (no process): `gateway::tests::auth_pages`
+- (no process): `gateway::tests::oauth_flow`
 - process(humaux-gateway): `adapters::email::outbox`
 
 executed by:

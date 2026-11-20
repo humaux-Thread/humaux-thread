@@ -18,11 +18,12 @@ fn g_m02_14_metadata_matches_golden() {
 #[test]
 fn g_m02_14_metadata_capabilities_are_exact() {
     let value: Value = serde_json::from_str(&metadata_document("https://humaux.com")).unwrap();
-    assert_eq!(value.as_object().unwrap().len(), 9);
+    assert_eq!(value.as_object().unwrap().len(), 11);
     assert_eq!(value["issuer"], "https://humaux.com");
     for (key, path) in [
         ("authorization_endpoint", "/oauth/authorize"),
         ("token_endpoint", "/oauth/token"),
+        ("revocation_endpoint", "/oauth/revoke"),
     ] {
         assert_eq!(value[key], format!("https://humaux.com{path}"));
     }
@@ -30,6 +31,10 @@ fn g_m02_14_metadata_capabilities_are_exact() {
     assert_eq!(
         value["grant_types_supported"],
         json!(["authorization_code", "refresh_token"])
+    );
+    assert_eq!(
+        value["revocation_endpoint_auth_methods_supported"],
+        json!(["none"])
     );
     assert_eq!(value["code_challenge_methods_supported"], json!(["S256"]));
     assert_eq!(
@@ -52,7 +57,6 @@ fn g_m02_14_metadata_capabilities_are_exact() {
     );
     for key in [
         "registration_endpoint",
-        "revocation_endpoint",
         "client_id_metadata_document_supported",
     ] {
         assert_eq!(value.get(key), None);

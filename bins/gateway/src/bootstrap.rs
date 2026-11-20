@@ -4,7 +4,7 @@
 //!   stream cache) — the same family the 14 governance / subject / affect writes attach to since ADR-0054, so
 //!   the process holds no default write pair at all.
 //! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
-//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde, serde_json, sha2, tokio, uuid];
+//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde, serde_json, sha2, tokio, url, uuid];
 //!   services=[PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_BILLING_WEBHOOK_PROVIDERS, HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS, HUMAUX_GATEWAY_DEPLOYMENT, HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS,
 //!   HUMAUX_GATEWAY_RATE_USER_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_TENANT_MAX_SUBJECTS,
@@ -23,7 +23,7 @@
 //!   HUMAUX_GATEWAY_PUBLIC_BASE_URL, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS,
 //!   HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS,
-//!   HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS,
+//!   HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE, HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_EMBEDDING_DIMENSION, HUMAUX_GATEWAY_EMBEDDING_MODEL_ID, HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION,
 //!   HUMAUX_GATEWAY_EMBEDDING_PROVIDER_ID, HUMAUX_GATEWAY_EMBEDDING_VERSION, HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP,
@@ -52,8 +52,8 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[gateway::auth, gateway::route_cache, adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::confirm_token_repo, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::cache, telemetry::metrics]
-//! Called-by: [gateway::auth, gateway::context, gateway::guard, gateway::main, gateway::mcp_application, gateway::memory, gateway::recall, tests]
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::confirm_token_repo, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::oauth_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::oauth_exchange, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::route_cache, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::cache, telemetry::metrics]
+//! Called-by: [gateway::auth, gateway::context, gateway::guard, gateway::main, gateway::mcp_application, gateway::oauth_http, gateway::memory, gateway::recall, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
 //! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7; ADR-0125
 //!
@@ -163,6 +163,7 @@ const LOGIN_CODE_PEPPER_KEY: &str = "HUMAUX_GATEWAY_LOGIN_CODE_PEPPER";
 const EMAIL_RECIPIENT_ALLOWLIST_KEY: &str = "HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST";
 /// ADR-0125 8e (§78.1): the console session's absolute and idle lifetimes, the login code's lifetime and attempt cap,
 /// and the resend cooldown. Registry defaults are the former `AuthConfig::default()` values.
+const OAUTH_RESOURCE_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE";
 const OAUTH_CODE_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS";
 const OAUTH_ACCESS_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS";
 const OAUTH_REFRESH_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS";
@@ -924,9 +925,32 @@ fn parse_oauth_http(
             "must not exceed HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS",
         ));
     }
+    let issuer = parse_public_origin(required(effective, PUBLIC_BASE_URL_KEY)?)?;
+    let resource = match effective.get(OAUTH_RESOURCE_KEY).map(String::as_str) {
+        None | Some("") => format!("{issuer}/mcp"),
+        Some(value) => {
+            let url = url::Url::parse(value)
+                .map_err(|_| BootstrapError::new(OAUTH_RESOURCE_KEY, "invalid resource URL"))?;
+            if url.scheme() != "https"
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.fragment().is_some()
+                || value.chars().any(char::is_whitespace)
+            {
+                return Err(BootstrapError::new(
+                    OAUTH_RESOURCE_KEY,
+                    "must be an absolute HTTPS resource URL",
+                ));
+            }
+            value.to_owned()
+        }
+    };
     Ok(Some(OAuthHttpConfig {
         keys,
-        issuer: parse_public_origin(required(effective, PUBLIC_BASE_URL_KEY)?)?,
+        issuer,
+        resource,
+        login_return_ttl: parse_auth_lifetimes(effective)?.login_challenge.ttl,
         code_ttl,
         access_ttl,
         refresh_ttl,
@@ -1809,6 +1833,7 @@ pub fn registry() -> Vec<ConfigEntry> {
         ]
         .map(|(name, default)| entry_with_default(name, "u64", false, default)),
     );
+    entries.push(entry_with_default(OAUTH_RESOURCE_KEY, "string", false, ""));
     entries.push(entry_with_default(BILLING_PROVIDERS, "string", false, "{}"));
     entries.extend(
         ["REMEMBER_TENANT_ID", "REMEMBER_WORKSPACE_ID"]
@@ -2409,6 +2434,52 @@ pub(crate) fn read_quota_store(
 ) -> impl humaux_application::read_quota::ReadQuotaStore<Audit = humaux_domain::audit::AuditEvent> + '_
 {
     humaux_adapters::audited_read_quota::PostgresReadQuota::new(pool)
+}
+
+/// Read the current commercial admission policy for a consent target without reserving any quota.
+pub(crate) async fn check_oauth_entitlement(
+    pool: &RuntimeDbPool,
+    scope: &humaux_domain::identity::AuthorizationScope,
+) -> Result<(), humaux_domain::error::ErrorCode> {
+    use humaux_application::read_quota::{BMO_ENTITLEMENT, charge_policy_for};
+
+    charge_policy_for(&read_quota_store(pool), scope, BMO_ENTITLEMENT)
+        .await
+        .map(drop)
+}
+
+/// Open the consent write transaction and keep the admitted entitlement locked through issuance.
+pub(crate) async fn begin_oauth_consent(
+    pool: &RuntimeDbPool,
+    scope: &humaux_domain::identity::AuthorizationScope,
+) -> Result<
+    Box<dyn humaux_application::oauth_exchange::ExchangeTransaction>,
+    humaux_domain::error::ErrorCode,
+> {
+    use humaux_application::{
+        oauth_exchange::ExchangeTransaction,
+        read_quota::{BMO_ENTITLEMENT, QuotaPolicyFacts, quota_policy},
+    };
+    use humaux_domain::error::ErrorCode;
+
+    let user = scope.user_id().ok_or(ErrorCode::Forbidden)?;
+    let mut txn = humaux_adapters::oauth_repo::begin(pool).await?;
+    if txn.consent_tenants(user).await?.as_slice() != [scope.tenant_id()] {
+        return Err(ErrorCode::Forbidden);
+    }
+    txn.admit_consent(scope, |facts| {
+        quota_policy(
+            &QuotaPolicyFacts {
+                effective: facts.effective,
+                computed_at: facts.computed_at,
+                observed_at: facts.observed_at,
+            },
+            BMO_ENTITLEMENT,
+        )
+        .map(drop)
+    })
+    .await?;
+    Ok(Box::new(txn))
 }
 
 impl GatewayGuard {

@@ -102,7 +102,7 @@ fn sp2_archive_push_same_name() {
     };
     source.stanza_create();
     let codes = source.sh(
-        "set -u; G=/var/lib/postgresql/18/docker; S=$(psql -qAt -c 'select pg_walfile_name(pg_current_wal_lsn())'); \
+        "set -u; G=/var/lib/postgresql/19/docker; S=$(psql -qAt -c 'select pg_walfile_name(pg_current_wal_lsn())'); \
          psql -qAt -c 'create table t(i int); insert into t values (1); select pg_switch_wal()' >/dev/null; sleep 2; \
          d=$(mktemp -d); mkdir -p $d/pg_wal/archive_status $d/global; cp $G/global/pg_control $d/global/; \
          cp $G/pg_wal/$S $d/pg_wal/; P=\"pgbackrest --stanza=humaux --pg1-path=$d --log-level-console=off archive-push\"; \
@@ -232,7 +232,7 @@ fn sp5_restore_from_a_read_only_bind() {
     let probe =
         run("touch /var/lib/pgbackrest/repo/.drill-probe 2>&1; echo rc=$?").unwrap_or_default();
     let restored = run(
-        "D=/var/lib/postgresql/18/docker; mkdir -p $D && chmod 700 $D && \
+        "D=/var/lib/postgresql/19/docker; mkdir -p $D && chmod 700 $D && \
          pgbackrest --stanza=humaux --log-level-console=off --archive-mode=off --type=immediate --target-action=promote restore && \
          pg_ctl -D $D -o '-c listen_addresses= -c archive_mode=off' -w -t 60 start >/tmp/pg.log 2>&1 && \
          psql -qAt -c 'select count(*) from w'; grep -c 'archive-get command end: completed successfully' /tmp/pg.log",
@@ -390,7 +390,7 @@ fn sp11_info_json_set_size_and_cipher() {
     assert!(size.as_i64().is_some_and(|s| s > 0) && cipher == "aes-256-cbc");
 }
 
-/// SP-12: `pg_stat_archiver` is readable by role_maintenance on PG18 (no grant needed by the DR_EVIDENCE latch).
+/// SP-12: role_maintenance can read `pg_stat_archiver` without an extra grant for the DR_EVIDENCE latch.
 #[test]
 #[ignore = "lane(c) ADR-0064 10.6 spike, run once and pasted into the ADR as its MEASURE line; never in the chain or the lane: run once -- --ignored --nocapture"]
 fn sp12_pg_stat_archiver_readable_by_role_maintenance() {

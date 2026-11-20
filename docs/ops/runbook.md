@@ -27,7 +27,7 @@ below runs images, the compose wrapper and POSIX tools.
 | service | image | uid:gid (+ groups) | role |
 |---|---|---|---|
 | `netns` | pause (digest-pinned) | 65535 | anchor of the shared network namespace; publishes the gateway on `127.0.0.1` only |
-| `pg` | `humaux-pg:<tag>` (card 37: PostgreSQL 18 + pgBackRest) | 999 inside | the database; pgBackRest repository on its own host filesystem |
+| `pg` | `humaux-pg:<tag>` (ADR-0135: PostgreSQL 19.0 + pgBackRest) | 999 inside | the database; pgBackRest repository on its own host filesystem |
 | `qdrant` | qdrant unprivileged (digest-pinned) | 1000 | the vector index (rebuilt from PostgreSQL, never backed up) |
 | `private-rpc` / `private-distill` | `humaux-private-worker:<tag>` | 10103:10202 | inference RPC server / distill dispatcher |
 | `retrieval-rpc` / `retrieval-serve` | `humaux-retrieval-worker:<tag>` | 10102:10201 | retrieval RPC server / projection runner |

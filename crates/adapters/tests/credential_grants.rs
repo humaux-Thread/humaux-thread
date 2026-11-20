@@ -10,7 +10,7 @@
 //!   row, grant or role changes; a SELECT that succeeds as a worker, batch issuer, admin or health reader is the
 //!   failure, and the grant set read back from the table ACL (PUBLIC included, column-level included) must equal
 //!   exactly SELECT for the two readers; the four OAuth tables of 0268 (M02-8) hold no grant for any role and are reached
-//!   only through nine doors executable by role_gateway alone; no DSN or unreachable database is a visible §79.2 skip]
+//!   only through the named doors executable by role_gateway alone; no DSN or unreachable database is a visible §79.2 skip]
 //! Spec: Baseline §6.2.1; §6.2.2; §79.2
 
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
@@ -150,16 +150,19 @@ const OAUTH_TABLES: [(&str, &str); 4] = [
     ("control.oauth_refresh_tokens", "status"),
 ];
 
-/// The nine doors of migration 0268, by `pg_proc.proname`: the whole access path to the four tables.
-const OAUTH_DOORS: [&str; 9] = [
+/// The named OAuth doors of migrations 0268 and 0308, ordered by `pg_proc.proname`.
+const OAUTH_DOORS: [&str; 12] = [
     "oauth_client_lookup",
     "oauth_client_register",
     "oauth_code_consume",
     "oauth_code_issue",
+    "oauth_consent_entitlement_lock",
+    "oauth_consent_tenants",
     "oauth_grant_issue",
     "oauth_grant_lookup",
     "oauth_grant_revoke",
     "oauth_refresh_family_revoke",
+    "oauth_refresh_grant",
     "oauth_refresh_rotate",
 ];
 
@@ -229,7 +232,7 @@ fn g_m02_1_an_oauth_table_acl_is_exactly_empty() {
     });
 }
 
-/// G-M02-1 for 0268, doors: the `control.oauth_*` functions are exactly the nine named, each owner SECURITY DEFINER with
+/// G-M02-1 for 0268/0308, doors: the `control.oauth_*` functions are exactly the twelve named, each owner SECURITY DEFINER with
 /// `search_path=pg_catalog` alone, and EXECUTE is held by role_gateway alone (PUBLIC included).
 #[test]
 fn g_m02_1_the_oauth_doors_are_executable_by_gateway_alone() {

@@ -57,6 +57,22 @@ const CONSOLE_ROOT: &str = "/";
 const AUDIT_SURFACE: &str = "auth";
 /// Cookie that carries the canonical mailbox from the email step to the code step.
 const PENDING_COOKIE_NAME: &str = "__Host-humaux_login";
+const RETURN_COOKIE: &str = "__Host-humaux_oauth_return";
+const RETURN_LABEL: TokenLabel = TokenLabel::new(b"oauth-return@1", b"oauth-return.kid@1");
+
+/// An OAuth request can resume only on the fixed authorize path and within the login window.
+pub(crate) fn oauth_login_redirect(keys: &TokenKeys, query: &str, ttl: u64) -> Response {
+    let expires = unix_now().saturating_add(ttl);
+    let token = keys.sign(&RETURN_LABEL, &format!("{expires}{FIELD_SEP}{query}"));
+    redirect(LOGIN_PATH, [cookie(RETURN_COOKIE, &token, ttl)])
+}
+
+fn oauth_destination(keys: &TokenKeys, headers: &HeaderMap) -> Option<String> {
+    let token = cookie_value(headers, RETURN_COOKIE)?;
+    let payload = keys.verify(&RETURN_LABEL, token).ok()?;
+    let (expiry, query) = payload.split_once(FIELD_SEP)?;
+    (expiry.parse::<u64>().ok()? > unix_now()).then(|| format!("/oauth/authorize?{query}"))
+}
 /// MAC and kid domains of the pending-login value; distinct from every other token kind under the auth key. `pub` so the
 /// forged-cookie test signs with the production label and fails on the expiry check, not on a label mismatch.
 pub const PENDING_LABEL: TokenLabel =
@@ -316,7 +332,15 @@ async fn code_submit(
         &issued.secret.cookie_value(),
         pages.session.absolute_ttl.as_secs(),
     );
-    redirect(CONSOLE_ROOT, [session, cookie(PENDING_COOKIE_NAME, "", 0)])
+    let destination = oauth_destination(&pages.config.keys, &headers);
+    redirect(
+        destination.as_deref().unwrap_or(CONSOLE_ROOT),
+        [
+            session,
+            cookie(PENDING_COOKIE_NAME, "", 0),
+            cookie(RETURN_COOKIE, "", 0),
+        ],
+    )
 }
 
 /// Revokes the caller's session when, and only when, the request carries the CSRF token minted for that session.
@@ -351,7 +375,7 @@ async fn logout(State(pages): State<Shared>, headers: HeaderMap) -> Response {
 
 /// ADR-0125 ruling 4: the request's `Origin` (its `Referer` when `Origin` is absent) must be the public origin. Anything
 /// else, `Origin: null` and a repeated `Origin` included, fails closed.
-fn same_origin(headers: &HeaderMap, public_origin: &str) -> bool {
+pub(crate) fn same_origin(headers: &HeaderMap, public_origin: &str) -> bool {
     let mut origins = headers.get_all(header::ORIGIN).iter();
     match (origins.next(), origins.next()) {
         (Some(origin), None) => origin.to_str().is_ok_and(|origin| origin == public_origin),
@@ -383,7 +407,7 @@ fn pending_mailbox(pages: &Pages, headers: &HeaderMap) -> Option<String> {
     (expires.parse::<u64>().ok()? > unix_now()).then(|| address.to_owned())
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
@@ -397,7 +421,7 @@ fn cookie(name: &str, value: &str, max_age_seconds: u64) -> String {
     )
 }
 
-fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+pub(crate) fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get_all(header::COOKIE)
         .iter()
@@ -407,7 +431,7 @@ fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .find_map(|(key, value)| (key == name).then_some(value))
 }
 
-fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+pub(crate) fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name).and_then(|value| value.to_str().ok())
 }
 
@@ -434,7 +458,7 @@ fn page(status: StatusCode, body: &'static str) -> Response {
 }
 
 /// `303 See Other` with an empty body; the same bytes for every caller of the same route.
-fn redirect<const N: usize>(to: &'static str, cookies: [String; N]) -> Response {
+pub(crate) fn redirect<const N: usize>(to: &str, cookies: [String; N]) -> Response {
     let mut response = axum::http::Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header(header::LOCATION, to);
@@ -446,7 +470,7 @@ fn redirect<const N: usize>(to: &'static str, cookies: [String; N]) -> Response 
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-fn forbidden() -> Response {
+pub(crate) fn forbidden() -> Response {
     page(StatusCode::FORBIDDEN, FORBIDDEN_PAGE)
 }
 
