@@ -142,7 +142,11 @@ fn seed(handle: &mut Handle) -> SyntheticServiceCredential {
 }
 
 async fn ping(address: SocketAddr, credential: &SyntheticServiceCredential) -> u16 {
-    let body = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{
+        "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+        "io.modelcontextprotocol/clientInfo":{"name":"route-cache-acceptance","version":"1"},
+        "io.modelcontextprotocol/clientCapabilities":{}
+    }}}"#;
     let request = format!(
         "POST /mcp HTTP/1.1\r\nHost: mcp.test\r\nOrigin: https://mcp.test\r\nConnection: close\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: ping\r\nAuthorization: {}\r\nContent-Length: {}\r\n\r\n{body}",
         credential.bearer,
