@@ -1424,6 +1424,19 @@ processes:
 modules:
 - `gateway::bootstrap`
 
+### `HUMAUX_GATEWAY_AUTH_OAUTH_STATIC_CLIENTS`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+
 ### `HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS`
 - witness: literal
 - registry: gateway
