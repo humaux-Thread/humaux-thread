@@ -580,6 +580,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::evidence`
 
+#### `domain::evidence::fingerprint`
+
 #### `domain::grounding`
 
 #### `domain::grounding_read`
@@ -1728,6 +1730,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::evidence`
 
+#### `domain::evidence::fingerprint`
+
 #### `domain::identity`
 
 #### `domain::ids`
@@ -2369,6 +2373,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::error`
 
 #### `domain::evidence`
+
+#### `domain::evidence::fingerprint`
 
 #### `domain::grounding`
 
@@ -3355,6 +3361,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::error`
 
 #### `domain::evidence`
+
+#### `domain::evidence::fingerprint`
 
 #### `domain::grounding`
 
@@ -4527,6 +4535,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::evidence`
 
+#### `domain::evidence::fingerprint`
+
 #### `domain::grounding`
 
 #### `domain::grounding_read`
@@ -4740,6 +4750,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::error`
 
 #### `domain::evidence`
+
+#### `domain::evidence::fingerprint`
 
 #### `domain::identity`
 
@@ -5371,6 +5383,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::error`
 
 #### `domain::evidence`
+
+#### `domain::evidence::fingerprint`
 
 #### `domain::grounding`
 
