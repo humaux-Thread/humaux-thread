@@ -7,7 +7,8 @@
 //!   UDS(retrieval-worker), UDS(serve)]; env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_RETRIEVAL_WORKER_PG_DSN,
 //!   HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256, HUMAUX_TEST_GITLEAKS_VERSION]; modules=[adapters::postgres,
 //!   application::retrieval_embedding_port, cache::bounded, domain::error, domain::identity, domain::ids,
-//!   gateway::cached_embedding, gateway::retrieval_embedding_client, humaux-local-secret-scan, infra-cell::permit,
+//!   gateway::bootstrap, gateway::cached_embedding, gateway::retrieval_embedding_client, humaux-local-secret-scan,
+//!   infra-cell::permit,
 //!   infra-cell::resource,
 //!   retrieval-provider::adapters, retrieval-provider::contract, retrieval-worker::rpc]
 //! Called-by: [cargo-test]
@@ -40,6 +41,7 @@ use humaux_cache::CacheConfig;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId};
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
+use humaux_gateway::bootstrap::EMBEDDING_CACHE_OBSERVER;
 use humaux_gateway::cached_embedding::{CachedEmbeddingPort, GenerationStamp};
 use humaux_gateway::retrieval_embedding_client::GatewayRetrievalEmbeddingClient;
 use humaux_infra_cell::{
@@ -296,7 +298,12 @@ async fn real_port() -> (CachedEmbeddingPort, sqlx::PgPool) {
         cell_registry(),
         Duration::from_secs(30),
     );
-    let port = CachedEmbeddingPort::new(Arc::new(client), stamp(), cache_config());
+    let port = CachedEmbeddingPort::new(
+        Arc::new(client),
+        stamp(),
+        cache_config(),
+        EMBEDDING_CACHE_OBSERVER,
+    );
     // dep: PostgreSQL(role_gateway) — reads the registration rows this test's tenant wrote
     let count_pool = sqlx::PgPool::connect(&required("HUMAUX_GATEWAY_PG_DSN"))
         .await
@@ -382,7 +389,12 @@ async fn inner_calls_for_two_recalls(
         outcome: outcome.clone(),
         calls: AtomicUsize::new(0),
     });
-    let port = CachedEmbeddingPort::new(stub.clone(), stamp(), cache_config());
+    let port = CachedEmbeddingPort::new(
+        stub.clone(),
+        stamp(),
+        cache_config(),
+        EMBEDDING_CACHE_OBSERVER,
+    );
     let workspace_id = WorkspaceId::new();
     let scope = user_scope(TenantId::new(), workspace_id);
     let mut got = Vec::new();
@@ -475,7 +487,12 @@ async fn service_principal_call_is_never_cached() {
         },
         calls: AtomicUsize::new(0),
     });
-    let port = CachedEmbeddingPort::new(stub.clone(), stamp(), cache_config());
+    let port = CachedEmbeddingPort::new(
+        stub.clone(),
+        stamp(),
+        cache_config(),
+        EMBEDDING_CACHE_OBSERVER,
+    );
     let workspace_id = WorkspaceId::new();
     let service = scope(TenantId::new(), None, workspace_id);
     for _ in 0..2 {

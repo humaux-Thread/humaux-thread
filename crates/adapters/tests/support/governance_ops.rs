@@ -245,7 +245,7 @@ pub fn supersede(
             successor: MemoryId(successor),
             stream: stream.clone(),
             claim,
-            finished_audit: audit(auth, op, request_id, false),
+            finished_audit: audit(auth, op, request_id, false).into(),
             undo_window: Duration::from_secs(86_400),
         },
     ))
@@ -273,7 +273,7 @@ pub fn restore(
             target: MemoryId(target),
             stream: stream.clone(),
             claim,
-            finished_audit: audit(auth, op, request_id, false),
+            finished_audit: audit(auth, op, request_id, false).into(),
             consistency_token_ttl: Duration::from_secs(600),
         },
     ))
@@ -301,7 +301,7 @@ pub fn archive(
             target: MemoryId(target),
             stream: stream.clone(),
             claim,
-            finished_audit: audit(auth, op, request_id, false),
+            finished_audit: audit(auth, op, request_id, false).into(),
             op,
         },
     ))
@@ -336,7 +336,7 @@ pub fn correct(
             payload_sha256: payload_sha256(&bytes),
             stream: stream.clone(),
             claim,
-            finished_audit: audit(auth, op, request_id, false),
+            finished_audit: audit(auth, op, request_id, false).into(),
             undo_window: Duration::from_secs(86_400),
             consistency_token_ttl: Duration::from_secs(600),
             subjects: humaux_domain::subject::SubjectDeclaration::default(),

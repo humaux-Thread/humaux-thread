@@ -1,5 +1,5 @@
 //! `application::auth` — H2: §74 注册/登录/重置/变更状态机（Argon2id+security epoch）（Phase 2 wave 实现；判据出处见 spec 家章）。
-//! Depends-on: crates=[argon2, hex, hmac, humaux-domain, rand, sha2]; services=[]; env=[]; modules=[domain::audit,
+//! Depends-on: crates=[argon2, hex, hmac, humaux-domain, rand, sha2]; services=[]; env=[]; modules=[domain::audit::write_view,
 //!   domain::error, domain::ids]
 //! Called-by: [adapters::login_repo, adapters::provisioning, adapters::session_repo, application::session, gateway::auth_pages, gateway::bootstrap, tests]
 //! Invariants: []
@@ -18,7 +18,7 @@
 //! every state transition below is a function the caller cannot skip past; there is no field
 //! anywhere a client sets directly to jump to `ACCOUNT_ACTIVE` or "verified".
 
-use humaux_domain::audit::AuditMetadata;
+use humaux_domain::audit::write_view::AuditMetadataView;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::ids::UserId;
 use std::sync::OnceLock;
@@ -826,7 +826,7 @@ impl AuthEventType {
 }
 
 /// One `control.auth_events` row's application-owned fields (§77): pairs the closed
-/// [`AuthEventType`] enum with an allowlisted [`AuditMetadata`], never a raw jsonb value — so
+/// [`AuthEventType`] enum with an allowlisted [`AuditMetadataView`], never a raw jsonb value — so
 /// no caller in this crate can smuggle a password/code/token into `metadata` past §77's ban.
 /// `migrations/0035_email_auth_identity.sql`'s own comment on `control.auth_events.metadata`
 /// names this as "application-layer contract...a code-review/test invariant" with nothing in
@@ -837,7 +837,7 @@ impl AuthEventType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthEventRecord {
     pub event_type: AuthEventType,
-    pub metadata: AuditMetadata,
+    pub metadata: AuditMetadataView,
 }
 
 #[cfg(test)]
@@ -1456,22 +1456,13 @@ mod tests {
 
     #[test]
     fn auth_event_record_metadata_is_typed_through_the_allowlist() {
-        let mut metadata = AuditMetadata::new();
-        // "role" is one of `AuditMetadata`'s current closed-set keys (humaux_domain::audit,
-        // owned by a different task, §77) — an auth-specific key this crate eventually needs
-        // would be added to that allowlist by whoever owns it, not reimplemented here; this
-        // test only proves `AuthEventRecord.metadata`'s type routes through it at all.
-        metadata.insert("role", "member").unwrap();
+        let metadata = AuditMetadataView::try_from_entries([("role", "member")]).unwrap();
         let record = AuthEventRecord {
             event_type: AuthEventType::LoginSuccess,
-            metadata: metadata.clone(),
+            metadata,
         };
-        assert_eq!(record.metadata.len(), 1);
-        // A password/token-shaped key never reaches an `AuthEventRecord` at all — the
-        // allowlist rejects it at `AuditMetadata::insert` itself (humaux_domain::audit),
-        // not reimplemented here.
-        let mut bad = AuditMetadata::new();
-        assert!(bad.insert("password", "x").is_err());
+        assert_eq!(record.metadata.iter().len(), 1);
+        assert!(AuditMetadataView::try_from_entries([("password", "x")]).is_err());
     }
 
     // ---- auth_events enum <-> SQL CHECK spelling, read from the migration file itself ----

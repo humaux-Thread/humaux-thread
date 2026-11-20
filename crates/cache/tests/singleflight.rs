@@ -1,8 +1,10 @@
 //! `cache::tests::singleflight` — G-M12-4: identical concurrent misses run one compute (M12 D7).
-//! Depends-on: crates=[humaux-domain, humaux-telemetry, tokio]; services=[]; env=[]; modules=[cache::bounded, cache::key, domain::ids, telemetry::cache]
+//! Depends-on: crates=[humaux-domain, humaux-telemetry, tokio]; services=[]; env=[]; modules=[cache::bounded, cache::key, cache::tests::support, domain::ids, telemetry::cache]
 //! Called-by: [cargo-test]
 //! Invariants: [32 concurrent identical misses run exactly one compute; a cancelled first waiter strands nobody]
 //! Spec: Baseline §51; M12 design §6 D7, §8 G-M12-4
+
+mod support;
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -12,6 +14,8 @@ use std::time::Duration;
 use humaux_cache::{BoundedCache, CacheConfig, EmbeddingQueryKey};
 use humaux_domain::ids::{TenantId, UserId};
 use humaux_telemetry::cache::CacheName;
+
+use support::CACHE_OBSERVER;
 
 type Cache = BoundedCache<EmbeddingQueryKey, Vec<u8>>;
 
@@ -24,6 +28,7 @@ fn cache() -> Arc<Cache> {
             ttl: Duration::from_secs(3600),
             enabled: true,
         },
+        CACHE_OBSERVER,
     ))
 }
 

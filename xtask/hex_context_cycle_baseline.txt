@@ -1,6 +1,5 @@
 # Existing actual context edges reversed by a may_depend_on path.
 # Shrink with HEX_CONTEXT_CYCLE_CEILING when a reverse edge or path disappears.
-identity_access->provider_execution
 knowledge_curation->project_continuity
 provider_execution->knowledge_lifecycle
 provider_execution->retrieval_read_model

@@ -1,8 +1,10 @@
 //! `cache::tests::embedding_key` — G-M12-1: the query-embedding key is complete (DOD-059, §51).
-//! Depends-on: crates=[humaux-domain, humaux-telemetry, tokio]; services=[]; env=[]; modules=[cache::bounded, cache::key, domain::ids, telemetry::cache]
+//! Depends-on: crates=[humaux-domain, humaux-telemetry, tokio]; services=[]; env=[]; modules=[cache::bounded, cache::key, cache::tests::support, domain::ids, telemetry::cache]
 //! Called-by: [cargo-test]
 //! Invariants: [changing any one key field is a different key and a miss; an identical key is a hit]
 //! Spec: Baseline §51; M12 design §8 G-M12-1
+
+mod support;
 
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,6 +13,8 @@ use std::time::Duration;
 use humaux_cache::{BoundedCache, CacheConfig, EmbeddingQueryKey};
 use humaux_domain::ids::{TenantId, UserId};
 use humaux_telemetry::cache::CacheName;
+
+use support::CACHE_OBSERVER;
 
 type Cache = BoundedCache<EmbeddingQueryKey, Vec<u8>>;
 
@@ -65,7 +69,7 @@ async fn every_field_change_is_a_distinct_key_and_a_miss() {
         ("input_sha256", user_key(tenant, user, 1, 1024, 8)),
     ];
 
-    let cache = Cache::new(CacheName::EmbedQuery, config());
+    let cache = Cache::new(CacheName::EmbedQuery, config(), CACHE_OBSERVER);
     let computes = AtomicUsize::new(0);
     lookup(&cache, &computes, original.clone()).await;
     assert_eq!(computes.load(Ordering::SeqCst), 1);

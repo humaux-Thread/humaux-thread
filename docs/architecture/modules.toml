@@ -208,6 +208,7 @@ files = [
   "crates/application/src/oauth_exchange.rs",
   "crates/application/src/session.rs",
   "crates/application/src/signed_token.rs",
+  "crates/domain/src/audit/write_view.rs",
   "crates/domain/src/identity.rs",
 ]
 kind = "support"
@@ -599,6 +600,7 @@ files = [
   "crates/cache/tests/failure.rs",
   "crates/cache/tests/isolation.rs",
   "crates/cache/tests/singleflight.rs",
+  "crates/cache/tests/support/mod.rs",
   "crates/domain/src/affect_read.rs",
   "crates/domain/src/grounding_read.rs",
   "crates/domain/src/selection.rs",

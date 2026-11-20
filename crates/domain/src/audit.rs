@@ -2,8 +2,8 @@
 //!   `SensitiveAdminAction`, the closed `McpAuditAction` set, and the `AuditBatch` hash-chain (construction +
 //!   verification only — no IO, no ObjectStore; the adapter-layer export port lives in `adapters::audit_sink`,
 //!   §3/§78.3 keeps this crate free of it).
-//! Depends-on: crates=[sha2, uuid]; services=[]; env=[]; modules=[domain::error, domain::ids]
-//! Called-by: [adapters::audited_read_quota, gateway::bootstrap, adapters::independent_audit, application::independent_audit, adapters::audit_sink, adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::provisioning, adapters::request_guard_repo, application::auth, application::remember, gateway::guard, gateway::mcp_application, gateway::memory, tests]
+//! Depends-on: crates=[sha2, uuid]; services=[]; env=[]; modules=[domain::audit::write_view, domain::error, domain::ids]
+//! Called-by: [adapters::audited_read_quota, gateway::bootstrap, adapters::independent_audit, application::independent_audit, adapters::audit_sink, adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::memory_governance_repo, adapters::operation_receipt, adapters::provisioning, adapters::request_guard_repo, application::remember, gateway::guard, gateway::mcp_application, gateway::memory, tests]
 //! Invariants: []
 //! Spec: Baseline §77
 //!
@@ -17,10 +17,15 @@
 //! contract and the DB trigger are both defense in depth, not the tamper-evidence guarantee
 //! itself; that guarantee is the exported hash chain.
 
+pub mod write_view;
+
+use std::borrow::Cow;
+
 use crate::error::ErrorCode;
 use crate::ids::TenantId;
 #[cfg(test)]
 use uuid::Uuid;
+use write_view::{AuditMetadataView, AuditWriteEvent, AuditWriteSource};
 
 /// Shared audit event identity, MCP actions, and reserved audit tenant (§77).
 pub use crate::audit_types::{AuditEventId, McpAuditAction, SYSTEM_TENANT_ID};
@@ -150,6 +155,57 @@ pub struct AuditEvent {
     /// (e.g. a delete/revoke read back as "gone").
     pub after_fingerprint: Option<String>,
     pub metadata: AuditMetadata,
+}
+
+impl From<AuditEvent> for AuditWriteEvent {
+    fn from(event: AuditEvent) -> Self {
+        Self {
+            event_id: event.event_id,
+            ts: event.ts,
+            tenant_id: event.tenant_id,
+            actor_type: event.actor_type,
+            actor_id: event.actor_id,
+            action: event.action,
+            resource_type: event.resource_type,
+            resource_id: event.resource_id,
+            result: event.result,
+            request_id: event.request_id,
+            trace_id: event.trace_id,
+            client_ip: event.client_ip,
+            user_agent_hash: event.user_agent_hash,
+            risk_tags: event.risk_tags,
+            before_fingerprint: event.before_fingerprint,
+            after_fingerprint: event.after_fingerprint,
+            metadata: AuditMetadataView {
+                entries: event.metadata.entries,
+            },
+        }
+    }
+}
+
+impl AuditWriteSource for AuditEvent {
+    fn audit_write_event(&self) -> Cow<'_, AuditWriteEvent> {
+        Cow::Owned(self.clone().into())
+    }
+}
+
+impl AuditMetadataView {
+    /// Validate the published entries with the §77 owner's key and duplicate checks.
+    pub fn try_from_entries<K, V>(
+        entries: impl IntoIterator<Item = (K, V)>,
+    ) -> Result<Self, ErrorCode>
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let mut metadata = AuditMetadata::new();
+        for (key, value) in entries {
+            metadata.insert(key, value)?;
+        }
+        Ok(Self {
+            entries: metadata.entries,
+        })
+    }
 }
 
 /// §77 Audit Immutability §"Sensitive Admin Action" field list, verbatim: actor / subject
