@@ -1241,6 +1241,89 @@ fn m02_10b_review_entitlement_revocation_wins_pending_issuance() {
     });
 }
 
+#[test]
+fn m02_10b_review_entitlement_expiry_wins_pending_issuance() {
+    run_db_fixture::<OAuthFixture, _>("M02-10b review: entitlement expiry", |mut h| {
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        let address = serve(&h, 7200);
+        let session = session_cookie(&h);
+        let path = authorize_url(&h.client_id, REDIRECT, "S256");
+        let page = browser_get(&h, address, &path, &session);
+        assert_eq!(page.status, 200);
+        let body = consent_body(&page, "allow");
+
+        let expires_at: String = h
+            .admin
+            .query_one(
+                r#"UPDATE control.entitlement_snapshots SET effective = jsonb_set(effective,
+                 '{mcp.billable_operations.per_period,period_end}', to_jsonb(to_char(
+                 (clock_timestamp() + interval '5 seconds') AT TIME ZONE 'UTC',
+                 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))) WHERE tenant_id=$1
+                 RETURNING effective #>> '{mcp.billable_operations.per_period,period_end}'"#,
+                &[&tenant],
+            )
+            .unwrap()
+            .get(0);
+        // The client's FK blocks the insert after the consent entitlement check.
+        let mut barrier = h.admin.transaction().unwrap();
+        barrier.query_one(
+            "SELECT client_id FROM control.oauth_client_registrations WHERE client_id=$1 FOR UPDATE",
+            &[&h.client_id],
+        ).unwrap();
+        let request = h.rt.spawn(async move {
+            http_with(
+                address,
+                "POST",
+                "/oauth/authorize",
+                &[
+                    ("Cookie", &session),
+                    ("Origin", ORIGIN),
+                    ("Sec-Fetch-Site", "same-origin"),
+                ],
+                &body,
+            )
+            .await
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let waiting: bool = barrier.query_one(
+                "SELECT EXISTS (SELECT FROM pg_locks WHERE locktype='transactionid' AND NOT granted \
+                 AND pg_backend_pid() = ANY(pg_blocking_pids(pid)))",
+                &[],
+            ).unwrap().get(0);
+            if waiting {
+                break;
+            }
+            assert!(
+                !request.is_finished() && std::time::Instant::now() < deadline,
+                "issuance did not reach the DB barrier"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let still_valid: bool = barrier
+            .query_one(
+                "SELECT clock_timestamp() < $1::text::timestamptz",
+                &[&expires_at],
+            )
+            .unwrap()
+            .get(0);
+        assert!(still_valid, "issuance must reach the insert before expiry");
+        barrier
+            .query_one(
+                "SELECT pg_sleep_until($1::text::timestamptz)",
+                &[&expires_at],
+            )
+            .unwrap();
+        barrier.commit().unwrap();
+        let reply = h.rt.block_on(request).unwrap();
+        assert_eq!(reply.status, 403, "expiry must prevent code issuance");
+        assert!(!reply.headers.contains_key("location"));
+        assert_eq!(authorization_code_count(&mut h), 0);
+    });
+}
+
 fn authorization_code_count(h: &mut Handle) -> i64 {
     h.admin
         .query_one(
