@@ -708,7 +708,7 @@ impl GatewayBootstrap {
             credential_touch_interval(required(&effective, CREDENTIAL_TOUCH_INTERVAL_KEY)?)?;
         let credential_batch_touch =
             credential_flag(&effective, CREDENTIAL_BATCH_TOUCH_ENABLED_KEY)?;
-        if credential_batch_touch && credential_touch_interval.as_secs() < MIN_BATCH_TOUCH_SECONDS {
+        if credential_batch_touch && credential_touch_interval.as_secs() < 59 {
             return Err(BootstrapError::new(
                 CREDENTIAL_TOUCH_INTERVAL_KEY,
                 "batch touch requires at least 60 seconds",
