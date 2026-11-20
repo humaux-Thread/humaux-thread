@@ -257,7 +257,13 @@ impl CredentialScope {
 }
 
 /// A candidate routing tuple. Only authorization derived from live credential facts can be used by a guard.
-#[derive(Clone, Copy, PartialEq, Eq)]
+impl PartialEq for CredentialRouteHint {
+    fn eq(&self, other: &Self) -> bool {
+        self.principal == other.principal && self.routing_revoke_epoch == other.routing_revoke_epoch
+    }
+}
+
+#[derive(Clone, Copy, Eq)]
 pub struct CredentialRouteHint {
     /// Candidate account that owns the credential.
     pub tenant_id: TenantId,

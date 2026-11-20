@@ -151,9 +151,7 @@ BEGIN
   END IF;
   UPDATE control.api_keys
      SET last_used_at = v_now
-   WHERE api_key_id = ANY(p_ids)
-     AND (last_used_at IS NULL
-          OR last_used_at <= v_now - make_interval(secs => p_interval_seconds));
+   WHERE api_key_id = ANY(p_ids);
   GET DIAGNOSTICS v_updated = ROW_COUNT;
   RETURN v_updated;
 END;
