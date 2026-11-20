@@ -557,7 +557,7 @@ fn observe(f: &mut Fixture, evidence_id: Uuid) -> Observed {
     let disclosure_outcomes = f
         .admin
         .query(
-            "SELECT d.outcome FROM ops.data_disclosures d \
+            "SELECT coalesce(d.outcome, 'UNFINALIZED') FROM ops.data_disclosures d \
              JOIN ops.data_disclosure_sources s ON s.disclosure_id = d.disclosure_id \
              WHERE s.evidence_id = $1",
             &[&evidence_id],
@@ -2449,8 +2449,10 @@ fn assert_provider_settlement(
     if case == "no receipt" {
         assert_eq!(report.unknown, 1, "{case}: {report:?}");
         assert_eq!(observed.ledger.status.as_deref(), Some("RESERVED"));
+        assert_eq!(observed.disclosure_outcomes, ["UNFINALIZED"]);
     } else {
         assert_eq!(observed.ledger.status.as_deref(), Some("FAILED"), "{case}");
+        assert_eq!(observed.disclosure_outcomes, ["FAILED"], "{case}");
     }
     let next = job_retry_epoch(f, job);
     if let Some((min, max)) = delay {
