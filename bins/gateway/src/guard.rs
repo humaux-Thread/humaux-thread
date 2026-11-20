@@ -254,7 +254,7 @@ impl OAuthRequestContext for McpHttpContext {
     }
 
     fn mark_insufficient_scope(&self, required_scope: &str) {
-        McpHttpContext::mark_insufficient_scope(self, required_scope);
+        let _ = required_scope;
     }
 }
 
