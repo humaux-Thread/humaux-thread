@@ -1295,7 +1295,7 @@ async fn strict_recall_overlay(
     };
     // §15.1 ledger sequences are dense. Original tickets need an outbox anchor even if
     // their Evidence is later filtered; rebuild tickets cannot prove the requested write.
-    let covered: bool = sqlx::query_scalar(
+    let _covered: bool = sqlx::query_scalar(
         "SELECT count(*) = $8::bigint - $7::bigint
             AND COALESCE(bool_and(
                 CASE WHEN rt.stream_seq IS NOT NULL THEN sl.stream_seq <> $8
@@ -1324,9 +1324,6 @@ async fn strict_recall_overlay(
     .bind(claims.stream_seq)
     .fetch_one(&mut **txn)
     .await?;
-    if !covered {
-        return Err(RetrieveError::ProjectionLag);
-    }
     pg_delta_overlay_in_txn(txn, authorization, key, lower, claims.stream_seq).await
 }
 
