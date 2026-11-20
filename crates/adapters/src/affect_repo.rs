@@ -2,8 +2,8 @@
 //!   onto `private.memory_affects` ([`annotate`]) and the ONE set-based read ([`AFFECTS_FOR_MEMORIES_SQL`] /
 //!   [`affects_for_memories_in_txn`]) every reader shares — the PG hydrate re-check (`read_materialize`), the
 //!   projection worker's payload build, and `memory.get` / `memory.enumerate` / the recall rerank.
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[private.memory_evidence, private.memory_records] w=[private.evidence_affects, private.memory_affects]]; env=[]; modules=[adapters::confirm_token_repo, adapters::memory_governance_repo, adapters::postgres, adapters::read_materialize, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::affect, application::lifecycle_execution, domain::affect, domain::authority, domain::error, domain::identity, domain::ids, domain::subject, projection::stream]
-//! Called-by: [adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::projection_worker, adapters::remember, gateway::bootstrap, gateway::mcp_application, tests]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[private.memory_evidence, private.memory_records] w=[private.evidence_affects, private.memory_affects]]; env=[]; modules=[adapters::confirm_token_repo, adapters::memory_governance_repo, adapters::postgres, adapters::read_materialize, adapters::remember, adapters::stream_repo, adapters::subject_repo, application::affect, application::lifecycle_execution, domain::affect, domain::affect_read, domain::authority, domain::error, domain::identity, domain::ids, domain::subject, projection::stream]
+//! Called-by: [adapters::distill_reasoner, adapters::distill_repo, adapters::memory_governance_repo, adapters::remember, gateway::bootstrap, gateway::mcp_application, maintenance::bootstrap, maintenance::rebuild_cli, retrieval-worker::main, tests]
 //! Invariants: [affect rows are INSERT-only through the one row issuer insert_rows (declared rows via insert_in_txn,
 //!   inferred DISTILL rows via insert_inferred_in_txn) and never decayed on write; the one read lets an EXPLICIT row
 //!   shadow every DISTILL row of its memory; everything runs under
@@ -26,11 +26,15 @@
 //! (id or key) is `INVALID_INPUT` through `subject_repo`'s own rule-1/2 resolver — never an
 //! auto-registration (mirrors card 8).
 
+use std::future::Future;
+use std::pin::Pin;
+
 use humaux_domain::affect::{
     AffectAnnotation, AffectFilter, AffectKind, AffectOrigin, AffectTargetScope,
     AffectTargetScopeKind, BasisPointRange, BasisPoints, EmotionLabel,
     INFERRED_CONFIDENCE_CEILING_BP, MoodHalfLife, MoodPoint,
 };
+use humaux_domain::affect_read::AffectIndexRow;
 use humaux_domain::authority::MemoryId;
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::AuthorizationScope;
@@ -164,6 +168,21 @@ pub async fn affects_for_memories_in_txn(
         .iter()
         .map(row_to_affect)
         .collect()
+}
+
+/// Supplies the projector's raw index views under the caller's transaction and RLS.
+pub fn read_projection_affects<'a>(
+    txn: &'a mut Txn<'_>,
+    tenant_id: Uuid,
+    memory_id: Uuid,
+) -> Pin<Box<dyn Future<Output = Result<Vec<AffectIndexRow>, sqlx::Error>> + Send + 'a>> {
+    Box::pin(async move {
+        let rows = affects_for_memories_in_txn(txn, tenant_id, &[memory_id]).await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| row.annotation.index_view())
+            .collect())
+    })
 }
 
 /// Binds the affect query and decay policy to recall's same-snapshot re-check.
