@@ -1,6 +1,6 @@
 //! `infra-network::http` — ADR-0003 / §83.4 G80-3 判据1's real raw-client construction point.
 //! Depends-on: crates=[reqwest, tokio]; services=[HTTP(loopback)]; env=[]; modules=[]
-//! Called-by: [infra-cell::transport, infra-egress::http, infra-egress::raw, infra-egress::resolver]
+//! Called-by: [infra-cell::transport, infra-egress::http, infra-egress::oauth_metadata, infra-egress::raw, infra-egress::resolver]
 //! Invariants: [egress HTTP failure surfaces as a transport error to the caller; no silent retry across trust boundaries]
 //! Spec: none
 //!

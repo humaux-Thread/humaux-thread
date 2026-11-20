@@ -714,6 +714,7 @@ files = [
   "crates/infra-cell/tests/ui/pass_qdrant_rest_variant.rs",
   "crates/infra-egress/src/http.rs",
   "crates/infra-egress/src/lib.rs",
+  "crates/infra-egress/src/oauth_metadata.rs",
   "crates/infra-egress/src/raw.rs",
   "crates/infra-egress/src/resolver.rs",
   "crates/infra-network/src/http.rs",

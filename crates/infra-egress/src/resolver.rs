@@ -1,7 +1,7 @@
 //! `infra-egress::resolver` — Layer 1A 的「检查即拨号」解析器：**出网 client 的唯一构造点**。
 //! Depends-on: crates=[humaux-infra-network, tokio]; services=[HTTP(loopback)]; env=[];
 //!   modules=[humaux-infra-network, infra-network::http]
-//! Called-by: [adapters::byok, infra-egress::http, infra-egress::raw, tests]
+//! Called-by: [adapters::byok, infra-egress::http, infra-egress::oauth_metadata, infra-egress::raw, tests]
 //! Invariants: [the only outbound client constructor: the address the SSRF check approved is the address that is
 //!   dialed (one resolution, ADR-0039); behind an operator proxy the pin does not hold, a documented residual]
 //! Spec: ADR-0039; §11.4; §83.4
@@ -186,6 +186,7 @@ impl reqwest::dns::Resolve for PinnedResolver {
         }
         let inner = self.inner.clone();
         let cache = self.cache.clone();
+        let cache_enabled = !self.ttl.is_zero();
         Box::pin(async move {
             let lookup_host = host.clone();
             // 注入的 resolver 可能是阻塞的（`SystemCheckedResolve` 的 `ToSocketAddrs`、
@@ -199,7 +200,7 @@ impl reqwest::dns::Resolve for PinnedResolver {
             if addrs.is_empty() {
                 return Err(refused(&host, "resolved to zero addresses".to_string()));
             }
-            if let Ok(mut guard) = cache.lock() {
+            if cache_enabled && let Ok(mut guard) = cache.lock() {
                 guard.insert(host, (Instant::now(), addrs.clone()));
             }
             Ok(as_addrs(addrs))

@@ -13447,6 +13447,7 @@ executed by:
 - `gateway::tests::support::guard_limiter`
 - `humaux-telemetry`
 - `infra-egress::http`
+- `infra-egress::oauth_metadata`
 - `infra-egress::resolver`
 - `infra-network::http`
 - `maintenance::main`
@@ -13474,6 +13475,7 @@ executed by:
 ### `HTTP(provider)`
 - `billing-worker::creem_egress`
 - `infra-egress::http`
+- `infra-egress::oauth_metadata`
 - `infra-egress::raw`
 
 ### `MiniMax`
@@ -16429,6 +16431,7 @@ why: humaux-infra-network dependency
 
 modules naming it:
 - `infra-egress::http`
+- `infra-egress::oauth_metadata`
 - `infra-egress::raw`
 - `infra-egress::resolver`
 
@@ -16469,6 +16472,7 @@ why: tokio dependency
 
 modules naming it:
 - `infra-egress::http`
+- `infra-egress::oauth_metadata`
 - `infra-egress::raw`
 - `infra-egress::resolver`
 - `tests`
@@ -16478,6 +16482,7 @@ why: tokio dependency
 
 modules naming it:
 - `infra-egress::http`
+- `infra-egress::oauth_metadata`
 - `infra-egress::raw`
 - `infra-egress::resolver`
 - `tests`
