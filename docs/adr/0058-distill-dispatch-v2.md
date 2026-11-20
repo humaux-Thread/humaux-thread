@@ -97,10 +97,11 @@ Read on `5ff4aff` (file:line at that commit):
   only; an error that escapes a job (DB, reasoner, membership) is `errors=<n>` on the dispatch line and
   `outcome=ERROR error_class=<class>` on the job line, so "healthy = `lost_lease=0`" stays true.
 - **D-F settles (slice 2)**: anything before the first admitted request is NOT_READY; a provider 401
-  (`ReasoningProviderError::WAITING_KEY_CLASS`) parks WAITING_KEY and reverts its attempt; any other failed call is
-  RETRY with `jobs::retry_backoff_seconds(lease, attempt)` or, at `max_attempts`, DEAD with the class and the outbox
-  FAILED in the same transaction (forward pointer: so a provider outage settles RETRY → DEAD, not WAITING_KEY,
-  and is recovered with `jobs requeue-dead` once the provider is back — ADR-0060 D-G); a refused malformed re-ask
+  (`ReasoningProviderError::WAITING_KEY_CLASS`) parks WAITING_KEY and reverts its attempt. Per Baseline §11.3,
+  `PROVIDER_PERMANENT` settles DEAD immediately with its class and the outbox FAILED in the same transaction.
+  A retryable failure honors a bounded provider delay when present; otherwise it uses
+  `jobs::retry_backoff_seconds(lease, attempt)` with D1 jitter (the E1 window below). At `max_attempts` it settles
+  DEAD and is recovered with `jobs requeue-dead` once the provider is back (ADR-0060 D-G). A refused malformed re-ask
   is DEAD `FAILED_OUTPUT_SCHEMA`, a refused empty retry
   accepts the empty answer; a claim with `attempt` or `abandoned_claims ≥ max_attempts` is DEAD at once
   (`ATTEMPTS_EXHAUSTED` / `PRE_DISPATCH_ABANDONED`). Every settle runs `finish_derived_work_v2` as the first

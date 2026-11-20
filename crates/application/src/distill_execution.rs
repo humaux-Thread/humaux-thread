@@ -1,5 +1,5 @@
 //! `application::distill_execution` — Claimed-job Distill use case (§16.1.1; ADR-0058; ADR-0130 D2/D7a).
-//! Depends-on: crates=[async-trait, humaux-domain, serde_json, time, uuid]; services=[]; env=[]; modules=[application::consolidate, domain::affect, domain::authority, domain::error, domain::memory]
+//! Depends-on: crates=[async-trait, humaux-domain, rand, serde_json, time, uuid]; services=[]; env=[]; modules=[application::consolidate, domain::affect, domain::authority, domain::error, domain::memory]
 //! Called-by: [adapters::derived_job_lease, adapters::distill_reasoner, adapters::distill_repo, adapters::jobs, private-worker::bootstrap, private-worker::distill, private-worker::main, private-worker::route_providers, tests]
 //! Invariants: [provider attempts are admitted before sending; result persistence owns one fenced transaction]
 //! Spec: §16.1.1; ADR-0058; ADR-0130
@@ -158,7 +158,7 @@ pub struct DistillDispatchConfig {
     pub http_timeout_seconds: f64,
     /// How long a job may be not ready before it parks as `WAITING_KEY`, and the park interval.
     pub not_ready_park_seconds: f64,
-    /// Admitted provider requests after which a failing job is DEAD with its class.
+    /// Admitted provider requests after which retryable failures are DEAD with their class.
     pub max_attempts: i32,
     /// §72.3 tenant distill budget every request passes before it may leave (ADR-0058 D-T).
     pub budget: DistillCallBudget,
@@ -575,11 +575,17 @@ pub struct Prepared<H> {
     pub handle: H,
 }
 /// Finalized call or deliberately unknown outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DistillCallOutcome {
     /// Successful round trip.
     Answered(DistillInferenceResult),
-    /// Static failure class.
-    Failed(&'static str),
+    /// A finalized failure, without any provider text.
+    Failed {
+        /// Static failure class.
+        class: &'static str,
+        /// Provider retry hint already bounded at the BYOK boundary.
+        retry_after: Option<Duration>,
+    },
     /// Deadline cut only the HTTP future.
     Unknown,
 }
@@ -770,9 +776,10 @@ async fn settle_failed_call<R: DistillPorts>(
     row: &ClaimedEvidence,
     attempt: i32,
     class: &'static str,
+    retry_after: Option<Duration>,
 ) -> Result<Settled, DistillError> {
     let dispatch = dispatcher.dispatch;
-    if attempt >= dispatch.max_attempts {
+    if class == ErrorCode::ProviderPermanent.as_str() || attempt >= dispatch.max_attempts {
         return settle_as(
             dispatcher,
             lease,
@@ -784,15 +791,23 @@ async fn settle_failed_call<R: DistillPorts>(
         )
         .await;
     }
+    let delay = retry_after.map_or_else(
+        || {
+            // ADR-0058 E1: spread retries across the same ±25% window as D1's T6 reconciliation.
+            dispatcher
+                .runtime
+                .retry_backoff(dispatch.lease_seconds, attempt)
+                * rand::random_range(0.75..1.25)
+        },
+        |hint| hint.as_secs_f64(),
+    );
     settle_as(
         dispatcher,
         lease,
         Some((row, OutboxSettle::Pending)),
         Finish::Retry,
         Some(class),
-        dispatcher
-            .runtime
-            .retry_backoff(dispatch.lease_seconds, attempt),
+        delay,
         JobOutcome::Retry,
     )
     .await
@@ -954,7 +969,7 @@ async fn call_loop<R: DistillPorts>(
             }
             // Became unready between two calls of one claim: a counted call happened.
             Ok(ReadLeg::NotReady(class)) => {
-                return settle_failed_call(dispatcher, lease, row, *attempt, class).await;
+                return settle_failed_call(dispatcher, lease, row, *attempt, class, None).await;
             }
             Err(error) => return Err(error),
         };
@@ -1028,7 +1043,7 @@ async fn call_loop<R: DistillPorts>(
                     )
                     .await;
             }
-            Ok(DistillCallOutcome::Failed(class)) if *class == "WAITING_KEY" => {
+            Ok(DistillCallOutcome::Failed { class, .. }) if *class == "WAITING_KEY" => {
                 dispatcher
                     .runtime
                     .observe_health(
@@ -1045,7 +1060,10 @@ async fn call_loop<R: DistillPorts>(
             Ok(DistillCallOutcome::Unknown) => {
                 return Ok(Settled::new(JobOutcome::Unknown, Some(EXECUTION_UNCERTAIN)));
             }
-            Ok(DistillCallOutcome::Failed(class)) if class == "WAITING_KEY" => {
+            Ok(DistillCallOutcome::Failed {
+                class: "WAITING_KEY",
+                ..
+            }) => {
                 // §11: WAITING_KEY = known blocked, never DEAD, no retry count.
                 *attempt = (*attempt - 1).max(0);
                 return settle_as(
@@ -1053,7 +1071,7 @@ async fn call_loop<R: DistillPorts>(
                     lease,
                     Some((row, OutboxSettle::Pending)),
                     Finish::WaitingKey,
-                    Some(class),
+                    Some("WAITING_KEY"),
                     0.0,
                     JobOutcome::Parked,
                 )
@@ -1061,9 +1079,13 @@ async fn call_loop<R: DistillPorts>(
             }
             // ADR-0058 D-M: a reply that broke the tool-call contract spends the malformed budget
             // exactly like one the parser refused (ADR-0048 D-D), never the provider-retry path.
-            Ok(DistillCallOutcome::Failed(class)) if class == FAILED_OUTPUT_SCHEMA => None,
-            Ok(DistillCallOutcome::Failed(class)) => {
-                return settle_failed_call(dispatcher, lease, row, *attempt, class).await;
+            Ok(DistillCallOutcome::Failed {
+                class: FAILED_OUTPUT_SCHEMA,
+                ..
+            }) => None,
+            Ok(DistillCallOutcome::Failed { class, retry_after }) => {
+                return settle_failed_call(dispatcher, lease, row, *attempt, class, retry_after)
+                    .await;
             }
             Ok(DistillCallOutcome::Answered(inferred)) => Some(inferred),
             Err(error) => return Err(error),
