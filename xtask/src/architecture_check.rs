@@ -98,6 +98,27 @@ fn m03_2_no_pg_rate_path(root: &Path) -> Verdict {
 
 const REQUEST_GUARD_SOURCE: &str = "bins/gateway/src/guard.rs";
 
+/// Scan literal paths throughout Guard, including the local imports skipped by the module index.
+struct GuardSourcePaths<'a>(&'a mut Vec<Vec<String>>);
+
+impl<'ast> syn::visit::Visit<'ast> for GuardSourcePaths<'_> {
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        let mut imports = Vec::new();
+        hex_imports(&item.tree, Vec::new(), &mut imports);
+        self.0.extend(imports.into_iter().map(|(_, path)| path));
+    }
+
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        self.0.push(
+            path.segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect(),
+        );
+        syn::visit::visit_path(self, path);
+    }
+}
+
 /// M03 design §4 / §8 G-M03-12: Guard can reach request-policy adapters, never operation adapters.
 fn m03_12_guard_adapter_boundary(root: &Path) -> Verdict {
     let file = match fs::read_to_string(root.join(REQUEST_GUARD_SOURCE))
@@ -114,35 +135,30 @@ fn m03_12_guard_adapter_boundary(root: &Path) -> Verdict {
         aliases: BTreeMap::new(),
     };
     refs.items(&file.items);
+    syn::visit::visit_file(&mut GuardSourcePaths(&mut refs.paths), &file);
     let forbidden: BTreeSet<_> = refs
         .paths
         .iter()
         .filter_map(|path| {
-            let [krate, adapter_path @ ..] = path.as_slice() else {
+            let segments: Vec<_> = path
+                .iter()
+                .map(|segment| segment.strip_prefix("r#").unwrap_or(segment))
+                .collect();
+            let ["humaux_adapters", adapter_path @ ..] = segments.as_slice() else {
                 return None;
             };
-            if krate != "humaux_adapters" {
-                return None;
-            }
-            let allowed = match adapter_path {
+            let allowed = matches!(
+                adapter_path,
                 // M02 credentials, M04 admission/metering, M05 denials audit.
-                [door, ..]
-                    if matches!(
-                        door.as_str(),
-                        "credential_repo"
-                            | "request_guard_repo"
-                            | "quota_repo"
-                            | "audited_read_quota"
-                            | "independent_audit"
-                    ) =>
-                {
-                    true
-                }
+                [
+                    "credential_repo" | "request_guard_repo" | "quota_repo" | "audited_read_quota"
+                    | "independent_audit",
+                    ..,
+                ]
                 // Typed handle passed to the composition root. The postgres module itself isn't a door.
-                [module, pool] => module == "postgres" && pool == "RuntimeDbPool",
-                _ => false,
-            };
-            (!allowed).then(|| format!("{REQUEST_GUARD_SOURCE}: {}", path.join("::")))
+                | ["postgres", "RuntimeDbPool"]
+            );
+            (!allowed).then(|| format!("{REQUEST_GUARD_SOURCE}: {}", segments.join("::")))
         })
         .collect();
     hex_verdict(forbidden.into_iter().collect())
@@ -14037,13 +14053,29 @@ mod tests {
                 "use humaux_adapters::{confirm_token_repo as repo};",
                 "humaux_adapters::confirm_token_repo",
             ),
+            (
+                "fn fault() { { use humaux_adapters::{confirm_token_repo as repo}; } }",
+                "humaux_adapters::confirm_token_repo",
+            ),
+            (
+                "mod fault { use ::r#humaux_adapters::{r#remember as repo}; }",
+                "humaux_adapters::remember",
+            ),
+            (
+                "fn fault() { ::humaux_adapters::remember::remember(); }",
+                "humaux_adapters::remember::remember",
+            ),
+            (
+                "fn fault() { humaux_adapters::confirm_token_repo::mint_with_audit(); }",
+                "humaux_adapters::confirm_token_repo::mint_with_audit",
+            ),
         ] {
             fs::write(&guard, format!("{source}\n{fault}\n")).unwrap();
             let red = m03_12_guard_adapter_boundary(&root);
             let expected = format!("{REQUEST_GUARD_SOURCE}: {forbidden}");
             assert!(
                 matches!(&red, Verdict::Fail(diagnostics) if diagnostics.contains(&expected)),
-                "{red:?}"
+                "{fault}: {red:?}"
             );
             println!("G-M03-12 injected {fault} RED: {red:?}");
             fs::write(&guard, &source).unwrap();
