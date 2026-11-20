@@ -186,3 +186,26 @@ another client's key. An unreadable peer keeps key 0.
 - G-M02-8: bins/gateway/tests/oauth_flow.rs — rotation, reuse and live access rejection; red r2 [40642632361](https://github.com/humaux-Thread/humaux-thread/actions/runs/40642632361): a revoking deny drops the transaction instead, so `g_m02_8_reuse_revokes_successor_and_both_access_tokens` fails at `oauth_flow.rs:351` and `g_m02_8_reused_access_tokens_fail_the_live_grant_check` at `:585` (the grant stays live); the G-M02-9 epoch revocations share the path and fail too (`:425`).
 - G-M02-9: bins/gateway/tests/oauth_flow.rs — epochs and absolute ceiling; red r3 [40643124515](https://github.com/humaux-Thread/humaux-thread/actions/runs/40643124515): live epochs read from the snapshots, so `g_m02_9_user_epoch_revokes` and `g_m02_9_tenant_epoch_revokes` fail at `oauth_flow.rs:351` (the bumped-epoch refresh is accepted).
 - G-M02-14: bins/gateway/tests/as_metadata.rs — exact metadata golden; red r4 [40643432618](https://github.com/humaux-Thread/humaux-thread/actions/runs/40643432618): issuer emitted with a trailing `/`, so `g_m02_14_metadata_matches_golden` fails at `as_metadata.rs:12` and `g_m02_14_metadata_capabilities_are_exact` at `:22`.
+
+## M02-10c — public client registration
+
+- The enabled OAuth router serves open RFC 7591 registration at `POST /oauth/register`. Its RFC 8414 document advertises
+  that route. Registration creates a public client with a generated ID, an explicit `token_endpoint_auth_method: none`,
+  and an authorization-code profile. Confidential authentication and caller-supplied credentials or IDs are refused.
+- Operators may supply a JSON array in `HUMAUX_GATEWAY_AUTH_OAUTH_STATIC_CLIENTS` using the existing gateway environment
+  configuration. For example, `[{"client_id":"desktop-example","token_endpoint_auth_method":"none","redirect_uris":["http://127.0.0.1/oauth/callback"]}]`.
+  Enabled gateway startup validates and commits the array as one transaction before serving OAuth. An existing active
+  STATIC row can be updated. A disabled ID or an ID owned by another registration kind fails startup. Removing an entry
+  from configuration has no effect on its persisted registry row.
+- New public callbacks use HTTPS or HTTP with a literal `localhost`, `127.0.0.1` or `[::1]` authority. HTTPS is matched
+  exactly. The HTTP loopback exception permits only a different port and keeps the scheme, host, path and query exact.
+  Migration 0311 enforces the same boundary at code issuance and stores the requested redirect URI for exact exchange.
+- DCR remains the compatibility option from M02 D5. Revisit its retirement after X-M02-2 establishes coverage through
+  CIMD or pre-registration.
+- Anonymous registration charges a route-specific bucket using the pre-auth trusted source IP. The typed registry sets
+  its burst and per-minute refill. Defaults allow one immediate request and refill one per minute. PostgreSQL serializes
+  DCR insertions and caps the active, unused registrations globally and per source. Defaults are 4096 globally and
+  16 per source during the first hour after registration. Disabled registrations and clients with a grant consume no
+  slots. Expired registrations leave the count, preserving the registry and authorization history. Only a labelled
+  HMAC of the trusted IP is persisted, and current and previous auth keys both count during overlap. Exhausted budgets
+  return HTTP 429 and RATE_LIMITED.

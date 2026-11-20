@@ -2,9 +2,8 @@
 //!   terms, code-exchange validation, refresh-rotation decisions and grant lifetime/epoch checks. Pure: no SQL, no clock,
 //!   no randomness; `now`, row snapshots and every lifetime come in as arguments.
 //! Depends-on: crates=[base64, humaux-domain, sha2, time, uuid]; services=[]; env=[]; modules=[application::signed_token, domain::error, domain::ids]
-//! Called-by: [application::bearer, application::oauth_exchange, gateway::oauth_http, tests]
-//! Invariants: [PKCE is S256 only; a redirect URI is accepted only when it is exactly registered and is https, loopback
-//!   http or a private-use scheme; `resource` is mandatory and allowlisted; a reused refresh token yields a decision that
+//! Called-by: [adapters::oauth_repo, application::bearer, application::oauth_exchange, gateway::bootstrap, gateway::oauth_http, tests]
+//! Invariants: [PKCE is S256 only; redirects are matched against the registry, with port variation only for registered HTTP loopback; `resource` is mandatory and allowlisted; a reused refresh token yields a decision that
 //!   revokes its family and grant; a grant is live only before its ceiling and while both epoch snapshots equal the live
 //!   epochs; every refusal is an `ErrorCode` plus one row of `OAUTH_REASONS`, never a third error enum]
 //! Spec: §6.2.1; §73.5; §52; §78.1; M02 D3; M02 D4; RFC 7636; RFC 8252 §7.3; RFC 8707
@@ -24,6 +23,17 @@ use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+/// Configured occupancy limits for unconsented dynamic clients (§78.1).
+#[derive(Clone, Copy)]
+pub struct RegistrationBudget {
+    /// Maximum occupied slots across all sources.
+    pub max_unused: i64,
+    /// Maximum occupied slots per trusted source.
+    pub max_unused_per_ip: i64,
+    /// Seconds after registration for which an unused client occupies capacity.
+    pub unused_ttl_seconds: i32,
+}
 
 /// Baseline recommended OAuth scopes: one application table (M02 §14).
 pub const SUPPORTED_SCOPES: [&str; 5] = [
@@ -81,7 +91,7 @@ const FORBIDDEN_REDIRECT_SCHEMES: [&str; 6] =
     ["javascript", "data", "vbscript", "file", "blob", "about"];
 
 /// A sub-reason attached to an [`ErrorCode`], same shape as `domain::error::ConflictReason` (§52 D-B): a frozen numeric
-/// code, resolved through [`OAUTH_REASONS`]. The 20xx block is authorize, 21xx code exchange, 22xx refresh and grant.
+/// code, resolved through [`OAUTH_REASONS`]. The 20xx block is authorize, 21xx code exchange, 22xx refresh and grant, and 23xx registration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OAuthReason(pub u16);
 
@@ -145,6 +155,11 @@ impl OAuthReason {
     /// Refresh request `resource` differs from the grant's.
     pub const REFRESH_RESOURCE_MISMATCH: Self = Self(2207);
 
+    /// RFC 7591: invalid or unsupported registration metadata.
+    pub const REGISTRATION_METADATA_INVALID: Self = Self(2301);
+    /// RFC 7591: missing, duplicate or invalid registered callback.
+    pub const REGISTRATION_REDIRECT_INVALID: Self = Self(2302);
+
     /// The raw numeric reason.
     pub const fn code(self) -> u16 {
         self.0
@@ -184,7 +199,7 @@ const fn row(
 }
 
 /// The one table mapping every [`OAuthReason`] to its label, OAuth wire `error` string and `ErrorCode`.
-pub const OAUTH_REASONS: [ReasonRow; 29] = [
+pub const OAUTH_REASONS: [ReasonRow; 31] = [
     row(
         OAuthReason::CLIENT_UNKNOWN,
         "CLIENT_UNKNOWN",
@@ -359,6 +374,18 @@ pub const OAUTH_REASONS: [ReasonRow; 29] = [
         "invalid_target",
         ErrorCode::Unauthorized,
     ),
+    row(
+        OAuthReason::REGISTRATION_METADATA_INVALID,
+        "REGISTRATION_METADATA_INVALID",
+        "invalid_client_metadata",
+        ErrorCode::InvalidInput,
+    ),
+    row(
+        OAuthReason::REGISTRATION_REDIRECT_INVALID,
+        "REGISTRATION_REDIRECT_INVALID",
+        "invalid_redirect_uri",
+        ErrorCode::InvalidInput,
+    ),
 ];
 
 /// A refusal: the terminal [`ErrorCode`] and the [`OAuthReason`] under it (§52 D-B shape).
@@ -432,7 +459,7 @@ pub struct AuthorizeRequest<'a> {
 pub struct ValidatedAuthorize {
     /// Client.
     pub client_id: String,
-    /// The exactly-registered redirect URI.
+    /// The actual redirect URI supplied by the client.
     pub redirect_uri: String,
     /// S256 challenge.
     pub pkce_challenge: String,
@@ -506,7 +533,7 @@ fn parse_redirect(uri: &str) -> Result<RedirectShape, OAuthReason> {
             None => (authority, None),
         }
     };
-    if host.is_empty() || port.is_some_and(|p| p.parse::<u16>().is_err()) {
+    if host.is_empty() || port.is_some_and(|p| !p.parse::<u16>().is_ok_and(|port| port != 0)) {
         return Err(invalid);
     }
     Ok(RedirectShape {
@@ -526,9 +553,53 @@ fn check_redirect_policy(uri: &str) -> Result<(), OAuthReason> {
             Err(OAuthReason::REDIRECT_URI_INVALID)
         }
         // ponytail: any other scheme is a private-use scheme accepted once exactly registered, with no reverse-domain
-        // rule (RFC 8252 §7.1); tighten when DCR registrations are screened (M02-10).
+        // rule (RFC 8252 §7.1); new public registrations are screened separately (M02-10c).
         _ => Ok(()),
     }
+}
+
+// Keep the raw host, path and query. URL normalization could turn different registrations into the same callback.
+fn loopback_key(uri: &str) -> Option<(&str, &str)> {
+    let rest = uri.strip_prefix("http://")?;
+    if rest.contains(['#', '\\']) || rest.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return None;
+    }
+    let (authority, suffix) = rest.split_at(rest.find(['/', '?']).unwrap_or(rest.len()));
+    for host in LOOPBACK_HOSTS {
+        let tail = if host.contains(':') {
+            authority
+                .strip_prefix('[')
+                .and_then(|part| part.strip_prefix(host))
+                .and_then(|part| part.strip_prefix(']'))
+        } else {
+            authority.strip_prefix(host)
+        };
+        if tail == Some("") {
+            return Some((host, suffix));
+        }
+        if let Some(port) = tail.and_then(|part| part.strip_prefix(':'))
+            && port.len() <= 5
+            && port.bytes().all(|b| b.is_ascii_digit())
+            && port.parse::<u16>().is_ok_and(|port| port != 0)
+        {
+            return Some((host, suffix));
+        }
+    }
+    None
+}
+
+/// New public registrations may use HTTPS or an explicit HTTP loopback literal.
+pub fn public_registration_redirect(uri: &str) -> bool {
+    if uri.contains('\\') {
+        return false;
+    }
+    parse_redirect(uri).is_ok_and(|shape| shape.scheme == "https" && shape.host.is_some())
+        || loopback_key(uri).is_some()
+}
+
+fn redirect_matches(registered: &str, requested: &str) -> bool {
+    registered == requested
+        || loopback_key(requested).is_some_and(|key| loopback_key(registered) == Some(key))
 }
 
 fn is_base64url_challenge(value: &str) -> bool {
@@ -540,7 +611,7 @@ fn is_base64url_challenge(value: &str) -> bool {
 
 /// Validates an authorize request against the client registry and `policy` (G-M02-6).
 ///
-/// Order: client, redirect URI (shape, then exact registration), then — now redirectable — response type, PKCE,
+/// Order: client, redirect URI (shape, then registration match), then — now redirectable — response type, PKCE,
 /// resource, scope. The first failure wins.
 pub fn authorize_request(
     request: &AuthorizeRequest<'_>,
@@ -557,7 +628,7 @@ pub fn authorize_request(
     if !client
         .redirect_uris
         .iter()
-        .any(|registered| registered == redirect_uri)
+        .any(|registered| redirect_matches(registered, redirect_uri))
     {
         return Err(refuse_before_redirect(OAuthReason::REDIRECT_URI_MISMATCH));
     }
@@ -1111,7 +1182,7 @@ mod tests {
 
     #[test]
     fn reason_table_is_closed_unique_and_total() {
-        assert_eq!(OAUTH_REASONS.len(), 29);
+        assert_eq!(OAUTH_REASONS.len(), 31);
         let mut codes = std::collections::HashSet::new();
         let mut labels = std::collections::HashSet::new();
         for row in OAUTH_REASONS {

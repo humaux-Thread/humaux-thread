@@ -1,15 +1,22 @@
-//! `gateway::oauth_http` — M02 browser authorization, token exchange, revocation and AS metadata.
-//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, serde, serde_json, time, url, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::login, application::oauth, application::oauth_exchange, application::session, application::signed_token, domain::error, domain::identity, domain::ids, gateway::auth_pages, gateway::bootstrap, gateway::guard, protocol::edge]
+//! `gateway::oauth_http` — M02 browser authorization, token exchange, revocation, registration and AS metadata.
+//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, serde, serde_json, time, url, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::login, application::oauth, application::oauth_exchange, application::session, application::signed_token, domain::error, domain::identity, domain::ids, gateway::auth_pages, gateway::bootstrap, gateway::guard, gateway::limiter, protocol::edge]
 //! Called-by: [gateway::bootstrap, gateway::main, tests]
-//! Invariants: [refusals render only OAUTH_REASONS strings; precheck precedes consume; spent codes and revoking denies
+//! Invariants: [OAuth refusals render OAUTH_REASONS strings; DCR admission uses the bounded IP limiter; precheck precedes consume; spent codes and revoking denies
 //!   commit, other denies roll back; no raw code or refresh token is logged or stored]
 //! Spec: §73.5; §78.1; M02 D3; M02 D4; M02 D9; RFC 8414; RFC 8707; RFC 6749 §5; MCP 2026-07-28
 
-use crate::{auth_pages, guard::GatewayGuard};
+use crate::{
+    auth_pages,
+    guard::GatewayGuard,
+    limiter::{Limiter, RatePolicy, Subject},
+};
 use axum::{
-    Form, Json, Router,
-    extract::{ConnectInfo, RawQuery, Request, State, rejection::FormRejection},
-    http::{HeaderMap, StatusCode, header},
+    Extension, Form, Json, Router,
+    extract::{
+        ConnectInfo, DefaultBodyLimit, RawQuery, Request, State,
+        rejection::{FormRejection, JsonRejection},
+    },
+    http::{HeaderMap, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -19,8 +26,8 @@ use humaux_application::{
     login::{self, PasswordlessLoginPort},
     oauth::{
         self, ACCESS_TOKEN_LABEL, AccessTerms, AuthorizeRequest, ClientView, CodeExchangeRequest,
-        ConsentSubject, OAuthPolicy, OAuthReason, RefreshRequest, SUPPORTED_SCOPES,
-        ValidatedAuthorize,
+        ConsentSubject, OAuthPolicy, OAuthReason, RefreshRequest, RegistrationBudget,
+        SUPPORTED_SCOPES, ValidatedAuthorize,
     },
     oauth_exchange::{self, ExchangeStore},
     session::{SessionSecret, VerifiedSession, csrf_token},
@@ -33,12 +40,15 @@ use humaux_domain::{
 };
 use humaux_protocol::edge::{FETCH_SITE_HEADER_NAME, FetchSite, SESSION_COOKIE_NAME, verify_csrf};
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{collections::HashSet, net::SocketAddr, sync::Arc, time::Duration};
 use time::OffsetDateTime;
 use url::{Url, form_urlencoded};
 
 const AUTHORIZE: &str = "/oauth/authorize";
 const REVOKE: &str = "/oauth/revoke";
+const REGISTER: &str = "/oauth/register";
+// Matches the client registry's M02 D5 metadata bound.
+const REGISTRATION_BODY_LIMIT: usize = 8192;
 const CONSENT_LABEL: TokenLabel = TokenLabel::new(b"oauth-consent@1", b"oauth-consent.kid@1");
 // A signed, hex-encoded return value must fit in the browser's 4 KiB cookie.
 const MAX_AUTH_QUERY: usize = 1750;
@@ -63,6 +73,8 @@ pub struct OAuthHttpConfig {
     pub refresh_ttl: Duration,
     /// Absolute grant lifetime.
     pub grant_max_ttl: Duration,
+    /// Admission policy for the anonymous registration route.
+    pub registration: RegistrationPolicy,
 }
 
 impl OAuthHttpConfig {
@@ -79,6 +91,30 @@ impl OAuthHttpConfig {
     }
 }
 
+/// DCR's separate source bucket and durable quota (§78.1).
+pub struct RegistrationPolicy {
+    ip: Limiter,
+    budget: RegistrationBudget,
+}
+
+impl RegistrationPolicy {
+    /// Construct a bounded source limiter and reject a non-positive registry quota.
+    pub fn new(
+        rate: RatePolicy,
+        max_sources: usize,
+        budget: RegistrationBudget,
+    ) -> Result<Self, ErrorCode> {
+        if budget.max_unused <= 0 || budget.max_unused_per_ip <= 0 || budget.unused_ttl_seconds <= 0
+        {
+            return Err(ErrorCode::InvalidInput);
+        }
+        Ok(Self {
+            ip: Limiter::new([rate; 5], [max_sources; 5])?,
+            budget,
+        })
+    }
+}
+
 struct HttpState {
     guard: Arc<GatewayGuard>,
     pool: Arc<RuntimeDbPool>,
@@ -90,9 +126,12 @@ struct HttpState {
 /// The M02 OAuth routes, inside admission and the one pre-auth layer (ADR-0125 D1/D3).
 pub fn router(
     guard: Arc<GatewayGuard>,
-    config: OAuthHttpConfig,
+    config: Option<OAuthHttpConfig>,
     login: Arc<dyn PasswordlessLoginPort>,
 ) -> Router {
+    let Some(config) = config else {
+        return Router::new();
+    };
     let state = Arc::new(HttpState {
         pool: guard.runtime_pool(),
         guard,
@@ -105,6 +144,15 @@ pub fn router(
         .route("/oauth/token", post(token))
         .route(AUTHORIZE, get(authorize).post(consent))
         .route(REVOKE, post(revoke))
+        .route(
+            REGISTER,
+            post(register)
+                .layer(DefaultBodyLimit::max(REGISTRATION_BODY_LIMIT))
+                .layer(middleware::from_fn_with_state(
+                    Arc::clone(&state),
+                    registration_gate,
+                )),
+        )
         .layer(middleware::from_fn_with_state(Arc::clone(&state), gate))
         .with_state(state)
 }
@@ -118,11 +166,48 @@ async fn gate(
     auth_pages::guarded(&state.guard, "oauth", peer, request, next).await
 }
 
+#[derive(Clone)]
+struct RegistrationSource(Vec<Vec<u8>>);
+
+async fn registration_gate(
+    State(state): State<Arc<HttpState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    // The outer pre-auth gate already rejected malformed or repeated Forwarded headers.
+    let forwarded = auth_pages::header_str(request.headers(), "forwarded");
+    let Some(ip) = state.guard.bucket_ip(peer.ip(), forwarded) else {
+        return server_failure(ErrorCode::Internal);
+    };
+    if let Err(denial) = state.config.registration.ip.check(&[Subject::Ip(ip)]) {
+        return registration_denial(denial.code);
+    }
+    let tags = state
+        .config
+        .keys
+        .labelled_hmac_candidates(b"oauth-dcr-source@1", ip.to_string().as_bytes());
+    request.extensions_mut().insert(RegistrationSource(tags));
+    next.run(request).await
+}
+
+fn registration_denial(code: ErrorCode) -> Response {
+    if code == ErrorCode::RateLimited {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({"error": code.as_str()})),
+        )
+            .into_response();
+    }
+    server_failure(code)
+}
+
 #[derive(Serialize)]
 struct Metadata<'a> {
     issuer: &'a str,
     authorization_endpoint: String,
     token_endpoint: String,
+    registration_endpoint: String,
     revocation_endpoint: String,
     revocation_endpoint_auth_methods_supported: [&'static str; 1],
     response_types_supported: [&'static str; 1],
@@ -133,12 +218,13 @@ struct Metadata<'a> {
     authorization_response_iss_parameter_supported: bool,
 }
 
-/// Compact, ordered RFC 8414 document; capabilities outside M02-10 are not advertised.
+/// Compact, ordered RFC 8414 document for the mounted OAuth router.
 pub fn metadata_document(issuer: &str) -> String {
     serde_json::to_string(&Metadata {
         issuer,
         authorization_endpoint: format!("{issuer}/oauth/authorize"),
         token_endpoint: format!("{issuer}/oauth/token"),
+        registration_endpoint: format!("{issuer}{REGISTER}"),
         revocation_endpoint: format!("{issuer}{REVOKE}"),
         revocation_endpoint_auth_methods_supported: ["none"],
         response_types_supported: ["code"],
@@ -157,6 +243,105 @@ async fn metadata(State(state): State<Arc<HttpState>>) -> Response {
         metadata_document(&state.config.issuer),
     )
         .into_response()
+}
+
+#[derive(Deserialize, Serialize)]
+/// Supported metadata for a public authorization-code client.
+pub(crate) struct PublicClientMetadata {
+    /// The original callback strings persisted to the client registry.
+    #[serde(default)]
+    pub(crate) redirect_uris: Vec<String>,
+    token_endpoint_auth_method: String,
+    #[serde(default = "default_grants")]
+    grant_types: Vec<String>,
+    #[serde(default = "default_response_types")]
+    response_types: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_name: Option<String>,
+    #[serde(flatten, skip_serializing)]
+    extensions: serde_json::Map<String, serde_json::Value>,
+}
+
+fn default_grants() -> Vec<String> {
+    vec!["authorization_code".to_owned()]
+}
+
+fn default_response_types() -> Vec<String> {
+    vec!["code".to_owned()]
+}
+
+impl PublicClientMetadata {
+    /// Apply the same screening to dynamic and operator-managed public clients.
+    pub(crate) fn validate(&self) -> Result<(), OAuthReason> {
+        use OAuthReason as Reason;
+        let grants: HashSet<_> = self.grant_types.iter().map(String::as_str).collect();
+        if self.token_endpoint_auth_method != "none"
+            || self.response_types != ["code"]
+            || self
+                .client_name
+                .as_ref()
+                .is_some_and(|name| name.chars().any(char::is_control))
+            || grants.len() != self.grant_types.len()
+            || !grants.contains("authorization_code")
+            || grants
+                .iter()
+                .any(|grant| !matches!(*grant, "authorization_code" | "refresh_token"))
+            || [
+                "client_id",
+                "client_secret",
+                "client_secret_expires_at",
+                "software_statement",
+            ]
+            .iter()
+            .any(|key| self.extensions.contains_key(*key))
+        {
+            return Err(Reason::REGISTRATION_METADATA_INVALID);
+        }
+        let mut seen = HashSet::new();
+        if self.redirect_uris.is_empty()
+            || self.redirect_uris.iter().any(|uri| {
+                !seen.insert(uri)
+                    || !oauth::public_registration_redirect(uri)
+                    || uri.parse::<Uri>().is_err()
+                    || !valid_callback(uri)
+            })
+        {
+            return Err(Reason::REGISTRATION_REDIRECT_INVALID);
+        }
+        Ok(())
+    }
+}
+
+async fn register(
+    State(state): State<Arc<HttpState>>,
+    Extension(source): Extension<RegistrationSource>,
+    body: Result<Json<PublicClientMetadata>, JsonRejection>,
+) -> Response {
+    let Ok(Json(metadata)) = body else {
+        return refusal(OAuthReason::REGISTRATION_METADATA_INVALID);
+    };
+    if let Err(reason) = metadata.validate() {
+        return refusal(reason);
+    }
+    let mut document = serde_json::json!(metadata);
+    let client_id = uuid::Uuid::new_v4().to_string();
+    match crate::bootstrap::register_dynamic_oauth_client(
+        &state.pool,
+        &client_id,
+        &metadata.redirect_uris,
+        &document,
+        &source.0,
+        state.config.registration.budget,
+    )
+    .await
+    {
+        Ok(()) => {
+            document["client_id"] = serde_json::Value::String(client_id);
+            (StatusCode::CREATED, Json(document)).into_response()
+        }
+        Err(ErrorCode::InvalidInput) => refusal(OAuthReason::REGISTRATION_METADATA_INVALID),
+        Err(code) => registration_denial(code),
+    }
 }
 
 struct Params(Vec<(String, String)>);
