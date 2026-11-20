@@ -1,6 +1,6 @@
 //! `domain::evidence` — `EvidenceOriginClass` / `InstructionDisposition` (§8.7 / §59).
-//! Depends-on: crates=[sha2]; services=[]; env=[]; modules=[]
-//! Called-by: [adapters::byok, adapters::context_repo, adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::dedup_repo, adapters::distill_reasoner, adapters::distill_repo, adapters::evidence_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::operation_receipt, adapters::remember, application::confirm, application::contribute, application::contribution_execution, application::correct, application::lifecycle_execution, application::remember, domain::authority, domain::context, domain::grounding, domain::note, domain::policy, domain::source, gateway::mcp_application, gateway::memory, gateway::remember, humaux-local-secret-scan, projection::fingerprint, tests]
+//! Depends-on: crates=[sha2]; services=[]; env=[]; modules=[domain::evidence_fingerprint]
+//! Called-by: [adapters::byok, adapters::context_repo, adapters::contribution_entry_repo, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::dedup_repo, adapters::distill_reasoner, adapters::distill_repo, adapters::evidence_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::note_repo, adapters::operation_receipt, adapters::remember, application::confirm, application::contribute, application::contribution_execution, application::correct, application::lifecycle_execution, application::remember, domain::authority, domain::context, domain::grounding, domain::note, domain::policy, domain::source, gateway::mcp_application, gateway::memory, gateway::remember, humaux-local-secret-scan, tests]
 //! Invariants: []
 //! Spec: Baseline §8.1; §8.7; §16.1; ADR-0016
 //!
@@ -16,6 +16,8 @@
 //! Note: the exhaustiveness test below pins variant *count and shape*, not the verbatim
 //! wire name of each variant. Verbatim string pinning is deferred to the §78.2 DB↔Rust
 //! contract-test card, not covered here.
+
+use crate::evidence_fingerprint::{EvidenceFingerprintDigest, sealed};
 
 /// Evidence's ingress origin classification, a frozen closed set of 9 variants (§8.7).
 ///
@@ -114,6 +116,14 @@ impl EvidencePayloadSha256 {
     pub fn from_stored_digest(stored: &[u8]) -> Option<Self> {
         let digest: [u8; 32] = <[u8; 32]>::try_from(stored).ok()?;
         Some(EvidencePayloadSha256(digest))
+    }
+}
+
+impl sealed::Sealed for EvidencePayloadSha256 {}
+
+impl EvidenceFingerprintDigest for EvidencePayloadSha256 {
+    fn fingerprint_hex(&self) -> String {
+        self.to_hex()
     }
 }
 

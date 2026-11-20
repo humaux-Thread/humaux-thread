@@ -1,5 +1,5 @@
 //! `projection::fingerprint` — processing input fingerprint (§16.1 / §16.1.1).
-//! Depends-on: crates=[humaux-domain, sha2]; services=[]; env=[]; modules=[domain::evidence]
+//! Depends-on: crates=[humaux-domain, sha2]; services=[]; env=[]; modules=[domain::evidence_fingerprint]
 //! Called-by: [adapters::distill_repo, tests]
 //! Invariants: []
 //! Spec: Baseline §1.2.1; §11; §36; §16.1.1
@@ -14,7 +14,7 @@
 //! narrower question this module has no opinion on — see [`source_hash`]'s rustdoc for why an
 //! `output_digest` change alone can never move a `SourceHash`.
 
-use humaux_domain::evidence::EvidencePayloadSha256;
+use humaux_domain::evidence_fingerprint::EvidenceFingerprintDigest;
 use sha2::{Digest, Sha256};
 
 /// Every axis §1.3's frozen versioning list requires, spelled out field by field instead of
@@ -28,10 +28,10 @@ use sha2::{Digest, Sha256};
 /// doesn't use them (§16.1's G16-4: "card_builder_version (when applicable)") — see
 /// [`source_hash`]'s rustdoc for why `None` can never collide with `Some("")`.
 #[derive(Debug, Clone, Copy)]
-pub struct ProcessingInputFingerprintInputs<'a> {
+pub struct ProcessingInputFingerprintInputs<'a, E> {
     /// §16.1: `payload_sha256` of every Evidence this processing run depends on. Order does
     /// **not** matter — see [`source_hash`]'s rustdoc for the canonicalization.
-    pub evidence_payload_sha256: &'a [EvidencePayloadSha256],
+    pub evidence_payload_sha256: &'a [E],
     pub processor_kind: &'a str,
     pub processor_version: &'a str,
     pub model_provider: &'a str,
@@ -104,13 +104,15 @@ impl SourceHash {
 /// the identity). The (deduplicated) element count is length-prefixed and each hex string is
 /// a fixed 64 bytes, so the array section is self-delimiting with no separate per-element
 /// length prefix needed.
-pub fn source_hash(inputs: &ProcessingInputFingerprintInputs<'_>) -> SourceHash {
+pub fn source_hash(
+    inputs: &ProcessingInputFingerprintInputs<'_, impl EvidenceFingerprintDigest>,
+) -> SourceHash {
     let mut hasher = Sha256::new();
 
     let mut hexes: Vec<String> = inputs
         .evidence_payload_sha256
         .iter()
-        .map(EvidencePayloadSha256::to_hex)
+        .map(EvidenceFingerprintDigest::fingerprint_hex)
         .collect();
     hexes.sort_unstable();
     hexes.dedup(); // set, not multiset — see rustdoc above (private.memory_evidence role dup).
@@ -152,6 +154,7 @@ fn write_optional_field(hasher: &mut Sha256, field: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use humaux_domain::evidence::EvidencePayloadSha256;
 
     fn evidence(bytes: &[u8]) -> EvidencePayloadSha256 {
         humaux_domain::evidence::payload_sha256(bytes)
@@ -159,7 +162,9 @@ mod tests {
 
     /// Baseline inputs every G16-4 per-axis test starts from and mutates exactly one field
     /// of ("固定 Evidence 后逐轴只改一项").
-    fn baseline<'a>(ev: &'a [EvidencePayloadSha256]) -> ProcessingInputFingerprintInputs<'a> {
+    fn baseline(
+        ev: &[EvidencePayloadSha256],
+    ) -> ProcessingInputFingerprintInputs<'_, EvidencePayloadSha256> {
         ProcessingInputFingerprintInputs {
             evidence_payload_sha256: ev,
             processor_kind: "distill",
@@ -174,6 +179,19 @@ mod tests {
             card_builder_version: Some("1"),
             context_snapshot_seq: 100,
         }
+    }
+
+    #[test]
+    fn source_hash_matches_existing_fingerprint_bytes() {
+        let ev = [evidence(b"two"), evidence(b"one"), evidence(b"two")];
+        assert_eq!(
+            source_hash(&baseline(&ev)).as_bytes(),
+            &[
+                0x65, 0x84, 0xf5, 0x88, 0x2a, 0xd9, 0x55, 0x4c, 0x9a, 0x10, 0x65, 0x38, 0xab, 0xef,
+                0x0a, 0x1a, 0x9c, 0xec, 0x2e, 0xbe, 0xe8, 0xfa, 0x41, 0xf3, 0xfe, 0xdd, 0x5a, 0xfe,
+                0xfd, 0x9b, 0xd6, 0x88,
+            ],
+        );
     }
 
     #[test]
@@ -343,7 +361,7 @@ mod tests {
         // Same encoding as `source_hash`, minus the context_snapshot_seq `write_field` call —
         // the literal 注错 §80.1 registers.
         fn source_hash_without_context_snapshot_seq(
-            inputs: &ProcessingInputFingerprintInputs<'_>,
+            inputs: &ProcessingInputFingerprintInputs<'_, EvidencePayloadSha256>,
         ) -> [u8; 32] {
             let mut hasher = Sha256::new();
             let mut hexes: Vec<String> = inputs

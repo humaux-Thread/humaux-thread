@@ -66,6 +66,7 @@ pub mod dataclass;
 pub mod egress;
 pub mod error;
 pub mod evidence;
+pub mod evidence_fingerprint;
 pub mod grounding;
 pub mod grounding_read;
 pub mod identity;
