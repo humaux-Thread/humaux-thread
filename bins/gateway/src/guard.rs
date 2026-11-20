@@ -1,5 +1,5 @@
 //! `gateway::guard` — §83: one business admission path for every canonical MCP operation.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::read_quota, application::independent_audit, application::lifecycle_execution, application::remember, application::supersede, domain::affect, domain::audit, domain::confirm, domain::error, domain::identity, domain::ids, domain::selection, domain::subject, gateway::auth, gateway::bootstrap, gateway::limiter, gateway::route_cache, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::signed_token, application::read_quota, application::independent_audit, application::lifecycle_execution, application::remember, application::supersede, domain::affect, domain::audit, domain::confirm, domain::error, domain::identity, domain::ids, domain::selection, domain::subject, gateway::auth, gateway::bootstrap, gateway::limiter, gateway::route_cache, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::oauth_http, gateway::status, tests]
 //! Invariants: [no path mints and accepts in one call; transport owns HTTP validation only; this layer is the sole place that authenticates, authorizes and admits a request, so an operation that bypasses it is a bug, not a variant path]
 //! Spec: Baseline §83; §52.1; ADR-0018; ADR-0028; ADR-0030; ADR-0054; ADR-0065 D-D; ADR-0125
@@ -12,6 +12,7 @@ use humaux_application::read_quota::{self, ChargePolicy, ReadQuotaStore, Reserva
 use humaux_application::remember::{
     AtomicRememberRequest, AtomicRememberResult, RememberCommand, SourcedPutError,
 };
+use humaux_application::signed_token::TokenKeys;
 use std::{
     collections::BTreeMap,
     future::Future,
@@ -46,8 +47,8 @@ use uuid::Uuid;
 use crate::limiter::{Limiter, RatePolicy, Subject};
 
 use crate::auth::{
-    AuthenticatedServiceCredential, BatchTouch, CredentialScope, MIN_BATCH_TOUCH_SECONDS,
-    TouchThrottle, authenticate_live,
+    AuthenticatedBearer, BatchTouch, CredentialScope, MIN_BATCH_TOUCH_SECONDS, TouchThrottle,
+    authenticate_access_token, authenticate_live, parse_bearer_header,
 };
 
 use crate::route_cache::CredentialRouteCache;
@@ -238,6 +239,25 @@ impl GuardMetrics {
     }
 }
 
+/// Trusted, route-owned OAuth inputs and the request-local scope refusal signal.
+pub trait OAuthRequestContext {
+    /// The exact resource for the matched route, if it supports OAuth.
+    fn expected_resource(&self) -> Option<&str>;
+
+    /// Record a verified credential's missing operation scope for the HTTP response.
+    fn mark_insufficient_scope(&self, required_scope: &str);
+}
+
+impl OAuthRequestContext for McpHttpContext {
+    fn expected_resource(&self) -> Option<&str> {
+        McpHttpContext::expected_resource(self)
+    }
+
+    fn mark_insufficient_scope(&self, required_scope: &str) {
+        McpHttpContext::mark_insufficient_scope(self, required_scope);
+    }
+}
+
 pub struct GatewayGuard {
     pool: Arc<RuntimeDbPool>,
     confirmation_minter: ConfirmationMinter,
@@ -248,6 +268,7 @@ pub struct GatewayGuard {
     batch_touch: Option<BatchTouch>,
     route_cache: Option<Arc<CredentialRouteCache>>,
     limiter: Limiter,
+    oauth_issuer: Option<(String, Arc<TokenKeys>)>,
 }
 
 /// §33.10: persist a confirmation challenge and its finished audit in one commit.
@@ -388,6 +409,7 @@ impl GatewayGuard {
             touch: TouchThrottle::new(Duration::ZERO),
             batch_touch: None,
             route_cache: None,
+            oauth_issuer: None,
         })
     }
 
@@ -397,6 +419,19 @@ impl GatewayGuard {
     pub fn with_credential_touch_interval(mut self, interval: Duration) -> Self {
         self.touch = TouchThrottle::new(interval);
         self
+    }
+
+    /// Install the same issuer and dedicated key ring the authorization server uses.
+    pub fn with_oauth_issuer(mut self, issuer: String, keys: Arc<TokenKeys>) -> Self {
+        self.oauth_issuer = Some((issuer, keys));
+        self
+    }
+
+    /// The configured issuer for this guard's OAuth verifier.
+    pub fn oauth_issuer(&self) -> Option<&str> {
+        self.oauth_issuer
+            .as_ref()
+            .map(|(issuer, _)| issuer.as_str())
     }
 
     /// Enable the optional route region. It is consulted only for provisional routing.
@@ -502,32 +537,68 @@ impl GatewayGuard {
         })
     }
 
+    /// Authenticate the HTTP Bearer header against live facts, using a trusted route resource for OAuth.
+    pub async fn authenticate_bearer(
+        &self,
+        authorization_header: Option<&str>,
+        client_ip: IpAddr,
+        context: &impl OAuthRequestContext,
+    ) -> Result<AuthenticatedBearer, ErrorCode> {
+        let header = authorization_header.ok_or(ErrorCode::Unauthorized)?;
+        let raw = parse_bearer_header(header)?;
+        // Service credentials have a dot separator. oauth-at@1 is hex and never contains one.
+        if !raw.contains('.') {
+            let (_, keys) = self.oauth_issuer.as_ref().ok_or(ErrorCode::Unauthorized)?;
+            let resource = context.expected_resource().ok_or(ErrorCode::Unauthorized)?;
+            return authenticate_access_token(
+                &self.pool,
+                keys,
+                raw,
+                resource,
+                OffsetDateTime::now_utc(),
+            )
+            .await;
+        }
+        let now = SystemTime::now();
+        let credential = authenticate_live(
+            &self.pool,
+            header,
+            &self.settings.credential_pepper,
+            self.settings.credential_pepper_previous.as_deref(),
+            client_ip,
+            now,
+            self.route_cache.as_deref(),
+        )
+        .await?;
+        let principal = credential.identity().principal();
+        match &self.batch_touch {
+            Some(batch) => batch.stamp(principal, now).await?,
+            None => self.touch.stamp(&self.pool, principal, now).await?,
+        }
+        Ok(credential)
+    }
+
+    /// Narrow the verified bearer and preserve the distinction between scope and workspace refusals.
+    pub fn authorize_bearer(
+        credential: &AuthenticatedBearer,
+        required_scope: &str,
+        requested_workspace: Option<WorkspaceId>,
+        context: &impl OAuthRequestContext,
+    ) -> Result<AuthorizationScope, ErrorCode> {
+        let scope = CredentialScope::parse(required_scope)?;
+        credential.authorize_reporting_scope(scope, requested_workspace, || {
+            context.mark_insufficient_scope(required_scope);
+        })
+    }
+
     async fn authenticate(
         &self,
         context: &McpHttpContext,
         network: &ClientNetworkIdentity,
-    ) -> Result<AuthenticatedServiceCredential, ErrorCode> {
-        let result = async {
-            let header = context.authorization().ok_or(ErrorCode::Unauthorized)?;
-            let now = SystemTime::now();
-            let credential = authenticate_live(
-                &self.pool,
-                header,
-                &self.settings.credential_pepper,
-                self.settings.credential_pepper_previous.as_deref(),
-                network.client_ip,
-                now,
-                self.route_cache.as_deref(),
-            )
-            .await?;
-            let principal = credential.identity().principal();
-            match &self.batch_touch {
-                Some(batch) => batch.stamp(principal, now).await?,
-                None => self.touch.stamp(&self.pool, principal, now).await?,
-            }
-            Ok(credential)
-        }
-        .await;
+    ) -> Result<AuthenticatedBearer, ErrorCode> {
+        let result = self
+            .authenticate_bearer(context.authorization(), network.client_ip, context)
+            .await;
         self.metrics.increment(
             &families::MCP_AUTH_ATTEMPTS_TOTAL,
             &[
@@ -1334,12 +1405,16 @@ impl GatewayGuard {
     ) -> Result<AdmittedOperation, ErrorCode> {
         let network = self.network(context);
         let credential = self.authenticate(context, &network).await?;
-        let required_scope = CredentialScope::parse(operation.required_scope())?;
         let authorization_filter = match workspace_policy {
             WorkspaceAdmission::NarrowRequested => requested_workspace,
             WorkspaceAdmission::PreserveContinuityFilter => None,
         };
-        let auth = match credential.authorize(required_scope, authorization_filter) {
+        let auth = match Self::authorize_bearer(
+            &credential,
+            operation.required_scope(),
+            authorization_filter,
+            context,
+        ) {
             Ok(auth) => auth,
             Err(code) => {
                 self.metrics

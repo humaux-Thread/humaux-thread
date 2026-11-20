@@ -899,8 +899,16 @@ fn native_gateway_preserves_raw_workspace_non_disclosure_and_validates_output() 
 fn continuity_guard_and_dispatch_are_not_generic_narrowing() {
     let guard = include_str!("../src/guard.rs");
     let dispatch = include_str!("../src/mcp_application.rs");
-    assert!(guard.contains("WorkspaceAdmission::PreserveContinuityFilter"));
-    assert!(guard.contains("credential.authorize(required_scope, authorization_filter)"));
+    assert!(guard.contains("WorkspaceAdmission::PreserveContinuityFilter => None"));
+    assert!(guard.contains(concat!(
+        "let auth = match Self::authorize_bearer(\n",
+        "            &credential,\n",
+        "            operation.required_scope(),\n",
+        "            authorization_filter,\n",
+        "            context,\n",
+        "        )"
+    )));
+    assert!(guard.contains("credential.authorize_reporting_scope(scope, requested_workspace"));
     assert!(guard.contains("operation.operation_key() != \"continuity.get\""));
     assert!(dispatch.contains("ToolName::Continuity"));
     assert!(dispatch.contains("catalog.validate_output(ToolName::Continuity, &value)"));

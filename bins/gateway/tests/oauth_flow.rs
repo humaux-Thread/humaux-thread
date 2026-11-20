@@ -1,11 +1,11 @@
 //! `gateway::tests::oauth_flow` — G-M02-7/8/9/14 through real HTTP, role_gateway and PostgreSQL doors.
-//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol,
+//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-protocol,
 //!   humaux-testkit, postgres, rand, serde_json, time, tokio, url, uuid];
-//!   services=[HTTP(loopback), PostgreSQL(any) r=[control.oauth_authorization_codes, control.oauth_client_registrations, ops.email_outbox] w=[control.email_challenges, control.entitlement_snapshots, control.memberships, control.oauth_authorization_codes, control.oauth_client_registrations,
+//!   services=[HTTP(loopback), PostgreSQL(any) r=[control.oauth_authorization_codes, control.oauth_client_registrations, ops.email_outbox] w=[control.workspaces, control.workspace_memberships, control.email_challenges, control.entitlement_snapshots, control.memberships, control.oauth_authorization_codes, control.oauth_client_registrations,
 //!   control.oauth_grants, control.oauth_refresh_tokens, control.sessions, control.tenants, control.user_emails, control.users, ops.email_outbox]
 //!   x=[control.bump_user_security_epoch], PostgreSQL(role_gateway)]; env=[CI, HUMAUX_TEST_PG_DSN];
-//!   modules=[adapters::oauth_repo, adapters::postgres, adapters::session_repo, application::auth, application::login, application::oauth, application::session, application::signed_token, domain::error,
-//!   domain::ids, gateway::auth_pages, gateway::bootstrap, gateway::guard, gateway::limiter, gateway::oauth_http, humaux-testkit, protocol::edge]
+//!   modules=[adapters::oauth_repo, adapters::postgres, adapters::session_repo, application::auth, application::login, application::oauth, application::session, application::signed_token, contracts::retrieval_config, domain::context, domain::dataclass, domain::error, domain::identity,
+//!   domain::ids, gateway::auth, gateway::auth_pages, gateway::bootstrap, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::remember, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]
 //! Invariants: [fixture rows are unique and cleaned; missing DB on CI fails; token comparisons use production
 //!   verification and the live grant; every expected refusal checks the exact wire object and no-store]
@@ -24,21 +24,32 @@ use humaux_application::{
     signed_token::TokenKeys,
 };
 use humaux_domain::{
+    context::ContextBudget,
+    dataclass::DataClass,
     error::ErrorCode,
-    ids::{TenantId, UserId},
+    identity::VisibilityClass,
+    ids::{TenantId, UserId, WorkspaceId},
 };
 use humaux_gateway::{
+    auth::AuthenticatedBearer,
     auth_pages::{self, AuthPagesConfig},
     bootstrap::passwordless_login_port,
-    guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
+    context::ContextBootstrap,
+    guard::{GatewayGuard, GuardRatePolicies, GuardSettings, OAuthRequestContext},
     limiter::RatePolicy,
+    mcp_application::GatewayMcpApplication,
     oauth_http::{self, OAuthHttpConfig},
+    remember::{ProcessFamily, RememberEventKind, RememberPolicy},
 };
-use humaux_protocol::edge::TrustedProxyConfig;
+use humaux_protocol::{
+    edge::TrustedProxyConfig,
+    mcp::{McpAdapter, McpHttpConfig},
+    mcp_catalog::CanonicalCatalog,
+};
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use postgres::{Client, NoTls};
 use serde_json::Value;
-use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
+use std::{cell::RefCell, collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use time::OffsetDateTime;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -59,7 +70,7 @@ fn keys() -> TokenKeys {
 }
 fn config(max: u64) -> OAuthHttpConfig {
     OAuthHttpConfig {
-        keys: keys(),
+        keys: Arc::new(keys()),
         issuer: ORIGIN.to_owned(),
         resource: NATIVE_RESOURCE.to_owned(),
         login_return_ttl: Duration::from_secs(900),
@@ -102,6 +113,7 @@ impl Drop for Handle {
             "DELETE FROM control.oauth_refresh_tokens WHERE grant_id IN (SELECT grant_id FROM control.oauth_grants WHERE tenant_id=$1)",
             "DELETE FROM control.oauth_grants WHERE tenant_id=$1",
             "DELETE FROM control.oauth_authorization_codes WHERE tenant_id=$1",
+            "DELETE FROM control.workspaces WHERE tenant_id=$1",
             "DELETE FROM control.tenants WHERE tenant_id=$1",
         ] {
             let _ = self.admin.execute(sql, &[&self.tenant_id]);
@@ -222,6 +234,10 @@ fn serve(h: &Handle, max: u64) -> SocketAddr {
     let login = passwordless_login_port(&guard, &pages);
     let router = oauth_http::router(Arc::clone(&guard), config(max), Arc::clone(&login))
         .merge(auth_pages::router(guard, pages, login));
+    serve_router(h, router)
+}
+
+fn serve_router(h: &Handle, router: axum::Router) -> SocketAddr {
     h.rt.block_on(async {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let address = listener.local_addr().expect("address");
@@ -255,12 +271,17 @@ async fn http_with(
 ) -> Reply {
     // dep: HTTP(loopback) — production router and pre-auth guard
     let mut stream = TcpStream::connect(address).await.expect("connect");
+    let content_type = headers
+        .iter()
+        .find_map(|(name, value)| name.eq_ignore_ascii_case("content-type").then_some(*value))
+        .unwrap_or("application/x-www-form-urlencoded");
     let extra: String = headers
         .iter()
+        .filter(|(name, _)| !name.eq_ignore_ascii_case("content-type"))
         .map(|(name, value)| format!("{name}: {value}\r\n"))
         .collect();
     let raw = format!(
-        "{method} {path} HTTP/1.1\r\nHost: as.example.test\r\nConnection: close\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n{extra}\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: as.example.test\r\nConnection: close\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{extra}\r\n{body}",
         body.len()
     );
     stream.write_all(raw.as_bytes()).await.expect("write");
@@ -334,6 +355,10 @@ fn code_form(h: &Handle, code: &str, overrides: &[(&str, Option<&str>)]) -> Stri
     form(&fields.into_iter().collect::<Vec<_>>())
 }
 fn issue_code(h: &Handle) -> String {
+    issue_code_for(h, RESOURCE)
+}
+
+fn issue_code_for(h: &Handle, resource: &str) -> String {
     let code = Uuid::new_v4().to_string();
     h.rt.block_on(async {
         let mut txn = oauth_repo::begin(&h.gateway).await?;
@@ -344,7 +369,7 @@ fn issue_code(h: &Handle) -> String {
                     client_id: &h.client_id,
                     redirect_uri: REDIRECT,
                     pkce_challenge: CHALLENGE,
-                    resource: RESOURCE,
+                    resource,
                     user_id: UserId(h.user_id),
                     tenant_id: TenantId(h.tenant_id),
                     workspace_id: None,
@@ -822,6 +847,446 @@ fn g_m02_8_unknown_refresh_secret_cannot_mint() {
         ]);
         denied(&post(&h, address, &body), OAuthReason::REFRESH_REJECTED);
         assert_eq!(grant_count(&mut h), 0);
+    });
+}
+
+#[derive(Default)]
+struct ResourceRequest<'a> {
+    resource: Option<&'a str>,
+    missing_scope: RefCell<Option<String>>,
+}
+
+impl OAuthRequestContext for ResourceRequest<'_> {
+    fn expected_resource(&self) -> Option<&str> {
+        self.resource
+    }
+
+    fn mark_insufficient_scope(&self, required_scope: &str) {
+        self.missing_scope.replace(Some(required_scope.to_owned()));
+    }
+}
+
+fn bearer_fixture(h: &mut Handle) -> (GatewayGuard, Value) {
+    let tenant = h.tenant_id;
+    add_active_membership(h, tenant);
+    let address = serve(h, 7200);
+    let tokens = issued(h, address);
+    // dep: PostgreSQL(role_gateway) — the same role and guard entry as the gateway
+    let pool =
+        h.rt.block_on(RuntimeDbPool::connect(&dsn_as_role(&h.dsn)))
+            .expect("gateway pool");
+    let guard = GatewayGuard::new(pool, guard_settings())
+        .expect("guard")
+        .with_oauth_issuer(ORIGIN.to_owned(), Arc::new(keys()));
+    (guard, tokens)
+}
+
+fn bearer(
+    h: &Handle,
+    guard: &GatewayGuard,
+    token: &str,
+    resource: Option<&str>,
+) -> Result<AuthenticatedBearer, ErrorCode> {
+    let header = format!("Bearer {token}");
+    h.rt.block_on(guard.authenticate_bearer(
+        Some(&header),
+        "127.0.0.1".parse().unwrap(),
+        &ResourceRequest {
+            resource,
+            ..Default::default()
+        },
+    ))
+}
+
+fn raw_access(tokens: &Value) -> &str {
+    tokens["access_token"].as_str().unwrap()
+}
+
+fn signed_access(terms: &AccessTerms) -> String {
+    keys().sign(&ACCESS_TOKEN_LABEL, &oauth::access_token_payload(terms))
+}
+
+#[test]
+fn g_m02_10_bearer_good_and_requires_header() {
+    run_db_fixture::<OAuthFixture, _>("G-M02-10 good", |mut h| {
+        let (guard, tokens) = bearer_fixture(&mut h);
+        assert_eq!(guard.oauth_issuer(), Some(ORIGIN));
+        let request = ResourceRequest {
+            resource: Some(RESOURCE),
+            ..Default::default()
+        };
+        let credential = bearer(&h, &guard, raw_access(&tokens), request.resource).unwrap();
+        let auth = GatewayGuard::authorize_bearer(&credential, "context:read", None, &request)
+            .expect("authorized OAuth request");
+        assert_eq!(auth.tenant_id(), TenantId(h.tenant_id));
+        assert_eq!(auth.user_id(), Some(UserId(h.user_id)));
+        assert_eq!(auth.principal().0, decode(&tokens).grant_id);
+        assert_eq!(*request.missing_scope.borrow(), None);
+        let no_header =
+            h.rt.block_on(guard.authenticate_bearer(None, "127.0.0.1".parse().unwrap(), &request));
+        assert_eq!(no_header.err(), Some(ErrorCode::Unauthorized));
+        assert_eq!(
+            bearer(&h, &guard, raw_access(&tokens), None).err(),
+            Some(ErrorCode::Unauthorized)
+        );
+    });
+}
+
+#[test]
+fn g_m02_10_bearer_resource_is_exact() {
+    run_db_fixture::<OAuthFixture, _>("G-M02-10 exact audience", |mut h| {
+        let (guard, tokens) = bearer_fixture(&mut h);
+        let legacy_resource = format!("{RESOURCE}/legacy");
+        let code = issue_code_for(&h, &legacy_resource);
+        let reply = post(
+            &h,
+            serve(&h, 7200),
+            &code_form(&h, &code, &[("resource", Some(&legacy_resource))]),
+        );
+        assert_eq!(reply.status, 200);
+        let legacy_tokens: Value = serde_json::from_str(&reply.body).unwrap();
+        assert_eq!(decode(&legacy_tokens).resource, legacy_resource);
+        assert_eq!(
+            bearer(&h, &guard, raw_access(&legacy_tokens), Some(RESOURCE)).err(),
+            Some(ErrorCode::Unauthorized),
+            "legacy token on the native resource"
+        );
+        for resource in [
+            "/mcp",
+            NATIVE_RESOURCE,
+            &format!("{RESOURCE}/legacy"),
+            &format!("{RESOURCE}/"),
+        ] {
+            assert_eq!(
+                bearer(&h, &guard, raw_access(&tokens), Some(resource)).err(),
+                Some(ErrorCode::Unauthorized),
+                "audience {resource}"
+            );
+        }
+    });
+}
+
+#[test]
+fn g_m02_10_bearer_signature_and_issuer() {
+    run_db_fixture::<OAuthFixture, _>("G-M02-10 issuer and MAC", |mut h| {
+        let (guard, tokens) = bearer_fixture(&mut h);
+        let payload = oauth::access_token_payload(&decode(&tokens));
+        let foreign = TokenKeys::new(vec![8; 32], None)
+            .unwrap()
+            .sign(&ACCESS_TOKEN_LABEL, &payload);
+        assert_eq!(
+            bearer(&h, &guard, &foreign, Some(RESOURCE)).err(),
+            Some(ErrorCode::Unauthorized)
+        );
+        let mut altered = hex::decode(raw_access(&tokens)).unwrap();
+        let last = altered.last_mut().unwrap();
+        *last = if *last == b'a' { b'b' } else { b'a' };
+        assert_eq!(
+            bearer(&h, &guard, &hex::encode(altered), Some(RESOURCE)).err(),
+            Some(ErrorCode::Unauthorized)
+        );
+    });
+}
+
+#[test]
+fn g_m02_10_bearer_expiry() {
+    run_db_fixture::<OAuthFixture, _>("G-M02-10 token expired", |mut h| {
+        let (guard, tokens) = bearer_fixture(&mut h);
+        let mut terms = decode(&tokens);
+        terms.expires_at = OffsetDateTime::now_utc() - time::Duration::seconds(1);
+        assert_eq!(
+            bearer(&h, &guard, &signed_access(&terms), Some(RESOURCE)).err(),
+            Some(ErrorCode::Unauthorized)
+        );
+    });
+}
+
+#[test]
+fn g_m02_10_bearer_revocation_is_live() {
+    run_db_fixture::<OAuthFixture, _>("G-M02-10 grant revoked", |mut h| {
+        let (guard, tokens) = bearer_fixture(&mut h);
+        let token = raw_access(&tokens);
+        assert!(bearer(&h, &guard, token, Some(RESOURCE)).is_ok());
+        let reply = h.rt.block_on(http_with(
+            serve(&h, 7200),
+            "POST",
+            "/oauth/revoke",
+            &[],
+            &form(&[
+                ("token", tokens["refresh_token"].as_str().unwrap()),
+                ("client_id", &h.client_id),
+            ]),
+        ));
+        assert_eq!(reply.status, 200);
+        assert_eq!(
+            bearer(&h, &guard, token, Some(RESOURCE)).err(),
+            Some(ErrorCode::Unauthorized)
+        );
+    });
+}
+
+#[test]
+fn g_m02_10_bearer_epoch_is_live() {
+    run_db_fixture::<OAuthFixture, _>("G-M02-10 epoch moved", |mut h| {
+        let (guard, tokens) = bearer_fixture(&mut h);
+        h.admin
+            .query_one("SELECT control.bump_user_security_epoch($1)", &[&h.user_id])
+            .unwrap();
+        assert_eq!(
+            bearer(&h, &guard, raw_access(&tokens), Some(RESOURCE)).err(),
+            Some(ErrorCode::Unauthorized)
+        );
+    });
+}
+
+#[test]
+fn g_m02_10_bearer_membership_is_live() {
+    run_db_fixture::<OAuthFixture, _>("G-M02-10 removed membership", |mut h| {
+        let (guard, tokens) = bearer_fixture(&mut h);
+        h.admin.execute(
+            "UPDATE control.memberships SET state='SUSPENDED' WHERE tenant_id=$1 AND user_id=$2",
+            &[&h.tenant_id, &h.user_id],
+        ).unwrap();
+        assert_eq!(
+            bearer(&h, &guard, raw_access(&tokens), Some(RESOURCE)).err(),
+            Some(ErrorCode::Unauthorized)
+        );
+    });
+}
+
+#[test]
+fn g_m02_10_bearer_scope_and_signal() {
+    run_db_fixture::<OAuthFixture, _>("G-M02-10 least privilege", |mut h| {
+        let (guard, tokens) = bearer_fixture(&mut h);
+        let request = ResourceRequest {
+            resource: Some(RESOURCE),
+            ..Default::default()
+        };
+        let credential = bearer(&h, &guard, raw_access(&tokens), request.resource).unwrap();
+        assert_eq!(
+            GatewayGuard::authorize_bearer(&credential, "artifact:manage", None, &request),
+            Err(ErrorCode::Forbidden)
+        );
+        assert_eq!(
+            request.missing_scope.borrow().as_deref(),
+            Some("artifact:manage")
+        );
+
+        let mut terms = decode(&tokens);
+        terms.scopes.push("artifact:manage".to_owned());
+        assert_eq!(
+            bearer(&h, &guard, &signed_access(&terms), request.resource).err(),
+            Some(ErrorCode::Unauthorized)
+        );
+    });
+}
+
+fn fixture_workspace(h: &mut Handle) -> WorkspaceId {
+    WorkspaceId(h.admin.query_one(
+        "INSERT INTO control.workspaces(tenant_id,name) VALUES ($1,'bearer fixture') RETURNING workspace_id",
+        &[&h.tenant_id],
+    ).unwrap().get(0))
+}
+
+#[test]
+fn g_m02_10_bearer_cross_tenant_scope_is_not_widened() {
+    run_db_fixture::<OAuthFixture, _>("G-M02-10 cross tenant", |mut h| {
+        let (guard, tokens) = bearer_fixture(&mut h);
+        let own = fixture_workspace(&mut h);
+        h.admin.execute(
+            "INSERT INTO control.workspace_memberships(tenant_id,workspace_id,user_id,role) VALUES ($1,$2,$3,'MEMBER')",
+            &[&h.tenant_id, &own.0, &h.user_id],
+        ).unwrap();
+        run_db_fixture::<OAuthFixture, _>("G-M02-10 foreign tenant", |mut foreign| {
+            let foreign_workspace = fixture_workspace(&mut foreign);
+            let foreign_tenant = foreign.tenant_id;
+            add_active_membership(&mut foreign, foreign_tenant);
+            foreign.admin.execute(
+                "INSERT INTO control.workspace_memberships(tenant_id,workspace_id,user_id,role) VALUES ($1,$2,$3,'MEMBER')",
+                &[&foreign.tenant_id, &foreign_workspace.0, &foreign.user_id],
+            ).unwrap();
+            let request = ResourceRequest {
+                resource: Some(RESOURCE),
+                ..Default::default()
+            };
+            let credential = bearer(&h, &guard, raw_access(&tokens), request.resource).unwrap();
+            assert!(
+                GatewayGuard::authorize_bearer(&credential, "context:read", Some(own), &request)
+                    .is_ok()
+            );
+            assert_eq!(
+                GatewayGuard::authorize_bearer(
+                    &credential,
+                    "context:read",
+                    Some(foreign_workspace),
+                    &request
+                ),
+                Err(ErrorCode::Forbidden)
+            );
+            assert_eq!(*request.missing_scope.borrow(), None);
+        });
+    });
+}
+
+fn native_mcp_router(guard: GatewayGuard) -> axum::Router {
+    let catalog = CanonicalCatalog::load().expect("canonical catalog");
+    let advertised = catalog.trusted_catalog().expect("trusted catalog");
+    let remember = RememberPolicy::new(
+        ProcessFamily::new("workspace", "knowledge", "ingest", "v1").unwrap(),
+        Uuid::new_v4(),
+        Duration::from_secs(60),
+        DataClass::Internal,
+        VisibilityClass::WorkspaceShared,
+    )
+    .unwrap();
+    let context = ContextBootstrap::new(
+        ContextBudget::new(4_096, 512).unwrap(),
+        humaux_contracts::retrieval_config::resolve_registered_retrieval_profile(
+            &Default::default(),
+        )
+        .unwrap(),
+        &remember,
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let app = GatewayMcpApplication::new(
+        catalog,
+        Arc::new(guard),
+        remember,
+        RememberEventKind::UserMessage,
+        context,
+    );
+    let config = McpHttpConfig::new(
+        vec!["as.example.test".into()],
+        vec![ORIGIN.into()],
+        64 * 1024,
+    )
+    .unwrap()
+    .with_oauth_issuer(ORIGIN.to_owned());
+    McpAdapter::new(Arc::new(app), advertised, config).router()
+}
+
+fn native_mcp_request(
+    h: &Handle,
+    address: SocketAddr,
+    path: &str,
+    token: Option<&str>,
+    tool: Option<(&str, Value)>,
+) -> Reply {
+    let mut params = serde_json::json!({"_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "oauth-flow", "version": "1"},
+        "io.modelcontextprotocol/clientCapabilities": {},
+    }});
+    let method = if tool.is_some() {
+        "tools/call"
+    } else {
+        "tools/list"
+    };
+    let mut headers = vec![
+        ("Content-Type", "application/json"),
+        ("Accept", "application/json, text/event-stream"),
+        ("MCP-Protocol-Version", "2026-07-28"),
+        ("Mcp-Method", method),
+    ];
+    if let Some((name, arguments)) = tool {
+        headers.push(("Mcp-Name", name));
+        params["name"] = name.into();
+        params["arguments"] = arguments;
+    }
+    let authorization = token.map(|value| format!("Bearer {value}"));
+    if let Some(header) = authorization.as_deref() {
+        headers.push(("Authorization", header));
+    }
+    h.rt.block_on(http_with(
+        address,
+        "POST",
+        path,
+        &headers,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params,
+        })
+        .to_string(),
+    ))
+}
+
+#[test]
+fn g_m02_10_bearer_native_http() {
+    run_db_fixture::<OAuthFixture, _>("G-M02-10 real native OAuth", |mut h| {
+        // A write-only token authenticates for protocol traffic. It cannot run memory.get.
+        h.scopes = vec!["memory:write".to_owned()];
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        let as_address = serve(&h, 7200);
+        let mint = |resource: &str| {
+            let code = issue_code_for(&h, resource);
+            let reply = post(
+                &h,
+                as_address,
+                &code_form(&h, &code, &[("resource", Some(resource))]),
+            );
+            assert_eq!(reply.status, 200, "access token was not issued");
+            let tokens: Value = serde_json::from_str(&reply.body).unwrap();
+            let claims = decode(&tokens);
+            assert_eq!(claims.resource, resource);
+            assert_eq!(claims.scopes, ["memory:write"]);
+            raw_access(&tokens).to_owned()
+        };
+        let native = mint(NATIVE_RESOURCE);
+        let legacy = mint(&format!("{NATIVE_RESOURCE}/legacy"));
+        // dep: PostgreSQL(role_gateway) — same role and guard as the real MCP listener.
+        let pool =
+            h.rt.block_on(RuntimeDbPool::connect(&dsn_as_role(&h.dsn)))
+                .unwrap();
+        let guard = GatewayGuard::new(pool, guard_settings())
+            .unwrap()
+            .with_oauth_issuer(ORIGIN.to_owned(), Arc::new(keys()));
+        let address = serve_router(&h, native_mcp_router(guard));
+        let good = native_mcp_request(&h, address, "/mcp", Some(&native), None);
+        assert_eq!(good.status, 200, "native audience");
+        let catalog: Value = serde_json::from_str(&good.body).unwrap();
+        assert!(catalog["result"]["tools"].is_array());
+
+        let wrong = native_mcp_request(&h, address, "/mcp", Some(&legacy), None);
+        assert_eq!(wrong.status, 401, "legacy audience on native route");
+        let challenge = format!(
+            "Bearer resource_metadata=\"{ORIGIN}/.well-known/oauth-protected-resource/mcp\""
+        );
+        assert_eq!(
+            wrong.headers["www-authenticate"],
+            format!("{challenge}, error=\"invalid_token\"")
+        );
+
+        let scope = native_mcp_request(
+            &h,
+            address,
+            "/mcp",
+            Some(&native),
+            Some((
+                "memory",
+                serde_json::json!({"action":"get","memory_id":Uuid::now_v7()}),
+            )),
+        );
+        assert_eq!(scope.status, 403, "missing context:read");
+        assert_eq!(
+            scope.headers.get("www-authenticate"),
+            Some(&format!(
+                "{challenge}, error=\"insufficient_scope\", scope=\"context:read\""
+            ))
+        );
+
+        let query = native_mcp_request(
+            &h,
+            address,
+            &format!("/mcp?access_token={native}"),
+            None,
+            None,
+        );
+        assert_eq!(query.status, 401, "query transport cannot authenticate");
+        assert_eq!(query.headers["www-authenticate"], challenge);
     });
 }
 

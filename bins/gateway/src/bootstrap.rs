@@ -549,7 +549,11 @@ impl GatewayBootstrap {
         let session_lock = acquire_gateway_lock(&pool, &self.deployment)
             .await
             .map_err(|code| BootstrapError::new(DEPLOYMENT_KEY, code.as_str()))?;
-        let guard = Arc::new(self.credential_settings.build_guard(pool, self.guard)?);
+        let mut guard = self.credential_settings.build_guard(pool, self.guard)?;
+        if let Some(config) = &self.oauth_http {
+            guard = guard.with_oauth_issuer(config.issuer.clone(), Arc::clone(&config.keys));
+        }
+        let guard = Arc::new(guard);
         let catalog = CanonicalCatalog::load().map_err(|_| {
             BootstrapError::new("canonical MCP catalog", "invalid embedded contract")
         })?;
@@ -941,7 +945,7 @@ fn parse_oauth_http(
         ));
     }
     Ok(Some(OAuthHttpConfig {
-        keys,
+        keys: Arc::new(keys),
         issuer,
         resource,
         login_return_ttl: parse_auth_lifetimes(effective)?.login_challenge.ttl,
