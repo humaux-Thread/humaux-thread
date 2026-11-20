@@ -693,8 +693,15 @@ pub struct Dispatcher<'a, R> {
     pub runtime: &'a R,
     /// Monotonic deadline future supplied by the process executor.
     pub sleep_until: fn(Instant) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    /// Samples the multiplier for a local D1 retry (ADR-0058 E1).
+    pub retry_jitter: fn() -> f64,
     /// Deployment policy, unchanged for the claim.
     pub dispatch: &'a DistillDispatchConfig,
+}
+
+/// Samples the production D1 retry multiplier using the same ±25% window as T6.
+pub fn sample_retry_jitter() -> f64 {
+    rand::random_range(0.75..1.25)
 }
 struct EmptyAnswer<H> {
     inferred: DistillInferenceResult,
@@ -797,7 +804,7 @@ async fn settle_failed_call<R: DistillPorts>(
             dispatcher
                 .runtime
                 .retry_backoff(dispatch.lease_seconds, attempt)
-                * rand::random_range(0.75..1.25)
+                * (dispatcher.retry_jitter)()
         },
         |hint| hint.as_secs_f64(),
     );
