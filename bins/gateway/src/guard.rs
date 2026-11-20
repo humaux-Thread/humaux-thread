@@ -1,5 +1,5 @@
 //! `gateway::guard` — §83: one business admission path for every canonical MCP operation.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::read_quota, application::independent_audit, application::lifecycle_execution, application::remember, application::supersede, domain::affect, domain::audit, domain::confirm, domain::continuity, domain::coordination, domain::error, domain::identity, domain::ids, domain::selection, domain::source, domain::subject, gateway::auth, gateway::bootstrap, gateway::limiter, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::read_quota, application::independent_audit, application::lifecycle_execution, application::remember, application::supersede, domain::affect, domain::audit, domain::confirm, domain::error, domain::identity, domain::ids, domain::selection, domain::subject, gateway::auth, gateway::bootstrap, gateway::limiter, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::oauth_http, gateway::status, tests]
 //! Invariants: [no path mints and accepts in one call; transport owns HTTP validation only; this layer is the sole place that authenticates, authorizes and admits a request, so an operation that bypasses it is a bug, not a variant path]
 //! Spec: Baseline §83; §52.1; ADR-0018; ADR-0028; ADR-0030; ADR-0054; ADR-0065 D-D; ADR-0125
@@ -10,7 +10,7 @@ use humaux_application::independent_audit::{AuditIdentity, record_independent_au
 use humaux_application::lifecycle_execution::LifecycleConfirmation;
 use humaux_application::read_quota::{self, ChargePolicy, ReadQuotaStore, ReservationLease};
 use humaux_application::remember::{
-    self, AtomicRememberRequest, AtomicRememberResult, NoteIntake, RememberCommand, SourcedPutError,
+    AtomicRememberRequest, AtomicRememberResult, RememberCommand, SourcedPutError,
 };
 use std::{
     collections::BTreeMap,
@@ -25,12 +25,9 @@ use humaux_domain::{
     affect::AffectWriteOp,
     audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction, SYSTEM_TENANT_ID},
     confirm::{ConfirmToken, DestructiveOp, RISK_TAG_CONFIRMATION_MINTED},
-    continuity::ProjectId,
-    coordination::{FencingToken, TaskRunId},
     error::ErrorCode,
     identity::AuthorizationScope,
     ids::WorkspaceId,
-    source::SourceIdentity,
     subject::SubjectWriteOp,
 };
 use humaux_protocol::{
@@ -333,6 +330,23 @@ pub(crate) enum ConfirmedOutcome<T> {
 enum WorkspaceAdmission {
     NarrowRequested,
     PreserveContinuityFilter,
+}
+
+/// §83: the MCP routes allowed to run an atomic remember transaction.
+pub(crate) enum AtomicRememberOp {
+    /// `remember.put`.
+    Remember,
+    /// The create leg of `memory.note_put`.
+    NoteCreate,
+}
+
+impl AtomicRememberOp {
+    fn operation_key(self) -> &'static str {
+        match self {
+            Self::Remember => "remember.put",
+            Self::NoteCreate => "memory.note_put",
+        }
+    }
 }
 
 impl GatewayGuard {
@@ -832,76 +846,33 @@ impl GatewayGuard {
         result
     }
 
-    /// The one receipt transaction of `run_atomic_remember`: `remember.put` (verifying `task_run` when `Some`, design
-    /// v0.2 §15 T04c; resolving `project` when `Some`, ADR-0078 D-D A1), or `memory.note_put` when `note` is `Some`.
-    async fn write_atomically(
-        &self,
-        authorization: &AuthorizationScope,
-        request: AtomicRememberRequest,
-        note: Option<NoteIntake>,
-        task_run: Option<(TaskRunId, FencingToken)>,
-        project: Option<ProjectId>,
-        source: Option<SourceIdentity>,
-    ) -> Result<AtomicRememberResult, SourcedPutError> {
-        match note {
-            Some(note) => remember::put_note(
-                &crate::bootstrap::note_store(&self.pool),
-                authorization,
-                request,
-                note,
-            )
-            .await
-            .map_err(SourcedPutError::from),
-            None => {
-                remember::remember(
-                    &crate::bootstrap::remember_store(&self.pool),
-                    authorization,
-                    request,
-                    task_run,
-                    project,
-                    source,
-                )
-                .await
-            }
-        }
-    }
-
     /// A local write, its BMO settlement and its success audit share one commit.
     /// An unknown commit outcome is resolved by replaying the same logical key.
-    /// `note` is `Some` exactly for `memory.note_put` (ADR-0067 D-A): the same receipt transaction then also writes the
-    /// identity contract and the authorised Memory. `task_run` may be `Some` only for `remember.put` (design v0.2 §15
-    /// T04c): the receipt transaction verifies it before any write and refuses the whole call when it fails. `project`
-    /// likewise (ADR-0078 D-D A1): resolved before any write, one `INVALID_INPUT` when it is not visible. The request
-    /// fingerprint is the SHA-256 of `raw_arguments`, so it covers both: the same key with another run or project is
-    /// `CONFLICT`, and a replay of the same bytes is never re-verified nor re-resolved (§34.0.1).
-    #[allow(clippy::too_many_arguments)] // admission context + the write's own seven inputs; one call site per operation
-    pub(crate) async fn run_atomic_remember<F>(
+    /// The fingerprint covers the exact wire arguments (§34.0.1); a replay is accounted for by the handler's receipt.
+    #[allow(clippy::too_many_arguments)] // keep the authorization, route and write parameters explicit
+    pub(crate) async fn run_atomic_remember<F, H>(
         &self,
         context: &McpHttpContext,
         operation: &OperationDescriptor,
+        route: AtomicRememberOp,
         requested_workspace: Option<WorkspaceId>,
         raw_arguments: &str,
         idempotency_key: String,
-        note: Option<NoteIntake>,
-        task_run: Option<(TaskRunId, FencingToken)>,
-        project: Option<ProjectId>,
-        source: Option<SourceIdentity>,
         prepare: F,
+        handler: H,
     ) -> Result<AtomicRememberResult, SourcedPutError>
     where
         F: FnOnce(&AuthorizedRequest) -> Result<RememberCommand, ErrorCode>,
+        H: AsyncFnOnce(
+            &AuthorizationScope,
+            AtomicRememberRequest,
+        ) -> Result<AtomicRememberResult, SourcedPutError>,
     {
         let result = async {
             let admitted = self.admit(context, operation, requested_workspace).await?;
-            let routed = matches!(
-                (
-                    operation.operation_key(),
-                    note.is_some(),
-                    task_run.is_some() || project.is_some()
-                ),
-                ("remember.put", false, _) | ("memory.note_put", true, false)
-            );
-            if !routed || operation.meter_kind() != MeterKind::Ordinary {
+            if operation.operation_key() != route.operation_key()
+                || operation.meter_kind() != MeterKind::Ordinary
+            {
                 return self
                     .denied(
                         context,
@@ -936,14 +907,7 @@ impl GatewayGuard {
             };
             let result = tokio::time::timeout(
                 self.settings.handler_timeout,
-                self.write_atomically(
-                    admitted.request.authorization(),
-                    request,
-                    note,
-                    task_run,
-                    project,
-                    source,
-                ),
+                handler(admitted.request.authorization(), request),
             )
             .await
             .unwrap_or_else(|_| Err(ErrorCode::DependencyUnavailable.into()));
