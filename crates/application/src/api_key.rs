@@ -1,6 +1,6 @@
 //! `application::api_key` — API credential validation policy (§73.5; ADR-0059 D-H).
-//! Depends-on: crates=[hmac, humaux-domain, sha2, async-trait]; services=[]; env=[]; modules=[application::oauth, application::oauth_exchange, domain::network, domain::error, domain::identity, domain::ids]
-//! Called-by: [tests, application::bearer, adapters::credential_repo, gateway::auth, gateway::bootstrap, gateway::route_cache]
+//! Depends-on: crates=[hmac, humaux-domain, sha2, async-trait, time]; services=[]; env=[]; modules=[application::bearer, application::oauth_exchange, domain::network, domain::error, domain::identity, domain::ids]
+//! Called-by: [tests, adapters::credential_repo, gateway::auth, gateway::bootstrap, gateway::route_cache]
 //! Invariants: [caller-supplied clock and peppers; current pepper precedes previous]
 //! Spec: §73.5; ADR-0130
 
@@ -285,11 +285,14 @@ pub struct VerifiedCredential {
 }
 
 impl VerifiedCredential {
-    pub(crate) fn from_oauth(
-        access: crate::oauth::AccessTerms,
+    /// Bind verified token claims to their current grant and the subject's live memberships.
+    pub fn from_oauth(
+        access: crate::bearer::VerifiedAccess,
         grant: crate::oauth_exchange::GrantRecord,
         live_workspace_ids: Vec<WorkspaceId>,
+        now: time::OffsetDateTime,
     ) -> Result<Self, ErrorCode> {
+        let access = access.into_live_terms(&grant, now)?;
         let allowed = derive_workspace_scope(&live_workspace_ids, grant.workspace_id, None)?;
         Ok(Self {
             authorization: AuthorizationScope::new(

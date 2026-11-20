@@ -5,7 +5,7 @@
 //!   control.oauth_grants, control.oauth_refresh_tokens, control.sessions, control.tenants, control.user_emails, control.users, ops.email_outbox]
 //!   x=[control.bump_user_security_epoch], PostgreSQL(role_gateway)]; env=[CI, HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::oauth_repo, adapters::postgres, adapters::session_repo, application::auth, application::login, application::oauth, application::session, application::signed_token, domain::error,
-//!   domain::ids, domain::identity, gateway::auth, gateway::auth_pages, gateway::bootstrap, gateway::guard, gateway::limiter, gateway::oauth_http, humaux-testkit, protocol::edge]
+//!   domain::ids, gateway::auth, gateway::auth_pages, gateway::bootstrap, gateway::guard, gateway::limiter, gateway::oauth_http, humaux-testkit, protocol::edge]
 //! Called-by: [cargo-test]
 //! Invariants: [fixture rows are unique and cleaned; missing DB on CI fails; token comparisons use production
 //!   verification and the live grant; every expected refusal checks the exact wire object and no-store]

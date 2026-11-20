@@ -1,15 +1,14 @@
 //! `application::bearer` — access-token authentication and live grant binding (M02 D3).
-//! Depends-on: crates=[humaux-domain, time, uuid]; services=[]; env=[]; modules=[application::api_key, application::oauth, application::oauth_exchange, application::signed_token, domain::error, domain::ids]
-//! Called-by: [gateway::auth]
+//! Depends-on: crates=[humaux-domain, time, uuid]; services=[]; env=[]; modules=[application::oauth, application::oauth_exchange, application::signed_token, domain::error]
+//! Called-by: [application::api_key, gateway::auth]
 //! Invariants: [verify MAC and audience before lookup; a live grant and live workspace membership cap every request]
 //! Spec: §6.1.1; §73.5; §83; M02 D3.
 
-use humaux_domain::{error::ErrorCode, ids::WorkspaceId};
+use humaux_domain::error::ErrorCode;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
-    api_key::VerifiedCredential,
     oauth::{ACCESS_TOKEN_LABEL, AccessTerms, check_grant, parse_access_token_payload},
     oauth_exchange::GrantRecord,
     signed_token::TokenKeys,
@@ -41,7 +40,11 @@ impl VerifiedAccess {
         self.0.grant_id
     }
 
-    fn validate_grant(&self, grant: &GrantRecord, now: OffsetDateTime) -> Result<(), ErrorCode> {
+    pub(crate) fn into_live_terms(
+        self,
+        grant: &GrantRecord,
+        now: OffsetDateTime,
+    ) -> Result<AccessTerms, ErrorCode> {
         check_grant(&grant.view(), now).map_err(|_| ErrorCode::Unauthorized)?;
         if self.0.client_id != grant.client_id
             || self.0.resource != grant.resource
@@ -53,17 +56,6 @@ impl VerifiedAccess {
         {
             return Err(ErrorCode::Unauthorized);
         }
-        Ok(())
-    }
-
-    /// Construct the request binding from the already validated grant and current memberships.
-    pub fn bind(
-        self,
-        grant: GrantRecord,
-        live_workspace_ids: Vec<WorkspaceId>,
-        now: OffsetDateTime,
-    ) -> Result<VerifiedCredential, ErrorCode> {
-        self.validate_grant(&grant, now)?;
-        VerifiedCredential::from_oauth(self.0, grant, live_workspace_ids)
+        Ok(self.0)
     }
 }
