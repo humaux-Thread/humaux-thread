@@ -300,6 +300,7 @@ mod tests {
         let future = SystemTime::UNIX_EPOCH + Duration::from_secs(4_070_908_800);
         for (header, expected) in [
             ("17", Some(Duration::from_secs(17))),
+            ("18446744073709551616", Some(Duration::from_secs(u64::MAX))),
             ("Thu, 01 Jan 2099 00:00:00 GMT", None),
             ("Sat, 01 Jan 2000 00:00:00 GMT", Some(Duration::ZERO)),
             ("invalid", None),
