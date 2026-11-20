@@ -6,7 +6,7 @@
 //!   env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::byok, adapters::contribution_entry_repo,
 //!   adapters::contribution_reasoner, adapters::disclosure, adapters::reasoning_route_admission,
 //!   adapters::tests::support::contribution_fixture, application::consolidate, application::contribute,
-//!   domain::error]
+//!   domain::error, domain::identity]
 //! Called-by: [cargo-test]
 //! Invariants: [uses a recording provider (no user key, no network) over the real private pool and disclosure ledger;
 //!   a failed admission or wrong binding leaves no ledger/disclosure side effect; PG cases are #[ignore] lane tests]
@@ -80,7 +80,10 @@ fn config() -> ContributionReasonerConfig {
     }
 }
 
-fn fresh_request(fixture: &Fixture) -> humaux_application::contribute::PrepareContribution {
+fn fresh_request(
+    fixture: &Fixture,
+) -> humaux_application::contribute::PrepareContribution<humaux_domain::identity::AuthorizationScope>
+{
     let mut request = fixture.request();
     request.coverage_probe_call_id = LogicalReasoningCallId(Uuid::new_v4());
     request.assessment_call_id = LogicalReasoningCallId(Uuid::new_v4());
@@ -89,7 +92,9 @@ fn fresh_request(fixture: &Fixture) -> humaux_application::contribute::PrepareCo
 
 fn coverage_probe_call(
     base: SealedPrivateReasoningRequest,
-    request: &humaux_application::contribute::PrepareContribution,
+    request: &humaux_application::contribute::PrepareContribution<
+        humaux_domain::identity::AuthorizationScope,
+    >,
 ) -> SealedPrivateReasoningRequest {
     base.with_contribution_attempt(
         request.coverage_probe_call_id,

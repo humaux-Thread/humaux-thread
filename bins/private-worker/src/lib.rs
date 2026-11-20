@@ -44,18 +44,20 @@ use uuid::Uuid;
 /// Phase 15 may place an authenticated mTLS transport in front of this command. The command
 /// itself accepts only the existing verified ID-free preparation input and a caller idempotency
 /// key; it cannot receive rights, policy, source hashes, durable identities, or a fingerprint.
-pub struct StartManualContributionCommand<'a> {
-    ingress: &'a dyn ManualContributionPort,
+pub struct StartManualContributionCommand<'a, Authorization: Send + Sync> {
+    ingress: &'a dyn ManualContributionPort<Authorization = Authorization>,
 }
 
-impl<'a> StartManualContributionCommand<'a> {
-    pub const fn new(ingress: &'a dyn ManualContributionPort) -> Self {
+impl<'a, Authorization: Send + Sync> StartManualContributionCommand<'a, Authorization> {
+    pub const fn new(
+        ingress: &'a dyn ManualContributionPort<Authorization = Authorization>,
+    ) -> Self {
         Self { ingress }
     }
 
     pub async fn execute(
         &self,
-        request: ContributionPreparationInput,
+        request: ContributionPreparationInput<Authorization>,
         idempotency_key: String,
     ) -> Result<EnqueuedContributionExecution, ErrorCode> {
         start_manual_contribution(self.ingress, request, idempotency_key).await
