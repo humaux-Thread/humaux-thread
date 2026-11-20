@@ -14546,12 +14546,6 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             "use humaux_adapters::health::HealthSample as BoundaryHealthSample;",
             "LAYER SLICE-7a health entry adapter regression",
         );
-        mutate(
-            3,
-            "crates/domain/src/affect.rs",
-            "use humaux_adapters::affect_repo::AffectRepoError as BoundaryUpwardImport;",
-            "M01-5 LAYER domain import",
-        );
         let orphan = root.join("crates/domain/src/boundary_orphan.rs");
         fs::write(&orphan, "fn orphan() {}\n").unwrap();
         let red = gate(2);
@@ -14563,6 +14557,35 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         check(2);
         println!("COVERAGE orphan: restored GREEN");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn m01_5_domain_import_fails_hex_layer() {
+        let root = fresh_tmp("m01-5-domain-layer");
+        hex_copy_boundary_fixture(&real_root(), &root);
+        let path = "crates/domain/src/affect.rs";
+        let source_path = root.join(path);
+        let original = fs::read_to_string(&source_path).unwrap();
+        let adapter = "humaux_adapters::affect_repo::AffectRepoError";
+        assert_eq!(hex_layer_gate(&root), Verdict::Pass);
+
+        fs::write(
+            &source_path,
+            format!("{original}\nuse {adapter} as BoundaryUpwardImport;\n"),
+        )
+        .unwrap();
+        let red = hex_layer_gate(&root);
+        fs::write(source_path, original).unwrap();
+        let restored = hex_layer_gate(&root);
+        fs::remove_dir_all(root).unwrap();
+
+        assert_eq!(
+            red,
+            Verdict::Fail(vec![format!("HEX-LAYER: new violation {path}:{adapter}")]),
+        );
+        println!("M01-5 LAYER domain import: RED {red:?}");
+        assert_eq!(restored, Verdict::Pass);
+        println!("M01-5 LAYER domain import: restored GREEN");
     }
 
     #[test]
