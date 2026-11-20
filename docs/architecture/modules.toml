@@ -816,6 +816,7 @@ files = [
   "crates/protocol/src/lib.rs",
   "crates/protocol/src/mcp.rs",
   "crates/protocol/src/mcp_catalog.rs",
+  "crates/protocol/src/mcp_legacy.rs",
   "crates/protocol/src/mcp_profile.rs",
   "crates/protocol/src/page.rs",
   "crates/protocol/src/rest.rs",

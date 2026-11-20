@@ -120,6 +120,13 @@ fn trusted_catalog_rejects_duplicate_schema_names() {
 }
 
 async fn start(app: Arc<MockApplication>) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    start_router(app, McpAdapter::router).await
+}
+
+async fn start_router(
+    app: Arc<MockApplication>,
+    router: fn(&McpAdapter) -> axum::Router,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let adapter = McpAdapter::new(
         app,
         catalog(),
@@ -137,9 +144,7 @@ async fn start(app: Arc<MockApplication>) -> (SocketAddr, tokio::task::JoinHandl
     let handle = tokio::spawn(async move {
         axum::serve(
             listener,
-            adapter
-                .router()
-                .into_make_service_with_connect_info::<SocketAddr>(),
+            router(&adapter).into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
         .expect("loopback server");
@@ -153,10 +158,20 @@ async fn request(
     headers: &[(&str, &str)],
     body: &str,
 ) -> (u16, String, BTreeMap<String, String>) {
+    request_at(address, "/mcp", method, headers, body).await
+}
+
+async fn request_at(
+    address: SocketAddr,
+    path: &str,
+    method: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> (u16, String, BTreeMap<String, String>) {
     // dep: HTTP(loopback) — connects to the Axum router this test just started on a real TCP listener.
     let mut stream = TcpStream::connect(address).await.expect("connect loopback");
     let mut request = format!(
-        "{method} /mcp HTTP/1.1\r\nConnection: close\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+        "{method} {path} HTTP/1.1\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
         body.len(),
     );
     if !headers
@@ -170,6 +185,12 @@ async fn request(
         .any(|(name, _)| name.eq_ignore_ascii_case("origin"))
     {
         request.push_str("Origin: https://mcp.test\r\n");
+    }
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("accept"))
+    {
+        request.push_str("Accept: application/json, text/event-stream\r\n");
     }
     for (name, value) in headers {
         request.push_str(name);
@@ -402,4 +423,249 @@ async fn non_capacity_503_has_no_retry_after() {
     }
     assert_eq!(app.invocations.lock().unwrap().len(), 0);
     server.abort();
+}
+
+const LEGACY_PATH: &str = "/mcp/legacy";
+const LEGACY_HEADER: (&str, &str) = ("MCP-Protocol-Version", "2025-06-18");
+
+fn qwen_sample() -> Value {
+    serde_json::from_str(include_str!("fixtures/qwen_legacy_http.json")).expect("Qwen fixture")
+}
+
+async fn start_legacy(app: Arc<MockApplication>) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    start_router(app, McpAdapter::legacy_router).await
+}
+
+#[tokio::test]
+async fn legacy_qwen_initialize_negotiates_one_version() {
+    let (address, server) = start_legacy(Arc::new(MockApplication::default())).await;
+    let sample = qwen_sample();
+    let (status, body, headers) = request_at(
+        address,
+        LEGACY_PATH,
+        "POST",
+        &[("Accept", sample["accept"].as_str().unwrap())],
+        &sample["initialize"].to_string(),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(headers.get("mcp-session-id"), None);
+    assert_eq!(headers["content-type"], "application/json");
+    let reply: Value = serde_json::from_str(&body).unwrap();
+    let expected = &sample["initialize_response"];
+    assert_eq!(reply["id"], expected["id"]);
+    assert_eq!(
+        reply["result"]["protocolVersion"],
+        expected["result"]["protocolVersion"]
+    );
+    assert_eq!(
+        reply["result"]["capabilities"],
+        expected["result"]["capabilities"]
+    );
+    assert_eq!(reply["result"]["serverInfo"]["name"], "humaux-thread");
+    server.abort();
+}
+
+#[tokio::test]
+async fn legacy_qwen_notification_is_empty() {
+    let app = Arc::new(MockApplication::default());
+    let (address, server) = start_legacy(app.clone()).await;
+    let (status, body, headers) = request_at(
+        address,
+        LEGACY_PATH,
+        "POST",
+        &[LEGACY_HEADER],
+        &qwen_sample()["initialized"].to_string(),
+    )
+    .await;
+    assert_eq!(status, 202);
+    assert!(body.is_empty());
+    assert_eq!(headers.get("mcp-session-id"), None);
+    server.abort();
+    assert!(app.invocations.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn legacy_qwen_get_probe_is_405() {
+    let app = Arc::new(MockApplication::default());
+    let (address, server) = start_legacy(app.clone()).await;
+    for method in ["GET", "DELETE"] {
+        let (status, body, headers) = request_at(
+            address,
+            LEGACY_PATH,
+            method,
+            &[LEGACY_HEADER, ("Accept", "text/event-stream")],
+            "",
+        )
+        .await;
+        assert_eq!(status, 405);
+        assert_eq!(headers["allow"], "POST");
+        assert!(body.is_empty());
+    }
+    assert!(app.operations.lock().unwrap().is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn legacy_qwen_replay_uses_native_catalog_and_invokes_once() {
+    let app = Arc::new(MockApplication::default());
+    let (address, server) = start_legacy(app.clone()).await;
+    let (native, native_server) = start(Arc::new(MockApplication::default())).await;
+    let sample = qwen_sample();
+    for (key, headers, expected) in [
+        ("initialize", &[][..], 200),
+        ("initialized", &[LEGACY_HEADER][..], 202),
+    ] {
+        assert_eq!(
+            request_at(
+                address,
+                LEGACY_PATH,
+                "POST",
+                headers,
+                &sample[key].to_string()
+            )
+            .await
+            .0,
+            expected
+        );
+    }
+    assert_eq!(
+        request_at(
+            address,
+            LEGACY_PATH,
+            "GET",
+            &[LEGACY_HEADER, ("Accept", "text/event-stream")],
+            ""
+        )
+        .await
+        .0,
+        405
+    );
+    let (status, legacy_list, headers) = request_at(
+        address,
+        LEGACY_PATH,
+        "POST",
+        &[LEGACY_HEADER],
+        &sample["list"].to_string(),
+    )
+    .await;
+    assert_eq!(status, 200, "{legacy_list}");
+    assert_eq!(headers.get("mcp-session-id"), None);
+    let native_list = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}}"#,
+        modern_params("")
+    );
+    let (status, native_list, _) =
+        request(native, "POST", &modern_headers("tools/list"), &native_list).await;
+    assert_eq!(status, 200, "{native_list}");
+    let legacy_list: Value = serde_json::from_str(&legacy_list).unwrap();
+    let native_list: Value = serde_json::from_str(&native_list).unwrap();
+    assert_eq!(legacy_list["id"], sample["list"]["id"]);
+    assert_eq!(
+        legacy_list["result"]["tools"],
+        native_list["result"]["tools"]
+    );
+    assert_eq!(legacy_list["result"].as_object().unwrap().len(), 1);
+
+    let call = sample["call"].to_string().replace(
+        r#""name":"echo""#,
+        r#""name":"recall","arguments":{ "query" : "test" }"#,
+    );
+    let (status, body, headers) =
+        request_at(address, LEGACY_PATH, "POST", &[LEGACY_HEADER], &call).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(headers.get("mcp-session-id"), None);
+    let reply: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(reply["id"], sample["call_response"]["id"]);
+    assert_eq!(reply["result"]["content"][0]["text"], "\u{feff}line\r\n");
+    assert_eq!(
+        reply["result"]["structuredContent"],
+        json!({"kind":"mock","ok":true})
+    );
+    assert!(reply["result"].get("resultType").is_none());
+    assert_eq!(
+        *app.invocations.lock().unwrap(),
+        [(
+            ToolName::Recall,
+            r#"{ "query" : "test" }"#.to_owned(),
+            r#"{"query":"test"}"#.to_owned()
+        )]
+    );
+    assert_eq!(
+        *app.operations.lock().unwrap(),
+        [
+            McpOperation::Preflight,
+            McpOperation::Initialize,
+            McpOperation::Preflight,
+            McpOperation::Preflight,
+            McpOperation::Catalog,
+            McpOperation::Preflight
+        ]
+    );
+    server.abort();
+    native_server.abort();
+}
+
+#[tokio::test]
+async fn legacy_rejects_wrong_versions_before_application() {
+    let app = Arc::new(MockApplication::default());
+    let (address, server) = start_legacy(app.clone()).await;
+    let (native, native_server) = start(app.clone()).await;
+    let sample = qwen_sample();
+    assert_eq!(
+        request(native, "POST", &[], &sample["initialize"].to_string())
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        request(
+            native,
+            "POST",
+            &[LEGACY_HEADER],
+            &sample["list"].to_string()
+        )
+        .await
+        .0,
+        400
+    );
+    let modern = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}}"#,
+        modern_params("")
+    );
+    let mut modern_init = sample["initialize"].clone();
+    modern_init["params"]["protocolVersion"] = json!("2026-07-28");
+    let mut invalid_init = sample["initialize"].clone();
+    invalid_init["params"]
+        .as_object_mut()
+        .unwrap()
+        .remove("protocolVersion");
+    for (headers, body) in [
+        (&modern_headers("server/discover")[..], modern.clone()),
+        (&[LEGACY_HEADER][..], modern),
+        (&[LEGACY_HEADER][..], invalid_init.to_string()),
+        (&[][..], modern_init.to_string()),
+        (
+            &[("MCP-Protocol-Version", "2025-11-25")][..],
+            sample["list"].to_string(),
+        ),
+        (&[][..], sample["list"].to_string()),
+        (
+            &[LEGACY_HEADER, LEGACY_HEADER][..],
+            sample["list"].to_string(),
+        ),
+        (&[LEGACY_HEADER][..], sample["initialize"].to_string()),
+    ] {
+        assert_eq!(
+            request_at(address, LEGACY_PATH, "POST", headers, &body)
+                .await
+                .0,
+            400,
+            "{body}"
+        );
+    }
+    assert!(app.operations.lock().unwrap().is_empty());
+    assert!(app.invocations.lock().unwrap().is_empty());
+    server.abort();
+    native_server.abort();
 }

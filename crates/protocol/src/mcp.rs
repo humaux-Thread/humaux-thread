@@ -1,7 +1,7 @@
-//! `protocol::mcp` — Native, stateless MCP-over-HTTP adapter.
+//! `protocol::mcp` — Native MCP codec and shared stateless HTTP/application boundary.
 //! Depends-on: crates=[async-trait, axum, humaux-domain, rmcp, serde, serde_json, uuid]; services=[]; env=[];
-//!   modules=[domain::error, protocol::error_map]
-//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, protocol::mcp_catalog, protocol::mcp_profile, tests]
+//!   modules=[domain::error, protocol::error_map, protocol::mcp_legacy]
+//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, protocol::mcp_catalog, protocol::mcp_legacy, protocol::mcp_profile, tests]
 //! Invariants: [Retry-After is restricted to limiter capacity refusals (§67.2; ADR-0100)]
 //! Spec: Baseline §67.2; ADR-0100
 //!
@@ -48,7 +48,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value, value::RawValue};
 use uuid::Uuid;
 
-use crate::error_map::{self, McpError};
+use crate::{
+    error_map::{self, McpError},
+    mcp_legacy,
+};
 
 const NATIVE_PROTOCOL: ProtocolVersion = ProtocolVersion::V_2026_07_28;
 const TOOL_SET: [ToolName; 8] = [
@@ -164,9 +167,8 @@ impl TrustedMcpCatalog {
 /// tenant, user, owner, or request id through this type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum McpOperation {
-    /// Unauthenticated IP-abuse accounting after the HTTP peer, host/origin,
-    /// and body boundaries but before rmcp parses JSON-RPC. This happens once
-    /// per HTTP request, including malformed or unknown JSON-RPC requests.
+    /// Unauthenticated IP-abuse accounting once at the HTTP boundary, before
+    /// operation authorization or dispatch. Native also preflights malformed JSON.
     Preflight,
     Initialize,
     Discover,
@@ -331,10 +333,7 @@ impl McpAdapter {
     }
 
     pub fn router(&self) -> Router {
-        let state = HandlerState {
-            application: self.application.clone(),
-            catalog: self.catalog.clone(),
-        };
+        let state = self.handler_state();
         let service = StreamableHttpService::new(
             move || {
                 Ok(NativeMcpHandler {
@@ -347,19 +346,42 @@ impl McpAdapter {
         Router::new()
             .route_service("/mcp", any_service(service))
             .layer(middleware::from_fn_with_state(
-                BoundaryConfig {
-                    application: self.application.clone(),
-                    allowed_hosts: self.config.allowed_hosts.clone(),
-                    allowed_origins: self.config.allowed_origins.clone(),
-                    max_request_body_bytes: self.config.max_request_body_bytes,
-                },
-                native_request_boundary,
+                self.boundary(false),
+                request_boundary,
             ))
+    }
+
+    /// Builds only the stateless legacy resource. Serve with socket connect info.
+    pub fn legacy_router(&self) -> Router {
+        Router::new()
+            .route("/mcp/legacy", axum::routing::any(mcp_legacy::dispatch))
+            .with_state(self.handler_state())
+            .route_layer(middleware::from_fn_with_state(
+                self.boundary(true),
+                request_boundary,
+            ))
+    }
+
+    fn handler_state(&self) -> HandlerState {
+        HandlerState {
+            application: self.application.clone(),
+            catalog: self.catalog.clone(),
+        }
+    }
+
+    fn boundary(&self, legacy: bool) -> BoundaryConfig {
+        BoundaryConfig {
+            application: self.application.clone(),
+            allowed_hosts: self.config.allowed_hosts.clone(),
+            allowed_origins: self.config.allowed_origins.clone(),
+            max_request_body_bytes: self.config.max_request_body_bytes,
+            legacy,
+        }
     }
 }
 
 #[derive(Clone)]
-struct HandlerState {
+pub(crate) struct HandlerState {
     application: Arc<dyn McpApplication>,
     catalog: TrustedMcpCatalog,
 }
@@ -370,12 +392,13 @@ struct BoundaryConfig {
     allowed_hosts: Vec<String>,
     allowed_origins: Vec<String>,
     max_request_body_bytes: usize,
+    legacy: bool,
 }
 
 /// State inserted into the HTTP request parts and then picked up from rmcp's
 /// `RequestContext::extensions`. It intentionally has no Debug implementation.
 #[derive(Clone)]
-struct McpRequestState {
+pub(crate) struct McpRequestState {
     request_id: Uuid,
     raw_arguments: Option<Arc<RawValue>>,
     capacity_denied: Arc<AtomicBool>,
@@ -392,7 +415,7 @@ struct RawJsonRpcParams {
     arguments: Option<Box<RawValue>>,
 }
 
-async fn native_request_boundary(
+async fn request_boundary(
     State(config): State<BoundaryConfig>,
     request: Request,
     next: Next,
@@ -403,11 +426,12 @@ async fn native_request_boundary(
     if has_ambiguous_header(request.headers()) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    if request
-        .headers()
-        .get("mcp-protocol-version")
-        .and_then(|version| version.to_str().ok())
-        != Some(NATIVE_PROTOCOL.as_str())
+    if !config.legacy
+        && request
+            .headers()
+            .get("mcp-protocol-version")
+            .and_then(|version| version.to_str().ok())
+            != Some(NATIVE_PROTOCOL.as_str())
     {
         return StatusCode::BAD_REQUEST.into_response();
     }
@@ -420,7 +444,18 @@ async fn native_request_boundary(
         Ok(bytes) => bytes,
         Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
     };
-    let raw_arguments = serde_json::from_slice::<RawJsonRpcRequest>(&bytes)
+    if config.legacy {
+        let message = match mcp_legacy::decode(&parts.headers, &bytes) {
+            Ok(message) => message,
+            Err(status) => return status.into_response(),
+        };
+        parts.extensions.insert(message);
+    }
+    let raw_request = serde_json::from_slice::<RawJsonRpcRequest>(&bytes);
+    if config.legacy && raw_request.is_err() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let raw_arguments = raw_request
         .ok()
         .and_then(|request| request.params.and_then(|params| params.arguments))
         .map(Arc::from);
@@ -449,14 +484,19 @@ async fn native_request_boundary(
             .into_response();
         return with_capacity_retry(response, &capacity_denied);
     }
-    if !has_required_native_metadata(&bytes) {
+    if !config.legacy && !has_required_native_metadata(&bytes) {
         return StatusCode::BAD_REQUEST.into_response();
+    }
+    if config.legacy {
+        parts.extensions.insert(context);
     }
     parts.extensions.insert(request_state);
     let mut response = next
         .run(Request::from_parts(parts, Body::from(bytes)))
         .await;
-    if let Ok(status) = StatusCode::from_u16(status.load(Ordering::Acquire)) {
+    if let Ok(status) = StatusCode::from_u16(status.load(Ordering::Acquire))
+        && (!config.legacy || status != StatusCode::OK)
+    {
         *response.status_mut() = status;
     }
     with_capacity_retry(response, &capacity_denied)
@@ -578,15 +618,26 @@ impl NativeMcpHandler {
         operation: McpOperation,
     ) -> Result<McpHttpContext, ErrorData> {
         let (context, state) = self.context(request)?;
-        if let Err(code) = self
-            .state
-            .application
-            .check_access(&context, operation)
-            .await
-        {
-            return Err(protocol_error(&state, code));
-        }
+        self.state.check(&context, &state, operation).await?;
         Ok(context)
+    }
+}
+
+impl HandlerState {
+    pub(crate) async fn check(
+        &self,
+        context: &McpHttpContext,
+        state: &McpRequestState,
+        operation: McpOperation,
+    ) -> Result<(), ErrorData> {
+        self.application
+            .check_access(context, operation)
+            .await
+            .map_err(|code| protocol_error(state, code))
+    }
+
+    pub(crate) fn list(&self) -> ListToolsResult {
+        ListToolsResult::with_all_items(self.catalog.all_tools())
     }
 }
 
@@ -649,9 +700,7 @@ impl ServerHandler for NativeMcpHandler {
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         self.authorize(&context, McpOperation::Catalog).await?;
-        Ok(ListToolsResult::with_all_items(
-            self.state.catalog.all_tools(),
-        ))
+        Ok(self.state.list())
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -663,21 +712,30 @@ impl ServerHandler for NativeMcpHandler {
         request: CallToolRequestParams,
         request_context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        let (context, state) = self.context(&request_context)?;
+        self.state
+            .call(request, &context, &state)
+            .await
+            .map(Into::into)
+    }
+}
+
+impl HandlerState {
+    pub(crate) async fn call(
+        &self,
+        request: CallToolRequestParams,
+        context: &McpHttpContext,
+        state: &McpRequestState,
+    ) -> Result<CallToolResult, ErrorData> {
         let tool = ToolName::parse(&request.name)
             .ok_or_else(ErrorData::method_not_found::<rmcp::model::CallToolRequestMethod>)?;
-        let (context, state) = self.context(&request_context)?;
         let empty_arguments = JsonObject::new();
         let decoded = request.arguments.as_ref().unwrap_or(&empty_arguments);
         let arguments = McpToolArguments {
             decoded,
             raw_json: context.raw_arguments.as_deref(),
         };
-        match self
-            .state
-            .application
-            .invoke(&context, tool, arguments)
-            .await
-        {
+        match self.application.invoke(context, tool, arguments).await {
             Ok(output) => {
                 let blocks = vec![ContentBlock::text(output.text)];
                 let mut result = if output.is_error {
@@ -686,14 +744,14 @@ impl ServerHandler for NativeMcpHandler {
                     CallToolResult::success(blocks)
                 };
                 result.structured_content = Some(output.structured_content);
-                Ok(result.into())
+                Ok(result)
             }
             Err(code) => match error_map::lookup(code).mcp_error {
-                McpError::Protocol { .. } => Err(protocol_error(&state, code)),
+                McpError::Protocol { .. } => Err(protocol_error(state, code)),
                 McpError::ToolError { code } => {
                     let mut result = CallToolResult::error(vec![ContentBlock::text(code)]);
                     result.structured_content = Some(serde_json::json!({ "code": code }));
-                    Ok(result.into())
+                    Ok(result)
                 }
             },
         }
