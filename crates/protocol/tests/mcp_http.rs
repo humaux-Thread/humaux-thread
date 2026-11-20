@@ -28,6 +28,7 @@ use tokio::{
 struct MockApplication {
     /// Refuses only the pre-parse `Preflight` access check.
     denied: Mutex<Option<ErrorCode>>,
+    preflight_budget: Option<usize>,
     /// Refuses every later per-operation access check (`authorize`), the second 503 source of `protocol::mcp`.
     operation_denied: Mutex<Option<ErrorCode>>,
     invoke_denied: Mutex<Option<ErrorCode>>,
@@ -48,7 +49,16 @@ impl McpApplication for MockApplication {
         } else {
             &self.operation_denied
         };
-        self.operations.lock().expect("operations").push(operation);
+        let mut operations = self.operations.lock().expect("operations");
+        operations.push(operation);
+        if operation == McpOperation::Preflight
+            && self
+                .preflight_budget
+                .is_some_and(|budget| operations.len() > budget)
+        {
+            return Err(ErrorCode::RateLimited);
+        }
+        drop(operations);
         self.request_ids
             .lock()
             .expect("request ids")
@@ -607,7 +617,7 @@ async fn legacy_qwen_replay_uses_native_catalog_and_invokes_once() {
 }
 
 #[tokio::test]
-async fn legacy_rejects_wrong_versions_before_application() {
+async fn opposite_protocol_versions_never_dispatch() {
     let app = Arc::new(MockApplication::default());
     let (address, server) = start_legacy(app.clone()).await;
     let (native, native_server) = start(app.clone()).await;
@@ -664,8 +674,82 @@ async fn legacy_rejects_wrong_versions_before_application() {
             "{body}"
         );
     }
-    assert!(app.operations.lock().unwrap().is_empty());
+    assert_eq!(
+        *app.operations.lock().unwrap(),
+        [McpOperation::Preflight; 7]
+    );
     assert!(app.invocations.lock().unwrap().is_empty());
     server.abort();
     native_server.abort();
+}
+
+#[tokio::test]
+async fn malformed_posts_consume_preflight_budget_before_decoding() {
+    let native_headers = tool_call_headers();
+    for (router, path, headers, parse_status) in [
+        (
+            McpAdapter::router as fn(&McpAdapter) -> axum::Router,
+            "/mcp",
+            &native_headers[..],
+            200,
+        ),
+        (
+            McpAdapter::legacy_router,
+            LEGACY_PATH,
+            &[LEGACY_HEADER][..],
+            400,
+        ),
+    ] {
+        let app = Arc::new(MockApplication {
+            preflight_budget: Some(2),
+            ..MockApplication::default()
+        });
+        let (address, server) = start_router(app.clone(), router).await;
+        let mut preflight_counts = Vec::new();
+        for expected_status in [parse_status, parse_status, 429] {
+            let (status, body, _) = request_at(address, path, "POST", headers, "{").await;
+            assert_eq!(
+                status,
+                expected_status,
+                "{path}, request {}",
+                preflight_counts.len() + 1
+            );
+            let operations = app.operations.lock().unwrap();
+            assert!(operations.iter().all(|op| *op == McpOperation::Preflight));
+            preflight_counts.push(operations.len());
+            assert!(app.invocations.lock().unwrap().is_empty());
+            if status == 429 {
+                assert_eq!(body, ErrorCode::RateLimited.as_str());
+            }
+        }
+        assert_eq!(preflight_counts, [1, 2, 3], "{path}");
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn legacy_rejects_batches_oversize_bodies_and_unknown_methods() {
+    let app = Arc::new(MockApplication::default());
+    let (address, server) = start_legacy(app.clone()).await;
+    let batch = json!([qwen_sample()["call"]]).to_string();
+    let oversized = " ".repeat(64 * 1024 + 1);
+    for (body, expected) in [(&batch, 400), (&oversized, 413)] {
+        let (status, _, _) = request_at(address, LEGACY_PATH, "POST", &[LEGACY_HEADER], body).await;
+        assert_eq!(status, expected);
+        assert!(app.invocations.lock().unwrap().is_empty());
+        assert_eq!(*app.operations.lock().unwrap(), [McpOperation::Preflight]);
+    }
+    let unknown = r#"{"jsonrpc":"2.0","id":7,"method":"server/discover"}"#;
+    let (status, body, _) =
+        request_at(address, LEGACY_PATH, "POST", &[LEGACY_HEADER], unknown).await;
+    assert_eq!(status, 200);
+    let reply: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(reply["id"], 7);
+    assert_eq!(reply["error"]["code"], -32601);
+    assert!(app.invocations.lock().unwrap().is_empty());
+    assert_eq!(
+        *app.operations.lock().unwrap(),
+        [McpOperation::Preflight; 2]
+    );
+    server.abort();
 }

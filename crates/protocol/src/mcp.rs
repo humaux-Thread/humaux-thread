@@ -167,8 +167,8 @@ impl TrustedMcpCatalog {
 /// tenant, user, owner, or request id through this type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum McpOperation {
-    /// Unauthenticated IP-abuse accounting once at the HTTP boundary, before
-    /// operation authorization or dispatch. Native also preflights malformed JSON.
+    /// Unauthenticated IP-abuse accounting once after HTTP boundary checks
+    /// and before JSON-RPC parsing, including for malformed requests.
     Preflight,
     Initialize,
     Discover,
@@ -444,30 +444,15 @@ async fn request_boundary(
         Ok(bytes) => bytes,
         Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
     };
-    if config.legacy {
-        let message = match mcp_legacy::decode(&parts.headers, &bytes) {
-            Ok(message) => message,
-            Err(status) => return status.into_response(),
-        };
-        parts.extensions.insert(message);
-    }
-    let raw_request = serde_json::from_slice::<RawJsonRpcRequest>(&bytes);
-    if config.legacy && raw_request.is_err() {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    let raw_arguments = raw_request
-        .ok()
-        .and_then(|request| request.params.and_then(|params| params.arguments))
-        .map(Arc::from);
     let status = Arc::new(AtomicU16::new(StatusCode::OK.as_u16()));
     let capacity_denied = Arc::new(AtomicBool::new(false));
-    let request_state = McpRequestState {
+    let mut request_state = McpRequestState {
         request_id: Uuid::now_v7(),
-        raw_arguments,
+        raw_arguments: None,
         http_status: status.clone(),
         capacity_denied: capacity_denied.clone(),
     };
-    let context = match http_context(&parts, &request_state) {
+    let mut context = match http_context(&parts, &request_state) {
         Ok(context) => context,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
@@ -484,10 +469,26 @@ async fn request_boundary(
             .into_response();
         return with_capacity_retry(response, &capacity_denied);
     }
+    if config.legacy {
+        let message = match mcp_legacy::decode(&parts.headers, &bytes) {
+            Ok(message) => message,
+            Err(status) => return status.into_response(),
+        };
+        parts.extensions.insert(message);
+    }
+    let raw_request = serde_json::from_slice::<RawJsonRpcRequest>(&bytes);
+    if config.legacy && raw_request.is_err() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    request_state.raw_arguments = raw_request
+        .ok()
+        .and_then(|request| request.params.and_then(|params| params.arguments))
+        .map(Arc::from);
     if !config.legacy && !has_required_native_metadata(&bytes) {
         return StatusCode::BAD_REQUEST.into_response();
     }
     if config.legacy {
+        context.raw_arguments = request_state.raw_arguments.clone();
         parts.extensions.insert(context);
     }
     parts.extensions.insert(request_state);

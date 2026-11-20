@@ -2,6 +2,7 @@
   "source": {
     "test": "https://github.com/QwenLM/qwen-code/blob/2421ad2c3b18d0efce6a50c7576d2c4c735ec644/packages/core/src/tools/mcp-client-v2.test.ts#L352-L445",
     "sdk": "https://registry.npmjs.org/@modelcontextprotocol%2fsdk/1.32.2",
+    "dist.integrity": "sha512-SWsVtH/0vULSQStoZ6xxH2K09Li8fXYTMC64ZeogCdpZ3XSi1eCPOByV1OpuJxuI3OcmHhosDWYyii07tpPsLw==",
     "normalization": "Reconstructed from the pinned official test and SDK. IDs normalized. Replay uses the Humaux path and substitutes the canonical recall tool for echo."
   },
   "accept": "application/json, text/event-stream",
