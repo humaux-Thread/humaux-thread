@@ -1,8 +1,7 @@
 //! `public-pool::vocab` — Public vocabulary's only idempotent write door (§12.3, ADR-0089 D-E).
 //! Depends-on: crates=[humaux-adapters, humaux-domain, sqlx]; services=[PostgreSQL(role_public_worker)
-//!   r=[public.concepts, public.concept_labels, public.concept_relations]
-//!   w=[public.concepts, public.concept_labels, public.concept_relations]]; env=[];
-//!   modules=[adapters::postgres, domain::error, public-pool::vocab::model]
+//!   r=[public.concepts, public.concept_labels, public.concept_relations]]; env=[];
+//!   modules=[adapters::postgres, adapters::public_vocab_repo, domain::error, public-pool::vocab::model]
 //! Called-by: [tests]
 //! Invariants: [only concept ids are append-only; definitions and PREF labels upsert by natural key; persisted ALT labels, relations and facets are never removed here; only PublicWorkerDbPool writes]
 //! Spec: Baseline §12.3; §52; §78.2; ADR-0089 D-E
@@ -10,7 +9,7 @@
 /// Pure public-plane vocabulary types; shared with the offline gate (§78.2).
 pub mod model;
 
-use humaux_adapters::postgres::PublicWorkerDbPool;
+use humaux_adapters::{postgres::PublicWorkerDbPool, public_vocab_repo};
 use humaux_domain::error::ErrorCode;
 use model::{LabelKind, Vocabulary};
 use sqlx::Row;
@@ -63,9 +62,16 @@ pub async fn apply(pool: &PublicWorkerDbPool, source: &str, lock: &str) -> Resul
 
 async fn upsert_concepts(tx: &mut Txn<'_>, vocab: &Vocabulary) -> Result<(), ApplyError> {
     for c in &vocab.concepts {
-        sqlx::query("INSERT INTO public.concepts (concept_id,facet,status,replaced_by,definition) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (concept_id) DO UPDATE SET status=EXCLUDED.status,replaced_by=EXCLUDED.replaced_by,definition=EXCLUDED.definition")
-            .bind(&c.id).bind(c.facet.as_str()).bind(c.status.as_str()).bind(&c.replaced_by).bind(&c.definition)
-            .execute(&mut **tx).await.map_err(db_error)?;
+        public_vocab_repo::upsert_concept_in_txn(
+            tx,
+            &c.id,
+            c.facet.as_str(),
+            c.status.as_str(),
+            c.replaced_by.as_deref(),
+            &c.definition,
+        )
+        .await
+        .map_err(db_error)?;
     }
     Ok(())
 }
@@ -75,10 +81,11 @@ async fn upsert_concepts(tx: &mut Txn<'_>, vocab: &Vocabulary) -> Result<(), App
 async fn upsert_labels(tx: &mut Txn<'_>, vocab: &Vocabulary) -> Result<(), ApplyError> {
     for c in &vocab.concepts {
         for l in c.labels.iter().filter(|l| l.kind == LabelKind::Pref) {
-            let updated = sqlx::query("UPDATE public.concept_labels SET label=$3 WHERE concept_id=$1 AND lang=$2 AND kind='PREF'")
-                .bind(&c.id).bind(&l.lang).bind(&l.label)
-                .execute(&mut **tx).await.map_err(db_error)?;
-            if updated.rows_affected() == 0 {
+            let updated =
+                public_vocab_repo::update_preferred_label_in_txn(tx, &c.id, &l.lang, &l.label)
+                    .await
+                    .map_err(db_error)?;
+            if !updated {
                 insert_label(tx, &c.id, c.facet.as_str(), &l.lang, l.kind, &l.label).await?;
             }
         }
@@ -99,17 +106,16 @@ async fn insert_label(
     kind: LabelKind,
     label: &str,
 ) -> Result<(), ApplyError> {
-    sqlx::query("INSERT INTO public.concept_labels (concept_id,facet,lang,kind,label) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (concept_id,lang,kind,label) DO NOTHING")
-        .bind(id).bind(facet).bind(lang).bind(kind.as_str()).bind(label)
-        .execute(&mut **tx).await.map_err(db_error)?;
-    Ok(())
+    public_vocab_repo::insert_label_in_txn(tx, id, facet, lang, kind.as_str(), label)
+        .await
+        .map_err(db_error)
 }
 
 async fn upsert_relations(tx: &mut Txn<'_>, vocab: &Vocabulary) -> Result<(), ApplyError> {
     for r in &vocab.relations {
-        sqlx::query("INSERT INTO public.concept_relations (from_id,to_id,kind) VALUES ($1,$2,$3) ON CONFLICT (from_id,to_id,kind) DO NOTHING")
-            .bind(&r.from).bind(&r.to).bind(r.kind.as_str())
-            .execute(&mut **tx).await.map_err(db_error)?;
+        public_vocab_repo::insert_relation_in_txn(tx, &r.from, &r.to, r.kind.as_str())
+            .await
+            .map_err(db_error)?;
     }
     Ok(())
 }

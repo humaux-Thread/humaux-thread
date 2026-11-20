@@ -12,8 +12,4 @@ crates/public-pool/src/public_repo.rs:insert into public.source_closure:1
 crates/public-pool/src/public_repo.rs:insert into public.sources:1
 crates/public-pool/src/public_repo.rs:update public.claims:3
 crates/public-pool/src/public_repo.rs:update public.syntheses:1
-crates/public-pool/src/vocab.rs:insert into public.concept_labels:1
-crates/public-pool/src/vocab.rs:insert into public.concept_relations:1
-crates/public-pool/src/vocab.rs:insert into public.concepts:1
-crates/public-pool/src/vocab.rs:update public.concept_labels:1
 crates/testkit/src/fixture_purge.rs:delete from control.tenants:1
