@@ -59,7 +59,7 @@ use crate::{
         OutputChannel, PrivateInferenceContext, ReasoningProviderError, StructuredReasoningRequest,
         TokenUsage, UserReasoningProvider, json_has_nul, structured_request_body,
     },
-    contribution_entry_repo,
+    contribution_entry_repo::{self, ContributionEntryAuthorization},
     contribution_execution_repo::{
         ContributionExecutionRead, ContributionExecutionRepoError, ContributionExecutionSource,
         ContributionExecutionSourceKind, ContributionReservePlan, PreparedRouteExpectation,
@@ -282,7 +282,7 @@ struct ReservedReasoningCall {
 /// Private worker implementation of [`PrivateReasoningPort`] for one prepared contribution.
 pub struct ContributionReasoner<'a> {
     pool: &'a PrivateWorkerDbPool,
-    legacy_request: Option<PrepareContribution>,
+    legacy_request: Option<PrepareContribution<ContributionEntryAuthorization>>,
     providers: &'a ProviderFor,
     config: ContributionReasonerConfig,
 }
@@ -291,7 +291,7 @@ impl<'a> ContributionReasoner<'a> {
     /// Binds the route→provider seam to an authenticated, identifier-only contribution request.
     pub fn new(
         pool: &'a PrivateWorkerDbPool,
-        request: PrepareContribution,
+        request: PrepareContribution<ContributionEntryAuthorization>,
         providers: &'a ProviderFor,
         config: ContributionReasonerConfig,
     ) -> Result<Self, ErrorCode> {
@@ -330,7 +330,9 @@ impl<'a> ContributionReasoner<'a> {
         Ok(provider)
     }
 
-    fn legacy_request(&self) -> Result<&PrepareContribution, PrivateReasoningError> {
+    fn legacy_request(
+        &self,
+    ) -> Result<&PrepareContribution<ContributionEntryAuthorization>, PrivateReasoningError> {
         self.legacy_request
             .as_ref()
             .ok_or_else(|| fail("legacy contribution request unavailable"))

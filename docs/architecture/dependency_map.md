@@ -14185,6 +14185,7 @@ modules naming it:
 - `adapters::consolidation_reasoner`
 - `adapters::context_repo`
 - `adapters::context_repo::g8031_snapshot_tests`
+- `adapters::continuity_authorization`
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
 - `adapters::contribution_eligibility`
@@ -14357,6 +14358,7 @@ modules naming it:
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::context_repo`
+- `adapters::continuity_authorization`
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
 - `adapters::contribution_eligibility`
@@ -14779,6 +14781,7 @@ why: dyn-compatible async trait objects (EmailProvider et al.)
 
 modules naming it:
 - `adapters::affect_repo`
+- `adapters::applicability_repo`
 - `adapters::attribution_repo`
 - `adapters::audited_read_quota`
 - `adapters::billing_processor_repo`
@@ -14786,6 +14789,7 @@ modules naming it:
 - `adapters::consolidate_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::context_repo`
+- `adapters::continuity_authorization`
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
 - `adapters::contribution_entry_repo`
@@ -15084,6 +15088,7 @@ modules naming it:
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::context_repo::g8031_snapshot_tests`
+- `adapters::continuity_authorization`
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
 - `adapters::contribution_reasoner`
@@ -15470,6 +15475,7 @@ modules naming it:
 - `adapters::confirm_token_repo`
 - `adapters::consolidation_reasoner`
 - `adapters::context_repo::g8031_snapshot_tests`
+- `adapters::continuity_authorization`
 - `adapters::continuity_read`
 - `adapters::continuity_repo`
 - `adapters::contribution_reasoner`

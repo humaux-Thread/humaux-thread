@@ -8,7 +8,7 @@
 //!   staging.contribution_candidate_sources, staging.contribution_candidates, staging.contribution_release_sources,
 //!   staging.contribution_releases, staging.sanitized_public_candidates] x=[ops.lock_contribution_inputs,
 //!   public.phase9_public_coverage_for_probe]]; env=[]; modules=[adapters::contribution_scan, adapters::postgres, adapters::public_outbox_port, adapters::read_gate, adapters::stream_repo, adapters::structured_reasoning, application::consolidate, application::contribute, domain::authority, domain::error, domain::evidence, domain::identity, domain::ids, domain::public]
-//! Called-by: [adapters::contribution_execution_ingress, adapters::contribution_reasoner, tests]
+//! Called-by: [adapters::contribution_execution_ingress, adapters::contribution_execution_repo, adapters::contribution_reasoner, tests]
 //! Invariants: [provider/scanner work runs outside the short input lock; every durable step re-checks policy,
 //!   membership, profile and source hashes; no public pool can read candidates; a failed re-check is
 //!   Conflict/Forbidden with no candidate row]
@@ -198,8 +198,8 @@ fn visible(row: &sqlx::postgres::PgRow, auth: &AuthorizationScope) -> Result<boo
 
 async fn load_execution(
     txn: &mut Txn<'_>,
-    request: &ContributionPreparationInput,
-) -> Result<PreparationSnapshot, ErrorCode> {
+    request: &ContributionPreparationInput<AuthorizationScope>,
+) -> Result<PreparationSnapshot<AuthorizationScope>, ErrorCode> {
     load_execution_with_admission(txn, request)
         .await
         .map(|(snapshot, _)| snapshot)
@@ -211,8 +211,8 @@ async fn load_execution(
 /// rights, route admission, and source hashes cannot change between preparation and enqueue.
 pub(crate) async fn load_execution_preparation_in_txn(
     txn: &mut Txn<'_>,
-    request: &ContributionPreparationInput,
-) -> Result<PreparationSnapshot, ErrorCode> {
+    request: &ContributionPreparationInput<AuthorizationScope>,
+) -> Result<PreparationSnapshot<AuthorizationScope>, ErrorCode> {
     scope(txn, &request.authorization).await?;
     load_execution(txn, request).await
 }
@@ -220,15 +220,27 @@ pub(crate) async fn load_execution_preparation_in_txn(
 #[allow(clippy::too_many_lines)] // Keep the complete source/authorization snapshot in one transaction.
 pub(crate) async fn load_with_admission(
     txn: &mut Txn<'_>,
-    request: &PrepareContribution,
-) -> Result<(PreparationSnapshot, ReasoningAdmissionLocator), ErrorCode> {
+    request: &PrepareContribution<AuthorizationScope>,
+) -> Result<
+    (
+        PreparationSnapshot<AuthorizationScope>,
+        ReasoningAdmissionLocator,
+    ),
+    ErrorCode,
+> {
     load_execution_with_admission(txn, &ContributionPreparationInput::from(request)).await
 }
 
 async fn load_execution_with_admission(
     txn: &mut Txn<'_>,
-    request: &ContributionPreparationInput,
-) -> Result<(PreparationSnapshot, ReasoningAdmissionLocator), ErrorCode> {
+    request: &ContributionPreparationInput<AuthorizationScope>,
+) -> Result<
+    (
+        PreparationSnapshot<AuthorizationScope>,
+        ReasoningAdmissionLocator,
+    ),
+    ErrorCode,
+> {
     let admission = txn
         .resolve_user_reasoning_admission(
             request.binding_id,
@@ -257,9 +269,9 @@ async fn load_execution_with_admission(
 #[allow(clippy::too_many_lines)] // Current source/rights recheck, deliberately no route resolver.
 async fn load_current_with_profile(
     txn: &mut Txn<'_>,
-    request: &ContributionPreparationInput,
+    request: &ContributionPreparationInput<AuthorizationScope>,
     resolved_profile_version: UserReasoningProfileVersion,
-) -> Result<PreparationSnapshot, ErrorCode> {
+) -> Result<PreparationSnapshot<AuthorizationScope>, ErrorCode> {
     let auth = &request.authorization;
     let user = auth.user_id().ok_or(ErrorCode::Unauthorized)?;
     if request.requested_sources.is_empty() {
@@ -377,9 +389,9 @@ async fn load_current_with_profile(
 
 async fn load_legacy_current_with_profile(
     txn: &mut Txn<'_>,
-    request: &PrepareContribution,
+    request: &PrepareContribution<AuthorizationScope>,
     resolved_profile_version: UserReasoningProfileVersion,
-) -> Result<PreparationSnapshot, ErrorCode> {
+) -> Result<PreparationSnapshot<AuthorizationScope>, ErrorCode> {
     load_current_with_profile(
         txn,
         &ContributionPreparationInput::from(request),
@@ -392,7 +404,7 @@ async fn successful_reasoning_profile(
     txn: &mut Txn<'_>,
     tenant_id: Uuid,
     model_call_id: Uuid,
-    request: &PrepareContribution,
+    request: &PrepareContribution<AuthorizationScope>,
 ) -> Result<UserReasoningProfileVersion, ErrorCode> {
     let profile_version: Option<i64> = sqlx::query_scalar(
         "SELECT profile_version FROM ops.model_call_ledger WHERE tenant_id=$1 AND model_call_id=$2 AND status='SUCCEEDED' AND purpose='CONTRIBUTION_DEIDENTIFY' AND call_kind='TYPED_ASSESSMENT' AND reasoning_domain_id=$3 AND binding_id=$4 AND binding_version=$5",
@@ -428,7 +440,7 @@ impl<'a> ContributionEntryRepo<'a> {
 // storage invariant as the legacy port, kept here until that older port can be contract-dropped.
 async fn store_assessed_candidate_in_txn(
     txn: &mut Txn<'_>,
-    candidate: StoredCandidate<'_, ContributionScanReceipt>,
+    candidate: StoredCandidate<'_, ContributionScanReceipt, AuthorizationScope>,
 ) -> Result<ContributionCandidateId, ErrorCode> {
     let saved = candidate.preparation;
     scope(txn, &saved.authorization).await?;
@@ -528,15 +540,24 @@ async fn store_assessed_candidate_in_txn(
     Ok(ContributionCandidateId(id))
 }
 
+/// The authorization type shared by the entry repository and its same-context admission callers.
+pub(crate) type ContributionEntryAuthorization =
+    <ContributionEntryRepo<'static> as ContributionCandidatePort>::Authorization;
+
 #[allow(clippy::too_many_lines)] // Candidate store/finalize keep each current-state recheck and write in one transaction.
 #[async_trait]
 impl ContributionCandidatePort for ContributionEntryRepo<'_> {
+    type Authorization = AuthorizationScope;
     type ScanReceipt = ContributionScanReceipt;
+
+    fn has_user(&self, authorization: &Self::Authorization) -> bool {
+        authorization.user_id().is_some()
+    }
 
     async fn load_execution_preparation(
         &self,
-        request: &ContributionPreparationInput,
-    ) -> Result<PreparationSnapshot, ErrorCode> {
+        request: &ContributionPreparationInput<AuthorizationScope>,
+    ) -> Result<PreparationSnapshot<AuthorizationScope>, ErrorCode> {
         // dep: PostgreSQL(any) — opens a PostgreSQL transaction
         let mut txn = self.pool.pool().begin().await.map_err(db_error)?;
         let result = load_execution_preparation_in_txn(&mut txn, request).await?;
@@ -546,7 +567,7 @@ impl ContributionCandidatePort for ContributionEntryRepo<'_> {
 
     async fn store_prepared(
         &self,
-        candidate: StoredCandidate<'_, Self::ScanReceipt>,
+        candidate: StoredCandidate<'_, Self::ScanReceipt, Self::Authorization>,
     ) -> Result<ContributionCandidateId, ErrorCode> {
         let saved = candidate.preparation;
         // dep: PostgreSQL(any) — opens a PostgreSQL transaction
@@ -631,7 +652,7 @@ impl ContributionCandidatePort for ContributionEntryRepo<'_> {
 
     async fn finalize_confirmed(
         &self,
-        confirmation: ConfirmContribution,
+        confirmation: ConfirmContribution<AuthorizationScope>,
     ) -> Result<ContributionReleaseId, ErrorCode> {
         let auth = &confirmation.authorization;
         // dep: PostgreSQL(any) — opens a PostgreSQL transaction
@@ -859,7 +880,7 @@ impl ContributionCandidatePort for ContributionEntryRepo<'_> {
 impl AssessedContributionCandidatePort for ContributionEntryRepo<'_> {
     async fn store_assessed_prepared(
         &self,
-        assessed: AssessedStoredCandidate<'_, Self::ScanReceipt>,
+        assessed: AssessedStoredCandidate<'_, Self::ScanReceipt, Self::Authorization>,
     ) -> Result<ContributionCandidateId, ErrorCode> {
         let (candidate, coverage_probe, public_coverage, probe_scan_receipt, assessment) =
             assessed.into_parts();
@@ -1000,8 +1021,8 @@ mod tests {
 
     async fn load_without_caller_minted_ids(
         repo: &ContributionEntryRepo<'_>,
-        request: &ContributionPreparationInput,
-    ) -> Result<PreparationSnapshot, ErrorCode> {
+        request: &ContributionPreparationInput<AuthorizationScope>,
+    ) -> Result<PreparationSnapshot<AuthorizationScope>, ErrorCode> {
         repo.load_execution_preparation(request).await
     }
 

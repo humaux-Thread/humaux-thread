@@ -35,6 +35,23 @@ use sqlx::{Row, types::Uuid};
 use std::collections::{HashMap, HashSet};
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::AuthorizationScope {}
+}
+
+/// A trusted scope accepted by the canonical PostgreSQL read gates.
+pub trait ReadAuthorization: sealed::Sealed + Sync {
+    #[doc(hidden)]
+    fn read_gate_scope(&self) -> &AuthorizationScope;
+}
+
+impl ReadAuthorization for AuthorizationScope {
+    fn read_gate_scope(&self) -> &AuthorizationScope {
+        self
+    }
+}
+
 /// Whether `authorization` may read an object that carries `visibility` (§6.1.1): the one `can_read` call in adapters
 /// and bins. A caller whose own SQL already fetched the Memory or Evidence row (the RYW overlay, a contribution source,
 /// a receipt replay, a continuity fact) judges that row's descriptor here and keeps its tenant filter, lifecycle,
@@ -42,10 +59,10 @@ type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
 /// [`readable_memory_ids`], which adds the all-backing-evidence closure (§8.6); each caller outside this file is a
 /// declared row of `G-M08-2`, never an undeclared use.
 pub(crate) fn visibility_readable(
-    authorization: &AuthorizationScope,
+    authorization: &impl ReadAuthorization,
     visibility: &VisibilityDescriptor,
 ) -> bool {
-    can_read(authorization, visibility)
+    can_read(authorization.read_gate_scope(), visibility)
 }
 
 /// Runs the visibility judgement against real Memory and backing Evidence rows. A Memory without a backing

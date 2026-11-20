@@ -19,7 +19,9 @@ use humaux_application::{
 use humaux_domain::error::ErrorCode;
 
 use crate::{
-    contribution_entry_repo::load_execution_preparation_in_txn,
+    contribution_entry_repo::{
+        ContributionEntryAuthorization, ContributionEntryRepo, load_execution_preparation_in_txn,
+    },
     contribution_execution_repo::{
         ContributionExecutionRepo, ContributionExecutionRepoError, EnqueuedContributionExecution,
     },
@@ -88,7 +90,7 @@ impl<'a> ContributionExecutionIngress<'a> {
     /// The commit completes before the existing runner can make either provider call.
     pub async fn start_manual(
         &self,
-        request: ContributionPreparationInput,
+        request: ContributionPreparationInput<ContributionEntryAuthorization>,
         idempotency_key: String,
         coverage_contract: ContributionPromptContract,
         assessment_contract: ContributionPromptContract,
@@ -108,12 +110,15 @@ impl<'a> ContributionExecutionIngress<'a> {
         // prevents every guarded authorization/policy/source input from changing until enqueue.
         ContributionExecutionRepo::lock_enqueue_key_in_txn(&mut txn, &idempotency_key).await?;
         let preparation = load_execution_preparation_in_txn(&mut txn, &request).await?;
-        let prepared = PreparedAssessedContribution::try_from_current(request, preparation)?;
+        let candidates = ContributionEntryRepo::new(self.pool);
+        let prepared =
+            PreparedAssessedContribution::try_from_current(request, preparation, &candidates)?;
         let input = ContributionExecutionEnqueueInput::try_new(
             idempotency_key,
             coverage_contract,
             assessment_contract,
             prepared,
+            &candidates,
         )?;
 
         let execution_repo = ContributionExecutionRepo::new(self.pool);
@@ -129,9 +134,11 @@ impl<'a> ContributionExecutionIngress<'a> {
 impl humaux_application::contribution_execution::ManualContributionPort
     for ContributionExecutionIngress<'_>
 {
+    type Authorization = ContributionEntryAuthorization;
+
     async fn start_manual(
         &self,
-        request: ContributionPreparationInput,
+        request: ContributionPreparationInput<ContributionEntryAuthorization>,
         idempotency_key: String,
     ) -> Result<EnqueuedContributionExecution, ErrorCode> {
         ContributionExecutionIngress::start_manual(
