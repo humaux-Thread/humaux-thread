@@ -402,6 +402,10 @@ impl humaux_application::oauth_exchange::ExchangeTransaction for OAuthTxn {
                 request_guard_repo::read_effective_entitlements_in_txn(&mut self.txn, scope, false)
                     .await?;
             check(facts)?;
+            // The insert may have waited while the subject's memberships changed.
+            if self.consent_tenants(request.user_id).await?.as_slice() != [request.tenant_id] {
+                return Err(ErrorCode::Forbidden);
+            }
         }
         Ok(issued)
     }
