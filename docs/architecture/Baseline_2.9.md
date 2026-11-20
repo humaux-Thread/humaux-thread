@@ -4129,6 +4129,10 @@ recall(..., consistency_token=<token>)
 context(..., consistency_token=<token>)
 ```
 
+分阶段交付见 [ADR-0134](../adr/0134-strict-recall-read-your-writes.md)。首阶段由
+M01-4-TERMINAL 实现 recall 严格读。上面的 context token 要求仍待交付，由
+M01-4-CONTEXT-CONTRACT 先确定 canonical 输入、输出与兼容性。
+
 若 serving Qdrant 尚未覆盖该 token 对应的 pipeline frontier，Humaux 执行：
 
 ```text
@@ -8788,6 +8792,9 @@ processing_handle
 consistency_token
 processing_status
 ```
+
+关于返回的 `consistency_token`，下游严格读按 [ADR-0134](../adr/0134-strict-recall-read-your-writes.md)
+分阶段交付。首阶段为 recall，context 消费由 M01-4-CONTEXT-CONTRACT 跟进，保留 §15.5 要求。
 
 `memory_id` 只在后续蒸馏真正产生 Memory 后出现；一次 `remember` 可以映射到 0/1/N 条 Memory。
 
