@@ -692,7 +692,7 @@ impl ServerHandler for NativeMcpHandler {
                 McpError::Protocol { .. } => Err(protocol_error(&state, code)),
                 McpError::ToolError { code } => {
                     let mut result = CallToolResult::error(vec![ContentBlock::text(code)]);
-                    result.structured_content = Some(serde_json::json!({ "code": code }));
+                    result.structured_content = Some(serde_json::json!({ "code": code, "completeness": {"degradations": ["PROJECTION_LAG"]} }));
                     Ok(result.into())
                 }
             },
