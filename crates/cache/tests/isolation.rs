@@ -1,9 +1,11 @@
 //! `cache::tests::isolation` — G-M12-2: identical text in two tenants (or two users) is two entries (M12 D3).
-//! Depends-on: crates=[humaux-domain, humaux-telemetry, tokio]; services=[]; env=[]; modules=[cache::bounded, cache::key, domain::ids, telemetry::cache]
+//! Depends-on: crates=[humaux-domain, humaux-telemetry, tokio]; services=[]; env=[]; modules=[cache::bounded, cache::key, cache::tests::support, domain::ids, telemetry::cache]
 //! Called-by: [cargo-test]
 //! Invariants: [the privacy namespace (tenant, user) is part of every private key; a value computed for one namespace
 //!   is never returned to another]
 //! Spec: Baseline §51; M12 design §6 D3, §8 G-M12-2
+
+mod support;
 
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,6 +14,8 @@ use std::time::Duration;
 use humaux_cache::{BoundedCache, CacheConfig, EmbeddingQueryKey};
 use humaux_domain::ids::{TenantId, UserId};
 use humaux_telemetry::cache::CacheName;
+
+use support::CACHE_OBSERVER;
 
 type Cache = BoundedCache<EmbeddingQueryKey, Vec<u8>>;
 
@@ -44,7 +48,7 @@ async fn lookup(cache: &Cache, computes: &AtomicUsize, key: EmbeddingQueryKey, t
 /// Same text, two tenants: two computations, and each tenant gets its own value back.
 #[tokio::test]
 async fn same_text_two_tenants_computes_twice() {
-    let cache = Cache::new(CacheName::EmbedQuery, config());
+    let cache = Cache::new(CacheName::EmbedQuery, config(), CACHE_OBSERVER);
     let computes = AtomicUsize::new(0);
     let user = UserId::new();
     let (a, b) = (TenantId::new(), TenantId::new());
@@ -71,7 +75,7 @@ async fn same_text_two_tenants_computes_twice() {
 /// Same text, same tenant, two users (and a service principal): three computations.
 #[tokio::test]
 async fn same_text_two_users_computes_per_user() {
-    let cache = Cache::new(CacheName::EmbedQuery, config());
+    let cache = Cache::new(CacheName::EmbedQuery, config(), CACHE_OBSERVER);
     let computes = AtomicUsize::new(0);
     let tenant = TenantId::new();
     let users = [Some(UserId::new()), Some(UserId::new()), None];

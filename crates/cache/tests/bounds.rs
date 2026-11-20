@@ -1,15 +1,22 @@
 //! `cache::tests::bounds` — G-M12-5: the byte bound and the per-tenant cap (M12 D5).
-//! Depends-on: crates=[humaux-domain, humaux-telemetry, tokio]; services=[]; env=[]; modules=[cache::bounded, cache::key, domain::ids, telemetry::cache]
+//! Depends-on: crates=[humaux-domain, humaux-telemetry, tokio]; services=[]; env=[]; modules=[cache::bounded, cache::key, cache::tests::support, domain::ids, telemetry::cache]
 //! Called-by: [cargo-test]
 //! Invariants: [the weighted size never exceeds `capacity_bytes` and equals the bytes of the surviving entries; a
 //!   tenant at its cap is bypassed and evicts nobody else's entries]
 //! Spec: Baseline §51; §67.2; M12 design §6 D5, §8 G-M12-5
 
+mod support;
+
 use std::time::Duration;
 
 use humaux_cache::{BoundedCache, CacheConfig, CacheKey, EmbeddingQueryKey};
 use humaux_domain::ids::{TenantId, UserId};
-use humaux_telemetry::cache::{CacheName, CacheResult, cache_requests_total};
+use humaux_telemetry::cache::{
+    CacheName, CacheResult, EvictionCause, cache_bytes, cache_evictions_total,
+    cache_requests_total, cache_singleflight_waiters,
+};
+
+use support::CACHE_OBSERVER;
 
 type Cache = BoundedCache<EmbeddingQueryKey, Vec<u8>>;
 
@@ -39,7 +46,10 @@ fn config(capacity_bytes: u64, per_tenant_bytes: u64) -> CacheConfig {
 
 async fn insert(cache: &Cache, k: EmbeddingQueryKey) {
     let got = cache
-        .get_or_try_compute::<(), _>(k, async { Ok(vec![0_u8; VALUE_LEN]) })
+        .get_or_try_compute::<(), _>(k, async {
+            assert_eq!(cache_singleflight_waiters(CacheName::EmbedQuery), 1.0);
+            Ok(vec![0_u8; VALUE_LEN])
+        })
         .await;
     assert_eq!(got, Ok(vec![0_u8; VALUE_LEN]));
 }
@@ -60,11 +70,19 @@ async fn weighted_size_stays_within_capacity() {
     let (tenant, user) = (TenantId::new(), UserId::new());
     let weight = entry_weight(&key(tenant, user, 0));
     let capacity = 50 * weight;
-    let cache = Cache::new(CacheName::EmbedQuery, config(capacity, u64::MAX / 2));
+    let size_evictions = cache_evictions_total(CacheName::EmbedQuery, EvictionCause::Size);
+    let cache = Cache::new(
+        CacheName::EmbedQuery,
+        config(capacity, u64::MAX / 2),
+        CACHE_OBSERVER,
+    );
     for n in 0..100 {
         insert(&cache, key(tenant, user, n)).await;
     }
     let size = cache.weighted_size().await;
+    assert_eq!(cache_bytes(CacheName::EmbedQuery), size as f64);
+    assert_eq!(cache_singleflight_waiters(CacheName::EmbedQuery), 0.0);
+    assert!(cache_evictions_total(CacheName::EmbedQuery, EvictionCause::Size) > size_evictions);
     assert!(
         size <= capacity,
         "weighted size {size} exceeds capacity {capacity}"
@@ -89,7 +107,11 @@ async fn tenant_over_cap_is_bypassed_and_others_stay_intact() {
     let (greedy, polite) = (TenantId::new(), TenantId::new());
     let (u_greedy, u_polite) = (UserId::new(), UserId::new());
     let weight = entry_weight(&key(greedy, u_greedy, 0));
-    let cache = Cache::new(CacheName::EmbedQuery, config(1000 * weight, 3 * weight));
+    let cache = Cache::new(
+        CacheName::EmbedQuery,
+        config(1000 * weight, 3 * weight),
+        CACHE_OBSERVER,
+    );
     for n in 0..2 {
         insert(&cache, key(polite, u_polite, n)).await;
     }
