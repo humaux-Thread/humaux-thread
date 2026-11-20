@@ -89,6 +89,39 @@ fn g_m04_15a_missing_period_refused() {
     });
 }
 
+#[test]
+fn producer_cost_is_rolled_back_with_callers_transaction() {
+    run_db_fixture::<Fixture, _>("WRITER-B6 producer rollback", |db| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // dep: PostgreSQL(owner) — connection to this test's migrated throwaway database
+            let mut conn = PgConnection::connect(&db.dsn()).await.unwrap();
+            let tenant = tenant(&mut conn).await;
+            // dep: PostgreSQL(owner) — caller's transaction in the isolated database
+            let mut txn = conn.begin().await.unwrap();
+            // dep: PostgreSQL(role_private_worker) — exercise the producer role
+            sqlx::query("SET LOCAL ROLE role_private_worker")
+                .execute(&mut *txn)
+                .await
+                .unwrap();
+            let month = Date::from_ordinal_date(2026, 274).unwrap();
+            cost_repo::record_in_txn(&mut txn, event(tenant, 0.50, Some(month)))
+                .await
+                .unwrap();
+            txn.rollback().await.unwrap();
+
+            let count: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM ops.tenant_cost_events WHERE tenant_id=$1",
+            )
+            .bind(tenant)
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+            assert_eq!(count, 0, "producer rollback must remove the cost event");
+        });
+    });
+}
+
 async fn seed_payments(conn: &mut PgConnection, tenant: Uuid) {
     for (kind, cents, start) in [
         ("CHARGE", 1000_i64, "2026-10-01T00:00:00Z"),

@@ -1,5 +1,5 @@
 //! `projection::fingerprint` — processing input fingerprint (§16.1 / §16.1.1).
-//! Depends-on: crates=[humaux-domain, sha2]; services=[]; env=[]; modules=[domain::evidence_fingerprint]
+//! Depends-on: crates=[humaux-domain, sha2]; services=[]; env=[]; modules=[domain::evidence::fingerprint]
 //! Called-by: [adapters::distill_repo, tests]
 //! Invariants: []
 //! Spec: Baseline §1.2.1; §11; §36; §16.1.1
@@ -14,7 +14,7 @@
 //! narrower question this module has no opinion on — see [`source_hash`]'s rustdoc for why an
 //! `output_digest` change alone can never move a `SourceHash`.
 
-use humaux_domain::evidence_fingerprint::EvidenceFingerprintDigest;
+use humaux_domain::evidence::fingerprint::EvidenceFingerprintDigest;
 use sha2::{Digest, Sha256};
 
 /// Every axis §1.3's frozen versioning list requires, spelled out field by field instead of

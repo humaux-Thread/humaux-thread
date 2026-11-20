@@ -3,7 +3,7 @@
 //!   pre-call cost estimate before the external provider call is made, `status='RESERVED'`; [`finalize_call`] fills
 //!   in the token/latency/actual-cost/ error columns and flips `status` to `SUCCEEDED`/`FAILED` after the call
 //!   returns.
-//! Depends-on: crates=[humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(any) r=[control.provider_pricing_versions, ops.data_disclosures] w=[ops.model_call_ledger, ops.tenant_cost_events]]; env=[]; modules=[adapters::disclosure, adapters::postgres, adapters::reasoning_route_admission, application::consolidate, domain::egress, domain::ledger, humaux-adapters]
+//! Depends-on: crates=[humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(any) r=[control.provider_pricing_versions, ops.data_disclosures] w=[ops.model_call_ledger]]; env=[]; modules=[adapters::disclosure, adapters::postgres, adapters::reasoning_route_admission, adapters::tenant_cost_write_repo, application::consolidate, domain::egress, domain::ledger, humaux-adapters]
 //! Called-by: [adapters::consolidation_reasoner, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::provider_budget, adapters::structured_reasoning, private-worker::main, retrieval-provider::adapters, tests]
 //! Invariants: [every real provider call is bracketed by reserve_call/finalize_call (a skipped reserve leaves no row,
 //!   which the 0094 guard cannot see); costs are persisted as given, never computed here; a reservation conflict is a
@@ -775,19 +775,15 @@ pub async fn record_external_model_cost_event(
     let mut txn = pool.pool().begin().await?;
     set_tenant_local(&mut txn, tenant_id).await?;
 
-    sqlx::query(
-        "INSERT INTO ops.tenant_cost_events \
-           (tenant_id, cost_type, quantity, unit, estimated_unit_cost, estimated_cost, \
-            source, period) \
-         VALUES ($1, 'external_model_tokens', $2, 'tokens', $3, $4, $5, $6)",
+    crate::tenant_cost_write_repo::record_external_model_cost_event(
+        &mut txn,
+        tenant_id,
+        request_id,
+        billable_tokens,
+        estimated_unit_cost,
+        cost,
+        period,
     )
-    .bind(tenant_id)
-    .bind(billable_tokens as f64)
-    .bind(estimated_unit_cost)
-    .bind(cost)
-    .bind(request_id.to_string())
-    .bind(period)
-    .execute(&mut *txn)
     .await?;
 
     txn.commit().await?;
