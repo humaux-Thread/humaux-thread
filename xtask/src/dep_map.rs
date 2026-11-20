@@ -5983,7 +5983,7 @@ mod tests {
         assert_eq!(
             red,
             [(
-                2,
+                1,
                 "modules-drift",
                 "modules= extra [adapters::remember] missing [] (computed: [])".into(),
             )],
