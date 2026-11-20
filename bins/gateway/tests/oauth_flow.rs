@@ -1304,15 +1304,15 @@ fn legacy_mount_oauth_audience_and_authorization_parity() {
         let as_address = serve(&h, 7200);
         let mint = |resource| {
             let code = issue_code_for(&h, resource);
-            let tokens = success(
-                &post(
-                    &h,
-                    as_address,
-                    &code_form(&h, &code, &[("resource", Some(resource))]),
-                ),
-                3600,
+            let reply = post(
+                &h,
+                as_address,
+                &code_form(&h, &code, &[("resource", Some(resource))]),
             );
+            assert_eq!(reply.status, 200, "access token was not issued");
+            let tokens: Value = serde_json::from_str(&reply.body).unwrap();
             assert_eq!(decode(&tokens).resource, resource);
+            assert_eq!(tokens["scope"], "memory:write");
             raw_access(&tokens).to_owned()
         };
         let native = mint(NATIVE_RESOURCE);

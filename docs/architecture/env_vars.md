@@ -2012,6 +2012,20 @@ modules:
 - `gateway::tests::mcp_gateway`
 - `xtask::e2e_onboard`
 
+### `HUMAUX_GATEWAY_MCP_LEGACY_ENABLED`
+- witness: literal
+- registry: gateway
+
+kind:
+- runtime
+
+processes:
+- process(humaux-gateway)
+
+modules:
+- `gateway::bootstrap`
+- `gateway::tests::mcp_gateway`
+
 ### `HUMAUX_GATEWAY_METRICS_ADDR`
 - witness: literal
 - registry: gateway

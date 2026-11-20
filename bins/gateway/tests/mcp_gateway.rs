@@ -6422,7 +6422,7 @@ fn legacy_mount_binary_uses_runtime_flag() {
             "../../../crates/protocol/tests/fixtures/qwen_legacy_http.json"
         ))
         .unwrap();
-        let authorization = format!("Bearer {}", credential.bearer);
+        let authorization = credential.bearer.as_str();
         let initialize = replay["initialize"].to_string();
         let request = |address| {
             handle
@@ -6430,7 +6430,7 @@ fn legacy_mount_binary_uses_runtime_flag() {
                 .block_on(try_raw_request_at(
                     address,
                     "/mcp/legacy",
-                    &[("Authorization", authorization.as_str())],
+                    &[("Authorization", authorization)],
                     &initialize,
                 ))
                 .expect("legacy initialization request")
@@ -6457,7 +6457,7 @@ fn legacy_mount_binary_uses_runtime_flag() {
                 on.address,
                 "/mcp/legacy",
                 &[
-                    ("Authorization", &authorization),
+                    ("Authorization", authorization),
                     ("MCP-Protocol-Version", "2025-06-18"),
                 ],
                 &legacy_call.to_string(),
