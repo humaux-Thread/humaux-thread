@@ -668,14 +668,7 @@ impl GatewayBootstrap {
         )?;
         let token_keys = parse_token_keys(&effective)?;
         let auth_pages = parse_auth_pages(&effective, &token_keys, &guard)?;
-        let legacy_enabled = present(&effective, MCP_LEGACY_ENABLED_KEY)?
-            .parse::<bool>()
-            .map_err(|_| BootstrapError::new(MCP_LEGACY_ENABLED_KEY, "must be true or false"))?;
-        let oauth_http = parse_oauth_http(&effective, &token_keys, legacy_enabled)?;
-        let mut http = parse_http(&effective)?.with_legacy_enabled(legacy_enabled);
-        if let Some(oauth) = &oauth_http {
-            http = http.with_oauth_issuer(oauth.issuer.clone());
-        }
+        let (http, oauth_http) = parse_http(&effective, &token_keys)?;
         let billing_webhook = parse_billing_webhook(&effective, admission.max_request_body_bytes)?;
         let metrics_addr = parse_metrics_addr(required(&effective, METRICS_ADDR_KEY)?)?;
         let readiness_refresh = seconds(
@@ -1227,8 +1220,15 @@ fn optional_hex(
         .map_err(|_| BootstrapError::new(key, "invalid hex"))
 }
 
-fn parse_http(effective: &BTreeMap<String, String>) -> Result<McpHttpConfig, BootstrapError> {
-    McpHttpConfig::new(
+fn parse_http(
+    effective: &BTreeMap<String, String>,
+    token_keys: &TokenKeys,
+) -> Result<(McpHttpConfig, Option<OAuthHttpConfig>), BootstrapError> {
+    let legacy_enabled = present(effective, MCP_LEGACY_ENABLED_KEY)?
+        .parse::<bool>()
+        .map_err(|_| BootstrapError::new(MCP_LEGACY_ENABLED_KEY, "must be true or false"))?;
+    let oauth_http = parse_oauth_http(effective, token_keys, legacy_enabled)?;
+    let mut http = McpHttpConfig::new(
         csv_nonempty(
             required(effective, "HUMAUX_GATEWAY_ALLOWED_HOSTS")?,
             "HUMAUX_GATEWAY_ALLOWED_HOSTS",
@@ -1242,7 +1242,12 @@ fn parse_http(effective: &BTreeMap<String, String>) -> Result<McpHttpConfig, Boo
             "HUMAUX_GATEWAY_MAX_REQUEST_BODY_BYTES",
         )?,
     )
-    .map_err(|_| BootstrapError::new("HUMAUX_GATEWAY_MAX_REQUEST_BODY_BYTES", "invalid"))
+    .map_err(|_| BootstrapError::new("HUMAUX_GATEWAY_MAX_REQUEST_BODY_BYTES", "invalid"))?
+    .with_legacy_enabled(legacy_enabled);
+    if let Some(oauth) = &oauth_http {
+        http = http.with_oauth_issuer(oauth.issuer.clone());
+    }
+    Ok((http, oauth_http))
 }
 
 fn parse_guard(effective: &BTreeMap<String, String>) -> Result<GuardSettings, BootstrapError> {
