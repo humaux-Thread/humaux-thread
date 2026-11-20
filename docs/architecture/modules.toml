@@ -805,6 +805,7 @@ may_depend_on = []
 id = "protocol_integration"
 # ADR-0130: expanded from MD1 source_top_level_map; package module_layers for roots/tests.
 files = [
+  "crates/adapters/src/continuity_authorization.rs",
   "crates/protocol/src/edge.rs",
   "crates/protocol/src/error_map.rs",
   "crates/protocol/src/lib.rs",

@@ -3,8 +3,6 @@
 # read_gate.rs:RowGrounding{,::Judged,::NotJudged} -> read_materialize.rs:same symbols (3 rows).
 # read_gate.rs:MemoryId -> application/recall_read.rs:MemoryId.
 # read_gate.rs:NoteKind -> application/recall_read.rs:NoteKind.
-crates/adapters/src/applicability_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
-crates/adapters/src/continuity_read.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/continuity_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
 crates/application/src/contribute.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope

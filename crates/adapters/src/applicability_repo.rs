@@ -1,17 +1,35 @@
 //! `adapters::applicability_repo` — applicability proposals and evidenced decisions through SQL doors.
-//! Depends-on: crates=[humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(any) x=[private.propose_memory_applicability, private.decide_memory_applicability]]; env=[]; modules=[adapters::confirm_token_repo, adapters::postgres, domain::applicability, domain::error, domain::identity]
-//! Called-by: [tests]
+//! Depends-on: crates=[async-trait, humaux-domain, serde_json, sqlx, uuid]; services=[PostgreSQL(any) x=[private.propose_memory_applicability, private.decide_memory_applicability]]; env=[]; modules=[adapters::postgres, domain::applicability, domain::error, domain::ids]
+//! Called-by: [adapters::continuity_authorization, tests]
 //! Invariants: [writes authenticate through 0188 inside the SQL door; proposals never approve; console is fail-closed]
 //! Spec: Baseline §6.1.1; §78.2; ADR-0096 D-A/D-B.1
 
 use humaux_domain::{
     applicability::{ApplicabilityScope, ApplicabilityStatus, AssignmentMethod},
     error::ErrorCode,
-    identity::AuthorizationScope,
+    ids::WorkspaceId,
 };
 use uuid::Uuid;
 
-use crate::{confirm_token_repo, postgres::RuntimeDbPool};
+use crate::postgres::RuntimeDbPool;
+
+pub(crate) mod sealed {
+    pub trait Sealed {}
+}
+
+/// The authenticated scope used by the proposal and decision SQL doors.
+#[async_trait::async_trait]
+pub trait ApplicabilityAuthorization: sealed::Sealed + Sync {
+    /// The one workspace permitted for this write (§6.1.1).
+    fn sole_workspace(&self) -> Result<WorkspaceId, ErrorCode>;
+    /// The authenticated principal bound to the SQL door.
+    fn principal_id(&self) -> Uuid;
+    /// Installs the original tenant and user scope in the caller's write transaction.
+    async fn install_in_txn(
+        &self,
+        txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<(), ErrorCode>;
+}
 
 /// §52: an existing terminal ErrorCode plus a stable SQL sub-reason, never another error enum.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,14 +104,15 @@ fn db_error(error: sqlx::Error) -> ApplicabilityFailure {
 /// ADR-0096 D-B: every authorised writer can propose; SQL always stores PROPOSED.
 pub async fn propose(
     pool: &RuntimeDbPool,
-    auth: &AuthorizationScope,
+    auth: &impl ApplicabilityAuthorization,
     proposal: &Proposal,
 ) -> Result<ApplicabilityStatus, ApplicabilityFailure> {
-    let workspace = confirm_token_repo::sole_workspace(auth)
+    let workspace = auth
+        .sole_workspace()
         .map_err(|code| failure(code, "applicability_workspace_required"))?;
     // dep: PostgreSQL(any) — one proposal transaction; SQL reuses control.assert_write_scope
     let mut txn = pool.pool().begin().await.map_err(db_error)?;
-    confirm_token_repo::set_authorization_local(&mut txn, auth)
+    auth.install_in_txn(&mut txn)
         .await
         .map_err(|code| failure(code, "applicability_authorization"))?;
     let qualifiers = serde_json::json!({
@@ -102,7 +121,7 @@ pub async fn propose(
     });
     let status: String =
         sqlx::query_scalar("SELECT private.propose_memory_applicability($1,$2,$3,$4,$5,$6,$7)")
-            .bind(auth.principal().0)
+            .bind(auth.principal_id())
             .bind(workspace.0)
             .bind(proposal.memory_id)
             .bind(proposal.scope.wire())
@@ -121,20 +140,21 @@ pub async fn propose(
 /// ADR-0096 D-B.1: approve or reject only through the evidenced OWNER agent door.
 pub async fn decide(
     pool: &RuntimeDbPool,
-    auth: &AuthorizationScope,
+    auth: &impl ApplicabilityAuthorization,
     decision: &Decision,
 ) -> Result<ApplicabilityStatus, ApplicabilityFailure> {
-    let workspace = confirm_token_repo::sole_workspace(auth)
+    let workspace = auth
+        .sole_workspace()
         .map_err(|code| failure(code, "applicability_workspace_required"))?;
     // dep: PostgreSQL(any) — one decision transaction; refusal leaves the row unchanged
     let mut txn = pool.pool().begin().await.map_err(db_error)?;
-    confirm_token_repo::set_authorization_local(&mut txn, auth)
+    auth.install_in_txn(&mut txn)
         .await
         .map_err(|code| failure(code, "applicability_authorization"))?;
     let status: String = sqlx::query_scalar(
         "SELECT private.decide_memory_applicability($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
     )
-    .bind(auth.principal().0)
+    .bind(auth.principal_id())
     .bind(workspace.0)
     .bind(decision.expected.memory_id)
     .bind(decision.decision_evidence_id)

@@ -27,7 +27,7 @@ use sqlx::types::time::OffsetDateTime;
 
 use crate::context_repo::{set_authorization_local, visibility_from_row};
 use crate::postgres::RuntimeDbPool;
-use crate::read_gate::{readable_memory_ids, visibility_readable};
+use crate::read_gate::{ReadAuthorization, readable_memory_ids, visibility_readable};
 use crate::retrieve::OverlayCandidate;
 
 type Txn<'c> = sqlx::Transaction<'c, sqlx::Postgres>;
@@ -158,12 +158,12 @@ pub(crate) fn lifecycle_sql(alias: &str, first: u8) -> String {
 /// ([`Lifecycle::CURRENT`]): the recall/context face of the gate takes no selection (ADR-0067 D-J2).
 pub(crate) async fn final_memory_ids_in_txn(
     txn: &mut Txn<'_>,
-    authorization: &AuthorizationScope,
+    authorization: &impl ReadAuthorization,
     candidates: &[Uuid],
 ) -> Result<Vec<Uuid>, ErrorCode> {
     final_memory_ids_about_in_txn(
         txn,
-        authorization,
+        authorization.read_gate_scope(),
         candidates,
         Lifecycle::CURRENT,
         &[],
