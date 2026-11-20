@@ -141,14 +141,14 @@ fn seed(handle: &mut Handle) -> SyntheticServiceCredential {
     )
 }
 
-async fn ping(address: SocketAddr, credential: &SyntheticServiceCredential) -> u16 {
-    let body = r#"{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{
+async fn catalog_request(address: SocketAddr, credential: &SyntheticServiceCredential) -> u16 {
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{
         "io.modelcontextprotocol/protocolVersion":"2026-07-28",
         "io.modelcontextprotocol/clientInfo":{"name":"route-cache-acceptance","version":"1"},
         "io.modelcontextprotocol/clientCapabilities":{}
     }}}"#;
     let request = format!(
-        "POST /mcp HTTP/1.1\r\nHost: mcp.test\r\nOrigin: https://mcp.test\r\nConnection: close\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: ping\r\nAuthorization: {}\r\nContent-Length: {}\r\n\r\n{body}",
+        "POST /mcp HTTP/1.1\r\nHost: mcp.test\r\nOrigin: https://mcp.test\r\nConnection: close\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/list\r\nAuthorization: {}\r\nContent-Length: {}\r\n\r\n{body}",
         credential.bearer,
         body.len()
     );
@@ -182,7 +182,7 @@ fn g_m03_4_revoke_and_wrong_tenant_candidates_fail_on_http_entry() {
         fixture.rt.block_on(async {
             let (address, server) = start(pool, Arc::clone(&cache)).await;
             assert!(cache.lookup(&key).await.is_none());
-            assert_eq!(ping(address, &credential).await, 200);
+            assert_eq!(catalog_request(address, &credential).await, 200);
             let mut wrong = cache
                 .lookup(&key)
                 .await
@@ -190,7 +190,7 @@ fn g_m03_4_revoke_and_wrong_tenant_candidates_fail_on_http_entry() {
             wrong.tenant_id = TenantId(Uuid::new_v4());
             cache.insert(key, wrong).await;
             assert_eq!(
-                ping(address, &credential).await,
+                catalog_request(address, &credential).await,
                 401,
                 "foreign candidate must be refused"
             );
@@ -199,7 +199,7 @@ fn g_m03_4_revoke_and_wrong_tenant_candidates_fail_on_http_entry() {
                 "foreign candidate must be evicted"
             );
             assert_eq!(
-                ping(address, &credential).await,
+                catalog_request(address, &credential).await,
                 200,
                 "fresh lookup rebuilds the correct route"
             );
@@ -227,7 +227,7 @@ fn g_m03_4_revoke_and_wrong_tenant_candidates_fail_on_http_entry() {
                 txn.commit().unwrap();
             });
             assert_eq!(
-                ping(address, &credential).await,
+                catalog_request(address, &credential).await,
                 401,
                 "the next warm request must check the live row"
             );
@@ -267,7 +267,7 @@ fn g_m03_5_http_calls_change_the_activity_row_once_per_window() {
             let start = Instant::now();
             let mut updates = 0;
             for _ in 0..100 {
-                assert_eq!(ping(address, &credential).await, 200);
+                assert_eq!(catalog_request(address, &credential).await, 200);
                 let next = tokio::task::block_in_place(|| activity(admin, credential.api_key_id));
                 updates += usize::from(next.0 != previous.0);
                 previous = next;
