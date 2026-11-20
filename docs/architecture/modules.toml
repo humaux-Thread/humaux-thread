@@ -820,6 +820,7 @@ files = [
   "crates/protocol/src/mcp_profile.rs",
   "crates/protocol/src/page.rs",
   "crates/protocol/src/rest.rs",
+  "crates/protocol/tests/error_degrade_exclusive.rs",
   "crates/protocol/tests/mcp_http.rs",
   "crates/protocol/tests/mcp_profile.rs",
   "crates/protocol/tests/note_kind_contract.rs",
