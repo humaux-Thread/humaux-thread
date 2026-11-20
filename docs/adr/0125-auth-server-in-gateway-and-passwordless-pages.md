@@ -202,7 +202,10 @@ another client's key. An unreadable peer keeps key 0.
   Migration 0311 enforces the same boundary at code issuance and stores the requested redirect URI for exact exchange.
 - DCR remains the compatibility option from M02 D5. Revisit its retirement after X-M02-2 establishes coverage through
   CIMD or pre-registration.
-- Anonymous registration also charges a route-specific bucket using the same trusted source IP as pre-auth. The
-  typed registry owns the DCR capacity and refill settings. PostgreSQL applies the configured unused-client quota
-  across sources before insertion. The quota counts DCR rows with no grant. Code exchange frees a slot by creating
-  the grant. STATIC clients do not consume the quota. Either exhausted budget returns HTTP 429 with RATE_LIMITED.
+- Anonymous registration charges a route-specific bucket using the pre-auth trusted source IP. The typed registry sets
+  its burst and per-minute refill. Defaults allow one immediate request and refill one per minute. PostgreSQL serializes
+  DCR insertions and caps the active, unused registrations globally and per source. Defaults are 4096 globally and
+  16 per source during the first hour after registration. Disabled registrations and clients with a grant consume no
+  slots. Expired registrations leave the count, preserving the registry and authorization history. Only a labelled
+  HMAC of the trusted IP is persisted, and current and previous auth keys both count during overlap. Exhausted budgets
+  return HTTP 429 and RATE_LIMITED.

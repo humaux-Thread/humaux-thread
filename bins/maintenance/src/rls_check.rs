@@ -3417,7 +3417,7 @@ const R3_PRIVATE_WORKER_FUNCTIONS: &[(&str, &[&str])] = &[
     ),
     ("control.oauth_code_consume(bytea)", &["role_gateway"]),
     (
-        "control.oauth_dcr_register(text,text[],jsonb,bigint)",
+        "control.oauth_dcr_register(text,text[],jsonb,bytea[],bigint,bigint,integer)",
         &["role_gateway"],
     ),
     (

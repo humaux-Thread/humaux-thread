@@ -58,14 +58,23 @@ BEGIN
 END;
 $$;
 
--- DCR abuse budget. Code exchange releases a slot by creating a grant; refresh/revocation do not reopen it.
+-- The quota ignores expired and disabled rows without deleting registry or authorization history.
+ALTER TABLE control.oauth_client_registrations
+  ADD COLUMN dcr_source_tag bytea
+  CHECK (dcr_source_tag IS NULL OR (kind = 'DCR' AND octet_length(dcr_source_tag) = 32));
+
 CREATE INDEX oauth_grants_client_idx ON control.oauth_grants (client_id);
+CREATE INDEX oauth_dcr_active_created_idx ON control.oauth_client_registrations (created_at)
+  WHERE kind = 'DCR' AND disabled_at IS NULL;
 
 CREATE FUNCTION control.oauth_dcr_register(
   p_client_id text,
   p_redirect_uris text[],
   p_metadata jsonb,
-  p_max_unused bigint
+  p_source_tags bytea[],
+  p_max_unused bigint,
+  p_max_unused_per_ip bigint,
+  p_unused_ttl_seconds integer
 )
 RETURNS boolean
 LANGUAGE plpgsql
@@ -73,28 +82,41 @@ VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
+DECLARE
+  v_now timestamptz;
+  v_occupied bigint;
+  v_source_occupied bigint;
 BEGIN
-  IF p_max_unused IS NULL OR p_max_unused <= 0 THEN
+  IF coalesce(p_max_unused, 0) <= 0 OR coalesce(p_max_unused_per_ip, 0) <= 0
+     OR coalesce(p_unused_ttl_seconds, 0) <= 0
+     OR coalesce(octet_length(p_source_tags[1]), 0) <> 32 THEN
     RAISE EXCEPTION 'invalid OAuth registration quota' USING ERRCODE = '22023';
   END IF;
 
-  -- Serialize across gateway callers. The following statement sees the prior insertion after an advisory-lock wait.
+  -- The lock serializes counting and inserting, so gateways see the preceding committed admission.
   PERFORM pg_advisory_xact_lock(hashtextextended('oauth_dcr_register', 0));
-  IF (SELECT count(*) FROM (
-          SELECT FROM control.oauth_client_registrations r
-          WHERE r.kind = 'DCR'
-            AND NOT EXISTS (SELECT FROM control.oauth_grants g WHERE g.client_id = r.client_id)
-          LIMIT p_max_unused
-      ) AS unused_clients) >= p_max_unused THEN
+  v_now := clock_timestamp();
+  SELECT count(*), count(*) FILTER (WHERE occupied.dcr_source_tag = ANY(p_source_tags))
+    INTO v_occupied, v_source_occupied
+    FROM (
+      SELECT r.dcr_source_tag FROM control.oauth_client_registrations r
+      WHERE r.kind = 'DCR'
+        AND r.disabled_at IS NULL
+        AND r.created_at > v_now - make_interval(secs => p_unused_ttl_seconds)
+        AND NOT EXISTS (SELECT FROM control.oauth_grants g WHERE g.client_id = r.client_id)
+      LIMIT p_max_unused
+    ) AS occupied;
+  IF v_occupied >= p_max_unused OR v_source_occupied >= p_max_unused_per_ip THEN
     RETURN false;
   END IF;
 
-  INSERT INTO control.oauth_client_registrations (client_id, kind, redirect_uris, metadata)
-  VALUES (p_client_id, 'DCR', p_redirect_uris, p_metadata);
+  INSERT INTO control.oauth_client_registrations
+    (client_id, kind, redirect_uris, metadata, dcr_source_tag, created_at)
+  VALUES (p_client_id, 'DCR', p_redirect_uris, p_metadata, p_source_tags[1], v_now);
   RETURN true;
 END;
 $$;
 
-ALTER FUNCTION control.oauth_dcr_register(text,text[],jsonb,bigint) OWNER TO role_migration_owner;
-REVOKE ALL ON FUNCTION control.oauth_dcr_register(text,text[],jsonb,bigint) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION control.oauth_dcr_register(text,text[],jsonb,bigint) TO role_gateway;
+ALTER FUNCTION control.oauth_dcr_register(text,text[],jsonb,bytea[],bigint,bigint,integer) OWNER TO role_migration_owner;
+REVOKE ALL ON FUNCTION control.oauth_dcr_register(text,text[],jsonb,bytea[],bigint,bigint,integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION control.oauth_dcr_register(text,text[],jsonb,bytea[],bigint,bigint,integer) TO role_gateway;

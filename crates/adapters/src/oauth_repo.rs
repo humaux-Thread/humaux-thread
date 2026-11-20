@@ -1,7 +1,7 @@
 //! `adapters::oauth_repo` — OAuth 2.1 Authorization Server persistence over the `control.oauth_*` doors (migrations 0268/0308/0311):
 //!   client registry, one-time authorization codes, grants and single-use refresh rotation. Writes only through definers; no
 //!   runtime role holds any privilege on the four tables, so every read goes through a door too.
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users] x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_consent_tenants, control.oauth_dcr_register, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_grant, control.oauth_refresh_rotate]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, application::oauth_exchange, domain::error, domain::identity, domain::ids]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users] x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_consent_tenants, control.oauth_dcr_register, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_grant, control.oauth_refresh_rotate]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, application::oauth, application::oauth_exchange, domain::error, domain::identity, domain::ids]
 //! Called-by: [gateway::auth, gateway::bootstrap, tests]
 //! Invariants: [a raw code or refresh token never reaches this module: callers pass a SecretHash, whose Debug is redacted;
 //!   consume and rotate are single conditional statements inside the doors, so of two concurrent exchanges of one secret
@@ -68,13 +68,17 @@ pub async fn register_dcr(
     client_id: &str,
     redirect_uris: &[String],
     metadata: &serde_json::Value,
-    max_unused: i64,
+    source_tags: &[Vec<u8>],
+    budget: humaux_application::oauth::RegistrationBudget,
 ) -> Result<bool, ErrorCode> {
-    sqlx::query_scalar("SELECT control.oauth_dcr_register($1, $2, $3, $4)")
+    sqlx::query_scalar("SELECT control.oauth_dcr_register($1, $2, $3, $4, $5, $6, $7)")
         .bind(client_id)
         .bind(redirect_uris)
         .bind(metadata)
-        .bind(max_unused)
+        .bind(source_tags)
+        .bind(budget.max_unused)
+        .bind(budget.max_unused_per_ip)
+        .bind(budget.unused_ttl_seconds)
         // dep: PostgreSQL(any) — one guarded, autocommitted registration door
         .fetch_one(pool.pool())
         .await

@@ -105,6 +105,15 @@ impl TokenKeys {
         labelled_hmac(&self.current, label, data)
     }
 
+    /// Labelled derivations in write order: current first, then the overlap key when configured.
+    #[must_use]
+    pub fn labelled_hmac_candidates(&self, label: &[u8], data: &[u8]) -> Vec<Vec<u8>> {
+        std::iter::once(self.current.as_slice())
+            .chain(self.previous.as_deref())
+            .map(|key| labelled_hmac(key, label, data))
+            .collect()
+    }
+
     /// `hex(payload ‖ U+0001 ‖ kid ‖ U+0001 ‖ mac)` signed with the current key. The MAC covers the label, the
     /// payload and the kid; it proves that a holder of this key issued these bytes, not that anyone may act on them.
     #[must_use]

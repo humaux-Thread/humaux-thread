@@ -19,7 +19,7 @@ use humaux_adapters::{
 use humaux_application::{
     auth::AuthConfig,
     login::LoginVerifyOutcome,
-    oauth::{self, ACCESS_TOKEN_LABEL, AccessTerms, GrantView, OAuthReason},
+    oauth::{self, ACCESS_TOKEN_LABEL, AccessTerms, GrantView, OAuthReason, RegistrationBudget},
     session::SessionPolicy,
     signed_token::TokenKeys,
 };
@@ -82,10 +82,23 @@ fn config(max: u64) -> OAuthHttpConfig {
     }
 }
 fn test_registration_policy(capacity: i64, refill: i64, max_unused: i64) -> RegistrationPolicy {
+    test_policy_with_budget(capacity, refill, max_unused, max_unused)
+}
+
+fn test_policy_with_budget(
+    capacity: i64,
+    refill: i64,
+    max_unused: i64,
+    max_unused_per_ip: i64,
+) -> RegistrationPolicy {
     RegistrationPolicy::new(
-        RatePolicy::new(capacity, refill).unwrap(),
+        RatePolicy::per_minute(capacity, refill).unwrap(),
         50_000,
-        max_unused,
+        RegistrationBudget {
+            max_unused,
+            max_unused_per_ip,
+            unused_ttl_seconds: 3600,
+        },
     )
     .unwrap()
 }
@@ -2529,6 +2542,108 @@ fn m02_10c_registration_unused_quota_is_atomic_across_ips() {
             limited_registration(&mut h, &freed),
             201,
             "first grant frees the unused slot"
+        );
+    });
+}
+
+fn register_from_ip(h: &mut Handle, address: SocketAddr, ip: &str, body: &str) -> u16 {
+    let reply = h.rt.block_on(registration_from(address, ip, body));
+    limited_registration(h, &reply)
+}
+
+#[test]
+fn m02_10c_registration_ignores_expired_unused() {
+    run_db_fixture::<OAuthFixture, _>("M02-10c expired unused capacity", |mut h| {
+        lock_registration_fixture(&mut h);
+        let mut cfg = config(7200);
+        cfg.registration = test_policy_with_budget(10_000, 10_000, 1, 1);
+        let address = serve_surface(&h, Some(cfg));
+        let body = registration_body(&[REDIRECT]).to_string();
+        assert_eq!(register_from_ip(&mut h, address, "192.0.2.1", &body), 201);
+        let expired = h.registered_clients[0].clone();
+        h.admin.execute(
+            "UPDATE control.oauth_client_registrations SET created_at = now() - interval '2 hours' WHERE client_id = $1",
+            &[&expired],
+        ).unwrap();
+        assert_eq!(
+            register_from_ip(&mut h, address, "192.0.2.1", &body),
+            201,
+            "expired unused client releases capacity"
+        );
+        assert!(
+            recorded_client(&h, &expired).is_some(),
+            "expiry preserves registry history"
+        );
+    });
+}
+
+#[test]
+fn m02_10c_registration_ignores_disabled_unused() {
+    run_db_fixture::<OAuthFixture, _>("M02-10c disabled unused capacity", |mut h| {
+        lock_registration_fixture(&mut h);
+        let mut cfg = config(7200);
+        cfg.registration = test_policy_with_budget(10_000, 10_000, 1, 1);
+        let address = serve_surface(&h, Some(cfg));
+        let body = registration_body(&[REDIRECT]).to_string();
+        assert_eq!(register_from_ip(&mut h, address, "192.0.2.1", &body), 201);
+        let disabled = h.registered_clients[0].clone();
+        h.admin.execute(
+            "UPDATE control.oauth_client_registrations SET disabled_at = now() WHERE client_id = $1",
+            &[&disabled],
+        ).unwrap();
+        assert_eq!(
+            register_from_ip(&mut h, address, "192.0.2.1", &body),
+            201,
+            "disabled unused client releases capacity"
+        );
+    });
+}
+
+#[test]
+fn m02_10c_registration_has_durable_source_cap() {
+    run_db_fixture::<OAuthFixture, _>("M02-10c durable source quota", |mut h| {
+        lock_registration_fixture(&mut h);
+        let mut cfg = config(7200);
+        cfg.registration = test_policy_with_budget(10_000, 10_000, 10_000, 1);
+        let address = serve_surface(&h, Some(cfg));
+        let body = registration_body(&[REDIRECT]).to_string();
+        assert_eq!(register_from_ip(&mut h, address, "192.0.2.1", &body), 201);
+
+        let mut replacement = config(7200);
+        replacement.keys = Arc::new(TokenKeys::new(vec![8; 32], Some(vec![7; 32])).unwrap());
+        replacement.registration = test_policy_with_budget(10_000, 10_000, 10_000, 1);
+        let new_address = serve_surface(&h, Some(replacement));
+        assert_eq!(
+            register_from_ip(&mut h, new_address, "192.0.2.1", &body),
+            429,
+            "source quota survives a new router and normal key rollover"
+        );
+        assert_eq!(
+            register_from_ip(&mut h, new_address, "192.0.2.2", &body),
+            201,
+            "another source has its own quota"
+        );
+    });
+}
+
+#[test]
+fn m02_10c_registration_refills_per_minute() {
+    run_db_fixture::<OAuthFixture, _>("M02-10c sub-second token rate", |mut h| {
+        lock_registration_fixture(&mut h);
+        let mut cfg = config(7200);
+        cfg.registration = test_policy_with_budget(1, 1, 10_000, 10_000);
+        let address = serve_surface(&h, Some(cfg));
+        let body = registration_body(&[REDIRECT]).to_string();
+        assert_eq!(register_from_ip(&mut h, address, "192.0.2.1", &body), 201);
+        let early = h.rt.block_on(async {
+            // Cross the old one-second boundary while remaining inside the new minute.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            registration_from(address, "192.0.2.1", &body).await
+        });
+        assert_eq!(
+            limited_registration(&mut h, &early),
+            429,
+            "one second must not refill the minute bucket"
         );
     });
 }

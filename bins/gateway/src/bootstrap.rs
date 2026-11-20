@@ -24,7 +24,8 @@
 //!   HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE, HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_STATIC_CLIENTS,
-//!   HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_CAPACITY, HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_REFILL_PER_SECOND, HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_MAX_UNUSED,
+//!   HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_CAPACITY, HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_REFILL_PER_MINUTE, HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_MAX_UNUSED,
+//!   HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_MAX_UNUSED_PER_IP, HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_UNUSED_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_EMBEDDING_DIMENSION, HUMAUX_GATEWAY_EMBEDDING_MODEL_ID, HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION,
 //!   HUMAUX_GATEWAY_EMBEDDING_PROVIDER_ID, HUMAUX_GATEWAY_EMBEDDING_VERSION, HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP,
@@ -53,7 +54,7 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::confirm_token_repo, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::oauth_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::oauth_exchange, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::route_cache, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::cache, telemetry::metrics]
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::confirm_token_repo, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::oauth_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::oauth, application::oauth_exchange, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::route_cache, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::auth, gateway::context, gateway::guard, gateway::main, gateway::mcp_application, gateway::oauth_http, gateway::memory, gateway::recall, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
 //! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7; ADR-0125
@@ -168,9 +169,12 @@ const OAUTH_STATIC_CLIENTS_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_STATIC_CLIENTS
 const OAUTH_REGISTER_RATE: (&str, &str, &str) = (
     "OAUTH_REGISTER_IP",
     "HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_CAPACITY",
-    "HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_REFILL_PER_SECOND",
+    "HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_REFILL_PER_MINUTE",
 );
 const OAUTH_REGISTER_MAX_UNUSED: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_MAX_UNUSED";
+const OAUTH_REGISTER_MAX_UNUSED_PER_IP: &str =
+    "HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_MAX_UNUSED_PER_IP";
+const OAUTH_REGISTER_UNUSED_TTL: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_UNUSED_TTL_SECONDS";
 const OAUTH_RESOURCE_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE";
 const OAUTH_CODE_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS";
 const OAUTH_ACCESS_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS";
@@ -570,17 +574,13 @@ impl GatewayBootstrap {
         let session_lock = acquire_gateway_lock(&pool, &self.deployment)
             .await
             .map_err(|code| BootstrapError::new(DEPLOYMENT_KEY, code.as_str()))?;
-        let mut guard = self.credential_settings.build_guard(pool, self.guard)?;
-        if let Some(config) = &self.oauth_http {
-            guard = guard.with_oauth_issuer(config.issuer.clone(), Arc::clone(&config.keys));
-        }
-        let guard = Arc::new(guard);
-        let catalog = CanonicalCatalog::load().map_err(|_| {
-            BootstrapError::new("canonical MCP catalog", "invalid embedded contract")
-        })?;
-        let advertised = catalog.trusted_catalog().map_err(|_| {
-            BootstrapError::new("canonical MCP catalog", "invalid embedded contract")
-        })?;
+        let guard =
+            self.credential_settings
+                .build_guard(pool, self.guard, self.oauth_http.as_ref())?;
+        let invalid_catalog =
+            |_| BootstrapError::new("canonical MCP catalog", "invalid embedded contract");
+        let catalog = CanonicalCatalog::load().map_err(invalid_catalog)?;
+        let advertised = catalog.trusted_catalog().map_err(invalid_catalog)?;
         let mut application = GatewayMcpApplication::new(
             catalog,
             guard.clone(),
@@ -993,19 +993,38 @@ fn parse_registration_policy(
 ) -> Result<RegistrationPolicy, BootstrapError> {
     let cap_key = RATE_MAX_SUBJECTS_KEYS[0];
     let max_sources = parse_usize(required(effective, cap_key)?, cap_key)?;
-    let max_unused = required(effective, OAUTH_REGISTER_MAX_UNUSED)?
-        .parse::<i64>()
-        .ok()
-        .filter(|cap| *cap > 0)
-        .ok_or_else(|| {
-            BootstrapError::new(OAUTH_REGISTER_MAX_UNUSED, "must be a positive integer")
-        })?;
-    RegistrationPolicy::new(
-        rate(effective, OAUTH_REGISTER_RATE)?,
-        max_sources,
-        max_unused,
+    let budget = humaux_application::oauth::RegistrationBudget {
+        max_unused: bounded(
+            effective,
+            OAUTH_REGISTER_MAX_UNUSED,
+            1..=i64::MAX as u64,
+            "must be a positive integer",
+        )? as i64,
+        max_unused_per_ip: bounded(
+            effective,
+            OAUTH_REGISTER_MAX_UNUSED_PER_IP,
+            1..=i64::MAX as u64,
+            "must be a positive integer",
+        )? as i64,
+        unused_ttl_seconds: bounded(
+            effective,
+            OAUTH_REGISTER_UNUSED_TTL,
+            1..=i32::MAX as u64,
+            "must be positive seconds",
+        )? as i32,
+    };
+    let parsed_rate = |key| {
+        required(effective, key)?
+            .parse::<i64>()
+            .map_err(|_| BootstrapError::new(key, "invalid integer"))
+    };
+    let rate = RatePolicy::per_minute(
+        parsed_rate(OAUTH_REGISTER_RATE.1)?,
+        parsed_rate(OAUTH_REGISTER_RATE.2)?,
     )
-    .map_err(|_| BootstrapError::new(cap_key, "must be a positive IP subject cap"))
+    .map_err(|_| BootstrapError::new(OAUTH_REGISTER_RATE.0, "invalid registration rate"))?;
+    RegistrationPolicy::new(rate, max_sources, budget)
+        .map_err(|_| BootstrapError::new(cap_key, "must be a positive IP subject cap"))
 }
 
 #[derive(Deserialize)]
@@ -1896,6 +1915,8 @@ pub fn registry() -> Vec<ConfigEntry> {
             (OAUTH_REGISTER_RATE.1, "1"),
             (OAUTH_REGISTER_RATE.2, "1"),
             (OAUTH_REGISTER_MAX_UNUSED, "4096"),
+            (OAUTH_REGISTER_MAX_UNUSED_PER_IP, "16"),
+            (OAUTH_REGISTER_UNUSED_TTL, "3600"),
         ]
         .map(|(name, default)| entry_with_default(name, "i64", false, default)),
     );
@@ -2153,7 +2174,8 @@ impl CredentialGatewaySettings {
         self,
         pool: RuntimeDbPool,
         settings: GuardSettings,
-    ) -> Result<GatewayGuard, BootstrapError> {
+        oauth: Option<&OAuthHttpConfig>,
+    ) -> Result<Arc<GatewayGuard>, BootstrapError> {
         let route_cache = self.route_region.map(|(bytes, ttl)| {
             Arc::new(CredentialRouteCache::new(
                 &settings.credential_pepper,
@@ -2174,7 +2196,10 @@ impl CredentialGatewaySettings {
                     BootstrapError::new(CREDENTIAL_TOUCH_INTERVAL_KEY, "invalid batch interval")
                 })?;
         }
-        Ok(guard)
+        if let Some(config) = oauth {
+            guard = guard.with_oauth_issuer(config.issuer.clone(), Arc::clone(&config.keys));
+        }
+        Ok(Arc::new(guard))
     }
 }
 
@@ -2579,7 +2604,8 @@ pub(crate) async fn register_dynamic_oauth_client(
     client_id: &str,
     redirect_uris: &[String],
     document: &Value,
-    max_unused: i64,
+    source_tags: &[Vec<u8>],
+    budget: humaux_application::oauth::RegistrationBudget,
 ) -> Result<(), humaux_domain::error::ErrorCode> {
     use humaux_domain::error::ErrorCode;
 
@@ -2588,7 +2614,8 @@ pub(crate) async fn register_dynamic_oauth_client(
         client_id,
         redirect_uris,
         document,
-        max_unused,
+        source_tags,
+        budget,
     )
     .await?
     {

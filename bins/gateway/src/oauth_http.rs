@@ -11,7 +11,7 @@ use crate::{
     limiter::{Limiter, RatePolicy, Subject},
 };
 use axum::{
-    Form, Json, Router,
+    Extension, Form, Json, Router,
     extract::{
         ConnectInfo, DefaultBodyLimit, RawQuery, Request, State,
         rejection::{FormRejection, JsonRejection},
@@ -26,8 +26,8 @@ use humaux_application::{
     login::{self, PasswordlessLoginPort},
     oauth::{
         self, ACCESS_TOKEN_LABEL, AccessTerms, AuthorizeRequest, ClientView, CodeExchangeRequest,
-        ConsentSubject, OAuthPolicy, OAuthReason, RefreshRequest, SUPPORTED_SCOPES,
-        ValidatedAuthorize,
+        ConsentSubject, OAuthPolicy, OAuthReason, RefreshRequest, RegistrationBudget,
+        SUPPORTED_SCOPES, ValidatedAuthorize,
     },
     oauth_exchange::{self, ExchangeStore},
     session::{SessionSecret, VerifiedSession, csrf_token},
@@ -94,18 +94,23 @@ impl OAuthHttpConfig {
 /// DCR's separate source bucket and durable quota (§78.1).
 pub struct RegistrationPolicy {
     ip: Limiter,
-    max_unused: i64,
+    budget: RegistrationBudget,
 }
 
 impl RegistrationPolicy {
     /// Construct a bounded source limiter and reject a non-positive registry quota.
-    pub fn new(rate: RatePolicy, max_sources: usize, max_unused: i64) -> Result<Self, ErrorCode> {
-        if max_unused <= 0 {
+    pub fn new(
+        rate: RatePolicy,
+        max_sources: usize,
+        budget: RegistrationBudget,
+    ) -> Result<Self, ErrorCode> {
+        if budget.max_unused <= 0 || budget.max_unused_per_ip <= 0 || budget.unused_ttl_seconds <= 0
+        {
             return Err(ErrorCode::InvalidInput);
         }
         Ok(Self {
             ip: Limiter::new([rate; 5], [max_sources; 5])?,
-            max_unused,
+            budget,
         })
     }
 }
@@ -161,10 +166,13 @@ async fn gate(
     auth_pages::guarded(&state.guard, "oauth", peer, request, next).await
 }
 
+#[derive(Clone)]
+struct RegistrationSource(Vec<Vec<u8>>);
+
 async fn registration_gate(
     State(state): State<Arc<HttpState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     // The outer pre-auth gate already rejected malformed or repeated Forwarded headers.
@@ -175,6 +183,11 @@ async fn registration_gate(
     if let Err(denial) = state.config.registration.ip.check(&[Subject::Ip(ip)]) {
         return registration_denial(denial.code);
     }
+    let tags = state
+        .config
+        .keys
+        .labelled_hmac_candidates(b"oauth-dcr-source@1", ip.to_string().as_bytes());
+    request.extensions_mut().insert(RegistrationSource(tags));
     next.run(request).await
 }
 
@@ -301,6 +314,7 @@ impl PublicClientMetadata {
 
 async fn register(
     State(state): State<Arc<HttpState>>,
+    Extension(source): Extension<RegistrationSource>,
     body: Result<Json<PublicClientMetadata>, JsonRejection>,
 ) -> Response {
     let Ok(Json(metadata)) = body else {
@@ -316,7 +330,8 @@ async fn register(
         &client_id,
         &metadata.redirect_uris,
         &document,
-        state.config.registration.max_unused,
+        &source.0,
+        state.config.registration.budget,
     )
     .await
     {

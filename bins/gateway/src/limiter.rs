@@ -2,7 +2,7 @@
 //! Depends-on: crates=[humaux-domain, tokio, uuid]; services=[]; env=[]; modules=[domain::error]
 //! Called-by: [gateway::guard, gateway::bootstrap, gateway::oauth_http, tests]
 //! Invariants: [no PG I/O; never an allow decision beyond rate; one mutex makes tier charges atomic;
-//!   buckets start at one refill-second; per-tier caps; at most 32 idle probes per pressured tier; only replenished buckets may be evicted]
+//!   buckets start with one configured refill interval; per-tier caps; at most 32 idle probes per pressured tier; only replenished buckets may be evicted]
 //! Spec: Baseline §67.2; §72.3; §73.3; §78.1; ADR-0100
 
 use humaux_domain::error::ErrorCode;
@@ -21,20 +21,35 @@ const TOKEN: u128 = 1_000_000_000;
 pub struct RatePolicy {
     capacity: u128,
     refill: u128,
+    token_cost: u128,
 }
 
 impl RatePolicy {
     /// Validate the same positive integer domain as the retired PG hot path (§72.3).
     pub fn new(capacity: i64, refill_per_second: i64) -> Result<Self, ErrorCode> {
+        Self::for_interval(capacity, refill_per_second, TOKEN)
+    }
+
+    /// DCR's minute-based refill allows fewer than one token per second without floating-point rounding.
+    pub fn per_minute(capacity: i64, refill_per_minute: i64) -> Result<Self, ErrorCode> {
+        Self::for_interval(capacity, refill_per_minute, 60 * TOKEN)
+    }
+
+    fn for_interval(capacity: i64, refill: i64, token_cost: u128) -> Result<Self, ErrorCode> {
         let capacity = u128::try_from(capacity).map_err(|_| ErrorCode::InvalidInput)?;
-        let refill = u128::try_from(refill_per_second).map_err(|_| ErrorCode::InvalidInput)?;
+        let refill = u128::try_from(refill).map_err(|_| ErrorCode::InvalidInput)?;
         if capacity == 0 || refill == 0 {
             return Err(ErrorCode::InvalidInput);
         }
         Ok(Self {
-            capacity: capacity * TOKEN,
+            capacity: capacity * token_cost,
             refill,
+            token_cost,
         })
+    }
+
+    fn initial_credit(self) -> u128 {
+        (self.refill * self.token_cost).min(self.capacity)
     }
 }
 
@@ -203,9 +218,8 @@ impl Limiter {
             let credit = tiers[subject.tier()]
                 .buckets
                 .get(subject)
-                .map_or(policy.refill * TOKEN, |b| b.credit(now, policy))
-                .min(policy.capacity);
-            if credit < TOKEN {
+                .map_or_else(|| policy.initial_credit(), |b| b.credit(now, policy));
+            if credit < policy.token_cost {
                 return Err(RateLimited {
                     code: ErrorCode::RateLimited,
                     scope: subject.scope(),
@@ -222,10 +236,10 @@ impl Limiter {
                 tier.idle.push_back(subject.clone());
             }
             let b = tier.buckets.entry(subject.clone()).or_insert(Bucket {
-                credit: (policy.refill * TOKEN).min(policy.capacity),
+                credit: policy.initial_credit(),
                 updated: now,
             });
-            b.credit = b.credit(now, policy) - TOKEN;
+            b.credit = b.credit(now, policy) - policy.token_cost;
             b.updated = now;
         }
         Ok(())

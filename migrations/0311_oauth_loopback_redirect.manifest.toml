@@ -11,12 +11,13 @@ SELECT count(*) = 2 AND bool_and(proowner = 'role_migration_owner'::regrole AND 
    AND NOT EXISTS (SELECT FROM aclexplode(proacl) x
                     WHERE x.privilege_type = 'EXECUTE'
                       AND x.grantee NOT IN (proowner, 'role_gateway'::regrole)))
-   AND to_regclass('control.oauth_grants_client_idx') IS NOT NULL AS postcheck_ok
+   AND to_regclass('control.oauth_grants_client_idx') IS NOT NULL
+   AND to_regclass('control.oauth_dcr_active_created_idx') IS NOT NULL AS postcheck_ok
   FROM pg_proc
  WHERE oid IN (
    to_regprocedure('control.oauth_code_issue(bytea,text,text,text,text,uuid,uuid,uuid,text[],integer)'),
-   to_regprocedure('control.oauth_dcr_register(text,text[],jsonb,bigint)')
+   to_regprocedure('control.oauth_dcr_register(text,text[],jsonb,bytea[],bigint,bigint,integer)')
  )
 """
-rollback_or_forward_fix = "Forward fix. Restore the 0268 exact redirect predicate if port variation must be withdrawn."
+rollback_or_forward_fix = "Forward fix. Restore the 0268 exact redirect predicate if needed. Roll back the gateway before replacing or removing the DCR door. The grant lookup and active DCR index can then be removed if unused. Preserve registry rows and source tags."
 backup_restore_requirement = "No existing data or grants change. The new DCR door grants EXECUTE to role_gateway only."

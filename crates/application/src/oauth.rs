@@ -24,6 +24,17 @@ use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+/// Configured occupancy limits for unconsented dynamic clients (§78.1).
+#[derive(Clone, Copy)]
+pub struct RegistrationBudget {
+    /// Maximum occupied slots across all sources.
+    pub max_unused: i64,
+    /// Maximum occupied slots per trusted source.
+    pub max_unused_per_ip: i64,
+    /// Seconds after registration for which an unused client occupies capacity.
+    pub unused_ttl_seconds: i32,
+}
+
 /// Baseline recommended OAuth scopes: one application table (M02 §14).
 pub const SUPPORTED_SCOPES: [&str; 5] = [
     "context:read",
