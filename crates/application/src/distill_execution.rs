@@ -804,7 +804,6 @@ async fn settle_failed_call<R: DistillPorts>(
             dispatcher
                 .runtime
                 .retry_backoff(dispatch.lease_seconds, attempt)
-                * (dispatcher.retry_jitter)()
         },
         |hint| hint.as_secs_f64(),
     );
