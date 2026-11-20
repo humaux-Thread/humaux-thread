@@ -1,5 +1,5 @@
 //! `gateway::tests::mcp_gateway` — Native MCP -> Gateway actual PostgreSQL acceptance.
-//! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-infra-cell, humaux-local-secret-scan, humaux-projection, humaux-protocol, humaux-retrieval, humaux-retrieval-provider, humaux-retrieval-worker, humaux-telemetry, humaux-testkit, postgres, serde_json, sha2, time, tokio, uuid]; services=[PostgreSQL(role_consolidation_worker), PostgreSQL(role_gateway) r=[control.audit_events, control.quota_windows, control.usage_reservations, control.users, ops.commit_seq_seq, private.events, private.evidence_affects, private.evidence_sources, private.evidence_subjects, private.identity_note_materializations, private.note_heads, private.subject_keys, private.task_binding_grants, public.humaux_test_restore_fault_, public.humaux_test_supersede_fault_] w=[control.api_keys, control.confirm_tokens, control.memberships, control.operation_receipts, control.private_reasoning_domains, control.tenants, control.workspace_memberships, control.workspaces, coord.task_runs, coord.tasks, ops.memory_lifecycle_events, ops.outbox, ops.selection_snapshots, private.context_bindings, private.continuity_projects, private.distill_candidates, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_affects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_subject_presence, private.memory_subjects, private.subjects, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log, projection.tenant_placements] x=[control.bump_user_security_epoch, control.onboard_workspace, control.set_workspace_membership], PostgreSQL(role_retrieval_worker), Qdrant(*), UDS(retrieval-worker), UDS(serve), subprocess(humaux-gateway), subprocess(kill), HTTP(gateway)]; env=[HUMAUX_GATEWAY_DEPLOYMENT, CARGO_BIN_EXE_humaux-gateway, CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY, HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH, HUMAUX_GATEWAY_ALLOWED_HOSTS, HUMAUX_GATEWAY_ALLOWED_ORIGINS, HUMAUX_GATEWAY_BIND_ADDR, HUMAUX_GATEWAY_CONFIRM_TOKEN_TTL_SECONDS, HUMAUX_GATEWAY_CONTEXT_MANDATORY_TOKENS, HUMAUX_GATEWAY_CONTEXT_TOTAL_TOKENS, HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX, HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP, HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS, HUMAUX_GATEWAY_FINALIZE_TIMEOUT_SECONDS, HUMAUX_GATEWAY_GLOBAL_DENYLIST, HUMAUX_GATEWAY_GLOBAL_EMERGENCY_ALLOWLIST, HUMAUX_GATEWAY_HANDLER_TIMEOUT_SECONDS, HUMAUX_GATEWAY_MAX_FORWARDED_HOPS, HUMAUX_GATEWAY_MAX_REQUEST_BODY_BYTES, HUMAUX_GATEWAY_METRICS_ADDR, HUMAUX_GATEWAY_MOOD_HALF_LIFE_SECONDS, HUMAUX_GATEWAY_PG_ACQUIRE_TIMEOUT_MS, HUMAUX_GATEWAY_PG_DSN, HUMAUX_GATEWAY_PG_IDLE_IN_TRANSACTION_TIMEOUT_MS, HUMAUX_GATEWAY_PG_IDLE_TIMEOUT_SECONDS, HUMAUX_GATEWAY_PG_MAX_LIFETIME_SECONDS, HUMAUX_GATEWAY_PG_POOL_MAX_CONNECTIONS, HUMAUX_GATEWAY_PG_POOL_MIN_CONNECTIONS, HUMAUX_GATEWAY_PG_STATEMENT_TIMEOUT_MS, HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS, HUMAUX_GATEWAY_RATE_LOCK_TIMEOUT_MS, HUMAUX_GATEWAY_RATE_PREAUTH_IPV6_PREFIX_BITS, HUMAUX_GATEWAY_READINESS_REFRESH_SECONDS, HUMAUX_GATEWAY_REMEMBER_DATA_CLASS, HUMAUX_GATEWAY_REMEMBER_DOMAIN, HUMAUX_GATEWAY_REMEMBER_EVENT_KIND, HUMAUX_GATEWAY_REMEMBER_PROJECTION_KIND, HUMAUX_GATEWAY_REMEMBER_PROJECTION_VERSION, HUMAUX_GATEWAY_REMEMBER_REASONING_DOMAIN_ID, HUMAUX_GATEWAY_REMEMBER_SCOPE_KIND, HUMAUX_GATEWAY_REMEMBER_TOKEN_TTL_SECONDS, HUMAUX_GATEWAY_REMEMBER_VISIBILITY_CLASS, HUMAUX_GATEWAY_REPLAY_TTL_SECONDS, HUMAUX_GATEWAY_RESERVATION_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_PROFILE_TOP_K, HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS, HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN, HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256, HUMAUX_TEST_GITLEAKS_VERSION, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::confirm_token_repo, adapters::consolidate_repo, adapters::context_repo, adapters::coord_repo, adapters::forget_repo, adapters::grep_repo, adapters::membership_repo, adapters::operation_receipt, adapters::postgres, adapters::qdrant, adapters::remember, adapters::subject_repo, adapters::tests::support::operation_receipt_fixture, application::recall_read, application::retrieval_embedding_port, contracts::retrieval_config, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::selection, domain::subject, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, gateway::tests::support::guard_limiter, humaux-local-secret-scan, humaux-telemetry, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::card, projection::stream, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval-provider::adapters, retrieval-provider::contract, retrieval-worker::rpc, retrieval::request, telemetry::metrics]
+//! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-infra-cell, humaux-local-secret-scan, humaux-projection, humaux-protocol, humaux-retrieval, humaux-retrieval-provider, humaux-retrieval-worker, humaux-telemetry, humaux-testkit, postgres, serde_json, sha2, time, tokio, uuid]; services=[PostgreSQL(role_consolidation_worker), PostgreSQL(role_gateway) r=[control.audit_events, control.quota_windows, control.usage_reservations, control.users, ops.commit_seq_seq, private.events, private.evidence_affects, private.evidence_sources, private.evidence_subjects, private.identity_note_materializations, private.note_heads, private.subject_keys, private.task_binding_grants, public.humaux_test_restore_fault_, public.humaux_test_supersede_fault_] w=[control.api_keys, control.confirm_tokens, control.memberships, control.operation_receipts, control.private_reasoning_domains, control.tenants, control.workspace_memberships, control.workspaces, coord.task_runs, coord.tasks, ops.memory_lifecycle_events, ops.outbox, ops.selection_snapshots, private.context_bindings, private.continuity_projects, private.distill_candidates, private.evidence_objects, private.evidence_projects, private.evidence_task_runs, private.memory_affects, private.memory_consolidation_inputs, private.memory_consolidation_runs, private.memory_evidence, private.memory_records, private.memory_subject_presence, private.memory_subjects, private.subjects, projection.private_memory_points, projection.stream_checkpoints, projection.stream_log, projection.tenant_placements] x=[control.bump_user_security_epoch, control.onboard_workspace, control.set_workspace_membership], PostgreSQL(role_retrieval_worker), Qdrant(*), UDS(retrieval-worker), UDS(serve), subprocess(humaux-gateway), subprocess(kill), HTTP(gateway)]; env=[HUMAUX_GATEWAY_DEPLOYMENT, CARGO_BIN_EXE_humaux-gateway, CARGO_PKG_VERSION, HUMAUX_BUILD_GIT_SHA, HUMAUX_BUILD_TIME, HUMAUX_GATEWAY_ADMISSION_BODY_READ_TIMEOUT_MS, HUMAUX_GATEWAY_ADMISSION_CONCURRENCY, HUMAUX_GATEWAY_ADMISSION_MAX_WAIT_MS, HUMAUX_GATEWAY_ADMISSION_PER_KEY_LIMIT, HUMAUX_GATEWAY_ADMISSION_QUEUE_DEPTH, HUMAUX_GATEWAY_ALLOWED_HOSTS, HUMAUX_GATEWAY_ALLOWED_ORIGINS, HUMAUX_GATEWAY_BIND_ADDR, HUMAUX_GATEWAY_CONFIRM_TOKEN_TTL_SECONDS, HUMAUX_GATEWAY_CONTEXT_MANDATORY_TOKENS, HUMAUX_GATEWAY_CONTEXT_TOTAL_TOKENS, HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX, HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP, HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS, HUMAUX_GATEWAY_FINALIZE_TIMEOUT_SECONDS, HUMAUX_GATEWAY_GLOBAL_DENYLIST, HUMAUX_GATEWAY_GLOBAL_EMERGENCY_ALLOWLIST, HUMAUX_GATEWAY_HANDLER_TIMEOUT_SECONDS, HUMAUX_GATEWAY_MAX_FORWARDED_HOPS, HUMAUX_GATEWAY_MAX_REQUEST_BODY_BYTES, HUMAUX_GATEWAY_METRICS_ADDR, HUMAUX_GATEWAY_MOOD_HALF_LIFE_SECONDS, HUMAUX_GATEWAY_PG_ACQUIRE_TIMEOUT_MS, HUMAUX_GATEWAY_PG_DSN, HUMAUX_GATEWAY_PG_IDLE_IN_TRANSACTION_TIMEOUT_MS, HUMAUX_GATEWAY_PG_IDLE_TIMEOUT_SECONDS, HUMAUX_GATEWAY_PG_MAX_LIFETIME_SECONDS, HUMAUX_GATEWAY_PG_POOL_MAX_CONNECTIONS, HUMAUX_GATEWAY_PG_POOL_MIN_CONNECTIONS, HUMAUX_GATEWAY_PG_STATEMENT_TIMEOUT_MS, HUMAUX_GATEWAY_PROJECTION_LAG_SECONDS, HUMAUX_GATEWAY_RATE_LOCK_TIMEOUT_MS, HUMAUX_GATEWAY_RATE_PREAUTH_IPV6_PREFIX_BITS, HUMAUX_GATEWAY_READINESS_REFRESH_SECONDS, HUMAUX_GATEWAY_REMEMBER_DATA_CLASS, HUMAUX_GATEWAY_REMEMBER_DOMAIN, HUMAUX_GATEWAY_REMEMBER_EVENT_KIND, HUMAUX_GATEWAY_REMEMBER_PROJECTION_KIND, HUMAUX_GATEWAY_REMEMBER_PROJECTION_VERSION, HUMAUX_GATEWAY_REMEMBER_REASONING_DOMAIN_ID, HUMAUX_GATEWAY_REMEMBER_SCOPE_KIND, HUMAUX_GATEWAY_REMEMBER_TOKEN_TTL_SECONDS, HUMAUX_GATEWAY_REMEMBER_VISIBILITY_CLASS, HUMAUX_GATEWAY_REPLAY_TTL_SECONDS, HUMAUX_GATEWAY_RESERVATION_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_PROFILE_TOP_K, HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS, HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN, HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256, HUMAUX_TEST_GITLEAKS_VERSION, HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::confirm_token_repo, adapters::consolidate_repo, adapters::context_repo, adapters::coord_repo, adapters::forget_repo, adapters::grep_repo, adapters::membership_repo, adapters::operation_receipt, adapters::postgres, adapters::qdrant, adapters::remember, adapters::subject_repo, adapters::tests::support::operation_receipt_fixture, application::recall_read, application::retrieval_embedding_port, contracts::retrieval_config, domain::affect, domain::audit, domain::authority, domain::confirm, domain::context, domain::dataclass, domain::error, domain::evidence, domain::identity, domain::ids, domain::memory, domain::selection, domain::subject, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::recall, gateway::remember, gateway::retrieval_embedding_client, gateway::tests::support::guard_limiter, humaux-local-secret-scan, humaux-telemetry, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::card, projection::stream, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval-provider::adapters, retrieval-provider::contract, retrieval-worker::rpc, retrieval::request, telemetry::metrics, testkit::tests::pair::projection_lag_terminal]
 //! Called-by: [cargo-test]
 //! Invariants: [each test wires its own PostgreSQL/Qdrant/UDS fixtures and gateway subprocess; no test depends on state left by another test]
 //! Spec: Baseline §33.10; §34.0.1; ADR-0030; ADR-0031; ADR-0054; ADR-0056
@@ -97,6 +97,9 @@ use operation_receipt_fixture::{
     Fixture, Handle, SYNTHETIC_CREDENTIAL_PEPPER, ScopedContextRecord, SyntheticCredentialScopes,
     SyntheticServiceCredential,
 };
+
+#[path = "../../../crates/testkit/tests/pair/projection_lag_terminal.rs"]
+mod projection_lag_terminal;
 
 const HOST: &str = "mcp.test";
 const ORIGIN: &str = "https://mcp.test";
@@ -3581,6 +3584,59 @@ struct RecallHarness {
 }
 
 fn recall_harness(handle: &mut Handle, tag: &str) -> RecallHarness {
+    recall_harness_with_barrier(handle, tag, None)
+}
+
+#[derive(Default)]
+struct RecallQueryBarrier {
+    armed: AtomicBool,
+    queried: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
+}
+
+struct PausedRecallTransport {
+    inner: Arc<HttpIntraCellTransport>,
+    barrier: Arc<RecallQueryBarrier>,
+}
+
+#[async_trait::async_trait]
+impl IntraCellHttpTransport for PausedRecallTransport {
+    async fn execute(
+        &self,
+        permit: &humaux_infra_cell::CellAccessPermit,
+        request: IntraCellRequest,
+    ) -> Result<IntraCellResponse, humaux_infra_cell::IntraCellError> {
+        let pause = request.method == IntraCellMethod::Post
+            && request.path.contains("/points/query")
+            && self.barrier.armed.swap(false, Ordering::AcqRel);
+        let response = self.inner.execute(permit, request).await?;
+        if pause {
+            assert_eq!(
+                response.status, 200,
+                "race must start from a real Qdrant response"
+            );
+            assert!(
+                response
+                    .json_body
+                    .as_ref()
+                    .is_some_and(|body| body["result"]["points"]
+                        .as_array()
+                        .or_else(|| body["result"].as_array())
+                        .is_some_and(Vec::is_empty)),
+                "the only matching point has not been published: {response:?}",
+            );
+            self.barrier.queried.notify_one();
+            self.barrier.resume.notified().await;
+        }
+        Ok(response)
+    }
+}
+
+fn recall_harness_with_barrier(
+    handle: &mut Handle,
+    tag: &str,
+    barrier: Option<Arc<RecallQueryBarrier>>,
+) -> RecallHarness {
     let prefix = format!("c30{}", &Uuid::now_v7().simple().to_string()[..12]);
     let wire = format!("{prefix}.{}", "c".repeat(32));
     let credential = handle.seed_synthetic_service_credential_and_window(
@@ -3628,9 +3684,17 @@ fn recall_harness(handle: &mut Handle, tag: &str) -> RecallHarness {
             Duration::from_secs(30),
         ),
     );
+    let paused = barrier.is_some();
+    let query_transport: Arc<dyn IntraCellHttpTransport> = match barrier {
+        Some(barrier) => Arc::new(PausedRecallTransport {
+            inner: transport.clone(),
+            barrier,
+        }),
+        None => transport.clone(),
+    };
     let semantic = SemanticRecallRuntime::new(
         embedding_port,
-        transport.clone(),
+        query_transport,
         registry.clone(),
         SemanticRecallVersions {
             embedding_version: "embed-v1".to_owned(),
@@ -3640,6 +3704,11 @@ fn recall_harness(handle: &mut Handle, tag: &str) -> RecallHarness {
         None,
     )
     .expect("trusted semantic runtime");
+    let semantic = if paused {
+        semantic.with_text_processing_policy(|_| false)
+    } else {
+        semantic
+    };
     let app = application(handle, runtime).with_semantic_recall(semantic);
     RecallHarness {
         transport,
@@ -3648,6 +3717,209 @@ fn recall_harness(handle: &mut Handle, tag: &str) -> RecallHarness {
         bearer: credential.bearer,
         app: Some(app),
     }
+}
+
+/// ADR-0134: the same issued token terminates with a missing anchor, succeeds with its PG
+/// overlay, and keeps that overlay when the same serving version advances after the query.
+#[test]
+#[ignore = "lane(a:request_guard) requires isolated PostgreSQL, pinned scanner and disposable Qdrant"]
+fn strict_recall_projection_lag_and_post_query_frontier() {
+    run_db_fixture::<Fixture, _>(
+        "strict_recall_projection_lag_and_post_query_frontier",
+        |mut handle| {
+            let _cleanup = SemanticProjectionCleanup {
+                owner: handle.owner_client().expect("semantic cleanup owner"),
+                tenant_id: handle.tenant_id,
+            };
+            let barrier = Arc::new(RecallQueryBarrier::default());
+            let mut harness =
+                recall_harness_with_barrier(&mut handle, "strict_ryw", Some(barrier.clone()));
+            let query = "staged strict recall witness";
+            let mut stale = seed_recall_points(&mut handle, vec![(semantic_vector(query), false)]);
+            stale[0].seq = 41;
+            seed_semantic_projection_ledger(&mut handle, 40);
+            seed_ledger_row(&mut handle, 41, Some(stale[0].record.evidence_id));
+            let tenant = handle.tenant_id;
+            let workspace = handle.workspace_id;
+            handle
+                .admin
+                .execute(
+                    "UPDATE projection.stream_checkpoints SET projection_highwater=41
+              WHERE tenant_id=$1 AND scope_kind='workspace' AND scope_id=$2
+                AND domain='knowledge' AND projection_kind='ingest' AND projection_version='v1'",
+                    &[&tenant, &workspace],
+                )
+                .expect("pin the serving highwater before the candidate query");
+
+            let runtime = handle.rt.handle().clone();
+            runtime.block_on(async {
+            create_semantic_collection(&harness.transport, &harness.registry, &harness.collection).await;
+            upsert_recall_points(&harness, &handle, &stale).await;
+            let (address, server) = start(harness.app.take().expect("one Gateway")).await;
+            let bearer = harness.bearer.as_str();
+            let (status, response) = raw_request(
+                address,
+                &tool_call_headers("memory", bearer),
+                &rpc(1, "tools/call", call_params("memory", json!({
+                    "action": "note_put", "content": query, "note_kind": "note",
+                    "idempotency_key": format!("strict-{}", Uuid::now_v7()), "workspace_id": workspace,
+                }))),
+            ).await;
+            assert_eq!(status, 200, "{response}");
+            let stored = assert_tool_response(&response, ToolName::Memory);
+            let token = stored["consistency_token"].as_str().expect("opaque sequence 42 token");
+            let uuid = |field: &str| Uuid::parse_str(stored[field].as_str().expect(field)).expect(field);
+            let record = ScopedContextRecord {
+                memory_id: uuid("memory_id"),
+                evidence_id: uuid("evidence_id"),
+                binding_id: Uuid::nil(),
+            };
+            let evidence_id = record.evidence_id;
+            let point = Uuid::new_v4();
+            let (outbox_id, commit, event, created_at, outbox_status) = tokio::task::block_in_place(|| {
+                seed_semantic_registry_row(&mut handle, &record, point);
+                assert_eq!(handle.admin.execute(
+                    "UPDATE projection.stream_log SET issued_at=now()-interval '5 minutes'
+                      WHERE tenant_id=$1 AND scope_id=$2 AND projection_version='v1'
+                        AND stream_seq=42 AND state='ISSUED'",
+                    &[&tenant, &workspace],
+                ).expect("age the still-issued token ticket"), 1);
+                let row = handle.admin.query_one(
+                    "DELETE FROM ops.outbox WHERE tenant_id=$1 AND evidence_id=$2 AND stream_seq=42
+                     RETURNING outbox_id, commit_seq, event_type, created_at, status",
+                    &[&tenant, &evidence_id],
+                ).expect("remove only the disposable exact outbox anchor");
+                (row.get::<_, Uuid>(0), row.get::<_, i64>(1), row.get::<_, String>(2),
+                 row.get::<_, std::time::SystemTime>(3), row.get::<_, String>(4))
+            });
+            let permissive = json!({"query":query, "mode":"semantic", "workspace_id":workspace});
+            let mut strict = permissive.clone();
+            strict["consistency_token"] = json!(token);
+            assert_projection_lag_pair(address, bearer, permissive, strict.clone(), stale[0].record.memory_id).await;
+            tokio::task::block_in_place(|| {
+                assert_eq!(handle.admin.execute(
+                    "INSERT INTO ops.outbox
+                        (outbox_id, tenant_id, commit_seq, stream_seq, event_type, evidence_id, created_at, status)
+                     VALUES ($1, $2, $3, 42, $4, $5, $6, $7)",
+                    &[&outbox_id, &tenant, &commit, &event, &evidence_id, &created_at, &outbox_status],
+                ).expect("restore the token's exact outbox anchor"), 1);
+            });
+            let (status, covered) = recall_call(address, Some(bearer), strict.clone()).await;
+            assert_eq!(status, 200, "{covered}");
+            let items = assert_tool_response(&covered, ToolName::Recall)["items"].as_array().expect("overlay items");
+            assert!(items.iter().any(|item| item["evidence_id"] == evidence_id.to_string()
+                && item["stream_seq"] == 42 && item["processing_state"] == "ISSUED"), "{covered}");
+
+            let late = RecallPoint { record, point, vector: semantic_vector(query),
+                status: AuthorityStatus::Active, archived: false, seq: 42 };
+            assert_late_frontier_overlay(&mut handle, &harness, address, strict, &barrier, late).await;
+            server.abort();
+            delete_semantic_collection(&harness.transport, &harness.registry, &harness.collection).await;
+        });
+        },
+    );
+}
+
+async fn assert_projection_lag_pair(
+    address: SocketAddr,
+    bearer: &str,
+    permissive: Value,
+    strict: Value,
+    stale_id: Uuid,
+) {
+    let (status, answered) = recall_call(address, Some(bearer), permissive).await;
+    assert_eq!(status, 200, "{answered}");
+    let result = assert_tool_response(&answered, ToolName::Recall);
+    assert_eq!(recalled_memory_ids(result), vec![stale_id.to_string()]);
+    assert!(
+        result["completeness"]["degradations"]
+            .as_array()
+            .expect("degradations")
+            .contains(&json!("PROJECTION_LAG")),
+        "{answered}"
+    );
+
+    let (status, refused) = recall_call(address, Some(bearer), strict).await;
+    assert_eq!(status, 200, "{refused}");
+    let error = &refused["result"]["structuredContent"];
+    projection_lag_terminal::assert_terminal_projection_lag(
+        refused["result"]["isError"] == true,
+        error["code"].as_str(),
+        error.get("items").is_some()
+            || error.get("degradations").is_some()
+            || error.get("completeness").is_some()
+            || error.get("result").is_some(),
+        &refused.to_string(),
+    );
+}
+
+async fn assert_late_frontier_overlay(
+    handle: &mut Handle,
+    harness: &RecallHarness,
+    address: SocketAddr,
+    strict: Value,
+    barrier: &RecallQueryBarrier,
+    late: RecallPoint,
+) {
+    let tenant = handle.tenant_id;
+    let workspace = handle.workspace_id;
+    let memory_id = late.record.memory_id.to_string();
+    // Clear the stale candidate so the only authorized match in the race is the seq 42 write.
+    delete_semantic_collection(&harness.transport, &harness.registry, &harness.collection).await;
+    create_semantic_collection(&harness.transport, &harness.registry, &harness.collection).await;
+    barrier.armed.store(true, Ordering::Release);
+    let publish = async {
+        tokio::time::timeout(Duration::from_secs(8), barrier.queried.notified())
+            .await
+            .expect("real Qdrant query must stop before final hydration");
+        upsert_recall_points(harness, handle, &[late]).await;
+        tokio::task::block_in_place(|| {
+            let mut txn = handle
+                .admin
+                .transaction()
+                .expect("begin projection promotion");
+            // dep: PostgreSQL(role_retrieval_worker) — settle the real fixture as the authorized writer.
+            txn.batch_execute("SET LOCAL ROLE role_retrieval_worker")
+                .expect("fixture retrieval role");
+            txn.query_one(
+                "SELECT set_config('humaux.tenant_id', $1, true)",
+                &[&tenant.to_string()],
+            )
+            .expect("bind the disposable fixture tenant");
+            assert_eq!(
+                txn.execute(
+                    "UPDATE projection.stream_log SET state='DONE'
+                 WHERE tenant_id=$1 AND scope_kind='workspace' AND scope_id=$2
+                   AND projection_version='v1' AND stream_seq=42",
+                    &[&tenant, &workspace],
+                )
+                .expect("settle the exact late ticket"),
+                1
+            );
+            assert_eq!(
+                txn.execute(
+                    "UPDATE projection.stream_checkpoints SET projection_highwater=42
+                 WHERE tenant_id=$1 AND scope_kind='workspace' AND scope_id=$2
+                   AND projection_version='v1' AND projection_highwater=41",
+                    &[&tenant, &workspace],
+                )
+                .expect("publish 42 only after the candidate query"),
+                1
+            );
+            txn.commit().expect("commit post-query frontier advance");
+        });
+        barrier.resume.notify_one();
+    };
+    let ((status, raced), ()) =
+        tokio::join!(recall_call(address, Some(&harness.bearer), strict), publish);
+    assert_eq!(status, 200, "{raced}");
+    let result = assert_tool_response(&raced, ToolName::Recall);
+    assert_eq!(result["completeness"]["candidate_count"], 0, "{raced}");
+    assert_eq!(
+        recalled_memory_ids(result),
+        vec![memory_id],
+        "late write must come from the PG overlay: {raced}"
+    );
 }
 
 /// One fixture memory the harness indexes: the PG row, its opaque point, and the vector and
