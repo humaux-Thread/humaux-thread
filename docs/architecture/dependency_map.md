@@ -16555,6 +16555,13 @@ modules naming it:
 - `protocol::tests::mcp_http`
 - `tests`
 
+### humaux-protocol → `humaux-telemetry` (dev)
+why: exercise production degradation wire spelling in the HTTP contract test
+
+modules naming it:
+- `protocol::tests::error_degrade_exclusive`
+- `tests`
+
 ### humaux-public-pool → `humaux-application` (normal)
 why: public dispatch inbound use cases and outbound port
 
