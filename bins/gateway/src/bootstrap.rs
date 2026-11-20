@@ -51,7 +51,7 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::oauth_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::oauth_exchange, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::cache, telemetry::metrics]
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::confirm_token_repo, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::oauth_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::oauth_exchange, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::auth, gateway::context, gateway::guard, gateway::main, gateway::mcp_application, gateway::oauth_http, gateway::memory, gateway::recall, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
 //! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7; ADR-0125
@@ -74,6 +74,7 @@ use std::{
 
 use humaux_adapters::{
     attribution_repo::AttributionLadder,
+    confirm_token_repo,
     email::RecipientAllowlist,
     postgres::{PoolSettings, RuntimeDbPool, SessionLock, commercial_write_quota},
     retrieve::{TokenKeys, install_token_keys},
@@ -88,7 +89,9 @@ use humaux_contracts::config_registry::{
 use humaux_contracts::retrieval_config::{
     RERANK_TIMEOUT_MS, resolve_registered_retrieval_profile, retrieval_profile_registry,
 };
-use humaux_domain::{context::ContextBudget, dataclass::DataClass, identity::VisibilityClass};
+use humaux_domain::{
+    context::ContextBudget, dataclass::DataClass, error::ErrorCode, identity::VisibilityClass,
+};
 use humaux_infra_cell::{
     CallerId, CellAccessMode, CellCidr, CellId, DEFAULT_MAX_RESPONSE_BYTES, HttpIntraCellTransport,
     IntraCellResource, IntraCellResourceRegistry, ResourceEntry,
@@ -109,7 +112,7 @@ use crate::{
     auth_pages::AuthPagesConfig,
     cached_embedding::{CachedEmbeddingPort, GenerationStamp},
     context::ContextBootstrap,
-    guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
+    guard::{ConfirmationMint, GatewayGuard, GuardRatePolicies, GuardSettings},
     mcp_application::GatewayMcpApplication,
     oauth_http::OAuthHttpConfig,
     recall::{SemanticRecallRuntime, SemanticRecallVersions},
@@ -2384,6 +2387,36 @@ pub(crate) async fn begin_oauth_consent(
     })
     .await?;
     Ok(Box::new(txn))
+}
+
+impl GatewayGuard {
+    /// §83: assemble the guard with the knowledge lifecycle confirmation adapter.
+    pub fn new(pool: RuntimeDbPool, settings: GuardSettings) -> Result<Self, ErrorCode> {
+        let pool = Arc::new(pool);
+        let mint_pool = Arc::clone(&pool);
+        Self::with_confirmation_minter(
+            pool,
+            settings,
+            Box::new(move |mint: ConfirmationMint<'_>| {
+                let pool = Arc::clone(&mint_pool);
+                Box::pin(async move {
+                    confirm_token_repo::mint_with_audit(
+                        &pool,
+                        mint.authorization,
+                        mint.op,
+                        mint.target_id,
+                        mint.successor_id,
+                        mint.ttl,
+                        mint.nonce_sha256,
+                        mint.request_sha256,
+                        mint.finished_audit,
+                    )
+                    .await
+                    .map(|minted| minted.expires_at)
+                })
+            }),
+        )
+    }
 }
 
 /// Wire standalone §77 audit to the gateway runtime pool.

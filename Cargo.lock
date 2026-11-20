@@ -1386,6 +1386,7 @@ dependencies = [
  "axum",
  "humaux-application",
  "humaux-domain",
+ "humaux-telemetry",
  "jsonschema",
  "rmcp",
  "serde",

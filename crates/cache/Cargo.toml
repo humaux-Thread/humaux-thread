@@ -17,7 +17,7 @@ humaux-domain = { version = "0.1.0", path = "../domain" }
 # why: the four §51 cache metric families exercised by integration fixtures; used-by: [tests]
 humaux-telemetry = { version = "0.1.0", path = "../telemetry" }
 # §67.2: the in-process cache is moka; D1 of the M12 design note. `future` gives async single-flight (`try_get_with`).
-# why: byte-weighted, TTL-bound, single-flight in-process cache; used-by: [cache::bounded]
+# why: byte-weighted, TTL-bound, single-flight in-process cache; used-by: [cache::bounded, cache::region]
 moka = { version = "0.12.16", default-features = false, features = ["future"] }
 
 [dev-dependencies]

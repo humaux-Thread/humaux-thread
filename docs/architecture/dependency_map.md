@@ -1916,6 +1916,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.api_key_lookup`
 - executes `control.api_key_rehash`
 - executes `control.api_key_touch_last_used`
+- executes `control.api_key_touch_last_used_batch`
 - service `PostgreSQL(any)`
 
 #### `adapters::derived_job_lease`
@@ -2341,6 +2342,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `cache::bounded`
 
 #### `cache::key`
+
+#### `cache::region`
 
 #### `contracts::config_registry`
 - env `HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS`
@@ -5708,6 +5711,15 @@ executed by:
 - (no process): `gateway::tests::service_credentials`
 - process(humaux-gateway): `adapters::credential_repo`
 
+### `control.api_key_touch_last_used_batch`
+read by:
+
+written by:
+
+executed by:
+- (no process): `gateway::tests::service_credentials`
+- process(humaux-gateway): `adapters::credential_repo`
+
 ### `control.api_keys`
 read by:
 - (no process): `adapters::tests::credential_grants`
@@ -7593,6 +7605,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::provisioning`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -10346,6 +10359,7 @@ read by:
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::note_put`
+- (no process): `adapters::tests::note_reads`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::read_decoupling`
@@ -10458,6 +10472,7 @@ written by:
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
+- (no process): `adapters::tests::note_reads`
 - (no process): `adapters::tests::offset_pagination_positive_control`
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `adapters::tests::outbox_batch_remember`
@@ -13393,6 +13408,7 @@ executed by:
 - `private-worker::main`
 - `private-worker::tests::derived_dispatch_e2e`
 - `private-worker::tests::ops_listener`
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `retrieval-worker::main`
 - `retrieval-worker::tests::ops_listener`
@@ -13602,6 +13618,7 @@ executed by:
 - `adapters::tests::memory_evidence_grounding`
 - `adapters::tests::memory_in_project`
 - `adapters::tests::note_put`
+- `adapters::tests::note_reads`
 - `adapters::tests::note_text_once`
 - `adapters::tests::plan_catalog`
 - `adapters::tests::processing_status`
@@ -16191,11 +16208,13 @@ why: byte-weighted, TTL-bound, single-flight in-process cache
 
 modules naming it:
 - `cache::bounded`
+- `cache::region`
 
 ### humaux-cache → `tokio` (dev)
 why: async runtime that drives the cache gate tests
 
 modules naming it:
+- `cache::region`
 - `cache::tests::bounds`
 - `cache::tests::embedding_key`
 - `cache::tests::failure`
@@ -16511,6 +16530,7 @@ modules naming it:
 - `protocol::mcp_catalog`
 - `protocol::mcp_profile`
 - `protocol::page`
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
@@ -16544,6 +16564,7 @@ why: HTTP router the native MCP adapter is built on
 
 modules naming it:
 - `protocol::mcp`
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `tests`
 
@@ -16552,6 +16573,7 @@ why: object-safe async traits at the rmcp/Axum boundary
 
 modules naming it:
 - `protocol::mcp`
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `tests`
 
@@ -16570,6 +16592,7 @@ modules naming it:
 - `protocol::mcp_catalog`
 - `protocol::mcp_profile`
 - `protocol::page`
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
@@ -16590,6 +16613,7 @@ modules naming it:
 why: async runtime the Axum/rmcp server and its tests run on
 
 modules naming it:
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `tests`
 
@@ -16604,6 +16628,13 @@ why: MCP request/session id generation
 modules naming it:
 - `protocol::mcp`
 - `protocol::tests::mcp_http`
+- `tests`
+
+### humaux-protocol → `humaux-telemetry` (dev)
+why: exercise production degradation wire spelling in the HTTP contract test
+
+modules naming it:
+- `protocol::tests::error_degrade_exclusive`
 - `tests`
 
 ### humaux-public-pool → `humaux-application` (normal)
@@ -17122,6 +17153,7 @@ modules naming it:
 - `testkit::tests::fault::sparse_lane_unavailable`
 - `testkit::tests::metrics::humaux_retrieval_requests_total`
 - `testkit::tests::metrics::retrieval_completeness_total`
+- `testkit::tests::pair::projection_lag_degraded`
 - `tests`
 
 ### humaux-testkit → `humaux-telemetry` (dev)
@@ -17666,6 +17698,7 @@ modules naming it:
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
 - `gateway::tests::semantic_recall_wiring`
+- `gateway::tests::service_credentials`
 - `tests`
 
 ### humaux-gateway → `humaux-contracts` (normal)
@@ -17784,6 +17817,7 @@ modules naming it:
 - `gateway::bootstrap`
 - `gateway::cached_embedding`
 - `gateway::tests::recall_embedding_cache`
+- `gateway::tests::service_credentials`
 - `tests`
 
 ### humaux-gateway → `humaux-infra-cell` (normal)
@@ -21124,6 +21158,13 @@ services (computed):
 
 default run:
 
+### `crates/protocol/tests/error_degrade_exclusive.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
 ### `crates/protocol/tests/mcp_http.rs`
 db-bound (default run): no
 
@@ -21381,9 +21422,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3938` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3943` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3948` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3971` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3976` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3981` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection

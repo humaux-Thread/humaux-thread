@@ -3,7 +3,7 @@
 //!   std-only HTTP probe behind `--readyz` / `--livez`, and the renamed-key resolution.
 //! Depends-on: crates=[]; services=[HTTP(loopback)]; env=[]; modules=[telemetry::metrics]
 //! Called-by: [crate(humaux-adapters), crate(humaux-admin), crate(humaux-cache), crate(humaux-consolidation-worker), crate(humaux-gateway), crate(humaux-maintenance),
-//!   crate(humaux-private-worker), crate(humaux-retrieval), crate(humaux-retrieval-worker), crate(humaux-testkit), crate(xtask)]
+//!   crate(humaux-private-worker), crate(humaux-protocol), crate(humaux-retrieval), crate(humaux-retrieval-worker), crate(humaux-testkit), crate(xtask)]
 //! Invariants: [no function here reads the environment (§78.3): each binary passes its own build values and key
 //!   values in; `version_line` answers only for a 40-hex sha; `probe_http` exits 0 only on a 200 status line]
 //! Spec: Baseline §3; §4.4; §58; §78.3; ADR-0037; ADR-0066 D-D; ADR-0066 D-N; ADR-0066 D-O

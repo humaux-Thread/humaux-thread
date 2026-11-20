@@ -3,9 +3,9 @@
 # value to be a module id M01..M29 (ADR-0078 adds M29).
 #
 # Home module = the module whose boundary section names the crate as a whole; a crate that hosts several modules'
-# files carries the module that owns its crate-level contract and is marked `shared` below. The file-level map
-# (every .rs file -> exactly one module) is card M01-5 and replaces the `shared` rows; until then a `shared` row
-# is a placeholder, not a ruling on who owns a given file.
+# files carries the module that owns its crate-level contract and is marked `shared` below.
+# File ownership for crates/ and bins/ is declared in modules.toml and checked by HEX-COVERAGE
+# (ADR-0130 D6). The crate home remains a legacy M-number coordinate, independent of file ownership.
 
 # M29 (work_attribution, ADR-0078) spans context modules in domain/application/adapters/gateway.
 # Context boundaries live within layered crates; their existing crate homes remain unchanged.

@@ -96,6 +96,413 @@ fn m03_2_no_pg_rate_path(root: &Path) -> Verdict {
     }
 }
 
+const REQUEST_GUARD_SOURCE: &str = "bins/gateway/src/guard.rs";
+
+type GuardPath = Vec<String>;
+
+/// Scan each module separately so nested paths retain their own crate scope.
+#[derive(Default)]
+struct GuardSourcePaths<'ast> {
+    paths: Vec<GuardPath>,
+    modules: Vec<&'ast syn::ItemMod>,
+    locals: BTreeMap<String, GuardPath>,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for GuardSourcePaths<'ast> {
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        let mut imports = Vec::new();
+        hex_imports(&item.tree, Vec::new(), &mut imports);
+        for (alias, mut path) in imports {
+            if alias == "*" {
+                path.push(alias);
+            }
+            self.record_path(path);
+        }
+    }
+
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        self.record_path(
+            path.segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect(),
+        );
+        syn::visit::visit_path(self, path);
+    }
+
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        self.modules.push(item);
+    }
+
+    fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+        self.record_path(guard_extern_binding(item).1);
+    }
+
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        let outer = self.locals.clone();
+        for stmt in &block.stmts {
+            match stmt {
+                syn::Stmt::Item(syn::Item::Use(item)) => {
+                    let mut imports = Vec::new();
+                    hex_imports(&item.tree, Vec::new(), &mut imports);
+                    self.locals.extend(imports.into_iter().map(|(alias, path)| {
+                        (alias.strip_prefix("r#").unwrap_or(&alias).to_owned(), path)
+                    }));
+                }
+                syn::Stmt::Item(syn::Item::ExternCrate(item)) => {
+                    let (alias, target) = guard_extern_binding(item);
+                    if alias != "_" {
+                        self.locals.insert(alias, target);
+                    }
+                }
+                _ => {}
+            }
+        }
+        syn::visit::visit_block(self, block);
+        self.locals = outer;
+    }
+
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        self.macro_paths(mac.tokens.clone());
+        syn::visit::visit_macro(self, mac);
+    }
+}
+
+impl GuardSourcePaths<'_> {
+    fn record_path(&mut self, mut path: GuardPath) {
+        self.paths.push(path.clone());
+        let mut seen = BTreeSet::new();
+        while let [alias, rest @ ..] = path.as_slice()
+            && let Some(target) = self.locals.get(alias.strip_prefix("r#").unwrap_or(alias))
+            && seen.insert(alias.clone())
+        {
+            path = target.iter().chain(rest).cloned().collect();
+            self.paths.push(path.clone());
+        }
+    }
+
+    // ponytail: literal tokens and source imports only; generated code, include!, cfg_attr
+    // module selection and compiler name resolution require an expanded rustc HIR scan.
+    fn macro_paths(&mut self, stream: proc_macro2::TokenStream) {
+        use proc_macro2::{Spacing, TokenTree};
+        let tokens: Vec<_> = stream.into_iter().collect();
+        let mut i = 0;
+        while let Some(token) = tokens.get(i) {
+            i += 1;
+            match token {
+                TokenTree::Group(group) => self.macro_paths(group.stream()),
+                TokenTree::Ident(first) => {
+                    let mut path = vec![first.to_string()];
+                    while let [
+                        TokenTree::Punct(a),
+                        TokenTree::Punct(b),
+                        TokenTree::Ident(next),
+                        ..,
+                    ] = &tokens[i..]
+                        && a.as_char() == ':'
+                        && a.spacing() == Spacing::Joint
+                        && b.as_char() == ':'
+                    {
+                        path.push(next.to_string());
+                        i += 3;
+                    }
+                    self.record_path(path);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn guard_scoped_path(path: &[String], scope: &[String]) -> GuardPath {
+    let path: Vec<_> = path
+        .iter()
+        .map(|part| part.strip_prefix("r#").unwrap_or(part).to_owned())
+        .collect();
+    match path.first().map(String::as_str) {
+        Some("humaux_adapters" | "humaux_gateway") => path,
+        Some("crate" | "self" | "super") => hex_absolute(&path, scope, &BTreeMap::new()),
+        _ => scope.iter().cloned().chain(path).collect(),
+    }
+}
+
+fn guard_extern_binding(item: &syn::ItemExternCrate) -> (String, GuardPath) {
+    use syn::ext::IdentExt;
+    let name = item.ident.unraw().to_string();
+    let alias = item
+        .rename
+        .as_ref()
+        .map_or_else(|| name.clone(), |(_, alias)| alias.unraw().to_string());
+    let target = if name == "self" {
+        "humaux_gateway".into()
+    } else {
+        name
+    };
+    (alias, vec![target])
+}
+
+#[derive(Default)]
+struct GuardModuleGraph {
+    bindings: BTreeMap<GuardPath, BTreeSet<GuardPath>>,
+    exports: BTreeSet<GuardPath>,
+    extern_prelude: BTreeMap<String, GuardPath>,
+    references: BTreeSet<(String, GuardPath)>,
+    loading: BTreeSet<PathBuf>,
+    found_guard: bool,
+}
+
+impl GuardModuleGraph {
+    fn file(
+        &mut self,
+        root: &Path,
+        source: &Path,
+        dir: &Path,
+        scope: &[String],
+    ) -> Result<(), String> {
+        let name = display(root, source);
+        let canonical = source.canonicalize().map_err(|e| format!("{name}: {e}"))?;
+        if !canonical.starts_with(root) || !self.loading.insert(canonical.clone()) {
+            return Err(format!(
+                "{name}: module leaves the checkout or forms a file cycle"
+            ));
+        }
+        let text = fs::read_to_string(&canonical).map_err(|e| format!("{name}: {e}"))?;
+        let parsed = syn::parse_file(&text).map_err(|e| format!("{name}: {e}"))?;
+        let path_base = source.parent().unwrap_or(dir);
+        self.found_guard |= scope.get(1).is_some_and(|module| module == "guard");
+        self.items(root, source, dir, path_base, scope, &parsed.items)?;
+        self.loading.remove(&canonical);
+        Ok(())
+    }
+
+    fn items(
+        &mut self,
+        root: &Path,
+        source: &Path,
+        dir: &Path,
+        path_base: &Path,
+        scope: &[String],
+        items: &[syn::Item],
+    ) -> Result<(), String> {
+        use syn::visit::Visit;
+        let is_guard = scope.get(1).is_some_and(|module| module == "guard");
+        let mut scan = GuardSourcePaths::default();
+        for item in items {
+            match item {
+                syn::Item::Use(item) => self.index_imports(item, scope),
+                syn::Item::ExternCrate(item) => self.index_extern_crate(item, scope),
+                _ => {}
+            }
+            scan.visit_item(item);
+        }
+        // Crate-root extern aliases are visible in descendants through Rust's extern prelude.
+        for (alias, target) in &self.extern_prelude {
+            let mut key = scope.to_vec();
+            key.push(alias.clone());
+            self.bindings
+                .entry(key)
+                .or_insert_with(|| BTreeSet::from([target.clone()]));
+        }
+        if is_guard {
+            // Keep the original resolved references, including accesses via imported typed handles.
+            let mut refs = HexRefs {
+                scope: scope.to_vec(),
+                paths: Vec::new(),
+                exports: Vec::new(),
+                aliases: BTreeMap::new(),
+            };
+            refs.items(items);
+            let name = display(root, source);
+            self.references.extend(
+                scan.paths
+                    .into_iter()
+                    .chain(refs.paths)
+                    .map(|path| (name.clone(), guard_scoped_path(&path, scope))),
+            );
+        }
+        for module in scan.modules {
+            if !is_guard && hex_test_attrs(&module.attrs) {
+                continue;
+            }
+            let name = module.ident.to_string();
+            let name = name.strip_prefix("r#").unwrap_or(&name);
+            let mut child_scope = scope.to_vec();
+            child_scope.push(name.to_owned());
+            let explicit = module
+                .attrs
+                .iter()
+                .find(|attr| attr.path().is_ident("path"))
+                .map(|attr| {
+                    if let syn::Meta::NameValue(value) = &attr.meta
+                        && let syn::Expr::Lit(expr) = &value.value
+                        && let syn::Lit::Str(path) = &expr.lit
+                    {
+                        return Ok(path.value());
+                    }
+                    Err(format!(
+                        "{}: invalid path attribute on module {name}",
+                        display(root, source)
+                    ))
+                })
+                .transpose()?;
+            if let Some((_, items)) = &module.content {
+                let child_dir = dir.join(explicit.as_deref().unwrap_or(name));
+                self.items(root, source, &child_dir, &child_dir, &child_scope, items)?;
+                continue;
+            }
+            let (child, child_dir) = guard_module_file(dir, path_base, name, explicit.as_deref());
+            self.file(root, &child, &child_dir, &child_scope)?;
+        }
+        Ok(())
+    }
+
+    fn index_imports(&mut self, item: &syn::ItemUse, scope: &[String]) {
+        let mut imports = Vec::new();
+        hex_imports(&item.tree, Vec::new(), &mut imports);
+        for (alias, path) in imports {
+            self.index_binding(scope, &alias, guard_scoped_path(&path, scope), &item.vis);
+        }
+    }
+
+    fn index_extern_crate(&mut self, item: &syn::ItemExternCrate, scope: &[String]) {
+        let (alias, target) = guard_extern_binding(item);
+        if alias == "_" {
+            return;
+        }
+        if scope.len() == 1 {
+            self.extern_prelude.insert(alias.clone(), target.clone());
+        }
+        self.index_binding(scope, &alias, target, &item.vis);
+    }
+
+    fn index_binding(
+        &mut self,
+        scope: &[String],
+        alias: &str,
+        target: GuardPath,
+        visibility: &syn::Visibility,
+    ) {
+        let mut key = scope.to_vec();
+        key.push(alias.strip_prefix("r#").unwrap_or(alias).to_owned());
+        if !matches!(visibility, syn::Visibility::Inherited) {
+            self.exports.insert(key.clone());
+        }
+        self.bindings.entry(key).or_default().insert(target);
+    }
+
+    fn forbidden(
+        &self,
+        path: &[String],
+        active: &mut BTreeSet<GuardPath>,
+        found: &mut BTreeSet<String>,
+    ) {
+        if let [krate, rest @ ..] = path
+            && krate == "humaux_adapters"
+        {
+            let rest: Vec<_> = rest.iter().map(String::as_str).collect();
+            if !matches!(
+                rest.as_slice(),
+                // M02 credentials, M04 admission/metering, M05 denials audit.
+                ["credential_repo" | "request_guard_repo" | "quota_repo"
+                    | "audited_read_quota" | "independent_audit", ..]
+                // The typed pool is a handle, not an adapter door.
+                | ["postgres", "RuntimeDbPool"]
+            ) {
+                found.insert(path.join("::"));
+            }
+            return;
+        }
+        if let Some((last, module)) = path.split_last()
+            && last == "*"
+        {
+            for alias in self
+                .exports
+                .iter()
+                .filter(|alias| alias.len() == module.len() + 1 && alias.starts_with(module))
+            {
+                let suffix = if alias.last() == Some(last) {
+                    std::slice::from_ref(last)
+                } else {
+                    &[]
+                };
+                self.follow_binding(alias, suffix, active, found);
+            }
+            return;
+        }
+        for n in (1..=path.len()).rev() {
+            let (prefix, suffix) = path.split_at(n);
+            self.follow_binding(prefix, suffix, active, found);
+            if !suffix.is_empty() {
+                let mut glob = prefix.to_vec();
+                glob.push("*".to_owned());
+                self.follow_binding(&glob, suffix, active, found);
+            }
+        }
+    }
+
+    fn follow_binding(
+        &self,
+        alias: &[String],
+        suffix: &[String],
+        active: &mut BTreeSet<GuardPath>,
+        found: &mut BTreeSet<String>,
+    ) {
+        if let Some(targets) = self.bindings.get(alias)
+            && active.insert(alias.to_vec())
+        {
+            for target in targets {
+                let target: GuardPath = target.iter().chain(suffix).cloned().collect();
+                self.forbidden(&target, active, found);
+            }
+            active.remove(alias);
+        }
+    }
+}
+
+fn guard_module_file(
+    dir: &Path,
+    path_base: &Path,
+    name: &str,
+    explicit: Option<&str>,
+) -> (PathBuf, PathBuf) {
+    if let Some(path) = explicit {
+        let file = path_base.join(path);
+        let child_dir = file.parent().unwrap_or(path_base).to_path_buf();
+        return (file, child_dir);
+    }
+    let flat = dir.join(format!("{name}.rs"));
+    let child_dir = dir.join(name);
+    let file = if flat.is_file() {
+        flat
+    } else {
+        child_dir.join("mod.rs")
+    };
+    (file, child_dir)
+}
+
+/// M03 design §4 / §8 G-M03-12: Guard can reach request-policy adapters, never operation adapters.
+fn m03_12_guard_adapter_boundary(root: &Path) -> Verdict {
+    let result = (|| {
+        let root = root.canonicalize().map_err(|e| e.to_string())?;
+        let dir = root.join(GATEWAY_SRC_DIR);
+        let mut graph = GuardModuleGraph::default();
+        graph.file(&root, &dir.join("lib.rs"), &dir, &["humaux_gateway".into()])?;
+        if !graph.found_guard {
+            return Err(format!(
+                "{REQUEST_GUARD_SOURCE}: Guard module not found in gateway lib.rs"
+            ));
+        }
+        let mut forbidden = BTreeSet::new();
+        for (source, path) in &graph.references {
+            let mut paths = BTreeSet::new();
+            graph.forbidden(path, &mut BTreeSet::new(), &mut paths);
+            forbidden.extend(paths.into_iter().map(|path| format!("{source}: {path}")));
+        }
+        Ok::<_, String>(forbidden.into_iter().collect())
+    })();
+    hex_verdict(result.unwrap_or_else(|error| vec![error]))
+}
+
 // §67.2 / G-M03-2: migrations are historical inputs; test and script code stay in the scan.
 fn m03_2_code_files(root: &Path, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
@@ -684,6 +1091,72 @@ fn rule2_degrade_fault_parity(root: &Path) -> Verdict {
         .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(String::from))
         .collect();
     rule2_check(&variants, &stems)
+}
+
+/// §52.4 G52-5 / G-M01-6. Deleting projection_lag_degraded.rs is the red control.
+fn g52_5_pair_files(root: &Path) -> Verdict {
+    const SPEC: &str = "docs/architecture/Baseline_2.9.md";
+    const PAIRS: &str = "crates/testkit/tests/pair";
+    if !root.exists() {
+        return Verdict::NotApplicable(root.display().to_string());
+    }
+    let Ok(spec) = fs::read_to_string(root.join(SPEC)) else {
+        return Verdict::Fail(vec![format!("cannot read {SPEC}")]);
+    };
+    let mut section = spec.lines();
+    if section.find(|line| line.starts_with("## 52.2 ")).is_none() {
+        return Verdict::Fail(vec![format!("{SPEC}: missing §52.2")]);
+    }
+    let table = section
+        .take_while(|line| !line.starts_with('#'))
+        .skip_while(|line| !line.starts_with("| ErrorCode"))
+        .skip(2)
+        .take_while(|line| line.starts_with('|'));
+    let mut expected = BTreeSet::new();
+    for row in table {
+        let Some(code) = row
+            .split('|')
+            .nth(1)
+            .and_then(|cell| cell.trim().strip_prefix('`')?.strip_suffix('`'))
+        else {
+            return Verdict::Fail(vec![format!("{SPEC} §52.2: malformed pair row: {row}")]);
+        };
+        if !code.starts_with(|c: char| c.is_ascii_uppercase())
+            || !code
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        {
+            return Verdict::Fail(vec![format!("{SPEC} §52.2: invalid ErrorCode: {code}")]);
+        }
+        let stem = code.to_ascii_lowercase();
+        if !expected.insert(format!("{stem}_terminal.rs")) {
+            return Verdict::Fail(vec![format!("{SPEC} §52.2: duplicate ErrorCode: {code}")]);
+        }
+        expected.insert(format!("{stem}_degraded.rs"));
+    }
+    if expected.is_empty() {
+        return Verdict::Fail(vec![format!("{SPEC}: missing or empty §52.2 pair table")]);
+    }
+    let actual: BTreeSet<_> = walk_files(&root.join(PAIRS), &["rs"])
+        .iter()
+        .map(|path| {
+            path.strip_prefix(root.join(PAIRS))
+                .expect("pair path")
+                .display()
+                .to_string()
+        })
+        .collect();
+    if actual == expected {
+        return Verdict::Pass;
+    }
+    let mut details = vec![format!(
+        "{PAIRS}: {} Rust files found; §52.2 requires {}",
+        actual.len(),
+        expected.len()
+    )];
+    name_diff("missing pair file", &expected, &actual, &mut details);
+    name_diff("unexpected pair file", &actual, &expected, &mut details);
+    Verdict::Fail(details)
 }
 
 // ============================================================================
@@ -1459,7 +1932,8 @@ fn hex_layer_source(path: &str) -> bool {
     (path.strip_prefix("bins/").is_some_and(|p| {
         p.split_once('/')
             .is_some_and(|(_, p)| p.starts_with("src/"))
-    }) || path.starts_with("crates/protocol/src/"))
+    }) || path.starts_with("crates/domain/src/")
+        || path.starts_with("crates/protocol/src/"))
         && !HEX_LAYER_EXCLUDED.contains(&path)
         && !path.split('/').any(|part| part == "tests")
 }
@@ -1467,7 +1941,7 @@ fn hex_layer_source(path: &str) -> bool {
 fn hex_layer_gate(root: &Path) -> Verdict {
     let mut actual = BTreeSet::new();
     let mut problems = Vec::new();
-    for directory in ["bins", "crates/protocol/src"] {
+    for directory in ["bins", "crates/domain/src", "crates/protocol/src"] {
         let files = walk_files(&root.join(directory), &["rs"]);
         if files.is_empty() {
             problems.push(format!("missing source object `{directory}`"));
@@ -13666,6 +14140,10 @@ pub fn run(_args: &[String]) -> i32 {
             m03_2_no_pg_rate_path(&root),
         ),
         (
+            "G-M03-12 (request guard imports no operation adapter)",
+            m03_12_guard_adapter_boundary(&root),
+        ),
+        (
             "G-M15-1 / G-N09-2 (candidate isolation)",
             candidate_isolation_sources(&root),
         ),
@@ -13685,6 +14163,10 @@ pub fn run(_args: &[String]) -> i32 {
         (
             "§52.4 G52-1 (ErrorCode sole at error_code position)",
             g52_1_error_code_uniqueness(&root),
+        ),
+        (
+            "§52.4 G52-5 / G-M01-6 (pair files match the §52.2 registry)",
+            g52_5_pair_files(&root),
         ),
         (
             "§59.1 G59-3 (Authority::new sole construction point)",
@@ -13952,6 +14434,14 @@ pub fn run(_args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn g52_5_pair_files_match_live_registry() {
+        assert_eq!(
+            super::g52_5_pair_files(&super::workspace_root()),
+            super::Verdict::Pass
+        );
+    }
+
+    #[test]
     fn g_m03_2_no_pg_rate_path() {
         assert_eq!(
             super::m03_2_no_pg_rate_path(&super::workspace_root()),
@@ -13961,6 +14451,243 @@ mod tests {
 
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn g_m03_12_guard_adapter_boundary_red_green() {
+        let source = fs::read_to_string(workspace_root().join(REQUEST_GUARD_SOURCE)).unwrap();
+        let root = std::env::temp_dir().join(format!("humaux-g-m03-12-{}", std::process::id()));
+        let guard = root.join(REQUEST_GUARD_SOURCE);
+        fs::create_dir_all(guard.parent().unwrap()).unwrap();
+        fs::write(guard.with_file_name("lib.rs"), "pub mod guard;").unwrap();
+        assert_eq!(
+            m03_12_guard_adapter_boundary(&workspace_root()),
+            Verdict::Pass
+        );
+        for (fault, forbidden) in [
+            (
+                "use humaux_adapters::remember;",
+                "humaux_adapters::remember",
+            ),
+            (
+                "use humaux_adapters::{confirm_token_repo as repo};",
+                "humaux_adapters::confirm_token_repo",
+            ),
+            (
+                "fn fault() { { use humaux_adapters::{confirm_token_repo as repo}; } }",
+                "humaux_adapters::confirm_token_repo",
+            ),
+            (
+                "mod fault { use ::r#humaux_adapters::{r#remember as repo}; }",
+                "humaux_adapters::remember",
+            ),
+            (
+                "fn fault() { ::humaux_adapters::remember::remember(); }",
+                "humaux_adapters::remember::remember",
+            ),
+            (
+                "fn fault() { humaux_adapters::confirm_token_repo::mint_with_audit(); }",
+                "humaux_adapters::confirm_token_repo::mint_with_audit",
+            ),
+        ] {
+            fs::write(&guard, format!("{source}\n{fault}\n")).unwrap();
+            let red = m03_12_guard_adapter_boundary(&root);
+            let expected = format!("{REQUEST_GUARD_SOURCE}: {forbidden}");
+            assert!(
+                matches!(&red, Verdict::Fail(diagnostics) if diagnostics.contains(&expected)),
+                "{fault}: {red:?}"
+            );
+            println!("G-M03-12 injected {fault} RED: {red:?}");
+            fs::write(&guard, &source).unwrap();
+            assert_eq!(m03_12_guard_adapter_boundary(&root), Verdict::Pass);
+            println!("G-M03-12 removed {fault} GREEN");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn guard_graph_fault(
+        case: &str,
+        files: &[(&str, &str)],
+        target: &str,
+        injected: &str,
+        forbidden: &str,
+    ) {
+        let root =
+            std::env::temp_dir().join(format!("humaux-g-m03-12-{case}-{}", std::process::id()));
+        for (file, source) in files {
+            let path = root.join(GATEWAY_SRC_DIR).join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, source).unwrap();
+        }
+        let path = root.join(GATEWAY_SRC_DIR).join(target);
+        let clean = fs::read_to_string(&path).unwrap();
+        assert_eq!(m03_12_guard_adapter_boundary(&root), Verdict::Pass);
+        fs::write(&path, injected).unwrap();
+        let verdict = m03_12_guard_adapter_boundary(&root);
+        let expected = format!("{GATEWAY_SRC_DIR}/{target}: {forbidden}");
+        assert!(
+            matches!(&verdict, Verdict::Fail(lines) if lines.contains(&expected)),
+            "{case}: expected {expected}, got {verdict:?}"
+        );
+        println!("G-M03-12 {case} RED: {verdict:?}");
+        fs::write(path, clean).unwrap();
+        assert_eq!(m03_12_guard_adapter_boundary(&root), Verdict::Pass);
+        println!("G-M03-12 {case} restored GREEN");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn g_m03_12_external_guard_modules() {
+        for (case, guard, target) in [
+            (
+                "normal module",
+                "mod child;",
+                "guard/child/grandchild/mod.rs",
+            ),
+            (
+                "explicit path",
+                "mod child; #[path = \"selected.rs\"] mod selected;",
+                "selected.rs",
+            ),
+        ] {
+            guard_graph_fault(
+                case,
+                &[
+                    ("lib.rs", "pub mod guard;"),
+                    ("guard.rs", guard),
+                    ("guard/child.rs", "mod grandchild;"),
+                    ("guard/child/grandchild/mod.rs", ""),
+                    ("selected.rs", ""),
+                ],
+                target,
+                "use humaux_adapters::remember;",
+                "humaux_adapters::remember",
+            );
+        }
+    }
+
+    #[test]
+    fn g_m03_12_gateway_reexports() {
+        for (case, import) in [
+            (
+                "gateway reexport",
+                "use crate::bridge::links::door as mint;",
+            ),
+            ("glob reexport", "use crate::bridge::door as mint;"),
+            ("glob import", "use crate::bridge::*;"),
+            (
+                "extern crate reexport",
+                "use crate::bridge::links::store::confirm_token_repo;",
+            ),
+        ] {
+            guard_graph_fault(
+                case,
+                &[
+                    ("lib.rs", "pub mod guard; pub mod bridge;"),
+                    (
+                        "guard.rs",
+                        "use crate::bridge::links::store::credential_repo;",
+                    ),
+                    (
+                        "bridge.rs",
+                        "pub use humaux_adapters::confirm_token_repo as token; \
+                         pub(crate) extern crate humaux_adapters as storage; \
+                         pub(crate) mod links { pub(crate) use super::token as door; \
+                         pub(crate) use super::storage as store; } \
+                         pub(crate) use links::*;",
+                    ),
+                ],
+                "guard.rs",
+                import,
+                "humaux_adapters::confirm_token_repo",
+            );
+        }
+    }
+
+    #[test]
+    fn g_m03_12_guard_crate_aliases() {
+        for (case, source) in [
+            (
+                "crate renamed by use",
+                "use humaux_adapters as storage; \
+                 fn fault() { storage::confirm_token_repo::mint_with_audit(); }",
+            ),
+            (
+                "crate renamed by extern crate",
+                "extern crate humaux_adapters as storage; \
+                 fn fault() { storage::confirm_token_repo::mint_with_audit(); }",
+            ),
+            (
+                "crate renamed in block",
+                "fn fault() { extern crate humaux_adapters as storage; \
+                 storage::confirm_token_repo::mint_with_audit(); }",
+            ),
+        ] {
+            guard_graph_fault(
+                case,
+                &[("lib.rs", "pub mod guard;"), ("guard.rs", "")],
+                "guard.rs",
+                source,
+                "humaux_adapters::confirm_token_repo::mint_with_audit",
+            );
+        }
+    }
+
+    #[test]
+    fn g_m03_12_root_extern_crate_alias() {
+        for (case, root, call) in [
+            (
+                "crate root alias",
+                "extern crate humaux_adapters as storage; pub mod guard;",
+                "fn fault() { storage::confirm_token_repo::mint_with_audit(); }",
+            ),
+            (
+                "gateway self alias",
+                "extern crate self as gateway; pub use humaux_adapters as storage; pub mod guard;",
+                "fn fault() { gateway::storage::confirm_token_repo::mint_with_audit(); }",
+            ),
+        ] {
+            guard_graph_fault(
+                case,
+                &[("lib.rs", root), ("guard.rs", "")],
+                "guard.rs",
+                call,
+                "humaux_adapters::confirm_token_repo::mint_with_audit",
+            );
+        }
+    }
+
+    #[test]
+    fn g_m03_12_macro_arguments() {
+        for (case, injected, forbidden) in [
+            (
+                "join tokens",
+                "fn fault() { tokio::join!(humaux_adapters::remember::remember()); }",
+                "humaux_adapters::remember::remember",
+            ),
+            (
+                "select tokens and reexport",
+                "fn fault() { use crate::bridge as bridge_alias; \
+                 tokio::select! { _ = tokio::spawn(async { \
+                 bridge_alias::door::mint_with_audit().await }) => {} } }",
+                "humaux_adapters::confirm_token_repo::mint_with_audit",
+            ),
+        ] {
+            guard_graph_fault(
+                case,
+                &[
+                    ("lib.rs", "pub mod guard; pub mod bridge;"),
+                    ("guard.rs", ""),
+                    (
+                        "bridge.rs",
+                        "pub(crate) use humaux_adapters::confirm_token_repo as door;",
+                    ),
+                ],
+                "guard.rs",
+                injected,
+                forbidden,
+            );
+        }
+    }
 
     fn hex_boundary_gate(root: &Path, writer: bool) -> Verdict {
         if writer {
@@ -14556,6 +15283,35 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         check(2);
         println!("COVERAGE orphan: restored GREEN");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn m01_5_domain_import_fails_hex_layer() {
+        let root = fresh_tmp("m01-5-domain-layer");
+        hex_copy_boundary_fixture(&real_root(), &root);
+        let path = "crates/domain/src/affect.rs";
+        let source_path = root.join(path);
+        let original = fs::read_to_string(&source_path).unwrap();
+        let adapter = "humaux_adapters::affect_repo::AffectRepoError";
+        assert_eq!(hex_layer_gate(&root), Verdict::Pass);
+
+        fs::write(
+            &source_path,
+            format!("{original}\nuse {adapter} as BoundaryUpwardImport;\n"),
+        )
+        .unwrap();
+        let red = hex_layer_gate(&root);
+        fs::write(source_path, original).unwrap();
+        let restored = hex_layer_gate(&root);
+        fs::remove_dir_all(root).unwrap();
+
+        assert_eq!(
+            red,
+            Verdict::Fail(vec![format!("HEX-LAYER: new violation {path}:{adapter}")]),
+        );
+        println!("M01-5 LAYER domain import: RED {red:?}");
+        assert_eq!(restored, Verdict::Pass);
+        println!("M01-5 LAYER domain import: restored GREEN");
     }
 
     #[test]

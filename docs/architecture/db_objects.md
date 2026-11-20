@@ -20,6 +20,38 @@ written by:
 executed by:
 - (no process): `public-pool::notice`
 
+### `control.advance_credential_route_epoch`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0309_identity_route_generation
+
+grants (runtime roles):
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+
+### `control.advance_tenant_route_epoch`
+- kind: function
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0309_identity_route_generation
+
+grants (runtime roles):
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+
 ### `control.agents`
 - kind: table
 - owner: role_migration_owner
@@ -176,6 +208,25 @@ executed by:
 - RLS: —
 - FORCE: —
 - created in: 0039_edge_security_fixes
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `gateway::tests::service_credentials`
+- process(humaux-gateway): `adapters::credential_repo`
+
+### `control.api_key_touch_last_used_batch`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0309_identity_route_generation
 
 grants (runtime roles):
 - role_gateway: EXECUTE
@@ -4801,6 +4852,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::onboarding`
 - process(cargo-xtask): `adapters::provisioning`
 - process(cargo-xtask): `maintenance::rls_check`
@@ -11004,6 +11056,7 @@ read by:
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::note_history`
 - (no process): `adapters::tests::note_put`
+- (no process): `adapters::tests::note_reads`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::read_decoupling`
@@ -11116,6 +11169,7 @@ written by:
 - (no process): `adapters::tests::memory_security_lifecycle_eval`
 - (no process): `adapters::tests::memory_subjects_link`
 - (no process): `adapters::tests::minimax_live_smoke`
+- (no process): `adapters::tests::note_reads`
 - (no process): `adapters::tests::offset_pagination_positive_control`
 - (no process): `adapters::tests::operation_receipts`
 - (no process): `adapters::tests::outbox_batch_remember`
