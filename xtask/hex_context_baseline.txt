@@ -3,16 +3,6 @@
 # read_gate.rs:RowGrounding{,::Judged,::NotJudged} -> read_materialize.rs:same symbols (3 rows).
 # read_gate.rs:MemoryId -> application/recall_read.rs:MemoryId.
 # read_gate.rs:NoteKind -> application/recall_read.rs:NoteKind.
-bins/consolidation-worker/src/dsn.rs:knowledge_curation->operations_platform:humaux_telemetry::renamed_key
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::ModeFailure
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::ModeFailure::runtime
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::metrics::OpsListener
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::metrics::parse_ops_addr
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::metrics::process_routes
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::metrics::render_stage_liveness
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::metrics::serve_loopback
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::start_line
-bins/consolidation-worker/src/main.rs:knowledge_curation->operations_platform:humaux_telemetry::version_mode
 crates/adapters/src/applicability_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/confirm_token_repo.rs:knowledge_lifecycle->provider_execution:humaux_domain::audit::AuditEvent
 crates/adapters/src/continuity_read.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
@@ -45,9 +35,6 @@ crates/cache/src/bounded.rs:retrieval_read_model->operations_platform:humaux_tel
 crates/projection/src/fingerprint.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::evidence::EvidencePayloadSha256
 crates/projection/src/fingerprint.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::evidence::EvidencePayloadSha256::to_hex
 crates/public-pool/src/public_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
-crates/public-pool/src/public_repo.rs:public_knowledge->operations_platform:humaux_adapters::mechanism_observation::EvaluateClaim
-crates/public-pool/src/public_repo.rs:public_knowledge->operations_platform:humaux_adapters::mechanism_observation::EvaluationResult
-crates/public-pool/src/public_repo.rs:public_knowledge->operations_platform:humaux_adapters::mechanism_observation::PublicClaimEvaluator
 crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source
 crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source::RetrievalQuerySourceError::Disclosure
 crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source::SerializedRetrievalQueryBatch
