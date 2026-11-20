@@ -2137,7 +2137,7 @@ fn hex_context_gate(root: &Path) -> Result<(Verdict, Verdict), Vec<String>> {
         ),
         Err(errors) => (actual, Verdict::Fail(errors)),
     };
-    errors.extend(hex_exact(&remaining, &baseline, 23, "HEX-CONTEXT"));
+    errors.extend(hex_exact(&remaining, &baseline, 22, "HEX-CONTEXT"));
     Ok((hex_verdict(errors), verdict))
 }
 
