@@ -267,7 +267,7 @@ pub const OAUTH_REASONS: [ReasonRow; 29] = [
         OAuthReason::CONSENT_DENIED,
         "CONSENT_DENIED",
         "access_denied",
-        ErrorCode::Forbidden,
+        ErrorCode::Unauthorized,
     ),
     row(
         OAuthReason::GRANT_TYPE_UNSUPPORTED,

@@ -151,15 +151,17 @@ const OAUTH_TABLES: [(&str, &str); 4] = [
 ];
 
 /// The nine doors of migration 0268, by `pg_proc.proname`: the whole access path to the four tables.
-const OAUTH_DOORS: [&str; 9] = [
+const OAUTH_DOORS: [&str; 11] = [
     "oauth_client_lookup",
     "oauth_client_register",
     "oauth_code_consume",
     "oauth_code_issue",
+    "oauth_consent_tenants",
     "oauth_grant_issue",
     "oauth_grant_lookup",
     "oauth_grant_revoke",
     "oauth_refresh_family_revoke",
+    "oauth_refresh_grant",
     "oauth_refresh_rotate",
 ];
 
@@ -229,7 +231,7 @@ fn g_m02_1_an_oauth_table_acl_is_exactly_empty() {
     });
 }
 
-/// G-M02-1 for 0268, doors: the `control.oauth_*` functions are exactly the nine named, each owner SECURITY DEFINER with
+/// G-M02-1 for 0268/0308, doors: the `control.oauth_*` functions are exactly the eleven named, each owner SECURITY DEFINER with
 /// `search_path=pg_catalog` alone, and EXECUTE is held by role_gateway alone (PUBLIC included).
 #[test]
 fn g_m02_1_the_oauth_doors_are_executable_by_gateway_alone() {

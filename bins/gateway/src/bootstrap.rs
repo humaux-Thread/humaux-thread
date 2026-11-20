@@ -2340,6 +2340,18 @@ pub(crate) fn read_quota_store(
     humaux_adapters::audited_read_quota::PostgresReadQuota::new(pool)
 }
 
+/// Read the current commercial admission policy for a consent target without reserving any quota.
+pub(crate) async fn check_oauth_entitlement(
+    pool: &RuntimeDbPool,
+    scope: &humaux_domain::identity::AuthorizationScope,
+) -> Result<(), humaux_domain::error::ErrorCode> {
+    use humaux_application::read_quota::{BMO_ENTITLEMENT, charge_policy_for};
+
+    charge_policy_for(&read_quota_store(pool), scope, BMO_ENTITLEMENT)
+        .await
+        .map(drop)
+}
+
 /// Wire standalone §77 audit to the gateway runtime pool.
 pub(crate) fn independent_audit_store(
     pool: &RuntimeDbPool,

@@ -1,5 +1,5 @@
 //! `gateway::oauth_http` — M02 browser authorization, token exchange, revocation and AS metadata.
-//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, serde, serde_json, time, url, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::login, application::oauth, application::oauth_exchange, application::read_quota, application::session, application::signed_token, domain::error, domain::identity, gateway::auth_pages, gateway::bootstrap, gateway::guard, protocol::edge]
+//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, serde, serde_json, time, url, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::login, application::oauth, application::oauth_exchange, application::session, application::signed_token, domain::error, domain::identity, gateway::auth_pages, gateway::bootstrap, gateway::guard, protocol::edge]
 //! Called-by: [gateway::bootstrap, gateway::main, tests]
 //! Invariants: [refusals render only OAUTH_REASONS strings; precheck precedes consume; spent codes and revoking denies
 //!   commit, other denies roll back; no raw code or refresh token is logged or stored]
@@ -23,7 +23,6 @@ use humaux_application::{
         ValidatedAuthorize,
     },
     oauth_exchange::{self, ExchangeStore},
-    read_quota::{self, BMO_ENTITLEMENT},
     session::{SessionSecret, VerifiedSession, csrf_token},
     signed_token::{FIELD_SEP, TokenKeys, TokenLabel},
 };
@@ -300,12 +299,7 @@ async fn sole_tenant(
         Some(session.user_id),
         BoundedSet::new([])?,
     );
-    read_quota::charge_policy_for(
-        &crate::bootstrap::read_quota_store(state.pool.as_ref()),
-        &scope,
-        BMO_ENTITLEMENT,
-    )
-    .await?;
+    crate::bootstrap::check_oauth_entitlement(state.pool.as_ref(), &scope).await?;
     Ok(scope)
 }
 
