@@ -262,6 +262,7 @@ fn enqueue(
         coverage_prompt_contract(),
         assessment_prompt_contract(),
         prepared,
+        &ContributionEntryRepo::new(&fixture.private),
     )
     .expect("typed runner enqueue input");
     fixture

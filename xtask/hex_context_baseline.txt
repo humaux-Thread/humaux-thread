@@ -5,7 +5,6 @@
 # read_gate.rs:NoteKind -> application/recall_read.rs:NoteKind.
 crates/adapters/src/continuity_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
-crates/application/src/contribute.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
 crates/projection/src/fingerprint.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::evidence::EvidencePayloadSha256
 crates/projection/src/fingerprint.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::evidence::EvidencePayloadSha256::to_hex
 crates/public-pool/src/public_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope

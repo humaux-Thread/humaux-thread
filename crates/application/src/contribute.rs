@@ -1,6 +1,6 @@
 //! `application::contribute` — explicit private-to-public contribution entry workflow.
 //! Depends-on: crates=[async-trait, hex, humaux-domain, sha2, tokio, uuid]; services=[]; env=[];
-//!   modules=[application::consolidate, domain::error, domain::evidence, domain::identity, domain::public]
+//!   modules=[application::consolidate, domain::error, domain::evidence, domain::public]
 //! Called-by: [adapters::contribution_entry_repo, adapters::contribution_execution_ingress, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::contribution_scan, application::contribution_execution, humaux-private-worker, tests]
 //! Invariants: []
 //! Spec: none
@@ -15,7 +15,6 @@ use async_trait::async_trait;
 use humaux_domain::{
     error::ErrorCode,
     evidence::{EvidencePayloadSha256, payload_sha256},
-    identity::AuthorizationScope,
     public::{ContributionPolicy, ReleaseSource, RightsProvenance},
 };
 use sha2::{Digest, Sha256};
@@ -35,9 +34,9 @@ use crate::consolidate::{
 /// scope and returns the trusted current hashes; callers never supply a source-manifest hash,
 /// rights record, policy snapshot, or scan verdict.
 #[derive(Clone)]
-pub struct PrepareContribution {
+pub struct PrepareContribution<Authorization> {
     /// Authenticated actor and tenant.  This flow requires an on-behalf-of user.
-    pub authorization: AuthorizationScope,
+    pub authorization: Authorization,
     /// Candidate source identities which the port validates under the authenticated scope.
     pub requested_sources: Vec<ReleaseSource>,
     /// Existing private-worker reasoning domain to use for de-identification.
@@ -58,9 +57,9 @@ pub struct PrepareContribution {
 /// candidate identifiers.  This request therefore carries only caller-owned admission and routing
 /// inputs.
 #[derive(Clone)]
-pub struct ContributionPreparationInput {
+pub struct ContributionPreparationInput<Authorization> {
     /// Authenticated actor and tenant. This flow requires an on-behalf-of user.
-    pub authorization: AuthorizationScope,
+    pub authorization: Authorization,
     /// Candidate source identities which the repository validates under the authenticated scope.
     pub requested_sources: Vec<ReleaseSource>,
     /// Existing private-worker reasoning domain to use for de-identification.
@@ -71,8 +70,10 @@ pub struct ContributionPreparationInput {
     pub binding_version: ReasoningRouteBindingVersion,
 }
 
-impl From<&PrepareContribution> for ContributionPreparationInput {
-    fn from(request: &PrepareContribution) -> Self {
+impl<Authorization: Clone> From<&PrepareContribution<Authorization>>
+    for ContributionPreparationInput<Authorization>
+{
+    fn from(request: &PrepareContribution<Authorization>) -> Self {
         Self {
             authorization: request.authorization.clone(),
             requested_sources: request.requested_sources.clone(),
@@ -342,7 +343,10 @@ impl ContributionCoverageProbe {
         &self.provider_trace
     }
 
-    fn matches_preparation(&self, preparation: &PreparationSnapshot) -> bool {
+    fn matches_preparation<Authorization>(
+        &self,
+        preparation: &PreparationSnapshot<Authorization>,
+    ) -> bool {
         self.source_manifest_hash == preparation.source_manifest_hash
             && self.output_sha256 == payload_sha256(&self.output_bytes)
             && !self.provider_trace.0.trim().is_empty()
@@ -445,9 +449,9 @@ pub struct ContributionSourceSnapshot {
 /// In particular, policy, rights, authorization, source hashes, and sealed request are not caller
 /// input.
 #[derive(Clone)]
-pub struct PreparationSnapshot {
+pub struct PreparationSnapshot<Authorization> {
     /// Authenticated scope captured while source visibility was checked.
-    pub authorization: AuthorizationScope,
+    pub authorization: Authorization,
     /// Non-empty validated source identities and current hashes.
     pub sources: Vec<ContributionSourceSnapshot>,
     /// Hash over the repository-constructed source manifest.
@@ -472,9 +476,9 @@ pub struct PreparationSnapshot {
 /// must match this receipt's user, tenant, candidate, digest, and policy version in its final
 /// transaction before it creates a release.
 #[derive(Clone)]
-pub struct ConfirmContribution {
+pub struct ConfirmContribution<Authorization> {
     /// Authenticated actor and tenant at finalization time.
-    pub authorization: AuthorizationScope,
+    pub authorization: Authorization,
     /// Candidate the user previewed through the private-worker service.
     pub candidate_id: ContributionCandidateId,
     /// Exact bytes the user confirmed, represented by the canonical payload hash.
@@ -488,9 +492,9 @@ pub struct ConfirmContribution {
 /// `ScanReceipt` is an associated opaque type: an external caller cannot deserialize or
 /// construct a `PASSED` verdict.  The concrete scanner creates it only after every required
 /// stage succeeds, while its paired repository reads its persistence accessors.
-pub struct StoredCandidate<'a, ScanReceipt> {
+pub struct StoredCandidate<'a, ScanReceipt, Authorization> {
     /// Repository-derived state that binds policy, rights, authenticated user, and sources.
-    pub preparation: &'a PreparationSnapshot,
+    pub preparation: &'a PreparationSnapshot<Authorization>,
     /// Immutable disclosed output bytes.  Never logged or sent to a public dispatcher.
     pub disclosed_bytes: &'a [u8],
     /// Sole canonical hash over `disclosed_bytes`.
@@ -507,8 +511,8 @@ pub struct StoredCandidate<'a, ScanReceipt> {
 ///
 /// Its dedicated port keeps the decision and its public-coverage binding available for durable
 /// storage when an adapter adopts this seam; the existing legacy port remains untouched.
-pub struct AssessedStoredCandidate<'a, ScanReceipt> {
-    candidate: StoredCandidate<'a, ScanReceipt>,
+pub struct AssessedStoredCandidate<'a, ScanReceipt, Authorization> {
+    candidate: StoredCandidate<'a, ScanReceipt, Authorization>,
     /// First USER_REASONING response, bound to the trusted source manifest and probe scan.
     coverage_probe: &'a ContributionCoverageProbe,
     /// Canonically bound public coverage selected from the public-safe probe.
@@ -519,14 +523,14 @@ pub struct AssessedStoredCandidate<'a, ScanReceipt> {
     assessment: &'a ContributionAssessment,
 }
 
-impl<'a, ScanReceipt> AssessedStoredCandidate<'a, ScanReceipt> {
+impl<'a, ScanReceipt, Authorization> AssessedStoredCandidate<'a, ScanReceipt, Authorization> {
     /// Validates and binds the only value that may cross the assessed persistence seam.
     ///
     /// Keeping these fields private prevents callers from pairing a scanned candidate with an
     /// assessment for another probe or coverage snapshot. The concrete repository still verifies
     /// its opaque scan receipts before durable storage.
     pub fn try_bind(
-        candidate: StoredCandidate<'a, ScanReceipt>,
+        candidate: StoredCandidate<'a, ScanReceipt, Authorization>,
         coverage_probe: &'a ContributionCoverageProbe,
         public_coverage: &'a PublicCoverageDigest,
         probe_scan_receipt: &'a ScanReceipt,
@@ -556,7 +560,7 @@ impl<'a, ScanReceipt> AssessedStoredCandidate<'a, ScanReceipt> {
         })
     }
 
-    pub fn candidate(&self) -> &StoredCandidate<'a, ScanReceipt> {
+    pub fn candidate(&self) -> &StoredCandidate<'a, ScanReceipt, Authorization> {
         &self.candidate
     }
 
@@ -579,7 +583,7 @@ impl<'a, ScanReceipt> AssessedStoredCandidate<'a, ScanReceipt> {
     pub fn into_parts(
         self,
     ) -> (
-        StoredCandidate<'a, ScanReceipt>,
+        StoredCandidate<'a, ScanReceipt, Authorization>,
         &'a ContributionCoverageProbe,
         &'a PublicCoverageDigest,
         &'a ScanReceipt,
@@ -613,20 +617,26 @@ pub trait ContributionScannerPort: Send + Sync {
 /// outbox.  It returns no payload, so public dispatch can accept only a release identifier.
 #[async_trait]
 pub trait ContributionCandidatePort: Send + Sync {
+    /// Concrete scope supplied by the trusted adapter.
+    type Authorization: Clone + Eq + Send + Sync;
+
     /// Must be the opaque receipt produced by the paired [`ContributionScannerPort`].
     type ScanReceipt: Send + Sync;
+
+    /// Whether the trusted scope carries an on-behalf-of user (§12.1.1).
+    fn has_user(&self, authorization: &Self::Authorization) -> bool;
 
     /// Loads current, trusted preparation state without requiring caller-minted execution IDs.
     async fn load_execution_preparation(
         &self,
-        request: &ContributionPreparationInput,
-    ) -> Result<PreparationSnapshot, ErrorCode>;
+        request: &ContributionPreparationInput<Self::Authorization>,
+    ) -> Result<PreparationSnapshot<Self::Authorization>, ErrorCode>;
 
     /// Legacy preparation wrapper. Logical call IDs remain local to legacy reasoning orchestration.
     async fn load_preparation(
         &self,
-        request: &PrepareContribution,
-    ) -> Result<PreparationSnapshot, ErrorCode> {
+        request: &PrepareContribution<Self::Authorization>,
+    ) -> Result<PreparationSnapshot<Self::Authorization>, ErrorCode> {
         self.load_execution_preparation(&ContributionPreparationInput::from(request))
             .await
     }
@@ -634,13 +644,13 @@ pub trait ContributionCandidatePort: Send + Sync {
     /// Persists one immutable candidate and all repository-owned durable bindings.
     async fn store_prepared(
         &self,
-        candidate: StoredCandidate<'_, Self::ScanReceipt>,
+        candidate: StoredCandidate<'_, Self::ScanReceipt, Self::Authorization>,
     ) -> Result<ContributionCandidateId, ErrorCode>;
 
     /// Consumes a durable authenticated confirmation and creates one release transactionally.
     async fn finalize_confirmed(
         &self,
-        confirmation: ConfirmContribution,
+        confirmation: ConfirmContribution<Self::Authorization>,
     ) -> Result<ContributionReleaseId, ErrorCode>;
 }
 
@@ -652,13 +662,13 @@ pub trait ContributionCandidatePort: Send + Sync {
 pub trait AssessedContributionCandidatePort: ContributionCandidatePort {
     async fn store_assessed_prepared(
         &self,
-        candidate: AssessedStoredCandidate<'_, Self::ScanReceipt>,
+        candidate: AssessedStoredCandidate<'_, Self::ScanReceipt, Self::Authorization>,
     ) -> Result<ContributionCandidateId, ErrorCode>;
 }
 
-fn preparation_matches(
-    request: &ContributionPreparationInput,
-    preparation: &PreparationSnapshot,
+fn preparation_matches<Authorization: Eq>(
+    request: &ContributionPreparationInput<Authorization>,
+    preparation: &PreparationSnapshot<Authorization>,
 ) -> bool {
     let snapshot_sources = preparation
         .sources
@@ -695,22 +705,25 @@ fn contribution_reasoning_call(
 ///
 /// Fields stay private so the typed value can only be produced by [`prepare_assessed_input`].
 #[derive(Clone)]
-pub struct PreparedAssessedContribution {
-    request: ContributionPreparationInput,
-    preparation: PreparationSnapshot,
+pub struct PreparedAssessedContribution<Authorization> {
+    request: ContributionPreparationInput<Authorization>,
+    preparation: PreparationSnapshot<Authorization>,
 }
 
-impl PreparedAssessedContribution {
+impl<Authorization: Eq> PreparedAssessedContribution<Authorization> {
     /// Binds a repository-loaded current snapshot to its exact ID-free request.
     ///
     /// Adapters use this constructor when preparation and durable enqueue share one database
     /// transaction.  The caller still cannot supply execution identities, policy, rights, source
     /// hashes, or a fingerprint; those values must already be present in the repository snapshot.
-    pub fn try_from_current(
-        request: ContributionPreparationInput,
-        preparation: PreparationSnapshot,
+    pub fn try_from_current<
+        C: ContributionCandidatePort<Authorization = Authorization> + ?Sized,
+    >(
+        request: ContributionPreparationInput<Authorization>,
+        preparation: PreparationSnapshot<Authorization>,
+        candidates: &C,
     ) -> Result<Self, ErrorCode> {
-        if request.authorization.user_id().is_none() {
+        if !candidates.has_user(&request.authorization) {
             return Err(ErrorCode::Unauthorized);
         }
         if request.requested_sources.is_empty()
@@ -732,15 +745,15 @@ impl PreparedAssessedContribution {
         })
     }
 
-    pub const fn request(&self) -> &ContributionPreparationInput {
+    pub const fn request(&self) -> &ContributionPreparationInput<Authorization> {
         &self.request
     }
 
-    pub const fn preparation(&self) -> &PreparationSnapshot {
+    pub const fn preparation(&self) -> &PreparationSnapshot<Authorization> {
         &self.preparation
     }
 
-    pub fn into_preparation(self) -> PreparationSnapshot {
+    pub fn into_preparation(self) -> PreparationSnapshot<Authorization> {
         self.preparation
     }
 }
@@ -748,14 +761,14 @@ impl PreparedAssessedContribution {
 /// R4 preparation seam: loads and validates trusted state without caller-minted execution IDs.
 /// It performs no reasoning call, scan, candidate storage, provider dispatch, or ID minting.
 pub async fn prepare_assessed_input<C>(
-    request: ContributionPreparationInput,
+    request: ContributionPreparationInput<C::Authorization>,
     candidates: &C,
-) -> Result<PreparedAssessedContribution, ErrorCode>
+) -> Result<PreparedAssessedContribution<C::Authorization>, ErrorCode>
 where
     C: ContributionCandidatePort + ?Sized,
 {
     let preparation = candidates.load_execution_preparation(&request).await?;
-    PreparedAssessedContribution::try_from_current(request, preparation)
+    PreparedAssessedContribution::try_from_current(request, preparation, candidates)
 }
 
 /// Derives, scans, and stores an immutable contribution candidate.
@@ -765,7 +778,7 @@ where
 /// No release or outbox event is created on inference, integrity, scan, or storage failure.
 #[deprecated(note = "legacy-only; Phase 9 anonymous admission requires prepare_assessed")]
 pub async fn prepare<R, S, C>(
-    request: PrepareContribution,
+    request: PrepareContribution<C::Authorization>,
     reasoning_port: &R,
     scanner: &S,
     candidates: &C,
@@ -775,7 +788,7 @@ where
     S: ContributionScannerPort + ?Sized,
     C: ContributionCandidatePort<ScanReceipt = S::Receipt> + ?Sized,
 {
-    if request.authorization.user_id().is_none() {
+    if !candidates.has_user(&request.authorization) {
         return Err(ErrorCode::Unauthorized);
     }
     if request.requested_sources.is_empty()
@@ -838,7 +851,7 @@ where
 /// integrated by a persistence adapter later; until then its typed port and tests are an
 /// application-layer contract, not evidence of production adapter adoption.
 pub async fn prepare_assessed<A, P, S, C>(
-    request: PrepareContribution,
+    request: PrepareContribution<C::Authorization>,
     assessment_port: &A,
     public_coverage_port: &P,
     scanner: &S,
@@ -850,7 +863,7 @@ where
     S: ContributionScannerPort + ?Sized,
     C: AssessedContributionCandidatePort<ScanReceipt = S::Receipt> + ?Sized,
 {
-    if request.authorization.user_id().is_none() {
+    if !candidates.has_user(&request.authorization) {
         return Err(ErrorCode::Unauthorized);
     }
     if request.requested_sources.is_empty()
@@ -932,13 +945,13 @@ where
 
 /// Finalizes an authenticated confirmation without exposing candidate bytes to public callers.
 pub async fn finalize<C>(
-    confirmation: ConfirmContribution,
+    confirmation: ConfirmContribution<C::Authorization>,
     candidates: &C,
 ) -> Result<ContributionReleaseId, ErrorCode>
 where
     C: ContributionCandidatePort + ?Sized,
 {
-    if confirmation.authorization.user_id().is_none() {
+    if !candidates.has_user(&confirmation.authorization) {
         return Err(ErrorCode::Unauthorized);
     }
     candidates.finalize_confirmed(confirmation).await
@@ -949,7 +962,7 @@ mod tests {
     use super::*;
     use humaux_domain::{
         authority::EvidenceId,
-        identity::{BoundedSet, PrincipalId},
+        identity::{AuthorizationScope, BoundedSet, PrincipalId},
         ids::{TenantId, UserId, WorkspaceId},
     };
     use sha2::{Digest, Sha256};
@@ -977,18 +990,23 @@ mod tests {
 
     #[async_trait]
     impl ContributionCandidatePort for Candidates {
+        type Authorization = AuthorizationScope;
         type ScanReceipt = Receipt;
+
+        fn has_user(&self, authorization: &Self::Authorization) -> bool {
+            authorization.user_id().is_some()
+        }
 
         async fn load_execution_preparation(
             &self,
-            request: &ContributionPreparationInput,
-        ) -> Result<PreparationSnapshot, ErrorCode> {
+            request: &ContributionPreparationInput<AuthorizationScope>,
+        ) -> Result<PreparationSnapshot<AuthorizationScope>, ErrorCode> {
             fixture_preparation(request)
         }
 
         async fn store_prepared(
             &self,
-            candidate: StoredCandidate<'_, Self::ScanReceipt>,
+            candidate: StoredCandidate<'_, Self::ScanReceipt, Self::Authorization>,
         ) -> Result<ContributionCandidateId, ErrorCode> {
             self.stored
                 .lock()
@@ -999,7 +1017,7 @@ mod tests {
 
         async fn finalize_confirmed(
             &self,
-            _confirmation: ConfirmContribution,
+            _confirmation: ConfirmContribution<AuthorizationScope>,
         ) -> Result<ContributionReleaseId, ErrorCode> {
             *self.finalized.lock().expect("test mutex") += 1;
             Ok(ContributionReleaseId(Uuid::nil()))
@@ -1010,7 +1028,7 @@ mod tests {
     impl AssessedContributionCandidatePort for Candidates {
         async fn store_assessed_prepared(
             &self,
-            candidate: AssessedStoredCandidate<'_, Self::ScanReceipt>,
+            candidate: AssessedStoredCandidate<'_, Self::ScanReceipt, Self::Authorization>,
         ) -> Result<ContributionCandidateId, ErrorCode> {
             self.stored.lock().expect("test mutex").push((
                 candidate.candidate.disclosed_bytes.to_vec(),
@@ -1127,8 +1145,8 @@ mod tests {
     }
 
     fn fixture_preparation(
-        request: &ContributionPreparationInput,
-    ) -> Result<PreparationSnapshot, ErrorCode> {
+        request: &ContributionPreparationInput<AuthorizationScope>,
+    ) -> Result<PreparationSnapshot<AuthorizationScope>, ErrorCode> {
         let source = *request
             .requested_sources
             .first()
@@ -1157,7 +1175,7 @@ mod tests {
         })
     }
 
-    fn request(scope: AuthorizationScope) -> PrepareContribution {
+    fn request(scope: AuthorizationScope) -> PrepareContribution<AuthorizationScope> {
         PrepareContribution {
             authorization: scope,
             requested_sources: vec![ReleaseSource::Evidence(EvidenceId(Uuid::nil()))],
