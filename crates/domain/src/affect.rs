@@ -360,7 +360,14 @@ impl AffectFilter {
             valence: bounds.valence.map(axis),
             arousal: bounds.arousal.map(axis),
             dominance: bounds.dominance.map(axis),
-            min_effective_intensity: bounds.intensity.map(|(min, _)| BasisPoints(min)),
+            min_effective_intensity: bounds.intensity.map(|(min, max)| {
+                assert_eq!(
+                    max,
+                    BasisPoints::MAX.get(),
+                    "owner-issued intensity upper bound"
+                );
+                BasisPoints::unit(min).expect("owner-issued unit intensity")
+            }),
         }
     }
 
@@ -660,6 +667,25 @@ mod tests {
             AffectFilter::from_read_view(&unscoped.read_view()),
             unscoped
         );
+    }
+
+    #[test]
+    fn read_view_rejects_out_of_range_intensity() {
+        let max = BasisPoints::MAX.get();
+        for intensity in [(0, max + 1), (max + 1, max)] {
+            let view = AffectReadFilter::new(Some(AffectPrefilter {
+                kinds: Vec::new(),
+                labels_any: Vec::new(),
+                valence: None,
+                arousal: None,
+                dominance: None,
+                intensity: Some(intensity),
+            }));
+            assert!(
+                std::panic::catch_unwind(|| AffectFilter::from_read_view(&view)).is_err(),
+                "accepted out-of-range intensity bounds: {intensity:?}",
+            );
+        }
     }
 
     #[test]
