@@ -1,4 +1,4 @@
-//! `adapters::oauth_repo` — OAuth 2.1 Authorization Server persistence over the nine `control.oauth_*` doors (migration 0268):
+//! `adapters::oauth_repo` — OAuth 2.1 Authorization Server persistence over the `control.oauth_*` doors (migrations 0268/0308):
 //!   client registry, one-time authorization codes, grants and single-use refresh rotation. Writes only through definers; no
 //!   runtime role holds any privilege on the four tables, so every read goes through a door too.
 //! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_consent_tenants, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_grant, control.oauth_refresh_rotate]]; env=[]; modules=[adapters::postgres, application::oauth_exchange, domain::error, domain::ids]

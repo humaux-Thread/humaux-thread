@@ -10,7 +10,7 @@
 //!   row, grant or role changes; a SELECT that succeeds as a worker, batch issuer, admin or health reader is the
 //!   failure, and the grant set read back from the table ACL (PUBLIC included, column-level included) must equal
 //!   exactly SELECT for the two readers; the four OAuth tables of 0268 (M02-8) hold no grant for any role and are reached
-//!   only through nine doors executable by role_gateway alone; no DSN or unreachable database is a visible §79.2 skip]
+//!   only through the named doors executable by role_gateway alone; no DSN or unreachable database is a visible §79.2 skip]
 //! Spec: Baseline §6.2.1; §6.2.2; §79.2
 
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
@@ -150,7 +150,7 @@ const OAUTH_TABLES: [(&str, &str); 4] = [
     ("control.oauth_refresh_tokens", "status"),
 ];
 
-/// The nine doors of migration 0268, by `pg_proc.proname`: the whole access path to the four tables.
+/// The named OAuth doors of migrations 0268 and 0308, ordered by `pg_proc.proname`.
 const OAUTH_DOORS: [&str; 11] = [
     "oauth_client_lookup",
     "oauth_client_register",
