@@ -91,6 +91,8 @@ pub mod projection_worker;
 pub mod provider_budget;
 pub mod provisioning;
 /// M20 port for enqueueing public dispatch events in the producer transaction.
+#[cfg(feature = "cloud-raw-pool")]
+pub mod public_evaluation_repo;
 mod public_outbox_port;
 pub mod qdrant;
 pub mod quota_repo;

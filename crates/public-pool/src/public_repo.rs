@@ -3,8 +3,7 @@
 //! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-domain, serde_json, sha2, sqlx];
 //!   services=[PostgreSQL(any) r=[control.memberships, control.public_moderator_grants, control.users,
 //!   ops.public_release_revocations, public.eligible_objects, public.relations, public.synthesis_inputs,
-//!   staging.contribution_releases] w=[public.claim_trust_evaluation_sources, public.claim_trust_evaluations,
-//!   public.claims, public.poisoning_signals, public.provenance_edges, public.source_closure, public.sources,
+//!   staging.contribution_releases] w=[public.claims, public.provenance_edges, public.source_closure, public.sources,
 //!   public.syntheses] x=[ops.claim_global_anonymous_public_dispatches, ops.claim_public_dispatch_jobs,
 //!   ops.complete_global_anonymous_public_dispatch, ops.complete_public_dispatch_job, ops.dispatch_public_outbox,
 //!   ops.emit_public_object_changed, ops.enqueue_public_projection_from_anonymous_dispatch,
@@ -14,7 +13,7 @@
 //!   public.evaluate_anonymous_claim, public.public_projection_identities, public.revoke_anonymous_dispatch,
 //!   staging.assert_active_contribution_release], PostgreSQL(role_gateway), PostgreSQL(role_private_worker),
 //!   PostgreSQL(role_public_worker), PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::postgres,
-//!   domain::error, domain::ids, domain::public, public-pool::public_evolve]
+//!   adapters::public_evaluation_repo, domain::error, domain::ids, domain::public, public-pool::public_evolve]
 //! Called-by: [public-pool::bootstrap, public-pool::public_projection, public-pool::public_repo::moderator_authorization, tests]
 //! Invariants: [every write uses PublicWorkerDbPool in a real tenant transaction; no function reads private rows or
 //!   accepts caller-provided released content or scanner outcomes; the public DB stays the serving authority]
@@ -24,8 +23,12 @@
 //! remains the serving authority: no function reads private rows or accepts caller-provided
 //! released content or scanner outcomes.
 
-use humaux_adapters::postgres::{
-    PrivateWorkerDbPool, PublicWorkerDbPool, RetrievalWorkerDbPool, RuntimeDbPool,
+use humaux_adapters::{
+    postgres::{PrivateWorkerDbPool, PublicWorkerDbPool, RetrievalWorkerDbPool, RuntimeDbPool},
+    public_evaluation_repo::{
+        ClaimTrustReceipt, record_claim_trust_receipt_in_txn, record_claim_trust_root_in_txn,
+        record_poisoning_signal_in_txn,
+    },
 };
 use humaux_domain::{
     error::ErrorCode,
@@ -517,30 +520,25 @@ async fn evaluate_claim_in_txn(
         .ok_or(ErrorCode::InvalidInput)?;
     let moderation_state = input.target_state.as_db_str();
     let evaluation_id = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO public.claim_trust_evaluations( \
-           evaluation_id,claim_id,object_revision,body_sha256,policy_version,moderation_state,evaluator_user_id, \
-           evaluator_grant_version,rationale,support_count,independent_support_count, \
-           trusted_source_count,identity_incomplete,contradiction_count,checks_complete) \
-         SELECT $1,$2,$3,$4,$5,$6,$7,g.grant_version,$8,$9,$10,$11,$12,$13,$14 \
-         FROM (SELECT 1) x LEFT JOIN control.public_moderator_grants g \
-           ON g.user_id=$7 AND g.enabled",
+    record_claim_trust_receipt_in_txn(
+        txn,
+        &ClaimTrustReceipt {
+            evaluation_id,
+            claim_id: input.claim_id,
+            object_revision: next_revision,
+            body_sha256: &body_hash,
+            policy_version: input.policy_version,
+            moderation_state,
+            evaluator_user_id,
+            rationale: input.rationale,
+            support_count: assessment.support_count,
+            independent_support_count: assessment.independent_support_count,
+            trusted_source_count: assessment.trusted_source_count,
+            identity_incomplete: assessment.identity_incomplete,
+            contradiction_count,
+            checks_complete: matches!(input.target_state, ModerationState::Supported),
+        },
     )
-    .bind(evaluation_id)
-    .bind(input.claim_id)
-    .bind(next_revision)
-    .bind(&body_hash)
-    .bind(input.policy_version)
-    .bind(moderation_state)
-    .bind(evaluator_user_id)
-    .bind(input.rationale)
-    .bind(assessment.support_count)
-    .bind(assessment.independent_support_count)
-    .bind(assessment.trusted_source_count)
-    .bind(assessment.identity_incomplete)
-    .bind(contradiction_count)
-    .bind(matches!(input.target_state, ModerationState::Supported))
-    .execute(&mut **txn)
     .await
     .map_err(db_error)?;
     for root in &roots {
@@ -551,35 +549,34 @@ async fn evaluate_claim_in_txn(
         .fetch_one(&mut **txn)
         .await
         .map_err(db_error)?;
-        sqlx::query(
-            "INSERT INTO public.claim_trust_evaluation_sources( \
-              evaluation_id,root_source_id,source_content_hash,contribution_release_id) \
-             VALUES($1,$2,$3,$4)",
+        record_claim_trust_root_in_txn(
+            txn,
+            evaluation_id,
+            root.source_id,
+            &root.content_hash,
+            release_id,
         )
-        .bind(evaluation_id)
-        .bind(root.source_id)
-        .bind(&root.content_hash)
-        .bind(release_id)
-        .execute(&mut **txn)
         .await
         .map_err(db_error)?;
     }
-    insert_signal(
+    record_poisoning_signal_in_txn(
         txn,
         evaluation_id,
         "IDENTITY_INCOMPLETE",
         input.policy_version,
         assessment.identity_incomplete,
     )
-    .await?;
-    insert_signal(
+    .await
+    .map_err(db_error)?;
+    record_poisoning_signal_in_txn(
         txn,
         evaluation_id,
         "CONTRADICTION_PRESENT",
         input.policy_version,
         contradiction_count > 0,
     )
-    .await?;
+    .await
+    .map_err(db_error)?;
     let revision: i64 = sqlx::query_scalar(
         "UPDATE public.claims SET current_evaluation_id=$2, moderation_state=$3, \
              object_revision=$4 WHERE claim_id=$1 RETURNING object_revision",
@@ -666,27 +663,6 @@ async fn load_claim_roots(
             })
         })
         .collect()
-}
-
-async fn insert_signal(
-    txn: &mut Txn<'_>,
-    evaluation_id: Uuid,
-    signal: &str,
-    version: &str,
-    detected: bool,
-) -> Result<(), ErrorCode> {
-    sqlx::query(
-        "INSERT INTO public.poisoning_signals(evaluation_id,signal_code,check_version,detected) \
-         VALUES($1,$2,$3,$4)",
-    )
-    .bind(evaluation_id)
-    .bind(signal)
-    .bind(version)
-    .bind(detected)
-    .execute(&mut **txn)
-    .await
-    .map_err(db_error)?;
-    Ok(())
 }
 
 async fn insert_object_outbox(

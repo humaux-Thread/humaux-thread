@@ -3456,6 +3456,7 @@ foreign keys (outgoing):
 read by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
+- process(humaux-public-worker): `adapters::public_evaluation_repo`
 - process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
@@ -15430,7 +15431,7 @@ read by:
 
 written by:
 - (no process): `public-pool::tests::public_trust`
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_evaluation_repo`
 
 executed by:
 
@@ -15467,7 +15468,7 @@ read by:
 
 written by:
 - (no process): `public-pool::tests::public_trust`
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_evaluation_repo`
 
 executed by:
 
@@ -16018,7 +16019,7 @@ read by:
 - process(humaux-maintenance): `maintenance::rls_check`
 
 written by:
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_evaluation_repo`
 
 executed by:
 
