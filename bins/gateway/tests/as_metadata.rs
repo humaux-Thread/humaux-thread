@@ -10,14 +10,15 @@ use serde_json::{Value, json};
 #[test]
 fn g_m02_14_metadata_matches_golden() {
     assert_eq!(
-        metadata_document("https://humaux.com"),
+        metadata_document("https://humaux.com", false),
         include_str!("../../../contracts/oauth/as_metadata.json").trim_end()
     );
 }
 
 #[test]
 fn g_m02_14_metadata_capabilities_are_exact() {
-    let value: Value = serde_json::from_str(&metadata_document("https://humaux.com")).unwrap();
+    let value: Value =
+        serde_json::from_str(&metadata_document("https://humaux.com", false)).unwrap();
     assert_eq!(value.as_object().unwrap().len(), 12);
     assert_eq!(value["issuer"], "https://humaux.com");
     for (key, path) in [
@@ -57,4 +58,15 @@ fn g_m02_14_metadata_capabilities_are_exact() {
         true
     );
     assert_eq!(value.get("client_id_metadata_document_supported"), None);
+}
+
+#[test]
+fn g_m02_14_cimd_metadata_matches_golden() {
+    let advertised = metadata_document("https://humaux.com", true);
+    assert_eq!(
+        advertised,
+        include_str!("../../../contracts/oauth/as_metadata_cimd.json").trim_end()
+    );
+    let value: Value = serde_json::from_str(&advertised).unwrap();
+    assert_eq!(value["client_id_metadata_document_supported"], true);
 }

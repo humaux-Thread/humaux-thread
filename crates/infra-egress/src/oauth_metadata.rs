@@ -1,7 +1,7 @@
 //! `infra-egress::oauth_metadata` — Layer 1A's credential-free OAUTH_METADATA GET capability.
 //! Depends-on: crates=[humaux-infra-network, tokio]; services=[HTTP(provider), HTTP(loopback)]; env=[];
 //!   modules=[humaux-infra-network, infra-egress::resolver, infra-network::http]
-//! Called-by: []
+//! Called-by: [gateway::bootstrap]
 //! Invariants: [only validated public addresses reach the connector; no ambient proxy, credentials, or redirects]
 //! Spec: Baseline §33; §83.4; ADR-0039
 
@@ -33,6 +33,7 @@ pub struct OAuthMetadataDocument {
     pub age: Option<String>,
 }
 
+/// A request failed a destination, transport, or response precondition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OAuthMetadataError {
     Configuration,
@@ -115,11 +116,14 @@ impl OAuthMetadataGet {
             .iter()
             .map(|value| value.to_str().unwrap_or("no-store").to_owned())
             .collect();
-        let age = response
-            .headers()
-            .get(header::AGE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
+        let mut ages = response.headers().get_all(header::AGE).iter();
+        let age = ages.next().map(|value| {
+            // Invalid or repeated Age must not be interpreted as a fresh response.
+            match (value.to_str(), ages.next()) {
+                (Ok(value), None) => value.to_owned(),
+                _ => String::new(),
+            }
+        });
 
         let mut body = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
@@ -363,6 +367,22 @@ mod tests {
         assert_eq!(doc.body, b"{}");
         assert_eq!(doc.cache_control, ["public, max-age=30"]);
         assert_eq!(doc.age.as_deref(), Some("10"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn repeated_age_does_not_look_fresh() {
+        let (url, server) = serve(
+            concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n",
+                "Age: 0\r\nAge: 25\r\nContent-Length: 2\r\n\r\n{}",
+            )
+            .into(),
+            false,
+        )
+        .await;
+        let doc = transport(TIMEOUT).fetch_checked(url).await.unwrap();
+        assert_eq!(doc.age.as_deref(), Some(""));
         server.await.unwrap();
     }
 

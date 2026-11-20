@@ -1,10 +1,10 @@
 //! `gateway::tests::oauth_flow` — G-M02-7/8/9/14 through real HTTP, role_gateway and PostgreSQL doors.
-//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-protocol,
+//! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-protocol,
 //!   humaux-testkit, postgres, rand, serde_json, time, tokio, url, uuid];
 //!   services=[HTTP(loopback), PostgreSQL(any) r=[control.oauth_authorization_codes, control.oauth_client_registrations, control.oauth_grants, ops.email_outbox] w=[control.workspaces, control.workspace_memberships, control.email_challenges, control.entitlement_snapshots, control.memberships, control.oauth_authorization_codes, control.oauth_client_registrations,
 //!   control.oauth_grants, control.oauth_refresh_tokens, control.sessions, control.tenants, control.user_emails, control.users, ops.email_outbox]
 //!   x=[control.bump_user_security_epoch], PostgreSQL(role_gateway)]; env=[CI, HUMAUX_TEST_PG_DSN];
-//!   modules=[adapters::oauth_repo, adapters::postgres, adapters::session_repo, application::auth, application::login, application::oauth, application::session, application::signed_token, contracts::retrieval_config, domain::context, domain::dataclass, domain::error, domain::identity,
+//!   modules=[application::cimd, adapters::oauth_repo, adapters::postgres, adapters::session_repo, application::auth, application::login, application::oauth, application::session, application::signed_token, contracts::retrieval_config, domain::context, domain::dataclass, domain::error, domain::identity,
 //!   domain::ids, gateway::auth, gateway::auth_pages, gateway::bootstrap, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::remember, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]
 //! Invariants: [fixture rows are unique and cleaned; missing DB on CI fails; token comparisons use production
@@ -79,6 +79,7 @@ fn config(max: u64) -> OAuthHttpConfig {
         refresh_ttl: Duration::from_secs(3600),
         grant_max_ttl: Duration::from_secs(max),
         registration: test_registration_policy(10_000, 10_000, 10_000),
+        cimd: None,
     }
 }
 fn test_registration_policy(capacity: i64, refill: i64, max_unused: i64) -> RegistrationPolicy {
@@ -797,7 +798,7 @@ fn g_m02_14_served_metadata_is_the_document() {
             reply.headers.get("content-type").map(String::as_str),
             Some("application/json")
         );
-        assert_eq!(reply.body, oauth_http::metadata_document(ORIGIN));
+        assert_eq!(reply.body, oauth_http::metadata_document(ORIGIN, false));
         assert_eq!(
             h.rt.block_on(http(
                 address,
@@ -2847,5 +2848,105 @@ fn m02_10c_registration_refills_per_minute() {
             429,
             "one second must not refill the minute bucket"
         );
+    });
+}
+
+struct CimdFixture(String);
+
+#[async_trait::async_trait]
+impl humaux_application::cimd::CimdFetch for CimdFixture {
+    async fn fetch(
+        &self,
+        _: &str,
+    ) -> Result<humaux_application::cimd::FetchedDocument, humaux_application::cimd::CimdError>
+    {
+        Ok(humaux_application::cimd::FetchedDocument {
+            body: serde_json::to_vec(&serde_json::json!({
+                "client_id": self.0, "client_name": "<Desktop>",
+                "redirect_uris": ["http://127.0.0.1:18001/cb"],
+                "token_endpoint_auth_method": "none",
+            }))
+            .unwrap(),
+            cache_control: vec!["max-age=30".into()],
+            age: None,
+        })
+    }
+}
+
+#[test]
+fn m02_11_cimd_resolves_and_commits_with_consent() {
+    use humaux_application::cimd::CimdResolver;
+    use std::num::NonZeroUsize;
+    const REQUESTED: &str = "http://127.0.0.1:31001/cb";
+    run_db_fixture::<OAuthFixture, _>("M02-11 authorize and token exchange", |mut h| {
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        let id = format!("https://client.example.test/{}/metadata", h.client_id);
+        let mut enabled = config(7200);
+        enabled.cimd = Some(CimdResolver::new(
+            ORIGIN.into(),
+            Arc::new(CimdFixture(id.clone())),
+            Duration::from_secs(60),
+            NonZeroUsize::MIN,
+            oauth_http::public_client_callback,
+        ));
+        let address = serve_surface(&h, Some(enabled));
+        assert_eq!(
+            browser_get(&h, address, "/.well-known/oauth-authorization-server", "").body,
+            oauth_http::metadata_document(ORIGIN, true),
+        );
+        let session = session_cookie(&h);
+        for (client, redirect) in [
+            (format!("{id}?unmatched=true"), REQUESTED),
+            (id.clone(), "http://127.0.0.1:31001/other"),
+        ] {
+            let denied = browser_get(
+                &h,
+                address,
+                &authorize_url(&client, redirect, "S256"),
+                &session,
+            );
+            assert_eq!(denied.status, 400, "{}", denied.body);
+            assert!(!denied.headers.contains_key("location"));
+        }
+        let path = authorize_url(&id, REQUESTED, "S256");
+        let page = browser_get(&h, address, &path, &session);
+        assert_eq!(page.status, 200, "{}", page.body);
+        assert!(
+            page.body
+                .contains("Client name: &lt;Desktop&gt;. Redirect host: 127.0.0.1.")
+        );
+        assert!(recorded_client(&h, &id).is_none());
+        let denied = browser_consent(&h, address, &session, ORIGIN, &consent_body(&page, "deny"));
+        assert_eq!(denied.status, 303, "{}", denied.body);
+        assert!(recorded_client(&h, &id).is_none());
+        let allowed = browser_consent(&h, address, &session, ORIGIN, &consent_body(&page, "allow"));
+        assert_eq!(allowed.status, 303, "{}", allowed.body);
+        let target = &allowed.headers["location"];
+        assert!(target.starts_with(&format!("{REQUESTED}?")), "{target}");
+        let url = url::Url::parse(target).unwrap();
+        let params: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(params["iss"], ORIGIN);
+        let client = recorded_client(&h, &id).unwrap();
+        assert_eq!(client.kind, Some(oauth_repo::ClientKind::Cimd));
+        assert_eq!(client.metadata["issuer"], ORIGIN);
+        let tokens = post(
+            &h,
+            address,
+            &code_form(
+                &h,
+                &params["code"],
+                &[("client_id", Some(&id)), ("redirect_uri", Some(REQUESTED))],
+            ),
+        );
+        assert_eq!(tokens.status, 200, "{}", tokens.body);
+        let disabled = serve(&h, 7200);
+        let denied = browser_get(&h, disabled, &path, &session);
+        assert_eq!(
+            denied.status, 400,
+            "persisted registration must require enabled CIMD"
+        );
+        assert!(!denied.headers.contains_key("location"));
     });
 }

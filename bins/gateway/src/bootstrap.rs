@@ -3,8 +3,8 @@
 //!   (ADR-0031 D-A / ADR-0032 D-A, §34.0.1 Q9: one process serves every pair; no registry table, no per-process
 //!   stream cache) — the same family the 14 governance / subject / affect writes attach to since ADR-0054, so
 //!   the process holds no default write pair at all.
-//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
-//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde, serde_json, sha2, tokio, uuid];
+//! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
+//!   humaux-infra-cell, humaux-infra-egress, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde, serde_json, sha2, tokio, uuid];
 //!   services=[PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_BILLING_WEBHOOK_PROVIDERS, HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS, HUMAUX_GATEWAY_DEPLOYMENT, HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS,
 //!   HUMAUX_GATEWAY_RATE_USER_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_TENANT_MAX_SUBJECTS,
@@ -23,6 +23,8 @@
 //!   HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST, HUMAUX_GATEWAY_LOGIN_CODE_PEPPER, HUMAUX_GATEWAY_LOGIN_MAIL_FROM,
 //!   HUMAUX_GATEWAY_PUBLIC_BASE_URL, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS,
 //!   HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS,
+//!   HUMAUX_GATEWAY_AUTH_OAUTH_CIMD_ENABLED, HUMAUX_GATEWAY_AUTH_OAUTH_CIMD_TIMEOUT_SECONDS,
+//!   HUMAUX_GATEWAY_AUTH_OAUTH_CIMD_MAX_BYTES, HUMAUX_GATEWAY_AUTH_OAUTH_CIMD_CACHE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_CIMD_CACHE_ENTRIES,
 //!   HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE, HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_STATIC_CLIENTS,
 //!   HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_CAPACITY, HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_REFILL_PER_MINUTE, HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_MAX_UNUSED,
@@ -55,7 +57,7 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::confirm_token_repo, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::oauth_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::oauth, application::oauth_exchange, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::route_cache, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::cache, telemetry::metrics]
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::confirm_token_repo, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::oauth_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::cimd, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::oauth, application::oauth_exchange, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::route_cache, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, infra-egress::oauth_metadata, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::auth, gateway::context, gateway::guard, gateway::main, gateway::mcp_application, gateway::oauth_http, gateway::memory, gateway::recall, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
 //! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7; ADR-0125
@@ -167,6 +169,11 @@ const EMAIL_RECIPIENT_ALLOWLIST_KEY: &str = "HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLO
 /// ADR-0125 8e (§78.1): the console session's absolute and idle lifetimes, the login code's lifetime and attempt cap,
 /// and the resend cooldown. Registry defaults are the former `AuthConfig::default()` values.
 const OAUTH_STATIC_CLIENTS_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_STATIC_CLIENTS";
+const OAUTH_CIMD_ENABLED: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_CIMD_ENABLED";
+const OAUTH_CIMD_TIMEOUT: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_CIMD_TIMEOUT_SECONDS";
+const OAUTH_CIMD_MAX_BYTES: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_CIMD_MAX_BYTES";
+const OAUTH_CIMD_TTL: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_CIMD_CACHE_TTL_SECONDS";
+const OAUTH_CIMD_CAPACITY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_CIMD_CACHE_ENTRIES";
 const OAUTH_REGISTER_RATE: (&str, &str, &str) = (
     "OAUTH_REGISTER_IP",
     "HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_CAPACITY",
@@ -974,6 +981,7 @@ fn parse_oauth_http(
     if legacy_enabled {
         resources.push(McpResourceRoute::Legacy.resource(&issuer));
     }
+    let cimd = parse_cimd_policy(effective, &issuer)?;
     Ok(Some(OAuthHttpConfig {
         keys: Arc::new(keys),
         issuer,
@@ -984,7 +992,68 @@ fn parse_oauth_http(
         refresh_ttl,
         grant_max_ttl,
         registration: parse_registration_policy(effective)?,
+        cimd,
     }))
+}
+
+struct MetadataFetch(humaux_infra_egress::oauth_metadata::OAuthMetadataGet);
+
+#[async_trait::async_trait]
+impl humaux_application::cimd::CimdFetch for MetadataFetch {
+    async fn fetch(
+        &self,
+        client_id: &str,
+    ) -> Result<humaux_application::cimd::FetchedDocument, humaux_application::cimd::CimdError>
+    {
+        let doc = self
+            .0
+            .fetch(client_id)
+            .await
+            .map_err(|_| humaux_application::cimd::CimdError::Unavailable)?;
+        Ok(humaux_application::cimd::FetchedDocument {
+            body: doc.body,
+            cache_control: doc.cache_control,
+            age: doc.age,
+        })
+    }
+}
+
+fn parse_cimd_policy(
+    effective: &BTreeMap<String, String>,
+    issuer: &str,
+) -> Result<Option<humaux_application::cimd::CimdResolver>, BootstrapError> {
+    use humaux_application::cimd::CimdResolver;
+    use humaux_infra_egress::oauth_metadata::OAuthMetadataGet;
+    use std::num::NonZeroUsize;
+
+    let enabled = required(effective, OAUTH_CIMD_ENABLED)?
+        .parse::<bool>()
+        .map_err(|_| BootstrapError::new(OAUTH_CIMD_ENABLED, "must be true or false"))?;
+    if !enabled {
+        return Ok(None);
+    }
+    let seconds = |key, max| {
+        bounded(effective, key, 1..=max, "outside CIMD duration bounds").map(Duration::from_secs)
+    };
+    let positive_size = |key, max| {
+        NonZeroUsize::new(bounded(effective, key, 1..=max, "outside CIMD size bounds")? as usize)
+            .ok_or(BootstrapError::new(key, "must be positive"))
+    };
+    let transport = OAuthMetadataGet::new(
+        seconds(OAUTH_CIMD_TIMEOUT, 60)?,
+        positive_size(OAUTH_CIMD_MAX_BYTES, 8192)?,
+        "application/json",
+    )
+    .map_err(|_| {
+        BootstrapError::new(OAUTH_CIMD_ENABLED, "could not initialize guarded HTTPS GET")
+    })?;
+    Ok(Some(CimdResolver::new(
+        issuer.to_owned(),
+        Arc::new(MetadataFetch(transport)),
+        seconds(OAUTH_CIMD_TTL, 86400)?,
+        positive_size(OAUTH_CIMD_CAPACITY, 8192)?,
+        crate::oauth_http::public_client_callback,
+    )))
 }
 
 fn configured_static_clients(effective: &BTreeMap<String, String>, enabled: bool) -> String {
@@ -1921,6 +1990,22 @@ pub fn registry() -> Vec<ConfigEntry> {
         .map(|(name, default)| entry_with_default(name, "u64", false, default)),
     );
     entries.push(entry_with_default(OAUTH_RESOURCE_KEY, "string", false, ""));
+    entries.push(entry_with_default(
+        OAUTH_CIMD_ENABLED,
+        "bool",
+        false,
+        "true",
+    ));
+    // M02 D5 bounds; the composition root validates all effective overrides.
+    entries.extend(
+        [
+            (OAUTH_CIMD_TIMEOUT, "3"),
+            (OAUTH_CIMD_MAX_BYTES, "8192"),
+            (OAUTH_CIMD_TTL, "86400"),
+            (OAUTH_CIMD_CAPACITY, "1024"),
+        ]
+        .map(|(name, default)| entry_with_default(name, "u64", false, default)),
+    );
     entries.extend(
         [
             (OAUTH_REGISTER_RATE.1, "1"),
@@ -2641,6 +2726,7 @@ pub(crate) async fn register_dynamic_oauth_client(
 pub(crate) async fn begin_oauth_consent(
     pool: &RuntimeDbPool,
     scope: &humaux_domain::identity::AuthorizationScope,
+    cimd: Option<&humaux_application::cimd::CimdClient>,
 ) -> Result<
     Box<dyn humaux_application::oauth_exchange::ExchangeTransaction>,
     humaux_domain::error::ErrorCode,
@@ -2668,6 +2754,19 @@ pub(crate) async fn begin_oauth_consent(
         .map(drop)
     })
     .await?;
+    if let Some(client) = cimd
+        && !txn
+            .register_client(
+                client.client_id(),
+                humaux_application::oauth_exchange::ClientKind::Cimd,
+                client.redirect_uris(),
+                &serde_json::json!({ "issuer": client.issuer() }),
+                Some(client.fetched_at()),
+            )
+            .await?
+    {
+        return Err(ErrorCode::Forbidden);
+    }
     Ok(Box::new(txn))
 }
 
@@ -3868,6 +3967,15 @@ mod tests {
             GatewayBootstrap::from_raw(values)
         };
         let config = enabled(&[]).expect("defaults boot").oauth_http.expect("on");
+        assert_eq!(config.cimd.as_ref().unwrap().issuer(), config.issuer);
+        assert!(
+            enabled(&[(OAUTH_CIMD_ENABLED, "false")])
+                .expect("OAuth remains active")
+                .oauth_http
+                .unwrap()
+                .cimd
+                .is_none()
+        );
         assert_eq!(
             [
                 config.code_ttl.as_secs(),

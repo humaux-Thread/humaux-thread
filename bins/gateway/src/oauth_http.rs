@@ -1,5 +1,5 @@
 //! `gateway::oauth_http` — M02 browser authorization, token exchange, revocation, registration and AS metadata.
-//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, serde, serde_json, time, url, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::login, application::oauth, application::oauth_exchange, application::session, application::signed_token, domain::error, domain::identity, domain::ids, gateway::auth_pages, gateway::bootstrap, gateway::guard, gateway::limiter, protocol::edge]
+//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, serde, serde_json, time, url, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::cimd, application::login, application::oauth, application::oauth_exchange, application::session, application::signed_token, domain::error, domain::identity, domain::ids, gateway::auth_pages, gateway::bootstrap, gateway::guard, gateway::limiter, protocol::edge]
 //! Called-by: [gateway::bootstrap, gateway::main, tests]
 //! Invariants: [OAuth refusals render OAUTH_REASONS strings; DCR admission uses the bounded IP limiter; precheck precedes consume; spent codes and revoking denies
 //!   commit, other denies roll back; no raw code or refresh token is logged or stored]
@@ -23,13 +23,14 @@ use axum::{
 };
 use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_application::{
+    cimd::{CimdClient, CimdResolver, is_url_identifier},
     login::{self, PasswordlessLoginPort},
     oauth::{
         self, ACCESS_TOKEN_LABEL, AccessTerms, AuthorizeRequest, ClientView, CodeExchangeRequest,
         ConsentSubject, OAuthPolicy, OAuthReason, RefreshRequest, RegistrationBudget,
         SUPPORTED_SCOPES, ValidatedAuthorize,
     },
-    oauth_exchange::{self, ExchangeStore},
+    oauth_exchange::{self, ClientKind, ExchangeStore},
     session::{SessionSecret, VerifiedSession, csrf_token},
     signed_token::{FIELD_SEP, TokenKeys, TokenLabel},
 };
@@ -75,9 +76,17 @@ pub struct OAuthHttpConfig {
     pub grant_max_ttl: Duration,
     /// Admission policy for the anonymous registration route.
     pub registration: RegistrationPolicy,
+    /// Client metadata resolver assembled for this authorization server.
+    pub cimd: Option<CimdResolver>,
 }
 
 impl OAuthHttpConfig {
+    fn cimd(&self) -> Option<&CimdResolver> {
+        self.cimd
+            .as_ref()
+            .filter(|resolver| resolver.issuer() == self.issuer)
+    }
+
     fn policy(&self) -> OAuthPolicy<'_> {
         OAuthPolicy {
             code_ttl: self.code_ttl,
@@ -215,10 +224,12 @@ struct Metadata<'a> {
     token_endpoint_auth_methods_supported: [&'static str; 1],
     scopes_supported: [&'static str; 5],
     authorization_response_iss_parameter_supported: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_id_metadata_document_supported: Option<bool>,
 }
 
 /// Compact, ordered RFC 8414 document for the mounted OAuth router.
-pub fn metadata_document(issuer: &str) -> String {
+pub fn metadata_document(issuer: &str, cimd_available: bool) -> String {
     serde_json::to_string(&Metadata {
         issuer,
         authorization_endpoint: format!("{issuer}/oauth/authorize"),
@@ -232,6 +243,7 @@ pub fn metadata_document(issuer: &str) -> String {
         token_endpoint_auth_methods_supported: ["none"],
         scopes_supported: SUPPORTED_SCOPES,
         authorization_response_iss_parameter_supported: true,
+        client_id_metadata_document_supported: cimd_available.then_some(true),
     })
     .expect("metadata contains only strings and a bool")
 }
@@ -239,7 +251,7 @@ pub fn metadata_document(issuer: &str) -> String {
 async fn metadata(State(state): State<Arc<HttpState>>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        metadata_document(&state.config.issuer),
+        metadata_document(&state.config.issuer, state.config.cimd().is_some()),
     )
         .into_response()
 }
@@ -298,17 +310,20 @@ impl PublicClientMetadata {
         }
         let mut seen = HashSet::new();
         if self.redirect_uris.is_empty()
-            || self.redirect_uris.iter().any(|uri| {
-                !seen.insert(uri)
-                    || !oauth::public_registration_redirect(uri)
-                    || uri.parse::<Uri>().is_err()
-                    || !valid_callback(uri)
-            })
+            || self
+                .redirect_uris
+                .iter()
+                .any(|uri| !seen.insert(uri) || !public_client_callback(uri))
         {
             return Err(Reason::REGISTRATION_REDIRECT_INVALID);
         }
         Ok(())
     }
+}
+
+/// Shared screening for every callback in a public client's registration metadata.
+pub fn public_client_callback(uri: &str) -> bool {
+    oauth::public_registration_redirect(uri) && uri.parse::<Uri>().is_ok() && valid_callback(uri)
 }
 
 async fn register(
@@ -399,7 +414,12 @@ async fn live_session(
     login::authenticate_session(state.login.as_ref(), &secret).await
 }
 
-async fn validate(state: &HttpState, query: &str) -> Result<ValidatedAuthorize, Box<Response>> {
+struct Authorization {
+    request: ValidatedAuthorize,
+    cimd: Option<Arc<CimdClient>>,
+}
+
+async fn validate(state: &HttpState, query: &str) -> Result<Authorization, Box<Response>> {
     let params = Params(
         form_urlencoded::parse(query.as_bytes())
             .into_owned()
@@ -413,22 +433,49 @@ async fn validate(state: &HttpState, query: &str) -> Result<ValidatedAuthorize, 
         .begin_exchange()
         .await
         .map_err(|code| Box::new(server_failure(code)))?;
-    let client = txn
+    let registered = txn
         .lookup_client(request.client_id)
         .await
         .map_err(|code| Box::new(server_failure(code)))?;
-    let client = client.as_ref().map(|c| ClientView {
-        redirect_uris: &c.redirect_uris,
-        kind_recognized: c.kind.is_some(),
-        disabled: c.disabled_at.is_some(),
-    });
+    drop(txn);
+    let unknown = || Box::new(refusal(OAuthReason::CLIENT_UNKNOWN));
+    let cimd = if is_url_identifier(request.client_id) {
+        let resolver = state.config.cimd().ok_or_else(unknown)?;
+        if registered
+            .as_ref()
+            .is_some_and(|row| row.disabled_at.is_some() || row.kind != Some(ClientKind::Cimd))
+        {
+            return Err(unknown());
+        }
+        Some(
+            resolver
+                .resolve(request.client_id)
+                .await
+                .map_err(|_| unknown())?,
+        )
+    } else {
+        None
+    };
+    let client = if let Some(cimd) = &cimd {
+        Some(ClientView {
+            redirect_uris: cimd.redirect_uris(),
+            kind_recognized: true,
+            disabled: false,
+        })
+    } else {
+        registered.as_ref().map(|c| ClientView {
+            redirect_uris: &c.redirect_uris,
+            kind_recognized: c.kind.is_some() && c.kind != Some(ClientKind::Cimd),
+            disabled: c.disabled_at.is_some(),
+        })
+    };
     let policy = OAuthPolicy {
         supported_scopes: &state.scopes,
         ..state.config.policy()
     };
     let result = oauth::authorize_request(&request, client.as_ref(), &policy);
     match result {
-        Ok(validated) if valid_callback(&validated.redirect_uri) => Ok(validated),
+        Ok(request) if valid_callback(&request.redirect_uri) => Ok(Authorization { request, cimd }),
         Ok(_) => Err(Box::new(refusal(OAuthReason::REDIRECT_URI_INVALID))),
         Err(denied) => Err(Box::new(authorize_refusal(state, &denied))),
     }
@@ -550,11 +597,12 @@ fn html_text(value: &str) -> String {
 
 fn show_consent(
     state: &HttpState,
-    validated: &ValidatedAuthorize,
+    authorization: &Authorization,
     session: VerifiedSession,
     tenant: uuid::Uuid,
     query: &str,
 ) -> Response {
+    let validated = &authorization.request;
     let ttl = state.config.code_ttl.as_secs();
     let expires = auth_pages::unix_now().saturating_add(ttl);
     let csrf = csrf_token(&state.config.keys, session.session_id);
@@ -566,11 +614,31 @@ fn show_consent(
         ),
     );
     let client = html_text(&validated.client_id);
+    let client_details = authorization
+        .cimd
+        .as_ref()
+        .map_or_else(String::new, |client| {
+            let redirect = Url::parse(&validated.redirect_uri).ok();
+            let host = redirect
+                .as_ref()
+                .and_then(Url::host_str)
+                .unwrap_or_default();
+            let warning = if redirect.as_ref().is_some_and(|url| url.scheme() == "http") {
+                " Confirm this callback is running in the client on your device."
+            } else {
+                ""
+            };
+            format!(
+                "<p>Client name: {}. Redirect host: {}.{warning}</p>",
+                html_text(client.name()),
+                html_text(host)
+            )
+        });
     let resource = html_text(&validated.resource);
     let scopes = html_text(&validated.scopes.join(", "));
     Html(format!(
         r#"<!doctype html><html lang="en"><meta charset="utf-8"><title>Authorize client</title>
-<main><h1>Authorize client</h1><p>{client} requests {scopes} on {resource} for tenant {}.</p>
+<main><h1>Authorize client</h1><p>{client} requests {scopes} on {resource} for tenant {}.</p>{client_details}
 <form action="{AUTHORIZE}" method="post"><input type="hidden" name="ticket" value="{ticket}">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" name="decision" value="allow">Allow</button>
@@ -629,20 +697,21 @@ async fn consent(
     let Some((tenant, query)) = consent_ticket(&state.config, &form.ticket, session) else {
         return auth_pages::forbidden();
     };
-    let request = match validate(&state, &query).await {
-        Ok(request) => request,
+    let authorization = match validate(&state, &query).await {
+        Ok(authorization) => authorization,
         Err(response) => return *response,
     };
+    let request = &authorization.request;
     match form.decision.as_str() {
         "deny" => authorize_refusal(
             &state,
             &oauth::AuthorizeRefusal {
                 refusal: oauth::OAuthRefusal::of(OAuthReason::CONSENT_DENIED),
-                redirect_to: Some(request.redirect_uri),
-                state: request.state,
+                redirect_to: Some(request.redirect_uri.clone()),
+                state: request.state.clone(),
             },
         ),
-        "allow" => allow_consent(&state, session, tenant, &request).await,
+        "allow" => allow_consent(&state, session, tenant, &authorization).await,
         _ => auth_pages::forbidden(),
     }
 }
@@ -651,14 +720,21 @@ async fn allow_consent(
     state: &HttpState,
     session: VerifiedSession,
     tenant: uuid::Uuid,
-    request: &ValidatedAuthorize,
+    authorization: &Authorization,
 ) -> Response {
+    let request = &authorization.request;
     let tenant = TenantId(tenant);
     let scope = match consent_scope(tenant, session.user_id) {
         Ok(scope) => scope,
         Err(code) => return consent_failure(code),
     };
-    let txn = match crate::bootstrap::begin_oauth_consent(state.pool.as_ref(), &scope).await {
+    let txn = match crate::bootstrap::begin_oauth_consent(
+        state.pool.as_ref(),
+        &scope,
+        authorization.cimd.as_deref(),
+    )
+    .await
+    {
         Ok(txn) => txn,
         Err(code) => return consent_failure(code),
     };

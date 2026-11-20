@@ -1,6 +1,6 @@
 //! `humaux-infra-egress` — Humaux Thread workspace crate（布局见 §58）。
 //! Depends-on: crates=[]; services=[]; env=[]; modules=[]
-//! Called-by: [crate(humaux-adapters), crate(humaux-billing-worker), crate(humaux-retrieval-provider)]
+//! Called-by: [crate(humaux-adapters), crate(humaux-billing-worker), crate(humaux-gateway), crate(humaux-retrieval-provider)]
 //! Invariants: [external egress reaches reqwest only through humaux-infra-network; private data requires an EgressPermit]
 //! Spec: Baseline §3; §78.3
 //!

@@ -1247,6 +1247,7 @@ dependencies = [
  "humaux-contracts",
  "humaux-domain",
  "humaux-infra-cell",
+ "humaux-infra-egress",
  "humaux-local-secret-scan",
  "humaux-projection",
  "humaux-protocol",
