@@ -153,6 +153,7 @@ fn loader_idempotent_exact_seed_and_closed_checks() {
     );
     exact_seed(&mut admin);
     edits_update_in_place(&rt, &worker, &mut admin);
+    label_conflict_rolls_back_concept_edits(&rt, &worker, &mut admin);
     alt_label_removal_needs_migration(&rt, &worker, &mut admin);
     constraints_reject_direct_writes(&dsn);
 }
@@ -196,6 +197,28 @@ fn edits_update_in_place(
     assert_eq!(count, 8);
     rt.block_on(vocab::apply(worker, SOURCE, LOCK))
         .expect("restore seed");
+    exact_seed(admin);
+}
+
+fn label_conflict_rolls_back_concept_edits(
+    rt: &tokio::runtime::Runtime,
+    worker: &PublicWorkerDbPool,
+    admin: &mut Client,
+) {
+    // The snapshot is valid, but the first PREF update in a swap collides with the other
+    // persisted PREF. PostgreSQL must roll back the definition already written in that apply.
+    let swapped = SOURCE
+        .replace("label = \"DECISION\"", "label = \"SWAP-PLACEHOLDER\"")
+        .replace(PREF_FIX, "label = \"DECISION\"")
+        .replace("label = \"SWAP-PLACEHOLDER\"", PREF_FIX);
+    let swapped = swapped.replace(FIX_DEFINITION, "Definition that must roll back.");
+    Vocabulary::parse(&swapped, LOCK).expect("swap validates before reaching the database");
+    assert_eq!(
+        rt.block_on(vocab::apply(worker, &swapped, LOCK)),
+        Err(rejected(
+            "database constraint concept_labels_facet_unique rejected the vocabulary"
+        ))
+    );
     exact_seed(admin);
 }
 
