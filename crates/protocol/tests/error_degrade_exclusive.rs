@@ -1,4 +1,4 @@
-//! G52-4 exercises the production MCP adapter at the HTTP wire boundary.
+//! `protocol::tests::error_degrade_exclusive` — G52-4 exercises the production MCP adapter at the HTTP wire boundary.
 //! Depends-on: crates=[async-trait, axum, humaux-domain, serde_json, tokio]; services=[HTTP(loopback)]; env=[];
 //!   modules=[domain::error, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]

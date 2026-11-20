@@ -1,11 +1,12 @@
-//! §52.2 projection lag pair, degraded side. Drive the production envelope with a lagging ledger.
-//! Depends-on: crates=[humaux-retrieval, humaux-telemetry]; services=[]; env=[]; modules=[retrieval::completeness, retrieval::envelope, telemetry::degrade]
+//! `testkit::tests::pair::projection_lag_degraded` — §52.2 projection lag pair, degraded side through the production envelope.
+//! Depends-on: crates=[humaux-domain, humaux-retrieval, humaux-telemetry]; services=[]; env=[]; modules=[domain::error, retrieval::completeness, retrieval::envelope, telemetry::degrade]
 //! Called-by: [testkit::tests::pair_main]
 //! Invariants: [a lagged result remains available and carries ProjectionLag]
 //! Spec: Baseline §52.2; §52.4 G52-5; ADR-0057 D-E
 
 use std::time::Duration;
 
+use humaux_domain::error::ErrorCode;
 use humaux_retrieval::completeness::ledger::{self, LedgerReads, ProjectionReads};
 use humaux_retrieval::envelope::build_projection_block;
 use humaux_telemetry::degrade::DegradeCode;
@@ -35,5 +36,10 @@ fn projection_lag_degraded_when_read_your_write_not_required() {
     assert_eq!(
         outcome.degradations.as_slice(),
         &[DegradeCode::ProjectionLag]
+    );
+    assert_eq!(
+        outcome.degradations.as_slice()[0].line_format(),
+        ErrorCode::ProjectionLag.as_str(),
+        "§52.2: the concept pair shares the same wire spelling"
     );
 }
