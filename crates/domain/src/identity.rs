@@ -118,19 +118,7 @@ impl<T: PartialEq> BoundedSet<T> {
     }
 }
 
-pub use crate::vocab::VisibilityClass;
-
-/// An object's visibility, as read off the row being checked (§6.1.1). `user_id`/`workspace_id`
-/// are only meaningful for the matching `class` — [`can_read`] treats a class/id mismatch
-/// (e.g. `UserPrivate` with `user_id: None`) as a malformed descriptor and fails closed
-/// (`false`), it never panics on it. Row-level `CHECK` constraints (§48.0) are the place that
-/// rejects such rows at write time; this type does not re-validate that invariant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VisibilityDescriptor {
-    pub class: VisibilityClass,
-    pub user_id: Option<UserId>,
-    pub workspace_id: Option<WorkspaceId>,
-}
+pub use crate::vocab::{VisibilityClass, VisibilityDescriptor};
 
 /// A request's authorization scope (§6.1.1) — tenant, the acting principal, the on-behalf-of
 /// user if any, and the bounded set of workspaces the principal is currently authorized into.
