@@ -13336,6 +13336,7 @@ executed by:
 - `private-worker::main`
 - `private-worker::tests::derived_dispatch_e2e`
 - `private-worker::tests::ops_listener`
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `retrieval-worker::main`
 - `retrieval-worker::tests::ops_listener`
@@ -16454,6 +16455,7 @@ modules naming it:
 - `protocol::mcp_catalog`
 - `protocol::mcp_profile`
 - `protocol::page`
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
@@ -16487,6 +16489,7 @@ why: HTTP router the native MCP adapter is built on
 
 modules naming it:
 - `protocol::mcp`
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `tests`
 
@@ -16495,6 +16498,7 @@ why: object-safe async traits at the rmcp/Axum boundary
 
 modules naming it:
 - `protocol::mcp`
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `tests`
 
@@ -16513,6 +16517,7 @@ modules naming it:
 - `protocol::mcp_catalog`
 - `protocol::mcp_profile`
 - `protocol::page`
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `protocol::tests::mcp_profile`
 - `protocol::tests::note_kind_contract`
@@ -16533,6 +16538,7 @@ modules naming it:
 why: async runtime the Axum/rmcp server and its tests run on
 
 modules naming it:
+- `protocol::tests::error_degrade_exclusive`
 - `protocol::tests::mcp_http`
 - `tests`
 
@@ -17065,6 +17071,7 @@ modules naming it:
 - `testkit::tests::fault::sparse_lane_unavailable`
 - `testkit::tests::metrics::humaux_retrieval_requests_total`
 - `testkit::tests::metrics::retrieval_completeness_total`
+- `testkit::tests::pair::projection_lag_degraded`
 - `tests`
 
 ### humaux-testkit → `humaux-telemetry` (dev)
@@ -21050,6 +21057,13 @@ services (computed):
 default run:
 
 ### `crates/projection/tests/no_handwritten_filter_scan.rs`
+db-bound (default run): no
+
+services (computed):
+
+default run:
+
+### `crates/protocol/tests/error_degrade_exclusive.rs`
 db-bound (default run): no
 
 services (computed):
