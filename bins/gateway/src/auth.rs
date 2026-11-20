@@ -343,13 +343,13 @@ pub(crate) async fn authenticate_access_token(
     }
     txn.commit().await?;
     let workspaces = load_live_workspace_ids(pool, grant.tenant_id.0, grant.user_id.0).await?;
-    access
-        .bind(
-            grant,
-            workspaces.into_iter().map(WorkspaceId).collect(),
-            now,
-        )
-        .map(AuthenticatedBearer)
+    VerifiedCredential::from_oauth(
+        access,
+        grant,
+        workspaces.into_iter().map(WorkspaceId).collect(),
+        now,
+    )
+    .map(AuthenticatedBearer)
 }
 
 pub(crate) fn parse_bearer_header(header: &str) -> Result<&str, ErrorCode> {
