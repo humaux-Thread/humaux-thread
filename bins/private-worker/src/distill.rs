@@ -150,6 +150,7 @@ async fn run_seats<R: DistillPorts>(
         runtime,
         dispatch,
         sleep_until: |deadline| Box::pin(tokio::time::sleep_until(Instant::from_std(deadline))),
+        retry_jitter: execution::sample_retry_jitter,
     };
     let seats: Vec<SeatFuture<'_>> = (0..dispatch.in_flight)
         .map(|_| Box::pin(seat(&dispatcher, mode)) as SeatFuture<'_>)
