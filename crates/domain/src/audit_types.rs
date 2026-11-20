@@ -1,6 +1,6 @@
 //! `domain::audit_types` — shared security audit and disclosure vocabulary (§7.4, §77).
 //! Depends-on: crates=[uuid]; services=[]; env=[]; modules=[domain::error, domain::ids]
-//! Called-by: []
+//! Called-by: [domain::audit::write_view]
 //! Invariants: [§78.2 closed audit actions and disclosure outcomes]
 //! Spec: §7.4; §77; §78.2; ADR-0130
 

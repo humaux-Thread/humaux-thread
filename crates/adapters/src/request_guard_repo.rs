@@ -1,7 +1,7 @@
 //! `adapters::request_guard_repo` — PostgreSQL effective-entitlement reads and
 //!   FORCE-RLS operational-audit writes.
 //! Depends-on: crates=[humaux-domain, serde_json, sqlx]; services=[PostgreSQL(role_gateway)
-//!   r=[control.entitlement_snapshots] x=[control.audit_event_insert]]; env=[]; modules=[adapters::postgres, domain::audit, domain::error, domain::identity, domain::ids]
+//!   r=[control.entitlement_snapshots] x=[control.audit_event_insert]]; env=[]; modules=[adapters::postgres, domain::audit, domain::audit::write_view, domain::error, domain::identity, domain::ids]
 //! Called-by: [adapters::audited_read_quota, adapters::confirm_token_repo, adapters::context_repo, adapters::distill_repo, adapters::independent_audit, adapters::memory_governance_repo, adapters::operation_receipt, tests]
 //! Invariants: [this reads the effective entitlement snapshot (its staged successor
 //!   once that is in force, ADR-0072 D-A); a missing entitlement is EntitlementRequired]
@@ -11,7 +11,7 @@
 //! and the §77 audit writer for the caller's PostgreSQL transaction.
 
 use humaux_domain::{
-    audit::{AuditEvent, AuditEventId, SYSTEM_TENANT_ID},
+    audit::{AuditEventId, SYSTEM_TENANT_ID, write_view::AuditWriteSource},
     error::ErrorCode,
     identity::AuthorizationScope,
     ids::{TenantId, UserId},
@@ -160,7 +160,7 @@ pub async fn read_effective_entitlements(
 pub async fn audit_event_insert(
     pool: &RuntimeDbPool,
     tenant: AuditTenant<'_>,
-    event: &AuditEvent,
+    event: &(impl AuditWriteSource + Sync),
 ) -> Result<AuditEventId, ErrorCode> {
     insert_bound_audit(pool, tenant.authorized_ids(), event).await
 }
@@ -169,7 +169,7 @@ pub async fn audit_event_insert(
 pub(crate) async fn insert_bound_audit(
     pool: &RuntimeDbPool,
     authorized: Option<(TenantId, Option<UserId>)>,
-    event: &AuditEvent,
+    event: &(impl AuditWriteSource + Sync),
 ) -> Result<AuditEventId, ErrorCode> {
     // dep: PostgreSQL(role_gateway) — transaction entry for `audit_event_insert`
     let mut txn = pool.pool().begin().await.map_err(db_error)?;
@@ -182,7 +182,7 @@ pub(crate) async fn insert_bound_audit(
 pub async fn audit_event_insert_in_txn(
     txn: &mut Txn<'_>,
     tenant: AuditTenant<'_>,
-    event: &AuditEvent,
+    event: &(impl AuditWriteSource + Sync),
 ) -> Result<AuditEventId, ErrorCode> {
     insert_bound_audit_in_txn(txn, tenant.authorized_ids(), event).await
 }
@@ -190,8 +190,9 @@ pub async fn audit_event_insert_in_txn(
 async fn insert_bound_audit_in_txn(
     txn: &mut Txn<'_>,
     authorized: Option<(TenantId, Option<UserId>)>,
-    event: &AuditEvent,
+    event: &(impl AuditWriteSource + Sync),
 ) -> Result<AuditEventId, ErrorCode> {
+    let event = event.audit_write_event();
     let expected_tenant = authorized.map_or(SYSTEM_TENANT_ID, |(tenant_id, _)| tenant_id);
     if event.tenant_id != expected_tenant {
         return Err(ErrorCode::TenantBoundary);

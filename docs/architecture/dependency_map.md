@@ -542,6 +542,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::audit`
 
+#### `domain::audit::write_view`
+
+#### `domain::audit_types`
+
 #### `domain::authority`
 
 #### `domain::boundary`
@@ -2321,6 +2325,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::audit`
 
+#### `domain::audit::write_view`
+
+#### `domain::audit_types`
+
 #### `domain::authority`
 
 #### `domain::billing`
@@ -3293,6 +3301,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::attribution`
 
 #### `domain::audit`
+
+#### `domain::audit::write_view`
+
+#### `domain::audit_types`
 
 #### `domain::authority`
 
@@ -4456,6 +4468,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `domain::audit`
 
+#### `domain::audit::write_view`
+
+#### `domain::audit_types`
+
 #### `domain::authority`
 
 #### `domain::boundary`
@@ -5292,6 +5308,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `domain::attribution`
 
 #### `domain::audit`
+
+#### `domain::audit::write_view`
+
+#### `domain::audit_types`
 
 #### `domain::authority`
 

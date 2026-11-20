@@ -92,7 +92,7 @@ async fn execute_confirmed_governance(
                 successor,
                 stream,
                 claim,
-                finished_audit,
+                finished_audit: finished_audit.into(),
                 undo_window,
             };
             let result = governance::supersede_atomically(pool, quota, auth, request).await?;
@@ -106,7 +106,7 @@ async fn execute_confirmed_governance(
                 target,
                 stream,
                 claim,
-                finished_audit,
+                finished_audit: finished_audit.into(),
                 consistency_token_ttl,
             };
             let RestoreResult::Restored(result) =
@@ -124,7 +124,7 @@ async fn execute_confirmed_governance(
                 target,
                 stream,
                 claim,
-                finished_audit,
+                finished_audit: finished_audit.into(),
                 op,
             };
             let ArchiveResult::Done(result) =
@@ -145,7 +145,7 @@ async fn execute_confirmed_governance(
                 content,
                 stream,
                 claim,
-                finished_audit,
+                finished_audit: finished_audit.into(),
                 undo_window,
                 consistency_token_ttl,
                 subjects: Default::default(),

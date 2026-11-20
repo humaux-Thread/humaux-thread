@@ -1,6 +1,6 @@
 //! `adapters::memory_governance_repo` — §36 `memory.supersede`, the first confirm-gated governance write (ADR-0018,
 //!   D-C).
-//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time, uuid]; services=[PostgreSQL(any) r=[ops.memory_lifecycle_events, ops.outbox, private.evidence_objects, private.memory_evidence, projection.stream_checkpoints, projection.stream_log] w=[private.memory_records] x=[ops.append_memory_lifecycle]]; env=[]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::memory_repo, adapters::postgres, adapters::quota_reservation_port, adapters::read_gate, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::archive, application::correct, application::lifecycle_execution, application::supersede, domain::affect, domain::audit, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::lifecycle, domain::memory, domain::subject, projection::stream]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-projection, serde_json, sqlx, time, uuid]; services=[PostgreSQL(any) r=[ops.memory_lifecycle_events, ops.outbox, private.evidence_objects, private.memory_evidence, projection.stream_checkpoints, projection.stream_log] w=[private.memory_records] x=[ops.append_memory_lifecycle]]; env=[]; modules=[adapters::affect_repo, adapters::confirm_token_repo, adapters::memory_repo, adapters::postgres, adapters::quota_reservation_port, adapters::read_gate, adapters::remember, adapters::request_guard_repo, adapters::retrieve, adapters::stream_repo, adapters::subject_repo, application::archive, application::correct, application::lifecycle_execution, application::supersede, domain::affect, domain::audit, domain::audit::write_view, domain::authority, domain::confirm, domain::error, domain::evidence, domain::identity, domain::ids, domain::lifecycle, domain::memory, domain::subject, projection::stream]
 //! Called-by: [adapters::affect_repo, adapters::consolidate_repo, adapters::operation_receipt, gateway::bootstrap, gateway::mcp_application, tests]
 //! Invariants: [one role_gateway transaction: BMO reserve -> confirm token consume -> visibility -> successor rule ->
 //!   conditional UPDATE -> lifecycle ticket; the UPDATE's WHERE is the only status judge (0 rows = Conflict); any
@@ -42,7 +42,10 @@ use std::time::Duration;
 
 use humaux_domain::{
     affect::MoodHalfLife,
-    audit::{AuditEvent, AuditEventId, McpAuditAction},
+    audit::{
+        AuditEventId, McpAuditAction,
+        write_view::{AuditMetadataView, AuditWriteEvent},
+    },
     authority::{AuthorityStatus, MemoryId},
     confirm::{DestructiveOp, RISK_TAG_CONFIRMATION_MINTED},
     error::{ConflictReason, ErrorCode},
@@ -168,7 +171,7 @@ pub struct SupersedeRequest {
     /// same key `memory.get`/`recall` read their ledger from).
     pub stream: StreamKey,
     pub claim: ConfirmationClaim,
-    pub finished_audit: AuditEvent,
+    pub finished_audit: AuditWriteEvent,
     /// §78.1 undo window: how long the resulting SUPERSEDE stays restorable. Stamped onto the
     /// lifecycle event's `undo_deadline` at write time (ADR-0020 D-A/D-D).
     pub undo_window: Duration,
@@ -610,7 +613,7 @@ pub struct RestoreRequest {
     pub target: MemoryId,
     pub stream: StreamKey,
     pub claim: ConfirmationClaim,
-    pub finished_audit: AuditEvent,
+    pub finished_audit: AuditWriteEvent,
     /// §15.5 lifetime of the returned consistency_token (the workspace remember policy's TTL).
     pub consistency_token_ttl: Duration,
 }
@@ -997,7 +1000,7 @@ pub struct ArchiveRequest {
     pub target: MemoryId,
     pub stream: StreamKey,
     pub claim: ConfirmationClaim,
-    pub finished_audit: AuditEvent,
+    pub finished_audit: AuditWriteEvent,
     /// `MemoryArchive` sets `archived_at`; `MemoryUnarchive` clears it.
     pub op: DestructiveOp,
 }
@@ -1317,7 +1320,7 @@ pub struct CorrectRequest {
     /// Stream family the lifecycle ticket + the new Evidence are issued on.
     pub stream: StreamKey,
     pub claim: ConfirmationClaim,
-    pub finished_audit: AuditEvent,
+    pub finished_audit: AuditWriteEvent,
     /// §78.1 undo window: how long the resulting SUPERSEDE (reason USER_CORRECTION) stays
     /// restorable via `memory.restore` (a correction's undo IS card 3's restore of that
     /// SUPERSEDE).
@@ -1868,9 +1871,9 @@ impl<'a> PostgresLifecycleStore<'a> {
 fn lifecycle_parts(
     audit: humaux_application::lifecycle_execution::LifecycleAudit,
     confirmation: humaux_application::lifecycle_execution::LifecycleConfirmation,
-) -> Result<(AuditEvent, ConfirmationClaim), ErrorCode> {
+) -> Result<(AuditWriteEvent, ConfirmationClaim), ErrorCode> {
     let a = audit;
-    let mut audit = AuditEvent {
+    let audit = AuditWriteEvent {
         event_id: AuditEventId(a.event_id),
         ts: a.ts,
         tenant_id: humaux_domain::ids::TenantId(a.tenant_id),
@@ -1887,11 +1890,8 @@ fn lifecycle_parts(
         risk_tags: a.risk_tags,
         before_fingerprint: a.before_fingerprint,
         after_fingerprint: a.after_fingerprint,
-        metadata: Default::default(),
+        metadata: AuditMetadataView::try_from_entries(a.metadata)?,
     };
-    for (key, value) in a.metadata {
-        audit.metadata.insert(key, value)?;
-    }
     let c = confirmation;
     let claim = ConfirmationClaim {
         op: c.op,
@@ -2021,7 +2021,6 @@ mod tests {
     use std::time::SystemTime;
 
     use humaux_domain::{
-        audit::AuditMetadata,
         identity::{BoundedSet, PrincipalId},
         ids::{TenantId, UserId, WorkspaceId},
     };
@@ -2073,7 +2072,7 @@ mod tests {
                 request_sha256: None,
             },
             undo_window: Duration::from_secs(86_400),
-            finished_audit: AuditEvent {
+            finished_audit: AuditWriteEvent {
                 event_id: AuditEventId::new(),
                 ts: SystemTime::now(),
                 tenant_id: auth.tenant_id(),
@@ -2090,7 +2089,7 @@ mod tests {
                 risk_tags: vec![],
                 before_fingerprint: None,
                 after_fingerprint: None,
-                metadata: AuditMetadata::new(),
+                metadata: Default::default(),
             },
         }
     }
@@ -2197,7 +2196,7 @@ mod tests {
                 request_sha256: None,
             },
             consistency_token_ttl: Duration::from_secs(60),
-            finished_audit: AuditEvent {
+            finished_audit: AuditWriteEvent {
                 event_id: AuditEventId::new(),
                 ts: SystemTime::now(),
                 tenant_id: auth.tenant_id(),
@@ -2214,7 +2213,7 @@ mod tests {
                 risk_tags: vec![],
                 before_fingerprint: None,
                 after_fingerprint: None,
-                metadata: AuditMetadata::new(),
+                metadata: Default::default(),
             },
         }
     }
