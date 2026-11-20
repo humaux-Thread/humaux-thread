@@ -797,6 +797,14 @@ async fn deps_for(
     scope_id: Uuid,
     provider: Arc<TestDoubleProvider>,
 ) -> ProjectionWorkerDeps {
+    deps_for_embedder(handle, scope_id, Arc::new(TestEmbedder(provider))).await
+}
+
+async fn deps_for_embedder(
+    handle: &Handle,
+    scope_id: Uuid,
+    embedder: Arc<dyn CardEmbedder>,
+) -> ProjectionWorkerDeps {
     let retrieval_dsn = std::env::var("HUMAUX_RETRIEVAL_WORKER_PG_DSN")
         .expect("HUMAUX_RETRIEVAL_WORKER_PG_DSN must be set for this test");
     // dep: PostgreSQL(role_retrieval_worker) — open a role-scoped PG connection/pool for this test
@@ -812,7 +820,7 @@ async fn deps_for(
     ProjectionWorkerDeps {
         read_affects: humaux_adapters::affect_repo::read_projection_affects,
         pool,
-        embedder: Arc::new(TestEmbedder(provider)),
+        embedder,
         scanner: handle.scanner.clone(),
         transport: handle.transport.clone(),
         permit,
@@ -1097,48 +1105,11 @@ fn dimension_mismatch_fails_before_reaching_qdrant() {
             let scope_id = Uuid::new_v4();
             let stream_seq = seed_memory(&mut handle, scope_id, "wrong dimension vector");
 
-            let retrieval_dsn = std::env::var("HUMAUX_RETRIEVAL_WORKER_PG_DSN")
-                .expect("HUMAUX_RETRIEVAL_WORKER_PG_DSN must be set for this test");
-            let pool = handle
-                .rt
-                // dep: PostgreSQL(role_retrieval_worker) — open a role-scoped PG connection/pool for this test
-                .block_on(RetrievalWorkerDbPool::connect(&retrieval_dsn))
-                .expect("role_retrieval_worker connects");
-            let permit = authorize_cell_access(
-                &handle.registry,
-                IntraCellResource::QDRANT_REST,
-                Duration::from_secs(30),
-            )
-            .expect("retrieval worker Qdrant permit");
-            let deps = ProjectionWorkerDeps {
-                read_affects: humaux_adapters::affect_repo::read_projection_affects,
-                pool,
-                embedder: Arc::new(WrongDimEmbedder),
-                scanner: handle.scanner.clone(),
-                transport: handle.transport.clone(),
-                permit,
-                placement: TenantPlacementRow {
-                    tenant_id: TenantId(handle.tenant_id),
-                    projection_family: RetrievalFamily::PrivateMemoryV1,
-                    collection_name: handle.collection.clone(),
-                    shard_key: None,
-                    placement_class: PlacementClass::SharedFallback,
-                    point_count: 0,
-                    bytes_estimate: 0,
-                    promotion_state: PromotionState::Stable,
-                },
-                family: StreamFamily::new(
-                    TenantId(handle.tenant_id),
-                    "workspace",
-                    scope_id,
-                    "private_memory",
-                    "PRIVATE_MEMORY",
-                ),
-                embedding_version: "embed-v1".to_owned(),
-                projection_version: "v1".to_owned(),
-                dimension: 4,
-                processor_id: ProcessorId(TEST_PROCESSOR_ID),
-            };
+            let deps = handle.rt.block_on(deps_for_embedder(
+                &handle,
+                scope_id,
+                Arc::new(WrongDimEmbedder),
+            ));
 
             let outcome = handle
                 .rt
