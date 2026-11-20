@@ -14545,6 +14545,12 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
             "use humaux_adapters::health::HealthSample as BoundaryHealthSample;",
             "LAYER SLICE-7a health entry adapter regression",
         );
+        mutate(
+            3,
+            "crates/domain/src/affect.rs",
+            "use humaux_adapters::affect_repo::AffectRepoError as BoundaryUpwardImport;",
+            "M01-5 LAYER domain import",
+        );
         let orphan = root.join("crates/domain/src/boundary_orphan.rs");
         fs::write(&orphan, "fn orphan() {}\n").unwrap();
         let red = gate(2);
