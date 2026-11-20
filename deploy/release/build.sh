@@ -82,8 +82,12 @@ OUT="$CTX-out"
 # D-A allowlist: what the workspace build reads (F10: the Baseline and contracts are include_str!'d), the Dockerfiles,
 # the generated env examples. Nothing else of the commit (and nothing of the working tree) enters the build.
 ALLOWLIST="Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates bins xtask migrations contracts config docs/architecture deploy/images deploy/env/example"
-# Builder: rust:1.99.0 on Debian 13 (glibc of the distroless cc-debian13 runtime, W-2); resolved 2026-10-07.
-BUILDER=rust:1.99.0-slim-trixie@sha256:24e632c09342c20abf8312cf4f61430a911c01ed3a5e4c02b87292b1c39c5273
+# Match the selected commit's toolchain to a pinned Debian 13 builder, including older release commits.
+case "$TOOLCHAIN" in
+  1.99.0) BUILDER=rust:1.99.0-slim-trixie@sha256:24e632c09342c20abf8312cf4f61430a911c01ed3a5e4c02b87292b1c39c5273 ;;
+  1.100.0) BUILDER=rust:1.100.0-slim-trixie@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe ;;
+  *) echo "build.sh: build_failed:toolchain (no pinned builder for $TOOLCHAIN)" >&2; exit 1 ;;
+esac
 # The images and the binary each one runs (deploy-check --release comparison 3).
 TARGETS="gateway:humaux-gateway retrieval-worker:humaux-retrieval-worker private-worker:humaux-private-worker consolidation-worker:humaux-consolidation-worker maintenance:humaux-maintenance admin:humaux-admin ops:humaux-maintenance dr:humaux-maintenance"
 [ "$LOADGEN" = 1 ] && TARGETS="$TARGETS loadgen:xtask"

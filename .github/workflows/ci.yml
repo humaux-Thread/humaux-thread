@@ -433,18 +433,22 @@ jobs:
 
       # M24: every humaux_domain test binary must carry lld's `.comment` mark. Ubuntu's lld writes
       # "Linker: Ubuntu LLD 18.x", hence the vendor-tolerant pattern; GNU ld writes no "Linker:" line.
+      # Use Nextest's binary metadata because Cargo's intermediate artifact paths are internal.
       - name: linker is lld (M24)
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t bins < <(find target/debug/deps -maxdepth 1 -type f -perm -u+x -name 'humaux_domain-*')
-          [ "${#bins[@]}" -gt 0 ] || { echo "linker is lld: FAIL (no humaux_domain test binary under target/debug/deps)"; exit 1; }
+          paths=$(cargo nextest list --profile ci --workspace \
+            --exclude humaux-maintenance --exclude humaux-gateway --exclude humaux-retrieval-provider \
+            --list-type binaries-only --message-format json |
+            jq -er '."rust-binaries"[] | select(.kind == "lib" and ."binary-name" == "humaux_domain") | ."binary-path"') ||
+            { echo "linker is lld: FAIL (could not locate humaux_domain test binary via Nextest)"; exit 1; }
           bad=0
-          for f in "${bins[@]}"; do
+          while IFS= read -r f; do
             if readelf -p .comment "$f" | grep -q 'Linker: .*LLD'; then echo "linker is lld: pass ($f)"
             else echo "linker is lld: FAIL ($f was not linked by lld)"; readelf -p .comment "$f"; bad=1; fi
-          done
+          done <<< "$paths"
           exit $bad
 
       # The CI twin of the local gate `no_leaked_distill_jobs` (TW c31_leak_check.sh) plus the
