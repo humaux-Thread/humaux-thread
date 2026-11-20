@@ -2114,6 +2114,7 @@ read by:
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_reasoner`
 - process(humaux-gateway): `adapters::distill_repo`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
 - process(humaux-maintenance): `adapters::consolidation_reasoner`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
@@ -5252,6 +5253,7 @@ read by:
 - process(humaux-gateway): `adapters::consolidation_reasoner`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_reasoner`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
 - process(humaux-maintenance): `adapters::consolidation_reasoner`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
@@ -5623,6 +5625,7 @@ read by:
 - process(humaux-gateway): `adapters::consolidation_reasoner`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_reasoner`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
 - process(humaux-maintenance): `adapters::consolidation_reasoner`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
@@ -5786,6 +5789,7 @@ written by:
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `private-worker::tests::distill_hop_e2e`
 
@@ -5860,6 +5864,7 @@ written by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::onboarding`

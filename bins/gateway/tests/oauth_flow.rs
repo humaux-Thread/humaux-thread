@@ -336,6 +336,10 @@ fn code_form(h: &Handle, code: &str, overrides: &[(&str, Option<&str>)]) -> Stri
     form(&fields.into_iter().collect::<Vec<_>>())
 }
 fn issue_code(h: &Handle) -> String {
+    issue_code_for(h, RESOURCE)
+}
+
+fn issue_code_for(h: &Handle, resource: &str) -> String {
     let code = Uuid::new_v4().to_string();
     h.rt.block_on(async {
         let mut txn = oauth_repo::begin(&h.gateway).await?;
@@ -346,7 +350,7 @@ fn issue_code(h: &Handle) -> String {
                     client_id: &h.client_id,
                     redirect_uri: REDIRECT,
                     pkce_challenge: CHALLENGE,
-                    resource: RESOURCE,
+                    resource,
                     user_id: UserId(h.user_id),
                     tenant_id: TenantId(h.tenant_id),
                     workspace_id: None,
@@ -913,6 +917,21 @@ fn g_m02_10_bearer_good_and_requires_header() {
 fn g_m02_10_bearer_resource_is_exact() {
     run_db_fixture::<OAuthFixture, _>("G-M02-10 exact audience", |mut h| {
         let (guard, tokens) = bearer_fixture(&mut h);
+        let legacy_resource = format!("{RESOURCE}/legacy");
+        let code = issue_code_for(&h, &legacy_resource);
+        let reply = post(
+            &h,
+            serve(&h, 7200),
+            &code_form(&h, &code, &[("resource", Some(&legacy_resource))]),
+        );
+        assert_eq!(reply.status, 200);
+        let legacy_tokens: Value = serde_json::from_str(&reply.body).unwrap();
+        assert_eq!(decode(&legacy_tokens).resource, legacy_resource);
+        assert_eq!(
+            bearer(&h, &guard, raw_access(&legacy_tokens), Some(RESOURCE)).err(),
+            Some(ErrorCode::Unauthorized),
+            "legacy token on the native resource"
+        );
         for resource in [
             "/mcp",
             NATIVE_RESOURCE,
