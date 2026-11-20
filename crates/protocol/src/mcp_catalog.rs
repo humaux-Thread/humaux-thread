@@ -1,7 +1,7 @@
 //! `protocol::mcp_catalog` — Canonical MCP tool schema and operation registry (§33.1 / §33.10).
 //! Depends-on: crates=[humaux-domain, jsonschema, serde, serde_json]; services=[];
 //!   env=[]; modules=[domain::confirm, domain::error, protocol::mcp]
-//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, protocol::mcp_profile, protocol::page, tests, xtask::architecture_check]
+//! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, protocol::mcp, protocol::mcp_profile, protocol::page, tests, xtask::architecture_check]
 //! Invariants: [registry.scope == branch.required_scope; roles equal scope presets (§33); the registry holds exactly the `DestructiveOp`s whose `wire()` is `Mcp`, destructive effect (G-M26-1); every operation's budget_bytes is non-zero and at most the manifest's budget_cap_bytes, which `budget_cap_bytes()` hands to protocol::page]
 //! Spec: §33; §33.1; §33.10
 //!

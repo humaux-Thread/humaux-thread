@@ -2044,9 +2044,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(any)`
 
 #### `adapters::oauth_repo`
-- reads `control.memberships`
-- reads `control.tenants`
-- reads `control.users`
 - executes `control.oauth_client_lookup`
 - executes `control.oauth_client_register`
 - executes `control.oauth_code_consume`
@@ -2278,8 +2275,6 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::archive`
 
 #### `application::auth`
-
-#### `application::bearer`
 
 #### `application::confirm`
 
@@ -6531,7 +6526,6 @@ read by:
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_reasoner`
 - process(humaux-gateway): `adapters::distill_repo`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
 - process(humaux-maintenance): `adapters::consolidation_reasoner`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
@@ -7787,7 +7781,6 @@ read by:
 - process(humaux-gateway): `adapters::consolidation_reasoner`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_reasoner`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
 - process(humaux-maintenance): `adapters::consolidation_reasoner`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
@@ -8007,7 +8000,6 @@ read by:
 - process(humaux-gateway): `adapters::consolidation_reasoner`
 - process(humaux-gateway): `adapters::contribution_entry_repo`
 - process(humaux-gateway): `adapters::contribution_reasoner`
-- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-gateway): `adapters::operation_receipt`
 - process(humaux-maintenance): `adapters::consolidation_reasoner`
 - process(humaux-maintenance): `adapters::contribution_entry_repo`
@@ -8121,7 +8113,6 @@ written by:
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
-- (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `private-worker::tests::distill_hop_e2e`
 
@@ -8171,7 +8162,6 @@ written by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
-- (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::onboarding`
@@ -15923,7 +15913,6 @@ modules naming it:
 - `application::api_key`
 - `application::archive`
 - `application::auth`
-- `application::bearer`
 - `application::billing`
 - `application::billing_process`
 - `application::confirm`
@@ -16138,7 +16127,6 @@ why: entity ids threaded through every use case
 
 modules naming it:
 - `application::affect`
-- `application::bearer`
 - `application::billing`
 - `application::billing_process`
 - `application::confirm`
@@ -16183,8 +16171,6 @@ why: OffsetDateTime grants and RFC3339 freshness readings
 
 modules naming it:
 - `application::affect`
-- `application::api_key`
-- `application::bearer`
 - `application::billing`
 - `application::billing_process`
 - `application::coordination`
@@ -17183,7 +17169,6 @@ modules naming it:
 - `testkit::tests::pair::cannot_establish_completeness_degraded`
 - `testkit::tests::pair::cannot_establish_completeness_terminal`
 - `testkit::tests::pair::projection_lag_degraded`
-- `testkit::tests::pair::projection_lag_terminal`
 - `tests`
 
 ### humaux-testkit → `humaux-retrieval` (dev)
@@ -17256,7 +17241,6 @@ modules naming it:
 - `testkit::tests::pair::cannot_establish_completeness_degraded`
 - `testkit::tests::pair::cannot_establish_completeness_terminal`
 - `testkit::tests::pair::projection_lag_degraded`
-- `testkit::tests::pair::projection_lag_terminal`
 - `tests`
 
 ### humaux-admin → `humaux-infra-cell` (normal)
@@ -18030,7 +18014,6 @@ modules naming it:
 why: timestamps (OffsetDateTime, RFC3339)
 
 modules naming it:
-- `gateway::auth`
 - `gateway::guard`
 - `gateway::mcp_application`
 - `gateway::memory`
@@ -18127,7 +18110,6 @@ modules naming it:
 why: OAuth form encoding and registered redirect parsing
 
 modules naming it:
-- `gateway::bootstrap`
 - `gateway::oauth_http`
 - `gateway::tests::oauth_flow`
 - `tests`
@@ -21491,9 +21473,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:4095` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:4100` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:4105` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4114` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4119` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4124` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection

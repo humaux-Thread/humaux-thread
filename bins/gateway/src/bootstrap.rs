@@ -4,7 +4,7 @@
 //!   stream cache) — the same family the 14 governance / subject / affect writes attach to since ADR-0054, so
 //!   the process holds no default write pair at all.
 //! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
-//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde, serde_json, sha2, tokio, url, uuid];
+//!   humaux-infra-cell, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde, serde_json, sha2, tokio, uuid];
 //!   services=[PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_BILLING_WEBHOOK_PROVIDERS, HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS, HUMAUX_GATEWAY_DEPLOYMENT, HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS,
 //!   HUMAUX_GATEWAY_RATE_USER_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_TENANT_MAX_SUBJECTS,
@@ -101,7 +101,7 @@ use humaux_infra_cell::{
 };
 use humaux_protocol::{
     edge::{Cidr, TrustedProxyConfig},
-    mcp::{McpAdapter, McpHttpConfig},
+    mcp::{McpAdapter, McpHttpConfig, McpResourceRoute},
     mcp_catalog::CanonicalCatalog,
 };
 use humaux_retrieval::rerank::ModelIdentity;
@@ -667,6 +667,10 @@ impl GatewayBootstrap {
         let token_keys = parse_token_keys(&effective)?;
         let auth_pages = parse_auth_pages(&effective, &token_keys, &guard)?;
         let oauth_http = parse_oauth_http(&effective, &token_keys)?;
+        let mut http = parse_http(&effective)?;
+        if let Some(oauth) = &oauth_http {
+            http = http.with_oauth_issuer(oauth.issuer.clone());
+        }
         let billing_webhook = parse_billing_webhook(&effective, admission.max_request_body_bytes)?;
         let metrics_addr = parse_metrics_addr(required(&effective, METRICS_ADDR_KEY)?)?;
         let readiness_refresh = seconds(
@@ -700,7 +704,7 @@ impl GatewayBootstrap {
 
         Ok(Self {
             bind_addr: parse_bind_addr(required(&effective, "HUMAUX_GATEWAY_BIND_ADDR")?)?,
-            http: parse_http(&effective)?,
+            http,
             pg_dsn: required(&effective, "HUMAUX_GATEWAY_PG_DSN")?.to_owned(),
             deployment: required(&effective, DEPLOYMENT_KEY)?.to_owned(),
             session_lock_check: seconds(
@@ -930,26 +934,16 @@ fn parse_oauth_http(
         ));
     }
     let issuer = parse_public_origin(required(effective, PUBLIC_BASE_URL_KEY)?)?;
-    let resource = match effective.get(OAUTH_RESOURCE_KEY).map(String::as_str) {
-        None | Some("") => format!("{issuer}/mcp"),
-        Some(value) => {
-            let url = url::Url::parse(value)
-                .map_err(|_| BootstrapError::new(OAUTH_RESOURCE_KEY, "invalid resource URL"))?;
-            if url.scheme() != "https"
-                || url.host_str().is_none()
-                || !url.username().is_empty()
-                || url.password().is_some()
-                || url.fragment().is_some()
-                || value.chars().any(char::is_whitespace)
-            {
-                return Err(BootstrapError::new(
-                    OAUTH_RESOURCE_KEY,
-                    "must be an absolute HTTPS resource URL",
-                ));
-            }
-            value.to_owned()
-        }
-    };
+    let resource = McpResourceRoute::Native.resource(&issuer);
+    if effective
+        .get(OAUTH_RESOURCE_KEY)
+        .is_some_and(|value| !value.is_empty() && value != &resource)
+    {
+        return Err(BootstrapError::new(
+            OAUTH_RESOURCE_KEY,
+            "must exactly match the native MCP resource URI",
+        ));
+    }
     Ok(Some(OAuthHttpConfig {
         keys: Arc::new(keys),
         issuer,
@@ -3400,6 +3394,35 @@ mod tests {
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
         .collect()
+    }
+
+    #[test]
+    fn discovery_oauth_issuance_requires_the_exact_native_mcp_resource() {
+        let mut values = raw();
+        values.insert(AUTH_SURFACE_ENABLED_KEY.into(), "true".into());
+        values.insert(AUTH_HMAC_KEY_KEY.into(), generated_key_hex());
+        values.extend(auth_page_values());
+        let exact = "https://console.example.test/mcp";
+        for configured in ["", exact] {
+            values.insert(OAUTH_RESOURCE_KEY.into(), configured.into());
+            let oauth = GatewayBootstrap::from_raw(values.clone())
+                .expect("native audience")
+                .oauth_http
+                .expect("OAuth enabled");
+            assert_eq!(oauth.issuer, "https://console.example.test");
+            assert_eq!(oauth.resource, exact);
+        }
+        for configured in [
+            "https://console.example.test/mcp/",
+            "https://console.example.test/mcp/legacy",
+            "https://alias.example.test/mcp",
+        ] {
+            values.insert(OAUTH_RESOURCE_KEY.into(), configured.into());
+            let Err(error) = GatewayBootstrap::from_raw(values.clone()) else {
+                panic!("accepted mismatched resource {configured}");
+            };
+            assert_eq!(error.key, OAUTH_RESOURCE_KEY);
+        }
     }
 
     /// ADR-0125 8a/8c/8d: with the surface on, the origin, the sender and the pepper are each required and validated, and

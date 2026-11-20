@@ -31,6 +31,8 @@ The retrieval PostgreSQL adapter binds the candidate batch to its pre-query serv
 
 ADR-0053 D-E's empty B response remains the path for an initialized family without serving when the caller supplies no token. A token-bearing request without a serving version goes through token-aware PostgreSQL hydration first, without embedding or index calls. A covered write can return an authorized PG-only overlay with no-serving provenance. A valid unsatisfied token terminates with the existing `ErrorCode::ProjectionLag`. The wire error has no result or degradations (§52.2 and §52.4). Permissive reads that return lagged results retain `DegradeCode::ProjectionLag` through the existing envelope and the strictly greater `LedgerClosure::lagging` threshold. Age alone cannot decide a token's coverage.
 
+For MCP, termination uses the G52-4 tool error format (`result.isError = true`, `result.structuredContent.code = "PROJECTION_LAG"`). “No result” means no successful result items.
+
 ### Stage context separately
 
 M01-4-TERMINAL implements recall strict first. The current context schemas and route remain in place for that stage. The §15.5 context requirement remains open under M01-4-CONTEXT-CONTRACT, which owns the input and output contract and client compatibility for token-aware context before runtime delivery. Existing callers that omit a token retain their current contract.
