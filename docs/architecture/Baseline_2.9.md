@@ -931,7 +931,7 @@ gateway / retrieval-worker / private-worker / consolidation-worker 四者中任�
 
 | Store | 角色 | 是否权威 | 丢失后的处理 |
 |---|---|---:|---|
-| PostgreSQL 18.7 | 业务真源 | 是 | 从备份/PITR 恢复（已由 ADR-0121 D-J 取代：恢复改为 latest verified knowledge export；WAL/PITR 与 pgBackRest 在首个 verified export 后由卡 M23-7 owner-gated 退役，见 §44） |
+| PostgreSQL 19.0（见 ADR-0135） | 业务真源 | 是 | 从备份/PITR 恢复（已由 ADR-0121 D-J 取代：恢复改为 latest verified knowledge export；WAL/PITR 与 pgBackRest 在首个 verified export 后由卡 M23-7 owner-gated 退役，见 §44） |
 | Qdrant 1.19 | Retrieval Projection | 否 | 从 PG 全量重建 |
 | Valkey 9.1.1 | 可丢失 Cache / 分布式 rate-limit acceleration | 否 | 清空后继续服务，性能退化；OTP/验证码权威状态仍在 PostgreSQL |
 | S3-compatible | Raw Artifact | 是（Artifact bytes） | 从副本恢复 |

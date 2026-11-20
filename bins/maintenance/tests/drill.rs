@@ -1174,6 +1174,7 @@ fn drill_end_to_end_on_scratch_containers() {
     let id = Uuid::now_v7();
     let (out, ev, text) = live.drill(id, &env, &evidence);
     assert_eq!(code(&out), 0, "{}\n{text}", both(&out));
+    assert_eq!(ev["source"]["server_version_num"], 190000, "{text}");
     for (k, v) in [
         ("succeeded", Value::Bool(true)),
         ("witness_a_present", Value::Bool(true)),
