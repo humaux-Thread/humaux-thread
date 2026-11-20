@@ -763,4 +763,12 @@ and settle DEAD with their provider class and a FAILED outbox when the budget is
 Before exhaustion, a bounded Retry-After takes priority over the existing local schedule with
 the D1 jitter window described in E1.
 
-Effective change: PROVIDER-ERR-SETTLE-B. Real-provider M6 execution for this change: NOT_RUN.
+Effective change: [PROVIDER-ERR-SETTLE-B, PR #702](https://github.com/humaux-Thread/humaux-thread/pull/702).
+The [baseline fixture](https://github.com/humaux-Thread/humaux-thread/actions/runs/44766066816) and
+[permanent-requeue mutation](https://github.com/humaux-Thread/humaux-thread/actions/runs/44767773340)
+both reproduced the old PENDING job and outbox. The
+[PostgreSQL settlement fixtures](https://github.com/humaux-Thread/humaux-thread/actions/runs/44769926089)
+passed both the error matrix and transient exhaustion. The
+[loopback transport fixture](https://github.com/humaux-Thread/humaux-thread/actions/runs/44767684446)
+passed both Retry-After formats and the decimal overflow case. Real-provider M6 execution for
+this change: NOT_RUN.
