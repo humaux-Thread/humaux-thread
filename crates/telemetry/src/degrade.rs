@@ -92,7 +92,7 @@ impl DegradeCode {
     /// (§53.2: swapping breaks INV-2's `code=~"Egress.*"` label matcher or
     /// G52-3's fold-and-intersect check, each in one direction only).
     pub fn line_format(self) -> String {
-        fold(self.as_str())
+        self.as_str().to_owned()
     }
 }
 
