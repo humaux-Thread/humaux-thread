@@ -61,8 +61,8 @@ pub struct OAuthHttpConfig {
     pub keys: Arc<TokenKeys>,
     /// Normalized public origin, identical to the metadata issuer (RFC 8414 §3.3).
     pub issuer: String,
-    /// Exact permitted resource URI (RFC 8707).
-    pub resource: String,
+    /// Exact resource URIs available for new authorization (RFC 8707).
+    pub resources: Vec<String>,
     /// Same lifetime as the interactive login challenge.
     pub login_return_ttl: Duration,
     /// Authorization-code lifetime.
@@ -424,7 +424,7 @@ async fn validate(state: &HttpState, query: &str) -> Result<ValidatedAuthorize, 
         disabled: c.disabled_at.is_some(),
     });
     let policy = OAuthPolicy {
-        allowed_resources: std::slice::from_ref(&state.config.resource),
+        allowed_resources: &state.config.resources,
         supported_scopes: &state.scopes,
         ..state.config.policy()
     };
