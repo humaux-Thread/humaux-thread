@@ -1,5 +1,5 @@
 //! `adapters::credential_repo` — Gateway-only read adapter for §73.5.1 service credential bindings.
-//! Depends-on: crates=[humaux-domain, sqlx, async-trait, humaux-application]; services=[PostgreSQL(any) r=[control.workspace_memberships] x=[control.api_key_lookup, control.api_key_rehash, control.api_key_touch_last_used]]; env=[]; modules=[adapters::postgres, domain::error, domain::identity, application::api_key, domain::ids]
+//! Depends-on: crates=[humaux-domain, sqlx, async-trait, humaux-application]; services=[PostgreSQL(any) r=[control.workspace_memberships] x=[control.api_key_lookup, control.api_key_rehash, control.api_key_touch_last_used, control.api_key_touch_last_used_batch]]; env=[]; modules=[adapters::postgres, domain::error, domain::identity, application::api_key, domain::ids]
 //! Called-by: [gateway::bootstrap, tests]
 //! Invariants: [returns database facts only (HMAC and authorization stay in the auth layer); the workspace-ceiling
 //!   read runs only after a user-bound key validates, so a bad key does no membership work; a PG error is
@@ -54,6 +54,7 @@ pub struct CredentialRecord {
     user_state: Option<String>,
     live_user_security_epoch: Option<i64>,
     membership_state: Option<String>,
+    routing_revoke_epoch: i64,
 }
 
 impl CredentialRecord {
@@ -171,7 +172,8 @@ pub async fn lookup(
                   allowed_cidrs::text[] AS allowed_cidrs,
                   expires_at, revoked_at, scopes, authorization_version, user_id, workspace_id,
                   tenant_security_epoch, user_security_epoch, tenant_state,
-                  live_tenant_security_epoch, user_state, live_user_security_epoch, membership_state
+                  live_tenant_security_epoch, user_state, live_user_security_epoch, membership_state,
+                  routing_revoke_epoch
            FROM control.api_key_lookup($1)"#,
     )
     .bind(prefix)
@@ -202,6 +204,7 @@ pub async fn lookup(
             user_state: row.try_get("user_state").map_err(db_error)?,
             live_user_security_epoch: row.try_get("live_user_security_epoch").map_err(db_error)?,
             membership_state: row.try_get("membership_state").map_err(db_error)?,
+            routing_revoke_epoch: row.try_get("routing_revoke_epoch").map_err(db_error)?,
         })
     })
     .transpose()
@@ -267,6 +270,28 @@ pub async fn mark_used(pool: &RuntimeDbPool, api_key_id: Uuid) -> Result<(), Err
         .await
         .map_err(db_error)?;
     Ok(())
+}
+
+/// Writes due activity stamps in one owner door call using the trusted batch interval.
+pub async fn mark_used_batch(
+    pool: &RuntimeDbPool,
+    api_key_ids: &[Uuid],
+    interval_seconds: i32,
+) -> Result<i64, ErrorCode> {
+    // dep: PostgreSQL(any) — transaction for the activity-only commit setting
+    let mut txn = pool.pool().begin().await.map_err(db_error)?;
+    sqlx::query("SET LOCAL synchronous_commit = off")
+        .execute(&mut *txn)
+        .await
+        .map_err(db_error)?;
+    let updated = sqlx::query_scalar("SELECT control.api_key_touch_last_used_batch($1, $2)")
+        .bind(api_key_ids)
+        .bind(interval_seconds)
+        .fetch_one(&mut *txn)
+        .await
+        .map_err(db_error)?;
+    txn.commit().await.map_err(db_error)?;
+    Ok(updated)
 }
 
 /// §73.5 / ADR-0059 D-H: rewrites a key's verifier from `old_hash` (previous pepper) to `new_hash`
@@ -335,6 +360,7 @@ impl CredentialStore for PostgresCredentialStore<'_> {
             user_state: row.user_state,
             live_user_security_epoch: row.live_user_security_epoch,
             membership_state: row.membership_state,
+            routing_revoke_epoch: row.routing_revoke_epoch,
         }))
     }
     async fn live_workspaces(

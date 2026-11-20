@@ -1,6 +1,6 @@
 //! `cache::bounded` — `BoundedCache`: a moka-backed cache with byte weights, TTL, single-flight, a per-tenant byte
 //!   cap and the §51.3 failure rule.
-//! Depends-on: crates=[humaux-domain, moka]; services=[]; env=[]; modules=[cache::key, domain::ids, domain::vocab]
+//! Depends-on: crates=[humaux-domain, moka]; services=[]; env=[]; modules=[cache::key, cache::region, domain::ids, domain::vocab]
 //! Called-by: [gateway::bootstrap, gateway::cached_embedding, tests]
 //! Invariants: [concurrent identical misses run one compute (§51, M12 D7); an `Err` is never cached; an insert that
 //!   would take a tenant over `per_tenant_bytes` is skipped as `bypass` and evicts nobody (M12 D5); a disabled or
@@ -29,6 +29,7 @@ use humaux_domain::vocab::{CacheName, CacheResult, EvictionCause};
 use moka::notification::RemovalCause;
 
 use crate::key::{CacheKey, CacheValue};
+use crate::region::BoundedRegion;
 
 /// Cache observation port (§41.2). Callbacks run inline, including under the byte-accounting lock,
 /// and must return without blocking, panicking, or re-entering the cache.
@@ -157,15 +158,16 @@ impl<K: CacheKey, V: CacheValue> BoundedCache<K, V> {
         });
         let cache = (config.enabled && config.capacity_bytes > 0).then(|| {
             let listener_state = Arc::clone(&state);
-            moka::future::Cache::builder()
-                .max_capacity(config.capacity_bytes)
-                .weigher(|k: &K, v: &V| u32::try_from(weight(k, v)).unwrap_or(u32::MAX))
-                .time_to_live(config.ttl)
-                .eviction_listener(move |k: Arc<K>, v: V, cause: RemovalCause| {
+            BoundedRegion::with_eviction_listener(
+                config.capacity_bytes,
+                config.ttl,
+                |k: &K, v: &V| u32::try_from(weight(k, v)).unwrap_or(u32::MAX),
+                move |k: Arc<K>, v: V, cause: RemovalCause| {
                     listener_state.release(k.tenant(), weight(k.as_ref(), &v));
                     (listener_state.observer.eviction)(listener_state.name, cause_of(cause));
-                })
-                .build()
+                },
+            )
+            .cache
         });
         Self {
             cache,
