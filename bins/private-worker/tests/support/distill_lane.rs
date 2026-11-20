@@ -306,9 +306,26 @@ pub async fn dispatch_pass(
     humaux_private_worker::distill::DistillDispatchReport,
     humaux_private_worker::distill::DistillError,
 > {
+    let runtime = distill_runtime(pool, providers, config, dispatch)?;
+    humaux_private_worker::distill::dispatch_pass(&runtime, dispatch).await
+}
+
+/// Assemble the actual D1 ports for a fixture that inspects a single settlement.
+pub fn distill_runtime<'a>(
+    pool: &'a humaux_adapters::postgres::PrivateWorkerDbPool,
+    providers: &'a humaux_adapters::reasoning_route_admission::ProviderFor,
+    config: ContributionReasonerConfig,
+    dispatch: &'a DistillDispatchConfig,
+) -> Result<
+    humaux_adapters::distill_repo::DistillRuntime<
+        'a,
+        humaux_adapters::attribution_repo::AttributionLadder,
+    >,
+    humaux_private_worker::distill::DistillError,
+> {
     let reasoner = humaux_adapters::distill_reasoner::DistillReasoner::new(pool, providers, config)
         .map_err(humaux_private_worker::distill::DistillError::Config)?;
-    let runtime = humaux_adapters::distill_repo::DistillRuntime::new(
+    Ok(humaux_adapters::distill_repo::DistillRuntime::new(
         pool,
         reasoner,
         dispatch,
@@ -319,8 +336,7 @@ pub async fn dispatch_pass(
                 pool, tenant, call, rejected, seconds,
             ))
         },
-    );
-    humaux_private_worker::distill::dispatch_pass(&runtime, dispatch).await
+    ))
 }
 /// Fixture assembly for the resident dispatcher; shutdown semantics stay in the worker.
 #[allow(dead_code)]

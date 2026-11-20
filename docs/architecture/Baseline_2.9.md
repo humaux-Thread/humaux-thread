@@ -2,7 +2,7 @@
 
 > 版本：Architecture Baseline 2.9 Product-Named Development Handoff（2.3 用户调整版 + 2026-08-25 外部实现/规范复核）  
 > 日期：2026-08-25  
-> 主语言：Rust 1.99 / Edition 2024  
+> 主语言：Rust 1.100 / Edition 2024\
 > 目标：从 0→1 开发 Humaux Thread，不延续旧系统的模块边界；保留必要数据兼容与行为契约。
 > 状态：**Architecture Frozen / GO for Phase 0 implementation / NOT GA**。Claude 可以按 §57 Phase 0→17 顺序开始编码；不得以“架构已冻结”替代各 owning Phase 的 DoD / BenchmarkManifest / G80 Gate。Phase 0/1 的 Contract、Schema、Role、Architecture Gate 优先于业务功能。
 
@@ -4128,6 +4128,10 @@ token 仍绑定该 workspace；召回时同时校验流路由与真实对象可�
 recall(..., consistency_token=<token>)
 context(..., consistency_token=<token>)
 ```
+
+分阶段交付见 [ADR-0134](../adr/0134-strict-recall-read-your-writes.md)。首阶段由
+M01-4-TERMINAL 实现 recall 严格读。上面的 context token 要求仍待交付，由
+M01-4-CONTEXT-CONTRACT 先确定 canonical 输入、输出与兼容性。
 
 若 serving Qdrant 尚未覆盖该 token 对应的 pipeline frontier，Humaux 执行：
 
@@ -8788,6 +8792,9 @@ processing_handle
 consistency_token
 processing_status
 ```
+
+关于返回的 `consistency_token`，下游严格读按 [ADR-0134](../adr/0134-strict-recall-read-your-writes.md)
+分阶段交付。首阶段为 recall，context 消费由 M01-4-CONTEXT-CONTRACT 跟进，保留 §15.5 要求。
 
 `memory_id` 只在后续蒸馏真正产生 Memory 后出现；一次 `remember` 可以映射到 0/1/N 条 Memory。
 
@@ -13483,7 +13490,7 @@ NOT DEVELOPMENT-READY / NOT GA
 截至 2026-08-24，建议冻结：
 
 ```text
-Core language       Rust 1.99 / Edition 2024
+Core language       Rust 1.100 / Edition 2024
 HTTP/runtime        Axum + Tower + Tokio
 Authority DB        PostgreSQL 18.6
 Vector/sparse       Qdrant 1.19
@@ -17229,8 +17236,8 @@ G80-3 自本节起从 `NOT_ADMITTED` 转为 `ADMITTED`（Layer 0/1A/1B 均含）
 1. Model Context Protocol — 2026-07-28 Specification  
    https://blog.modelcontextprotocol.io/posts/2026-07-28/
 
-2. Rust 1.99.0 release / Cargo workspaces  
-   https://blog.rust-lang.org/releases/latest/  
+2. Rust 1.100.0 release / Cargo workspaces\
+   https://blog.rust-lang.org/releases/1.100.0/\
    https://doc.rust-lang.org/cargo/reference/workspaces.html
 
 3. PostgreSQL 18.6 release / docs  

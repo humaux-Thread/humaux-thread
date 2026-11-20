@@ -68,8 +68,8 @@ jobs:
       # steps with the x64 fixture required by the pinned postgres manifest.
       - name: Install pinned Rust toolchain
         run: |
-          rustup toolchain install 1.99.0 --profile minimal
-          rustc --version | grep -F 'rustc 1.99.0'
+          rustup toolchain install 1.100.0 --profile minimal
+          rustc --version | grep -F 'rustc 1.100.0'
 
       - uses: Swatinem/rust-cache@v2
         with:

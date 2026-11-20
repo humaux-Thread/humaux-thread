@@ -34,7 +34,7 @@ FROM docker/compose-bin:v5.5.1@sha256:14162382692aae43977f79effa64a499d61de19d46
 # apart. The stage only downloads and unpacks (nothing compiles; the COPY-ONLY rule is about the binaries). It runs on
 # the Debian 13 base the release builder is pinned to (deploy/release/build.sh BUILDER); only three files leave it,
 # into the retrieval-worker target.
-FROM rust:1.99.0-slim-trixie@sha256:24e632c09342c20abf8312cf4f61430a911c01ed3a5e4c02b87292b1c39c5273 AS rerank-fetch
+FROM rust:1.100.0-slim-trixie@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe AS rerank-fetch
 ADD --checksum=sha256:e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-aarch64-1.30.0.tgz /fetch/onnxruntime.tgz
 ADD --checksum=sha256:cd90976aa97eee7a29221a1bd136e3b44545e1df1dec2008b613b67711b82c2f https://github.com/humaux/humaux-thread/releases/download/rerank-mmarco-int8-v1/rerank-mmarco-int8-v1.tar.gz /fetch/rerank.tar.gz
 RUN set -eu; \
