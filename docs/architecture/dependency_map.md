@@ -915,6 +915,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.oauth_client_register`
 - executes `control.oauth_code_consume`
 - executes `control.oauth_code_issue`
+- executes `control.oauth_dcr_register`
 - executes `control.oauth_grant_issue`
 - executes `control.oauth_grant_lookup`
 - executes `control.oauth_grant_revoke`
@@ -2049,6 +2050,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.oauth_code_consume`
 - executes `control.oauth_code_issue`
 - executes `control.oauth_consent_tenants`
+- executes `control.oauth_dcr_register`
 - executes `control.oauth_grant_issue`
 - executes `control.oauth_grant_lookup`
 - executes `control.oauth_grant_revoke`
@@ -2468,7 +2470,11 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS`
+- env `HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_CAPACITY`
+- env `HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_REFILL_PER_SECOND`
+- env `HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_MAX_UNUSED`
 - env `HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE`
+- env `HUMAUX_GATEWAY_AUTH_OAUTH_STATIC_CLIENTS`
 - env `HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_AUTH_SURFACE_ENABLED`
@@ -3806,6 +3812,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.oauth_client_register`
 - executes `control.oauth_code_consume`
 - executes `control.oauth_code_issue`
+- executes `control.oauth_dcr_register`
 - executes `control.oauth_grant_issue`
 - executes `control.oauth_grant_lookup`
 - executes `control.oauth_grant_revoke`
@@ -6684,6 +6691,16 @@ written by:
 executed by:
 - process(humaux-gateway): `adapters::oauth_repo`
 
+### `control.oauth_dcr_register`
+read by:
+
+written by:
+
+executed by:
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `control.oauth_grant_issue`
 read by:
 
@@ -6718,6 +6735,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::auth_contract`
 - (no process): `adapters::tests::credential_grants`
+- (no process): `gateway::tests::oauth_flow`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -21473,9 +21491,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:4114` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:4119` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:4124` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4266` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4271` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4276` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection

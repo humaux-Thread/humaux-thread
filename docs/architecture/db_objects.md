@@ -2486,6 +2486,26 @@ written by:
 executed by:
 - process(humaux-gateway): `adapters::oauth_repo`
 
+### `control.oauth_dcr_register`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0311_oauth_loopback_redirect
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
+- process(humaux-maintenance): `maintenance::rls_check`
+
 ### `control.oauth_grant_issue`
 - kind: function (SECURITY DEFINER)
 - owner: role_migration_owner
@@ -2572,6 +2592,7 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::auth_contract`
 - (no process): `adapters::tests::credential_grants`
+- (no process): `gateway::tests::oauth_flow`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
