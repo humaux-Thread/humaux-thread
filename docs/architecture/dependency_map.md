@@ -1915,7 +1915,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.api_key_lookup`
 - executes `control.api_key_rehash`
 - executes `control.api_key_touch_last_used`
-- executes `control.api_key_touch_last_used_batch`
+- executes `control.api_key_touch_last_used_batch_rows`
 - service `PostgreSQL(any)`
 
 #### `adapters::derived_job_lease`
@@ -2462,8 +2462,12 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `HUMAUX_GATEWAY_CONFIRM_TOKEN_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_CONTEXT_MANDATORY_TOKENS`
 - env `HUMAUX_GATEWAY_CONTEXT_TOTAL_TOKENS`
+- env `HUMAUX_GATEWAY_CREDENTIAL_BATCH_TOUCH_ENABLED`
 - env `HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX`
 - env `HUMAUX_GATEWAY_CREDENTIAL_PEPPER_PREVIOUS_HEX`
+- env `HUMAUX_GATEWAY_CREDENTIAL_ROUTE_CACHE_BYTES`
+- env `HUMAUX_GATEWAY_CREDENTIAL_ROUTE_CACHE_ENABLED`
+- env `HUMAUX_GATEWAY_CREDENTIAL_ROUTE_CACHE_TTL_SECONDS`
 - env `HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS`
 - env `HUMAUX_GATEWAY_DEPLOYMENT`
 - env `HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST`
@@ -2593,6 +2597,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `gateway::retrieval_embedding_client`
 - service `UDS(retrieval-worker)`
+
+#### `gateway::route_cache`
 
 #### `gateway::status`
 - env `CARGO_PKG_VERSION`
@@ -5692,6 +5698,14 @@ executed by:
 - process(humaux-gateway): `adapters::credential_repo`
 
 ### `control.api_key_touch_last_used_batch`
+read by:
+
+written by:
+
+executed by:
+- (no process): `gateway::tests::service_credentials`
+
+### `control.api_key_touch_last_used_batch_rows`
 read by:
 
 written by:
@@ -13309,6 +13323,7 @@ executed by:
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::read_decoupling`
+- `gateway::tests::route_cache`
 - `xtask::e2e_onboard`
 - `xtask::load`
 - `xtask::soak`
@@ -17606,6 +17621,7 @@ modules naming it:
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
+- `gateway::tests::route_cache`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
 - `gateway::tests::singleton`
@@ -17630,6 +17646,7 @@ modules naming it:
 - `gateway::remember`
 - `gateway::rerank_client`
 - `gateway::retrieval_embedding_client`
+- `gateway::route_cache`
 - `gateway::tests::auth_pages`
 - `gateway::tests::console_csrf`
 - `gateway::tests::cross_tenant_canary`
@@ -17640,6 +17657,7 @@ modules naming it:
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
+- `gateway::tests::route_cache`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
 - `tests`
@@ -17695,6 +17713,7 @@ modules naming it:
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
+- `gateway::tests::route_cache`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
 - `gateway::tests::singleton`
@@ -17721,6 +17740,7 @@ modules naming it:
 - `gateway::tests::memory_get_frontier`
 - `gateway::tests::oauth_flow`
 - `gateway::tests::read_decoupling`
+- `gateway::tests::route_cache`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
 - `tests`
@@ -17758,6 +17778,7 @@ why: bounded, per-tenant, single-flight query-embedding cache
 modules naming it:
 - `gateway::bootstrap`
 - `gateway::cached_embedding`
+- `gateway::route_cache`
 - `gateway::tests::recall_embedding_cache`
 - `gateway::tests::service_credentials`
 - `tests`
@@ -17811,6 +17832,7 @@ modules naming it:
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
+- `gateway::tests::route_cache`
 - `gateway::tests::semantic_recall_wiring`
 - `tests`
 
@@ -17838,6 +17860,7 @@ modules naming it:
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
+- `gateway::tests::route_cache`
 - `gateway::tests::semantic_recall_wiring`
 - `tests`
 
@@ -17936,6 +17959,7 @@ why: async runtime
 
 modules naming it:
 - `gateway::admission`
+- `gateway::auth`
 - `gateway::bootstrap`
 - `gateway::guard`
 - `gateway::limiter`
@@ -17958,6 +17982,7 @@ modules naming it:
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
+- `gateway::tests::route_cache`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
 - `gateway::tests::singleton`
@@ -17995,6 +18020,7 @@ modules naming it:
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
+- `gateway::tests::route_cache`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::singleton`
 - `gateway::tests::support::singleton_env`
@@ -18012,6 +18038,7 @@ why: freeze the production limiter clock for exact hierarchy/restart assertions
 
 modules naming it:
 - `gateway::admission`
+- `gateway::auth`
 - `gateway::bootstrap`
 - `gateway::guard`
 - `gateway::limiter`
@@ -18034,6 +18061,7 @@ modules naming it:
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::recall_embedding_cache`
+- `gateway::tests::route_cache`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
 - `gateway::tests::singleton`
@@ -18056,6 +18084,7 @@ modules naming it:
 - `gateway::tests::oauth_flow`
 - `gateway::tests::ops_listener`
 - `gateway::tests::read_decoupling`
+- `gateway::tests::route_cache`
 - `gateway::tests::semantic_recall_wiring`
 - `gateway::tests::service_credentials`
 - `tests`
@@ -19430,6 +19459,15 @@ services (computed):
 default run:
 - PostgreSQL
 - UDS
+
+### `bins/gateway/tests/route_cache.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
 
 ### `bins/gateway/tests/semantic_recall_wiring.rs`
 db-bound (default run): yes
@@ -21354,9 +21392,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3900` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3905` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3910` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4020` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4025` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4030` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
