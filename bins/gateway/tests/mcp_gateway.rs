@@ -6415,6 +6415,8 @@ fn legacy_mount_binary_uses_runtime_flag() {
             &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
             4,
         );
+        let row = handle.seed_workspace_visible_context_record();
+        provision_stream_pair(&handle, handle.workspace_id);
         let config = GatewayProcessConfig::for_fixture(&handle, unused_loopback_address());
         let replay: Value = serde_json::from_str(include_str!(
             "../../../crates/protocol/tests/fixtures/qwen_legacy_http.json"
@@ -6447,6 +6449,33 @@ fn legacy_mount_binary_uses_runtime_flag() {
             response["result"]["protocolVersion"],
             replay["initialize_response"]["result"]["protocolVersion"]
         );
+        let arguments = json!({"action":"get","memory_id":row.memory_id});
+        let mut legacy_call = replay["call"].clone();
+        legacy_call["params"] = json!({"name":"memory","arguments":arguments});
+        handle.rt.block_on(async {
+            let (legacy_status, legacy) = try_raw_request_at(
+                on.address,
+                "/mcp/legacy",
+                &[
+                    ("Authorization", &authorization),
+                    ("MCP-Protocol-Version", "2025-06-18"),
+                ],
+                &legacy_call.to_string(),
+            )
+            .await
+            .expect("legacy tool request");
+            let (native_status, native) = raw_request(
+                on.address,
+                &tool_call_headers("memory", &credential.bearer),
+                &rpc(2, "tools/call", call_params("memory", arguments)),
+            )
+            .await;
+            assert_eq!((legacy_status, native_status), (200, 200));
+            let legacy = assert_tool_response(&legacy, ToolName::Memory);
+            let native = assert_tool_response(&native, ToolName::Memory);
+            assert_eq!(native["items"][0]["memory_id"], json!(row.memory_id));
+            assert_eq!(legacy["items"], native["items"]);
+        });
     });
 }
 
