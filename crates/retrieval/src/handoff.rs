@@ -1,5 +1,5 @@
 //! `retrieval::handoff` — §25.3 continuity handoff 的**字节域**（G80-31）。
-//! Depends-on: crates=[humaux-domain, serde, serde_json, sha2]; services=[]; env=[]; modules=[domain::context, retrieval::compiler]
+//! Depends-on: crates=[humaux-domain, serde, serde_json, sha2]; services=[]; env=[]; modules=[domain::context::budget_views, retrieval::compiler]
 //! Called-by: [adapters::context_repo, adapters::continuity_read, application::continuity, application::recall_read, gateway::context, tests]
 //! Invariants: []
 //! Spec: §25.3; §57.1
@@ -17,7 +17,7 @@
 //! 序列化唯一入口是 [`Handoff::canonical_bytes`]；快照身份的语义（seq 必要非充分、
 //! token 充分）见 [`FrozenSnapshot`] 的字段说明。
 
-use humaux_domain::context::MandatoryOverflow;
+use humaux_domain::context::budget_views::MandatoryOverflow;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 

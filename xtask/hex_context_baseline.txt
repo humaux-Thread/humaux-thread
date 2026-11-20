@@ -6,7 +6,3 @@
 crates/adapters/src/continuity_repo.rs:project_continuity->identity_access:humaux_domain::identity::AuthorizationScope
 crates/adapters/src/contribution_entry_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
 crates/public-pool/src/public_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
-crates/retrieval/src/compiler.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
-crates/retrieval/src/completeness.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
-crates/retrieval/src/envelope.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
-crates/retrieval/src/handoff.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow

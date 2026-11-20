@@ -2,4 +2,3 @@
 # Shrink with HEX_CONTEXT_CYCLE_CEILING when a reverse edge or path disappears.
 provider_execution->knowledge_lifecycle
 provider_execution->retrieval_read_model
-retrieval_read_model->project_continuity
