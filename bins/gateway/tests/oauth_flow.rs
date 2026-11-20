@@ -1192,3 +1192,138 @@ fn m02_10b_consent_rejects_cross_origin() {
         );
     });
 }
+
+#[test]
+fn m02_10b_review_rechecks_entitlement_after_concurrent_revocation() {
+    run_db_fixture::<OAuthFixture, _>(
+        "m02_10b_review_rechecks_entitlement_after_concurrent_revocation",
+        |mut h| {
+            let tenant = h.tenant_id;
+            add_active_membership(&mut h, tenant);
+            add_entitlement(&mut h, tenant);
+            let address = serve(&h, 7200);
+            let session = session_cookie(&h);
+            let path = authorize_url(&h.client_id, REDIRECT, "S256");
+            let page = browser_get(&h, address, &path, &session);
+            assert_eq!(page.status, 200);
+
+            // Keep a revoked projection uncommitted while the browser submits its approved ticket.
+            let mut writer = Client::connect(&h.dsn, NoTls).unwrap();
+            let writer_pid: i32 = writer
+                .query_one("SELECT pg_backend_pid()", &[])
+                .unwrap()
+                .get(0);
+            let mut revocation = writer.transaction().unwrap();
+            revocation.execute("UPDATE control.entitlement_snapshots SET effective='{}'::jsonb WHERE tenant_id=$1",
+            &[&tenant]).unwrap();
+
+            let form = consent_body(&page, "allow");
+            let request = h.rt.spawn(async move {
+                http_with(
+                    address,
+                    "POST",
+                    "/oauth/authorize",
+                    &[
+                        ("Cookie", &session),
+                        ("Origin", ORIGIN),
+                        ("Sec-Fetch-Site", "same-origin"),
+                    ],
+                    &form,
+                )
+                .await
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut waited_for_writer = false;
+            while !request.is_finished() && std::time::Instant::now() < deadline {
+                waited_for_writer = h.admin.query_one(
+                "SELECT EXISTS (SELECT FROM pg_stat_activity a                  WHERE $1 = ANY(pg_blocking_pids(a.pid)) AND a.query LIKE '%oauth_lock_consent_entitlement%')",
+                &[&writer_pid],
+            ).unwrap().get(0);
+                if waited_for_writer {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            revocation.commit().unwrap();
+            let reply = h.rt.block_on(request).unwrap();
+            assert_eq!(
+                reply.status, 403,
+                "a committed revocation must prevent code issuance"
+            );
+            assert!(!reply.headers.contains_key("location"));
+            assert!(
+                waited_for_writer,
+                "the issuing transaction must wait for the projection writer"
+            );
+        },
+    );
+}
+
+#[test]
+fn m02_10b_review_revokes_a_disabled_clients_grant() {
+    run_db_fixture::<OAuthFixture, _>(
+        "m02_10b_review_revokes_a_disabled_clients_grant",
+        |mut h| {
+            let address = serve(&h, 7200);
+            let tokens = post(&h, address, &code_form(&h, &issue_code(&h), &[]));
+            assert_eq!(tokens.status, 200);
+            let tokens: Value = serde_json::from_str(&tokens.body).unwrap();
+            let refresh_secret = tokens["refresh_token"].as_str().unwrap();
+            h.admin.execute("UPDATE control.oauth_client_registrations SET disabled_at=now() WHERE client_id=$1",
+            &[&h.client_id]).unwrap();
+            let revoke = h.rt.block_on(http(
+                address,
+                "POST",
+                "/oauth/revoke",
+                &form(&[("client_id", &h.client_id), ("token", refresh_secret)]),
+            ));
+            assert_eq!(revoke.status, 200);
+            h.admin.execute("UPDATE control.oauth_client_registrations SET disabled_at=NULL WHERE client_id=$1",
+            &[&h.client_id]).unwrap();
+
+            denied(
+                &refresh(&h, address, &tokens, &h.client_id),
+                OAuthReason::REFRESH_REJECTED,
+            );
+            assert_eq!(
+                lookup(&h, decode(&tokens).grant_id).status,
+                Some(oauth_repo::GrantStatus::Revoked)
+            );
+        },
+    );
+}
+
+#[test]
+fn m02_10b_review_rejects_repeated_authorize_fields_and_echoes_single_state() {
+    run_db_fixture::<OAuthFixture, _>(
+        "m02_10b_review_rejects_repeated_authorize_fields_and_echoes_single_state",
+        |mut h| {
+            let tenant = h.tenant_id;
+            add_active_membership(&mut h, tenant);
+            add_entitlement(&mut h, tenant);
+            let address = serve(&h, 7200);
+            let session = session_cookie(&h);
+            let path = authorize_url(&h.client_id, REDIRECT, "S256");
+            for repeated in [
+                "%73tate=another",
+                "redirect_uri=second",
+                "response_type=code",
+                "code_challenge=other",
+            ] {
+                let reply = browser_get(&h, address, &format!("{path}&{repeated}"), &session);
+                assert_eq!(reply.status, 400, "{repeated}");
+                assert!(!reply.headers.contains_key("location"));
+                assert_eq!(
+                    serde_json::from_str::<Value>(&reply.body).unwrap()["error"],
+                    "invalid_request"
+                );
+            }
+            let page = browser_get(&h, address, &path, &session);
+            let reply =
+                browser_consent(&h, address, &session, ORIGIN, &consent_body(&page, "allow"));
+            let params = callback(&reply);
+            assert_eq!(params["state"], "state + & 東京");
+            assert!(params.contains_key("code"));
+        },
+    );
+}
