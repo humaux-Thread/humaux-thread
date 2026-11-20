@@ -80,7 +80,7 @@ const FORBIDDEN_REDIRECT_SCHEMES: [&str; 6] =
     ["javascript", "data", "vbscript", "file", "blob", "about"];
 
 /// A sub-reason attached to an [`ErrorCode`], same shape as `domain::error::ConflictReason` (§52 D-B): a frozen numeric
-/// code, resolved through [`OAUTH_REASONS`]. The 20xx block is authorize, 21xx code exchange, 22xx refresh and grant.
+/// code, resolved through [`OAUTH_REASONS`]. The 20xx block is authorize, 21xx code exchange, 22xx refresh and grant, and 23xx registration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OAuthReason(pub u16);
 
@@ -554,13 +554,19 @@ fn loopback_key(uri: &str) -> Option<(&str, &str)> {
         return None;
     }
     let (authority, suffix) = rest.split_at(rest.find(['/', '?']).unwrap_or(rest.len()));
-    for host in ["localhost", "127.0.0.1", "[::1]"] {
-        if authority == host {
+    for host in LOOPBACK_HOSTS {
+        let tail = if host.contains(':') {
+            authority
+                .strip_prefix('[')
+                .and_then(|part| part.strip_prefix(host))
+                .and_then(|part| part.strip_prefix(']'))
+        } else {
+            authority.strip_prefix(host)
+        };
+        if tail == Some("") {
             return Some((host, suffix));
         }
-        if let Some(port) = authority
-            .strip_prefix(host)
-            .and_then(|tail| tail.strip_prefix(':'))
+        if let Some(port) = tail.and_then(|part| part.strip_prefix(':'))
             && port.len() <= 5
             && port.bytes().all(|b| b.is_ascii_digit())
             && port.parse::<u16>().is_ok_and(|port| port != 0)
