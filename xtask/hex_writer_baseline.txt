@@ -12,8 +12,6 @@ crates/adapters/src/maintenance_repo.rs:insert into ops.restore_witnesses:1
 crates/adapters/src/maintenance_repo.rs:insert into ops.wal_archive_failures:1
 crates/adapters/src/maintenance_repo.rs:update control.partition_registry:1
 crates/adapters/src/model_call_ledger.rs:insert into ops.tenant_cost_events:1
-crates/adapters/src/retrieval_query_source.rs:insert into private.retrieval_query_sources:1
-crates/adapters/src/retrieval_query_source.rs:update private.retrieval_query_sources:1
 crates/adapters/src/stream_repo.rs:update private.ingest_tickets:1
 crates/public-pool/src/public_repo.rs:insert into public.claim_trust_evaluation_sources:1
 crates/public-pool/src/public_repo.rs:insert into public.claim_trust_evaluations:1

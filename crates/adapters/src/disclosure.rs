@@ -1,6 +1,6 @@
 //! `adapters::disclosure` — `ops.data_disclosures` two-phase ledger writer (§7.4, T4.2).
 //! Depends-on: crates=[humaux-domain, sqlx]; services=[PostgreSQL(any) w=[ops.data_disclosure_sources, ops.data_disclosures] x=[ops.attach_retrieval_query_source]]; env=[]; modules=[adapters::postgres, domain::boundary, domain::egress, domain::error]
-//! Called-by: [adapters::consolidation_reasoner, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::health, adapters::model_call_ledger, adapters::retrieval_query_source, adapters::structured_reasoning, private-worker::bootstrap, retrieval-provider::adapters, tests]
+//! Called-by: [adapters::consolidation_reasoner, adapters::contribution_execution_repo, adapters::contribution_reasoner, adapters::distill_reasoner, adapters::health, adapters::model_call_ledger, adapters::retrieval_query_reservation, adapters::structured_reasoning, private-worker::bootstrap, retrieval-provider::adapters, tests]
 //! Invariants: [sole writer of ops.data_disclosures and its sources: reserve inserts the ledger row plus >=1 source
 //!   in one transaction before any external call, finalize records the outcome; empty sources or a payload mismatch
 //!   is a DisclosureError, no sampling]
@@ -337,7 +337,7 @@ async fn reserve_in_txn(
     Ok(disclosure_id)
 }
 
-/// Crate-private companion for [`crate::retrieval_query_source`]. The public generic reserve
+/// Crate-private companion for [`crate::retrieval_query_reservation`]. The public generic reserve
 /// APIs reject this source variant so it cannot be used as an unchecked fifth source kind.
 pub(crate) async fn reserve_retrieval_queries_in_txn(
     txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,

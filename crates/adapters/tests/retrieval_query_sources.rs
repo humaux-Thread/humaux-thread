@@ -621,6 +621,26 @@ fn typed_query_source_reserve_is_atomic_and_generic_paths_cannot_forge_it() {
         let queries = [query, sealed_query("second typed query source")];
         let wire = query_wire(&queries);
         let permit = permit_for_query_wire(&handle, DataClass::Private, &wire);
+        let before = source_and_disclosure_counts(&mut handle.admin, handle.tenant_id);
+        // PostgreSQL rejects NUL in the disclosure's text column after the source inserts.
+        let failed_disclosure = handle.rt.block_on(reserve_retrieval_query_batch(
+            &handle.retrieval,
+            &context,
+            &wire,
+            &permit,
+            "cn-hangzhou\0",
+        ));
+        assert!(matches!(
+            failed_disclosure,
+            Err(RetrievalQuerySourceError::Disclosure(
+                disclosure::DisclosureError::Db(_)
+            ))
+        ));
+        assert_eq!(
+            source_and_disclosure_counts(&mut handle.admin, handle.tenant_id),
+            before,
+            "disclosure failure must roll back every source insert"
+        );
         let reservation = handle
             .rt
             .block_on(reserve_retrieval_query_batch(
