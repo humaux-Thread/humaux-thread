@@ -31,5 +31,5 @@ LANGUAGE sql
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-  SELECT count(*) FROM control.api_key_touch_last_used_batch_rows($1, $2);
+  SELECT count(*) * 0 FROM control.api_key_touch_last_used_batch_rows($1, $2);
 $$;
