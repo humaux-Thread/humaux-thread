@@ -37,7 +37,8 @@ use humaux_application::recall_read::MemoryEnumerationParams;
 use humaux_application::recall_read::MemoryGetTarget;
 use humaux_application::recall_read::NoteEnumerationFilter;
 use humaux_application::remember::{
-    AtomicRememberRequest, NoteIntake, NoteReplaceOutcome, replace_note,
+    AtomicRememberRequest, NoteIntake, NoteReplaceOutcome, put_note, remember as accept_remember,
+    replace_note,
 };
 use humaux_domain::{
     affect::{AffectWriteOp, MoodHalfLife},
@@ -87,7 +88,8 @@ use crate::{
     context::{self, ContextBootstrap},
     continuity,
     guard::{
-        AuthorizedRequest, ConfirmGate, ConfirmedOutcome, ConfirmedWrite, GatewayGuard, PreMint,
+        AtomicRememberOp, AuthorizedRequest, ConfirmGate, ConfirmedOutcome, ConfirmedWrite,
+        GatewayGuard, PreMint,
     },
     memory,
     recall::{self, RecallSearchRequest, SemanticRecallRuntime},
@@ -356,6 +358,7 @@ impl GatewayMcpApplication {
         let requested_workspace = wire.workspace_id;
         let policy = self.remember_policy.clone();
         let bootstrap = self.context_bootstrap.clone();
+        let pool = self.runtime_pool.clone();
         let (source, occurred_at) = match wire.source {
             Some((source, occurred_at)) => (Some(source), occurred_at),
             None => (None, None),
@@ -365,15 +368,10 @@ impl GatewayMcpApplication {
             .run_atomic_remember(
                 context,
                 operation,
+                AtomicRememberOp::Remember,
                 requested_workspace,
                 raw_arguments,
                 wire.idempotency_key,
-                None,
-                // Design v0.2 §15 T04c: verified in the receipt transaction before any write; a refusal is the whole call.
-                wire.task_run,
-                // ADR-0078 D-D A1: resolved there too; unknown / foreign / archived / invisible is one INVALID_INPUT.
-                wire.project_id,
-                source,
                 move |request| {
                     // An unbound PAT naming no workspace has no route: nothing to write to.
                     let workspace = request
@@ -398,6 +396,18 @@ impl GatewayMcpApplication {
                         affects,
                         mood_half_life,
                     )
+                },
+                async move |authorization, request| {
+                    accept_remember(
+                        &crate::bootstrap::remember_store(&pool),
+                        authorization,
+                        request,
+                        // T04c and ADR-0078 D-D A1: the receipt transaction verifies the run and project before writing.
+                        wire.task_run,
+                        wire.project_id,
+                        source,
+                    )
+                    .await
                 },
             )
             .await;
@@ -458,6 +468,7 @@ impl GatewayMcpApplication {
         };
         let policy = self.remember_policy.clone();
         let bootstrap = self.context_bootstrap.clone();
+        let pool = self.runtime_pool.clone();
         let (kind, requested) = (wire.note.kind, wire.note.requested);
         // The refusal is decided after admission (inside `prepare`), so an unauthenticated caller learns nothing about the
         // ceiling; the closure can only return an `ErrorCode`, so it leaves the business refusal here.
@@ -468,13 +479,10 @@ impl GatewayMcpApplication {
             .run_atomic_remember(
                 context,
                 operation,
+                AtomicRememberOp::NoteCreate,
                 wire.workspace_id,
                 raw_arguments,
                 wire.idempotency_key,
-                Some(wire.note),
-                None,
-                None,
-                None,
                 move |request| {
                     if authorize_note(kind, requested).is_err() {
                         *refused_slot = true;
@@ -499,6 +507,16 @@ impl GatewayMcpApplication {
                         affects,
                         mood_half_life,
                     )
+                },
+                async move |authorization, request| {
+                    put_note(
+                        &crate::bootstrap::note_store(&pool),
+                        authorization,
+                        request,
+                        wire.note,
+                    )
+                    .await
+                    .map_err(Into::into)
                 },
             )
             .await
