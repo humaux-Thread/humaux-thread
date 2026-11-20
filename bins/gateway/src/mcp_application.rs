@@ -3268,8 +3268,8 @@ mod tests {
             stamp(a_id, 59);
             assert_eq!(handle.credential_activity(&a), a_first);
 
-            // At local t=60, A's persisted stamp is still only 58 seconds old.
-            handle.age_credential_activity(&a, 58);
+            // Local t=60 is due, while A's fresh database stamp leaves the full DB window.
+            handle.age_credential_activity(&a, 0);
             let (a_before_skip, b_initial) = (
                 handle.credential_activity(&a),
                 handle.credential_activity(&b),

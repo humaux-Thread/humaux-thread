@@ -1155,11 +1155,22 @@ fn pre_route_batch_touch_counts_real_updates_and_keeps_route_generation() {
             )
             .expect_err("per-key batch door enforces the same interval minimum");
         assert_eq!(early.code().map(|code| code.code()), Some("22023"));
-        let legacy_count = db_ok(f.gateway.query_one(
-            "SELECT control.api_key_touch_last_used_batch(ARRAY[]::uuid[], 60)",
-            &[],
-        ));
-        assert_eq!(legacy_count.get::<_, i64>(0), 0);
+        let legacy_key = f.key(None, None, Some(1));
+        assert!(!f.used(&legacy_key));
+        let legacy_touch = "SELECT control.api_key_touch_last_used_batch(ARRAY[$1]::uuid[], 60)";
+        let first = db_ok(f.gateway.query_one(legacy_touch, &[&legacy_key.id]));
+        assert_eq!(
+            first.get::<_, i64>(0),
+            1,
+            "legacy door reports the row it wrote"
+        );
+        assert!(f.used(&legacy_key));
+        let repeat = db_ok(f.gateway.query_one(legacy_touch, &[&legacy_key.id]));
+        assert_eq!(
+            repeat.get::<_, i64>(0),
+            0,
+            "legacy door skips the same window"
+        );
         let mut updates = 0;
         for _ in 0..100 {
             updates +=
