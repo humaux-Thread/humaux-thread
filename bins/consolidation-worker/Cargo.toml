@@ -20,18 +20,18 @@ workspace = true
 # below reaches `humaux_adapters::byok`). Its only inference capability is the
 # `PrivateReasoningPort` trait object from `humaux-application` — the sealed mTLS RPC client
 # that will implement it for real lives in a later task, out of this binary's file scope.
-# why: humaux-adapters dependency; used-by: [consolidation-worker::inference_client, consolidation-worker::main, consolidation-worker::tests::consolidation_hop_e2e, consolidation-worker::tests::derived_dispatch_e2e, consolidation-worker::tests::run_once_e2e, tests]
+# why: humaux-adapters dependency; used-by: [consolidation-worker::bootstrap, consolidation-worker::inference_client, consolidation-worker::tests::consolidation_hop_e2e, consolidation-worker::tests::derived_dispatch_e2e, consolidation-worker::tests::run_once_e2e, tests]
 humaux-adapters = { path = "../../crates/adapters" }
 # why: humaux-application dependency; used-by: [consolidation-worker::inference_client, consolidation-worker::tests::consolidation_hop_e2e, consolidation-worker::tests::derived_dispatch_e2e, consolidation-worker::tests::run_once_e2e, humaux-consolidation-worker, tests]
 humaux-application = { path = "../../crates/application" }
-# why: humaux-domain dependency; used-by: [consolidation-worker::inference_client, consolidation-worker::main, consolidation-worker::tests::consolidation_hop_e2e, consolidation-worker::tests::run_once_e2e, tests]
+# why: humaux-domain dependency; used-by: [consolidation-worker::bootstrap, consolidation-worker::inference_client, consolidation-worker::tests::consolidation_hop_e2e, consolidation-worker::tests::run_once_e2e, tests]
 humaux-domain = { path = "../../crates/domain" }
 # ADR-0066 D-L: the verified dial of the private worker's inference socket (`uds::connect_verified`), the one
 # worker RPC connect site. A path dependency already in the graph (no new lock package).
-# why: humaux-infra-cell dependency; used-by: [consolidation-worker::inference_client, consolidation-worker::main]
+# why: humaux-infra-cell dependency; used-by: [consolidation-worker::bootstrap, consolidation-worker::inference_client]
 humaux-infra-cell = { path = "../../crates/infra-cell" }
 # ADR-0061 D-B: the loopback ops listener (no metrics crate, D-A).
-# why: /metrics + /status exposition; used-by: [consolidation-worker::main]
+# why: /metrics + /status exposition; used-by: [consolidation-worker::bootstrap, consolidation-worker::dsn]
 humaux-telemetry = { path = "../../crates/telemetry" }
 # why: tokio dependency; used-by: [consolidation-worker::inference_client, consolidation-worker::main, consolidation-worker::tests::consolidation_hop_e2e, consolidation-worker::tests::derived_dispatch_e2e, consolidation-worker::tests::run_once_e2e, tests]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
@@ -41,7 +41,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time",
 # `sqlx` itself (kept out of this Cargo.toml on purpose, same reasoning as the byok/openbao
 # comment above: the fewer capability-shaped things this binary can name, the fewer things it
 # could accidentally acquire).
-# why: uuid dependency; used-by: [consolidation-worker::inference_client, consolidation-worker::main, consolidation-worker::tests::consolidation_hop_e2e, consolidation-worker::tests::derived_dispatch_e2e, consolidation-worker::tests::run_once_e2e, tests]
+# why: uuid dependency; used-by: [consolidation-worker::bootstrap, consolidation-worker::inference_client, consolidation-worker::tests::consolidation_hop_e2e, consolidation-worker::tests::derived_dispatch_e2e, consolidation-worker::tests::run_once_e2e, tests]
 uuid = { version = "1.25.0", features = ["v7", "serde"] }
 # why: serde dependency; used-by: [consolidation-worker::inference_client]
 serde = { version = "1", features = ["derive"] }
@@ -68,7 +68,7 @@ async-trait = "0.1"
 # `tests/consolidate_snapshot.rs`, not a second independent choice.
 # why: postgres dependency; used-by: [consolidation-worker::tests::consolidation_hop_e2e, consolidation-worker::tests::derived_dispatch_e2e, consolidation-worker::tests::run_once_e2e, tests]
 postgres = { version = "0.19", features = ["with-uuid-1", "with-serde_json-1"] }
-# why: uuid dependency; used-by: [consolidation-worker::inference_client, consolidation-worker::main, consolidation-worker::tests::consolidation_hop_e2e, consolidation-worker::tests::derived_dispatch_e2e, consolidation-worker::tests::run_once_e2e, tests]
+# why: uuid dependency; used-by: [consolidation-worker::bootstrap, consolidation-worker::inference_client, consolidation-worker::tests::consolidation_hop_e2e, consolidation-worker::tests::derived_dispatch_e2e, consolidation-worker::tests::run_once_e2e, tests]
 uuid = { version = "1.25.0", features = ["v4"] }
 # why: humaux-testkit dependency; used-by: [consolidation-worker::tests::consolidation_hop_e2e, consolidation-worker::tests::derived_dispatch_e2e, consolidation-worker::tests::run_once_e2e, tests]
 humaux-testkit = { path = "../../crates/testkit" }

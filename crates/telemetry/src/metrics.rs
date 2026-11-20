@@ -1,7 +1,7 @@
 //! `telemetry::metrics` — the §41.2 family table this workspace exports, a hand-written Prometheus text-format
 //!   0.0.4 encoder, and the std-only loopback listener that serves `/metrics` and `/status` (ADR-0061 D-A, D-B).
 //! Depends-on: crates=[humaux-domain]; services=[HTTP(loopback)]; env=[]; modules=[domain::error, domain::vocab, telemetry::degrade]
-//! Called-by: [admin::cell_resources, admin::ops_status, consolidation-worker::main, gateway::bootstrap,
+//! Called-by: [admin::cell_resources, admin::ops_status, consolidation-worker::bootstrap, gateway::bootstrap,
 //!   gateway::guard, gateway::main, gateway::mcp_application, gateway::status, humaux-telemetry,
 //!   maintenance::health_serve, maintenance::resident, maintenance::serve, private-worker::distill, private-worker::main, retrieval-worker::main,
 //!   telemetry::admission, telemetry::cache, telemetry::dr, telemetry::health, telemetry::host, tests]

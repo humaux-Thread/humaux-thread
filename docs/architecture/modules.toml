@@ -999,6 +999,14 @@ note = "M07 fact door and M18 verification collaborate in one PG transaction"
 # Shared source ownership is explicit; it grants no guest table write permission.
 
 [[shared_file]]
+path = "bins/consolidation-worker/src/bootstrap.rs"
+contexts = ["knowledge_curation", "operations_platform"]
+
+[[shared_file]]
+path = "crates/public-pool/src/bootstrap.rs"
+contexts = ["operations_platform", "public_knowledge"]
+
+[[shared_file]]
 path = "bins/gateway/build.rs"
 contexts = ["commercial", "coordination", "data_rights", "identity_access", "knowledge_lifecycle", "project_continuity", "protocol_integration", "public_knowledge", "retrieval_read_model"]
 
