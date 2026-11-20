@@ -17,6 +17,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Backup evidence published to the maintenance scheduler.
+pub use crate::knowledge_backup::{DrEvidence, MeasuredBudget};
+
 /// §32.0 每类 Job 的 estimated cost 四项。字段顺序与 spec 代码块一致。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct JobCost {
@@ -447,33 +450,6 @@ pub struct AuthorityI4Scan {
     pub violations: i64,
     /// The first (up to 100) violating `memory_id`s; empty when `violations` is 0.
     pub sample_ids: Vec<Uuid>,
-}
-
-/// The newest receipt that measured the repository (a budget refusal qualifies, 10.11 D / F4), with the limits the
-/// arm used then; the daemon reads no budget key (10.11 C / F10).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MeasuredBudget {
-    /// `du -sk` of the repository at that run.
-    pub repo_bytes: i64,
-    /// `HUMAUX_MAINTENANCE_BACKUP_REPO_MAX_BYTES` as that run used it.
-    pub repo_max_bytes: Option<i64>,
-    /// `HUMAUX_MAINTENANCE_BACKUP_MIN_FREE_BYTES` as that run used it.
-    pub min_free_bytes: Option<i64>,
-    /// The next set's estimate: newest VERIFIED `set_repo_bytes` × 1.25, else that receipt's `estimate_bytes`.
-    pub estimate_bytes: Option<i64>,
-}
-
-/// One DR_EVIDENCE reading from the database (ADR-0064 10.11 D). Timestamps are unix seconds.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DrEvidence {
-    /// `max(backup_stopped_at)` over the labels whose latest receipt is VERIFIED; `None` before the first.
-    pub backup_last_success: Option<f64>,
-    /// `finished_at` of the newest drill the table derived as succeeded.
-    pub restore_drill_last_success: Option<f64>,
-    /// `None` before the first measuring receipt.
-    pub budget: Option<MeasuredBudget>,
-    /// The latch (a row observed after the newest VERIFIED start) or archiving failing now.
-    pub wal_archive_failing: bool,
 }
 
 /// §77 audit fields for the daemon's or `sweep once`'s schema-failed re-drive (`MaintenanceTask::Redrive`).
