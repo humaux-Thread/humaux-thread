@@ -15510,13 +15510,14 @@ read by:
 - (no process): `public-pool::tests::public_runtime_qdrant`
 - (no process): `public-pool::tests::support::public_anonymous_seam`
 - process(cargo-xtask): `adapters::mechanism_observation`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `public-pool::tests::public_provenance`
 - (no process): `public-pool::tests::public_trust`
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_claim_repo`
 
 executed by:
 
@@ -16054,6 +16055,7 @@ read by:
 - (no process): `public-pool::public_provenance`
 - (no process): `public-pool::tests::public_runtime`
 - (no process): `public-pool::tests::support::public_anonymous_seam`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 - (no process): `adapters::contribution_repo`
@@ -16063,7 +16065,7 @@ written by:
 - (no process): `public-pool::tests::public_provenance`
 - (no process): `public-pool::tests::public_provenance_revocation_eval`
 - (no process): `public-pool::tests::public_trust`
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_claim_repo`
 
 executed by:
 
@@ -16291,6 +16293,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `public-pool::public_provenance`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 - (no process): `adapters::contribution_repo`
@@ -16299,7 +16302,7 @@ written by:
 - (no process): `public-pool::tests::mechanism_observation`
 - (no process): `public-pool::tests::public_provenance`
 - (no process): `public-pool::tests::public_trust`
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_claim_repo`
 
 executed by:
 
@@ -16334,6 +16337,7 @@ read by:
 - (no process): `public-pool::public_provenance`
 - (no process): `public-pool::tests::public_runtime`
 - (no process): `public-pool::tests::support::public_anonymous_seam`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 - (no process): `adapters::tests::contribution_repo`
@@ -16342,7 +16346,7 @@ written by:
 - (no process): `public-pool::tests::mechanism_observation`
 - (no process): `public-pool::tests::public_provenance`
 - (no process): `public-pool::tests::public_trust`
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_claim_repo`
 
 executed by:
 
@@ -16378,12 +16382,13 @@ read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `public-pool::public_provenance`
 - (no process): `public-pool::tests::completeness`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `public-pool::tests::completeness`
 - (no process): `public-pool::tests::public_provenance`
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_claim_repo`
 
 executed by:
 

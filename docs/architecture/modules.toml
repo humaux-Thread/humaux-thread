@@ -464,6 +464,7 @@ files = [
   "crates/adapters/src/contribution_reasoner.rs",
   "crates/adapters/src/contribution_repo.rs",
   "crates/adapters/src/contribution_scan.rs",
+  "crates/adapters/src/public_claim_repo.rs",
   "crates/adapters/src/public_evaluation_repo.rs",
   "crates/adapters/src/public_outbox_port.rs",
   "crates/adapters/src/public_vocab_repo.rs",

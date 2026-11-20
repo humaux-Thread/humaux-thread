@@ -90,6 +90,9 @@ pub mod project_rollup;
 pub mod projection_worker;
 pub mod provider_budget;
 pub mod provisioning;
+/// M20 owner commands for public claim and synthesis writes.
+#[cfg(feature = "cloud-raw-pool")]
+pub mod public_claim_repo;
 /// M20 port for enqueueing public dispatch events in the producer transaction.
 #[cfg(feature = "cloud-raw-pool")]
 pub mod public_evaluation_repo;

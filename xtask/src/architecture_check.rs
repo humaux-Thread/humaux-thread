@@ -2151,7 +2151,7 @@ fn hex_context_verdicts(root: &Path) -> (Verdict, Verdict) {
 fn hex_writer_gate(root: &Path) -> Verdict {
     hex_verdict(match hex_writer_actual(root) {
         Ok(actual) => match hex_read(root, "xtask/hex_writer_baseline.txt") {
-            Ok(text) => hex_exact(&actual, &text, 14, "HEX-WRITER"),
+            Ok(text) => hex_exact(&actual, &text, 8, "HEX-WRITER"),
             Err(errors) => errors,
         },
         Err(errors) => errors,

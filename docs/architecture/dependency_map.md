@@ -4735,6 +4735,14 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_retrieval_worker)`
 - service `PostgreSQL(owner)`
 
+#### `adapters::public_claim_repo`
+- writes `public.claims`
+- writes `public.provenance_edges`
+- writes `public.source_closure`
+- writes `public.sources`
+- writes `public.syntheses`
+- service `PostgreSQL(any)`
+
 #### `adapters::public_evaluation_repo`
 - reads `control.public_moderator_grants`
 - writes `public.claim_trust_evaluation_sources`
@@ -4798,15 +4806,15 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.public_moderator_grants`
 - reads `control.users`
 - reads `ops.public_release_revocations`
+- reads `public.claims`
 - reads `public.eligible_objects`
+- reads `public.provenance_edges`
 - reads `public.relations`
+- reads `public.source_closure`
+- reads `public.sources`
+- reads `public.syntheses`
 - reads `public.synthesis_inputs`
 - reads `staging.contribution_releases`
-- writes `public.claims`
-- writes `public.provenance_edges`
-- writes `public.source_closure`
-- writes `public.sources`
-- writes `public.syntheses`
 - executes `ops.claim_global_anonymous_public_dispatches`
 - executes `ops.claim_public_dispatch_jobs`
 - executes `ops.complete_global_anonymous_public_dispatch`
@@ -12735,13 +12743,14 @@ read by:
 - (no process): `public-pool::tests::public_runtime_qdrant`
 - (no process): `public-pool::tests::support::public_anonymous_seam`
 - process(cargo-xtask): `adapters::mechanism_observation`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 - (no process): `adapters::contribution_repo`
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `public-pool::tests::public_provenance`
 - (no process): `public-pool::tests::public_trust`
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_claim_repo`
 
 executed by:
 
@@ -12940,6 +12949,7 @@ read by:
 - (no process): `public-pool::public_provenance`
 - (no process): `public-pool::tests::public_runtime`
 - (no process): `public-pool::tests::support::public_anonymous_seam`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 - (no process): `adapters::contribution_repo`
@@ -12949,7 +12959,7 @@ written by:
 - (no process): `public-pool::tests::public_provenance`
 - (no process): `public-pool::tests::public_provenance_revocation_eval`
 - (no process): `public-pool::tests::public_trust`
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_claim_repo`
 
 executed by:
 
@@ -13010,6 +13020,7 @@ executed by:
 ### `public.source_closure`
 read by:
 - (no process): `public-pool::public_provenance`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 - (no process): `adapters::contribution_repo`
@@ -13018,7 +13029,7 @@ written by:
 - (no process): `public-pool::tests::mechanism_observation`
 - (no process): `public-pool::tests::public_provenance`
 - (no process): `public-pool::tests::public_trust`
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_claim_repo`
 
 executed by:
 
@@ -13028,6 +13039,7 @@ read by:
 - (no process): `public-pool::public_provenance`
 - (no process): `public-pool::tests::public_runtime`
 - (no process): `public-pool::tests::support::public_anonymous_seam`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 - (no process): `adapters::tests::contribution_repo`
@@ -13036,7 +13048,7 @@ written by:
 - (no process): `public-pool::tests::mechanism_observation`
 - (no process): `public-pool::tests::public_provenance`
 - (no process): `public-pool::tests::public_trust`
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_claim_repo`
 
 executed by:
 
@@ -13045,12 +13057,13 @@ read by:
 - (no process): `adapters::contribution_repo`
 - (no process): `public-pool::public_provenance`
 - (no process): `public-pool::tests::completeness`
+- process(humaux-public-worker): `public-pool::public_repo`
 
 written by:
 - (no process): `adapters::tests::contribution_repo`
 - (no process): `public-pool::tests::completeness`
 - (no process): `public-pool::tests::public_provenance`
-- process(humaux-public-worker): `public-pool::public_repo`
+- process(humaux-public-worker): `adapters::public_claim_repo`
 
 executed by:
 
@@ -13388,6 +13401,7 @@ executed by:
 - `adapters::private_projection_registry`
 - `adapters::projection_worker`
 - `adapters::provider_budget`
+- `adapters::public_claim_repo`
 - `adapters::public_evaluation_repo`
 - `adapters::quota_repo`
 - `adapters::read_gate`
@@ -14253,6 +14267,7 @@ modules naming it:
 - `adapters::projection_worker`
 - `adapters::provider_budget`
 - `adapters::provisioning`
+- `adapters::public_claim_repo`
 - `adapters::public_evaluation_repo`
 - `adapters::public_outbox_port`
 - `adapters::public_vocab_repo`
@@ -14907,6 +14922,7 @@ modules naming it:
 - `adapters::project_rollup`
 - `adapters::projection_worker`
 - `adapters::provisioning`
+- `adapters::public_claim_repo`
 - `adapters::qdrant`
 - `adapters::read_materialize`
 - `adapters::reasoning_route_admission`
