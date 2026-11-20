@@ -876,14 +876,17 @@ fn bearer_fixture(h: &mut Handle) -> (GatewayGuard, Value) {
     add_active_membership(h, tenant);
     let address = serve(h, 7200);
     let tokens = issued(h, address);
+    (bearer_guard(h), tokens)
+}
+
+fn bearer_guard(h: &Handle) -> GatewayGuard {
     // dep: PostgreSQL(role_gateway) — the same role and guard entry as the gateway
     let pool =
         h.rt.block_on(RuntimeDbPool::connect(&dsn_as_role(&h.dsn)))
             .expect("gateway pool");
-    let guard = GatewayGuard::new(pool, guard_settings())
+    GatewayGuard::new(pool, guard_settings())
         .expect("guard")
-        .with_oauth_issuer(ORIGIN.to_owned(), Arc::new(keys()));
-    (guard, tokens)
+        .with_oauth_issuer(ORIGIN.to_owned(), Arc::new(keys()))
 }
 
 fn bearer(
@@ -1300,7 +1303,8 @@ fn g_m02_10_bearer_native_http() {
 fn legacy_mount_oauth_audience_and_authorization_parity() {
     run_db_fixture::<OAuthFixture, _>("M26 legacy mount OAuth parity", |mut h| {
         h.scopes = vec!["memory:write".to_owned()];
-        let (guard, _) = bearer_fixture(&mut h);
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
         let as_address = serve(&h, 7200);
         let mint = |resource| {
             let code = issue_code_for(&h, resource);
@@ -1317,7 +1321,7 @@ fn legacy_mount_oauth_audience_and_authorization_parity() {
         };
         let native = mint(NATIVE_RESOURCE);
         let legacy = mint(LEGACY_RESOURCE);
-        let address = serve_router(&h, mcp_router(guard, true));
+        let address = serve_router(&h, mcp_router(bearer_guard(&h), true));
         let legacy_request = |token: Option<&str>, body: Value| {
             let mut headers = vec![
                 ("Content-Type", "application/json"),
