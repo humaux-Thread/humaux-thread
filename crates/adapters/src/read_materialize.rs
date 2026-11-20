@@ -235,6 +235,27 @@ pub(crate) async fn final_memory_ids_with_readable_in_txn(
     // $1 tenant, $2 candidates, $3 subject filter, $4/$5 the ADR-0067 D-J2 lifecycle (statuses, archive mode).
     let sql = format!(
         r#"
+        -- ADR-0071 D-A: materialize both candidate-bounded exclusions once, including on generic plans.
+        WITH excluded AS MATERIALIZED (
+            SELECT me.memory_id
+            FROM private.memory_evidence AS me
+            JOIN private.evidence_objects AS source
+              ON source.evidence_id = me.evidence_id
+             AND source.tenant_id = $1
+            WHERE me.memory_id = ANY($2)
+              AND source.data_class = 'SECRET_MATERIAL'
+            UNION
+            SELECT me.memory_id
+            FROM private.memory_evidence AS me
+            JOIN ops.outbox AS ob
+              ON ob.tenant_id = $1
+             AND ob.evidence_id = me.evidence_id
+            JOIN projection.stream_log AS sl
+              ON sl.tenant_id = ob.tenant_id
+             AND sl.commit_seq = ob.commit_seq
+            WHERE me.memory_id = ANY($2)
+              AND sl.state = 'TOMBSTONED'
+        )
         SELECT m.memory_id
         FROM private.memory_records AS m
         WHERE m.tenant_id = $1
@@ -249,31 +270,7 @@ pub(crate) async fn final_memory_ids_with_readable_in_txn(
                 AND ms.memory_id = m.memory_id
                 AND ms.subject_id = ANY($3::uuid[])
           ))
-          -- ADR-0071 D-A: the secret-backed and the tombstoned memories among the candidates, each one uncorrelated
-          -- set the planner hashes once (`memory_evidence.memory_id` is NOT NULL, so NOT IN is the exact anti-join).
-          -- Both are bounded by $2, so a small read never pays for the tenant's whole history; the tenant legs bind
-          -- $1, which `m.tenant_id = $1` above already fixes.
-          AND m.memory_id NOT IN (
-              SELECT me.memory_id
-              FROM private.memory_evidence AS me
-              JOIN private.evidence_objects AS source
-                ON source.evidence_id = me.evidence_id
-               AND source.tenant_id = $1
-              WHERE me.memory_id = ANY($2)
-                AND source.data_class = 'SECRET_MATERIAL'
-          )
-          AND m.memory_id NOT IN (
-              SELECT me.memory_id
-              FROM private.memory_evidence AS me
-              JOIN ops.outbox AS ob
-                ON ob.tenant_id = $1
-               AND ob.evidence_id = me.evidence_id
-              JOIN projection.stream_log AS sl
-                ON sl.tenant_id = ob.tenant_id
-               AND sl.commit_seq = ob.commit_seq
-              WHERE me.memory_id = ANY($2)
-                AND sl.state = 'TOMBSTONED'
-          )
+          AND NOT EXISTS (SELECT 1 FROM excluded e WHERE e.memory_id = m.memory_id)
         "#,
         lifecycle = lifecycle_sql("m", 4),
     );
