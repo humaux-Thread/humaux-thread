@@ -18,6 +18,7 @@
 //!   HUMAUX_GATEWAY_CONTEXT_MANDATORY_TOKENS, HUMAUX_GATEWAY_CONTEXT_TOTAL_TOKENS,
 //!   HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX, HUMAUX_GATEWAY_CREDENTIAL_PEPPER_PREVIOUS_HEX,
 //!   HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS,
+//!   HUMAUX_GATEWAY_CREDENTIAL_ROUTE_CACHE_ENABLED, HUMAUX_GATEWAY_CREDENTIAL_ROUTE_CACHE_BYTES, HUMAUX_GATEWAY_CREDENTIAL_ROUTE_CACHE_TTL_SECONDS, HUMAUX_GATEWAY_CREDENTIAL_BATCH_TOUCH_ENABLED,
 //!   HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLOWLIST, HUMAUX_GATEWAY_LOGIN_CODE_PEPPER, HUMAUX_GATEWAY_LOGIN_MAIL_FROM,
 //!   HUMAUX_GATEWAY_PUBLIC_BASE_URL, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS,
 //!   HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS,
@@ -51,7 +52,7 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::cache, telemetry::metrics]
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[gateway::auth, gateway::route_cache, adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::auth, gateway::context, gateway::guard, gateway::main, gateway::mcp_application, gateway::memory, gateway::recall, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
 //! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7; ADR-0125
@@ -63,8 +64,10 @@
 //! process. A tenant-specific network-policy loader needs a separate approved
 //! authorization and acceptance gate before this bootstrap can serve it.
 
+use crate::auth::MIN_BATCH_TOUCH_SECONDS;
 use crate::billing_webhook::BillingWebhookConfig;
 use crate::limiter::RatePolicy;
+use crate::route_cache::CredentialRouteCache;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::{IpAddr, SocketAddr},
@@ -167,6 +170,11 @@ const AUTH_LOGIN_CODE_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECOND
 const AUTH_LOGIN_CODE_MAX_ATTEMPTS_KEY: &str = "HUMAUX_GATEWAY_AUTH_LOGIN_CODE_MAX_ATTEMPTS";
 const AUTH_LOGIN_CODE_COOLDOWN_KEY: &str = "HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS";
 const CREDENTIAL_TOUCH_INTERVAL_KEY: &str = "HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS";
+const CREDENTIAL_ROUTE_CACHE_ENABLED_KEY: &str = "HUMAUX_GATEWAY_CREDENTIAL_ROUTE_CACHE_ENABLED";
+const CREDENTIAL_ROUTE_CACHE_BYTES_KEY: &str = "HUMAUX_GATEWAY_CREDENTIAL_ROUTE_CACHE_BYTES";
+const CREDENTIAL_ROUTE_CACHE_TTL_KEY: &str = "HUMAUX_GATEWAY_CREDENTIAL_ROUTE_CACHE_TTL_SECONDS";
+const CREDENTIAL_BATCH_TOUCH_ENABLED_KEY: &str = "HUMAUX_GATEWAY_CREDENTIAL_BATCH_TOUCH_ENABLED";
+const MAX_CREDENTIAL_ROUTE_BYTES: u64 = 8 * 1024 * 1024;
 /// Largest accepted credential touch interval: one hour. A technical bound, not a business limit: the stamp feeds the
 /// 24 h activity window of `ops.health_snapshot` (0261), and an interval beyond an hour would blur it by more than a
 /// twenty-fourth. Zero is accepted: it writes the stamp on every request, the behaviour before M02-2.
@@ -317,6 +325,8 @@ pub struct GatewayBootstrap {
     /// M02 D8 / §78.1 `HUMAUX_GATEWAY_CREDENTIAL_TOUCH_INTERVAL_SECONDS`: the least time between two `last_used_at`
     /// writes of one credential; every request still validates the credential.
     credential_touch_interval: Duration,
+    credential_batch_touch: bool,
+    credential_route_region: Option<(u64, Duration)>,
     /// ADR-0062 D-K `HUMAUX_GATEWAY_ENUMERATION_TTL_SECONDS`: one memory.enumerate manifest segment's lifetime.
     enumeration_ttl: Duration,
     /// ADR-0062 D-K `HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP`: the most ids one manifest segment stores.
@@ -539,11 +549,27 @@ impl GatewayBootstrap {
         let session_lock = acquire_gateway_lock(&pool, &self.deployment)
             .await
             .map_err(|code| BootstrapError::new(DEPLOYMENT_KEY, code.as_str()))?;
-        let guard = Arc::new(
-            GatewayGuard::new(pool, self.guard)
-                .map_err(|_| BootstrapError::new("gateway guard", "unsafe configuration"))?
-                .with_credential_touch_interval(self.credential_touch_interval),
-        );
+        let route_cache = self.credential_route_region.map(|(bytes, ttl)| {
+            Arc::new(CredentialRouteCache::new(
+                &self.guard.credential_pepper,
+                bytes,
+                ttl,
+            ))
+        });
+        let mut guard = GatewayGuard::new(pool, self.guard)
+            .map_err(|_| BootstrapError::new("gateway guard", "unsafe configuration"))?
+            .with_credential_touch_interval(self.credential_touch_interval);
+        if let Some(cache) = route_cache {
+            guard = guard.with_credential_route_cache(cache);
+        }
+        if self.credential_batch_touch {
+            guard = guard
+                .with_batched_credential_touch(self.credential_touch_interval)
+                .map_err(|_| {
+                    BootstrapError::new(CREDENTIAL_TOUCH_INTERVAL_KEY, "invalid batch interval")
+                })?;
+        }
+        let guard = Arc::new(guard);
         let catalog = CanonicalCatalog::load().map_err(|_| {
             BootstrapError::new("canonical MCP catalog", "invalid embedded contract")
         })?;
@@ -680,6 +706,37 @@ impl GatewayBootstrap {
         let task_lease_ttl = task_lease_ttl(required(&effective, TASK_LEASE_TTL_KEY)?)?;
         let credential_touch_interval =
             credential_touch_interval(required(&effective, CREDENTIAL_TOUCH_INTERVAL_KEY)?)?;
+        let credential_batch_touch =
+            credential_flag(&effective, CREDENTIAL_BATCH_TOUCH_ENABLED_KEY)?;
+        if credential_batch_touch && credential_touch_interval.as_secs() < MIN_BATCH_TOUCH_SECONDS {
+            return Err(BootstrapError::new(
+                CREDENTIAL_TOUCH_INTERVAL_KEY,
+                "batch touch requires at least 60 seconds",
+            ));
+        }
+        let route_cache_enabled = credential_flag(&effective, CREDENTIAL_ROUTE_CACHE_ENABLED_KEY)?;
+        let route_cache_bytes = required(&effective, CREDENTIAL_ROUTE_CACHE_BYTES_KEY)?
+            .parse::<u64>()
+            .ok()
+            .filter(|bytes| (1..=MAX_CREDENTIAL_ROUTE_BYTES).contains(bytes))
+            .ok_or_else(|| {
+                BootstrapError::new(
+                    CREDENTIAL_ROUTE_CACHE_BYTES_KEY,
+                    "must be 1..=8388608 bytes",
+                )
+            })?;
+        let route_cache_ttl = Duration::from_secs(u64::from(parse_u32(
+            required(&effective, CREDENTIAL_ROUTE_CACHE_TTL_KEY)?,
+            CREDENTIAL_ROUTE_CACHE_TTL_KEY,
+        )?));
+        if route_cache_ttl.is_zero() {
+            return Err(BootstrapError::new(
+                CREDENTIAL_ROUTE_CACHE_TTL_KEY,
+                "must be positive",
+            ));
+        }
+        let credential_route_region =
+            route_cache_enabled.then_some((route_cache_bytes, route_cache_ttl));
         let enumeration_ttl = seconds(
             required(&effective, ENUMERATION_TTL_KEY)?,
             ENUMERATION_TTL_KEY,
@@ -723,6 +780,8 @@ impl GatewayBootstrap {
             readiness_refresh,
             task_lease_ttl,
             credential_touch_interval,
+            credential_batch_touch,
+            credential_route_region,
             enumeration_ttl,
             enumeration_manifest_cap,
             effective_config: effective_config_rows(&registry, &raw, &effective),
@@ -1881,6 +1940,12 @@ pub fn registry() -> Vec<ConfigEntry> {
         false,
         "60",
     ));
+    entries.extend([
+        entry_with_default(CREDENTIAL_BATCH_TOUCH_ENABLED_KEY, "bool", false, "false"),
+        entry_with_default(CREDENTIAL_ROUTE_CACHE_ENABLED_KEY, "bool", false, "false"),
+        entry_with_default(CREDENTIAL_ROUTE_CACHE_BYTES_KEY, "u64", false, "8388608"),
+        entry_with_default(CREDENTIAL_ROUTE_CACHE_TTL_KEY, "u32", false, "60"),
+    ]);
     entries.extend(gateway_limiter_registry(
         RATE_MAX_SUBJECTS_KEYS,
         [
@@ -1993,6 +2058,15 @@ fn task_lease_ttl(value: &str) -> Result<Duration, BootstrapError> {
         .filter(|secs| (1..=MAX_TASK_LEASE_TTL_SECONDS).contains(secs))
         .map(Duration::from_secs)
         .ok_or_else(|| BootstrapError::new(TASK_LEASE_TTL_KEY, "must be 1..=4294967295 seconds"))
+}
+
+fn credential_flag(
+    effective: &BTreeMap<String, String>,
+    key: &str,
+) -> Result<bool, BootstrapError> {
+    required(effective, key)?
+        .parse::<bool>()
+        .map_err(|_| BootstrapError::new(key, "must be true or false"))
 }
 
 /// `0..=MAX_CREDENTIAL_TOUCH_INTERVAL_SECONDS`; anything else refuses to boot naming the key.
@@ -2894,6 +2968,33 @@ mod tests {
             GatewayBootstrap::from_raw(values).map(|boot| boot.credential_touch_interval),
             Ok(Duration::from_secs(60)),
             "unset resolves to the registered default"
+        );
+    }
+
+    #[test]
+    fn credential_route_and_batch_settings_are_validated_at_boot() {
+        let mut values = raw();
+        values.insert(CREDENTIAL_ROUTE_CACHE_ENABLED_KEY.into(), "true".into());
+        values.insert(CREDENTIAL_BATCH_TOUCH_ENABLED_KEY.into(), "true".into());
+        values.insert(CREDENTIAL_TOUCH_INTERVAL_KEY.into(), "59".into());
+        let outcome = |values| GatewayBootstrap::from_raw(values).map_err(|error| error.key);
+        assert!(
+            matches!(outcome(values.clone()), Err(key) if key == CREDENTIAL_TOUCH_INTERVAL_KEY)
+        );
+        values.insert(CREDENTIAL_TOUCH_INTERVAL_KEY.into(), "60".into());
+        for (key, invalid) in [
+            (CREDENTIAL_ROUTE_CACHE_BYTES_KEY, "8388609"),
+            (CREDENTIAL_ROUTE_CACHE_TTL_KEY, "0"),
+        ] {
+            let mut bad = values.clone();
+            bad.insert(key.into(), invalid.into());
+            assert!(matches!(outcome(bad), Err(found) if found == key));
+        }
+        let boot = outcome(values).unwrap();
+        assert!(boot.credential_batch_touch);
+        assert_eq!(
+            boot.credential_route_region,
+            Some((8 * 1024 * 1024, Duration::from_secs(60)))
         );
     }
 
