@@ -3625,12 +3625,12 @@ fn recall_with_a_consistency_token_answers_and_a_caller_chosen_limit_is_refused(
 
                 let (status, terminal) =
                     recall_call(address, Some(&credential.bearer), strict_args.clone()).await;
-                projection_lag_terminal::assert_projection_lag_terminal(status, &terminal);
+                projection_lag_terminal::assert_projection_lag_terminal!(status, &terminal);
 
                 tokio::task::block_in_place(|| set_fixture_serving(&mut handle, false));
                 let (status, unserved_terminal) =
                     recall_call(address, Some(&credential.bearer), strict_args.clone()).await;
-                projection_lag_terminal::assert_projection_lag_terminal(status, &unserved_terminal);
+                projection_lag_terminal::assert_projection_lag_terminal!(status, &unserved_terminal);
                 let (status, empty) =
                     recall_call(address, Some(&credential.bearer), permissive_args.clone()).await;
                 assert_eq!(status, 200, "{empty}");
@@ -3836,7 +3836,7 @@ fn recall_with_a_consistency_token_answers_and_a_caller_chosen_limit_is_refused(
                 let (status, unproved) = barrier.recall_during(
                     address, &credential.bearer, late_args.clone(), publish_late(&mut handle),
                 ).await;
-                projection_lag_terminal::assert_projection_lag_terminal(status, &unproved);
+                projection_lag_terminal::assert_projection_lag_terminal!(status, &unproved);
 
                 let (_, switched) = barrier.recall_during(
                     address, &credential.bearer, late_args,
@@ -3844,6 +3844,30 @@ fn recall_with_a_consistency_token_answers_and_a_caller_chosen_limit_is_refused(
                 ).await;
                 assert_eq!(switched["result"]["isError"], true, "{switched}");
                 assert_eq!(switched["result"]["structuredContent"], json!({"code":"DEPENDENCY_UNAVAILABLE"}));
+
+                tokio::task::block_in_place(|| handle.admin.execute(
+                    "INSERT INTO projection.stream_checkpoints
+                       (tenant_id, scope_kind, scope_id, domain, projection_kind, projection_version,
+                        projection_highwater, serving)
+                     VALUES ($1, 'workspace', $2, 'knowledge', 'ingest', 'v2', 42, true)",
+                    &[&handle.tenant_id, &workspace_id],
+                ).expect("activate a distinct serving version with a higher watermark"));
+
+                let (_, retired) =
+                    recall_call(address, Some(&credential.bearer), strict_args.clone()).await;
+                let retired = assert_tool_response(&retired, ToolName::Recall);
+                assert_eq!(retired["provenance"]["projection_version"]["id"], "v2", "{retired}");
+                assert_eq!(retired["items"][0]["evidence_id"], evidence_id, "{retired}");
+
+                let retired_key = StreamKey::new(
+                    TenantId(handle.tenant_id), "workspace", workspace_id, "knowledge", "ingest", "v1",
+                );
+                assert!(forget_repo::tombstone(&handle.maintenance, &retired_key, 1)
+                    .await.expect("maintenance tombstones the original ticket"));
+                let (_, tombstoned) =
+                    recall_call(address, Some(&credential.bearer), strict_args).await;
+                let tombstoned = assert_tool_response(&tombstoned, ToolName::Recall);
+                assert_eq!(tombstoned["items"], json!([]), "covered tombstone suppresses its body: {tombstoned}");
 
                 server.abort();
                 delete_semantic_collection(&transport, &registry, &collection).await;
