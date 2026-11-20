@@ -1,6 +1,6 @@
 //! `adapters::credential_repo` — Gateway-only read adapter for §73.5.1 service credential bindings.
 //! Depends-on: crates=[humaux-domain, sqlx, async-trait, humaux-application]; services=[PostgreSQL(any) r=[control.workspace_memberships] x=[control.api_key_lookup, control.api_key_rehash, control.api_key_touch_last_used, control.api_key_touch_last_used_batch]]; env=[]; modules=[adapters::postgres, domain::error, domain::identity, application::api_key, domain::ids]
-//! Called-by: [gateway::bootstrap, tests]
+//! Called-by: [gateway::auth, gateway::bootstrap, tests]
 //! Invariants: [returns database facts only (HMAC and authorization stay in the auth layer); the workspace-ceiling
 //!   read runs only after a user-bound key validates, so a bad key does no membership work; a PG error is
 //!   DependencyUnavailable; a verifier is rewritten only through the epoch-gated, window-bounded api_key_rehash door (ADR-0059 D-H, migration 0204)]

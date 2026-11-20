@@ -1,6 +1,6 @@
 //! `gateway::auth` — §73.5.1 headless authentication.
 //! Depends-on: crates=[humaux-adapters, humaux-domain, humaux-application, tokio]; services=[]; env=[]; modules=[adapters::credential_repo, adapters::postgres, gateway::route_cache, domain::error, domain::identity, domain::ids, application::api_key, gateway::bootstrap]
-//! Called-by: [gateway::guard, tests]
+//! Called-by: [gateway::bootstrap, gateway::guard, tests]
 //! Invariants: [a PAT's allowed_workspace_ids is always an intersection of the live ACTIVE membership set with the credential's bound workspace; a stale binding whose membership was revoked yields Forbidden, never a silent tenant-wide downgrade; a key verified only by the previous pepper is rehashed after validation and the rehash is never fatal to the request (ADR-0059 D-H); the touch throttle gates only the last_used_at write, so lookup and validation run on every request and a revoked or expired key is refused on the very next request whatever the throttle window holds (M02 D8)]
 //! Spec: Baseline §73.5.1; §6.1.1; §33; §78.1; ADR-0035; ADR-0059
 //!

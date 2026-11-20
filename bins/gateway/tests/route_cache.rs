@@ -1,6 +1,6 @@
 //! `gateway::tests::route_cache` — G-M03-4 and G-M03-5 through the MCP HTTP guard.
 //! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-testkit, postgres, tokio, uuid];
-//! services=[HTTP(gateway), PostgreSQL(role_migration_owner) r=[control.api_keys] x=[control.revoke_api_key]]; env=[]; modules=[adapters::postgres, application::api_key, domain::error, domain::ids, gateway::guard, gateway::limiter, gateway::route_cache, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog]
+//!   services=[HTTP(gateway), PostgreSQL(role_migration_owner) r=[control.api_keys] x=[control.revoke_api_key]]; env=[]; modules=[adapters::postgres, adapters::tests::support::operation_receipt_fixture, application::api_key, domain::error, domain::ids, gateway::guard, gateway::limiter, gateway::route_cache, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]
 //! Invariants: [one real gateway-login pool and isolated fixture tenant per gate; use the transport and guard for every request]
 //! Spec: Baseline §73.5.1; §79.2; ADR-0133; G-M03-4; G-M03-5
