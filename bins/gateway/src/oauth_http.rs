@@ -207,18 +207,22 @@ async fn live_session(
     login::authenticate_session(state.login.as_ref(), &secret).await
 }
 
-async fn validate(state: &HttpState, query: &str) -> Result<ValidatedAuthorize, Response> {
+async fn validate(state: &HttpState, query: &str) -> Result<ValidatedAuthorize, Box<Response>> {
     let params = Params(
         form_urlencoded::parse(query.as_bytes())
             .into_owned()
             .collect(),
     );
     let request = params.authorize_request();
-    let mut txn = state.pool.begin_exchange().await.map_err(server_failure)?;
+    let mut txn = state
+        .pool
+        .begin_exchange()
+        .await
+        .map_err(|code| Box::new(server_failure(code)))?;
     let client = txn
         .lookup_client(request.client_id)
         .await
-        .map_err(server_failure)?;
+        .map_err(|code| Box::new(server_failure(code)))?;
     let client = client.as_ref().map(|c| ClientView {
         redirect_uris: &c.redirect_uris,
         kind_recognized: c.kind.is_some(),
@@ -232,8 +236,8 @@ async fn validate(state: &HttpState, query: &str) -> Result<ValidatedAuthorize, 
     let result = oauth::authorize_request(&request, client.as_ref(), &policy);
     match result {
         Ok(validated) if valid_callback(&validated.redirect_uri) => Ok(validated),
-        Ok(_) => Err(refusal(OAuthReason::REDIRECT_URI_INVALID)),
-        Err(denied) => Err(authorize_refusal(state, &denied)),
+        Ok(_) => Err(Box::new(refusal(OAuthReason::REDIRECT_URI_INVALID))),
+        Err(denied) => Err(Box::new(authorize_refusal(state, &denied))),
     }
 }
 
@@ -323,7 +327,7 @@ async fn authorize(
     }
     let validated = match validate(&state, &query).await {
         Ok(validated) => validated,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let session = match live_session(&state, &headers).await {
         Ok(Some(session)) => session,
@@ -435,7 +439,7 @@ async fn consent(
     };
     let request = match validate(&state, &query).await {
         Ok(request) => request,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match form.decision.as_str() {
         "deny" => authorize_refusal(
