@@ -2035,5 +2035,40 @@ fn m02_10c_registration_unused_quota_is_atomic_across_ips() {
             [201, 429],
             "one global slot for the two distinct sources"
         );
+
+        let client = h.registered_clients[0].clone();
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        add_entitlement(&mut h, tenant);
+        let session = session_cookie(&h);
+        let page = browser_get(
+            &h,
+            address,
+            &authorize_url(&client, REDIRECT, "S256"),
+            &session,
+        );
+        assert_eq!(page.status, 200, "{}", page.body);
+        let consent = browser_consent(&h, address, &session, ORIGIN, &consent_body(&page, "allow"));
+        let code = callback(&consent);
+        let exchange = post(
+            &h,
+            address,
+            &code_form(
+                &h,
+                &code["code"],
+                &[
+                    ("client_id", Some(&client)),
+                    ("resource", Some(NATIVE_RESOURCE)),
+                ],
+            ),
+        );
+        assert_eq!(exchange.status, 200, "{}", exchange.body);
+        let freed =
+            h.rt.block_on(registration_from(address, "for=192.0.2.5", &body));
+        assert_eq!(
+            limited_registration(&mut h, &freed),
+            201,
+            "first grant frees the unused slot"
+        );
     });
 }
