@@ -14116,27 +14116,30 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         gate: &impl Fn(i32) -> Verdict,
         mutate: &impl Fn(i32, &str, &str, &str),
     ) {
-        for (kind, file) in [
-            (0, "xtask/hex_context_baseline.txt"),
-            (1, "xtask/hex_writer_baseline.txt"),
-        ] {
-            let path = root.join(file);
-            let original = fs::read_to_string(&path).unwrap();
-            let mut lines: Vec<_> = original.lines().collect();
-            let n = lines
-                .iter()
-                .position(|l| !l.starts_with('#') && !l.is_empty())
-                .unwrap();
-            lines.remove(n);
-            fs::write(&path, lines.join("\n")).unwrap();
-            assert!(matches!(gate(kind), Verdict::Fail(_)));
-            println!("{file}: deleted baseline row RED");
-            fs::write(&path, &original).unwrap();
-            assert!(matches!(gate(kind), Verdict::Pass));
-            println!("{file}: restored GREEN");
-            mutate(kind, file, "injected ceiling row", "baseline ceiling");
-        }
-        // With a zero production ceiling, adding the first layer row is the disk fault.
+        mutate(
+            0,
+            HEX_CONTEXT_BASELINE,
+            "injected ceiling row",
+            "CONTEXT baseline ceiling",
+        );
+
+        let file = "xtask/hex_writer_baseline.txt";
+        let path = root.join(file);
+        let original = fs::read_to_string(&path).unwrap();
+        let mut lines: Vec<_> = original.lines().collect();
+        let n = lines
+            .iter()
+            .position(|l| !l.starts_with('#') && !l.is_empty())
+            .unwrap();
+        lines.remove(n);
+        fs::write(&path, lines.join("\n")).unwrap();
+        assert!(matches!(gate(1), Verdict::Fail(_)));
+        println!("{file}: deleted baseline row RED");
+        fs::write(&path, &original).unwrap();
+        assert!(matches!(gate(1), Verdict::Pass));
+        println!("{file}: restored GREEN");
+        mutate(1, file, "injected ceiling row", "baseline ceiling");
+
         mutate(
             3,
             HEX_BASELINE,
