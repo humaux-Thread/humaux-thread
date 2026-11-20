@@ -1282,6 +1282,11 @@ async fn strict_recall_overlay(
     serving_version: Option<&str>,
     frontier: Option<RecallServingFrontier>,
 ) -> Result<Vec<OverlayCandidate>, RetrieveError> {
+    if serving_version == Some(key.projection_version.as_str())
+        && serving_projection_highwater_in_txn(txn, key).await? >= claims.stream_seq
+    {
+        return Ok(Vec::new());
+    }
     let lower = match frontier {
         Some(pinned)
             if pinned.key == *key && serving_version == Some(key.projection_version.as_str()) =>
