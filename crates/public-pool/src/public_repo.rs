@@ -2,9 +2,9 @@
 //!   (§12.6 / §13 / §14 / §31).
 //! Depends-on: crates=[async-trait, hex, humaux-adapters, humaux-domain, serde_json, sha2, sqlx];
 //!   services=[PostgreSQL(any) r=[control.memberships, control.public_moderator_grants, control.users,
-//!   ops.public_release_revocations, public.eligible_objects, public.relations, public.synthesis_inputs,
-//!   staging.contribution_releases] w=[public.claims, public.provenance_edges, public.source_closure, public.sources,
-//!   public.syntheses] x=[ops.claim_global_anonymous_public_dispatches, ops.claim_public_dispatch_jobs,
+//!   ops.public_release_revocations, public.claims, public.eligible_objects, public.provenance_edges,
+//!   public.relations, public.source_closure, public.sources, public.syntheses, public.synthesis_inputs,
+//!   staging.contribution_releases] x=[ops.claim_global_anonymous_public_dispatches, ops.claim_public_dispatch_jobs,
 //!   ops.complete_global_anonymous_public_dispatch, ops.complete_public_dispatch_job, ops.dispatch_public_outbox,
 //!   ops.emit_public_object_changed, ops.enqueue_public_projection_from_anonymous_dispatch,
 //!   ops.fail_global_anonymous_public_dispatch, ops.fail_public_dispatch_job,
@@ -13,7 +13,8 @@
 //!   public.evaluate_anonymous_claim, public.public_projection_identities, public.revoke_anonymous_dispatch,
 //!   staging.assert_active_contribution_release], PostgreSQL(role_gateway), PostgreSQL(role_private_worker),
 //!   PostgreSQL(role_public_worker), PostgreSQL(role_retrieval_worker)]; env=[]; modules=[adapters::postgres,
-//!   adapters::public_evaluation_repo, domain::error, domain::ids, domain::public, public-pool::public_evolve]
+//!   adapters::public_claim_repo, adapters::public_evaluation_repo, domain::error, domain::ids, domain::public,
+//!   public-pool::public_evolve]
 //! Called-by: [public-pool::bootstrap, public-pool::public_projection, public-pool::public_repo::moderator_authorization, tests]
 //! Invariants: [every write uses PublicWorkerDbPool in a real tenant transaction; no function reads private rows or
 //!   accepts caller-provided released content or scanner outcomes; the public DB stays the serving authority]
@@ -25,6 +26,11 @@
 
 use humaux_adapters::{
     postgres::{PrivateWorkerDbPool, PublicWorkerDbPool, RetrievalWorkerDbPool, RuntimeDbPool},
+    public_claim_repo::{
+        IntakeSource, apply_claim_evaluation_in_txn, apply_claim_revocation_in_txn,
+        apply_synthesis_revocation_in_txn, create_intake_claim_in_txn, create_intake_source_in_txn,
+        record_intake_provenance_in_txn,
+    },
     public_evaluation_repo::{
         ClaimTrustReceipt, record_claim_trust_receipt_in_txn, record_claim_trust_root_in_txn,
         record_poisoning_signal_in_txn,
@@ -300,17 +306,9 @@ async fn admit_release_in_txn(
     }
     let text = std::str::from_utf8(&payload).map_err(|_| ErrorCode::InvalidInput)?;
     let body = json!({"text": text});
-    let claim_id: Option<Uuid> = sqlx::query_scalar(
-        "INSERT INTO public.claims(content, moderation_state, intake_release_id) \
-         VALUES($1,'PUBLIC_STAGING',$2) \
-         ON CONFLICT (intake_release_id) WHERE intake_release_id IS NOT NULL DO NOTHING \
-         RETURNING claim_id",
-    )
-    .bind(&body)
-    .bind(release_id)
-    .fetch_optional(&mut **txn)
-    .await
-    .map_err(db_error)?;
+    let claim_id: Option<Uuid> = create_intake_claim_in_txn(txn, &body, release_id)
+        .await
+        .map_err(db_error)?;
     let Some(claim_id) = claim_id else {
         let existing = sqlx::query("SELECT c.claim_id,p.source_id,c.object_revision FROM public.claims c JOIN public.provenance_edges p USING(claim_id) WHERE c.intake_release_id=$1")
             .bind(release_id).fetch_one(&mut **txn).await.map_err(db_error)?;
@@ -321,43 +319,22 @@ async fn admit_release_in_txn(
             object_revision: existing.try_get("object_revision").map_err(db_error)?,
         });
     };
-    let source_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO public.sources(source_type,publisher,content_hash,source_license,rights_basis, \
-             redistribution_policy,trust_class,contribution_release_id) \
-         VALUES('USER_CONTRIBUTION',$1,$2,$3,$4,$5,'UNDER_REVIEW',$6) RETURNING source_id",
+    let source_id: Uuid = create_intake_source_in_txn(
+        txn,
+        IntakeSource {
+            publisher: row.try_get("publisher").map_err(db_error)?,
+            content_hash: hex::encode(&stored_hash),
+            source_license: row.try_get("source_license").map_err(db_error)?,
+            rights_basis: row.try_get("rights_basis").map_err(db_error)?,
+            redistribution_policy: row.try_get("redistribution_policy").map_err(db_error)?,
+            release_id,
+        },
     )
-    .bind(row.try_get::<Option<String>, _>("publisher").map_err(db_error)?)
-    .bind(hex::encode(&stored_hash))
-    .bind(row.try_get::<Option<String>, _>("source_license").map_err(db_error)?)
-    .bind(row.try_get::<String, _>("rights_basis").map_err(db_error)?)
-    .bind(row.try_get::<Option<String>, _>("redistribution_policy").map_err(db_error)?)
-    .bind(release_id)
-    .fetch_one(&mut **txn)
     .await
     .map_err(db_error)?;
-    sqlx::query("INSERT INTO public.provenance_edges(claim_id,source_id) VALUES($1,$2)")
-        .bind(claim_id)
-        .bind(source_id)
-        .execute(&mut **txn)
+    let revision: i64 = record_intake_provenance_in_txn(txn, claim_id, source_id)
         .await
         .map_err(db_error)?;
-    sqlx::query(
-        "INSERT INTO public.source_closure(claim_id,root_source_id,depth,is_current) \
-         VALUES($1,$2,1,true)",
-    )
-    .bind(claim_id)
-    .bind(source_id)
-    .execute(&mut **txn)
-    .await
-    .map_err(db_error)?;
-    let revision: i64 = sqlx::query_scalar(
-        "UPDATE public.claims SET moderation_state='UNDER_REVIEW',object_revision=object_revision+1 \
-         WHERE claim_id=$1 RETURNING object_revision",
-    )
-    .bind(claim_id)
-    .fetch_one(&mut **txn)
-    .await
-    .map_err(db_error)?;
     insert_object_outbox(txn, tenant_id, Some(claim_id), None, revision).await?;
     Ok(AdmittedRelease {
         release_id,
@@ -577,15 +554,13 @@ async fn evaluate_claim_in_txn(
     )
     .await
     .map_err(db_error)?;
-    let revision: i64 = sqlx::query_scalar(
-        "UPDATE public.claims SET current_evaluation_id=$2, moderation_state=$3, \
-             object_revision=$4 WHERE claim_id=$1 RETURNING object_revision",
+    let revision: i64 = apply_claim_evaluation_in_txn(
+        txn,
+        input.claim_id,
+        evaluation_id,
+        moderation_state,
+        next_revision,
     )
-    .bind(input.claim_id)
-    .bind(evaluation_id)
-    .bind(moderation_state)
-    .bind(next_revision)
-    .fetch_one(&mut **txn)
     .await
     .map_err(db_error)?;
     sqlx::query("SELECT public.carry_forward_anonymous_claim_lifecycle($1,$2,$3)")
@@ -809,17 +784,9 @@ async fn apply_revocation_in_txn(
         .await
         .map_err(db_error)?;
         let state = if survivors { "UNDER_REVIEW" } else { "REVOKED" };
-        let revision: Option<i64> = sqlx::query_scalar(
-            "UPDATE public.claims SET moderation_state=$2,current_evaluation_id=NULL, \
-                object_revision=object_revision+1 WHERE claim_id=$1 \
-                AND (moderation_state IS DISTINCT FROM $2 OR current_evaluation_id IS NOT NULL) \
-                RETURNING object_revision",
-        )
-        .bind(claim_id)
-        .bind(state)
-        .fetch_optional(&mut **txn)
-        .await
-        .map_err(db_error)?;
+        let revision: Option<i64> = apply_claim_revocation_in_txn(txn, claim_id, state)
+            .await
+            .map_err(db_error)?;
         if let Some(revision) = revision {
             insert_object_outbox(txn, tenant_id, Some(claim_id), None, revision).await?;
         }
@@ -846,17 +813,9 @@ async fn apply_revocation_in_txn(
         .await
         .map_err(db_error)?;
         let state = if survivors { "UNDER_REVIEW" } else { "REVOKED" };
-        let revision: Option<i64> = sqlx::query_scalar(
-            "UPDATE public.syntheses SET moderation_state=$2,current_evaluation_id=NULL, \
-                object_revision=object_revision+1 WHERE synthesis_id=$1 \
-                AND (moderation_state IS DISTINCT FROM $2 OR current_evaluation_id IS NOT NULL) \
-                RETURNING object_revision",
-        )
-        .bind(synthesis_id)
-        .bind(state)
-        .fetch_optional(&mut **txn)
-        .await
-        .map_err(db_error)?;
+        let revision: Option<i64> = apply_synthesis_revocation_in_txn(txn, synthesis_id, state)
+            .await
+            .map_err(db_error)?;
         if let Some(revision) = revision {
             insert_object_outbox(txn, tenant_id, None, Some(synthesis_id), revision).await?;
         }

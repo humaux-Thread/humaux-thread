@@ -6,12 +6,6 @@ crates/adapters/src/context_repo.rs:update private.task_binding_grants:1
 crates/adapters/src/forget_repo.rs:update projection.stream_log:1
 crates/adapters/src/maintenance_repo.rs:update control.partition_registry:1
 crates/adapters/src/stream_repo.rs:update private.ingest_tickets:1
-crates/public-pool/src/public_repo.rs:insert into public.claims:1
-crates/public-pool/src/public_repo.rs:insert into public.provenance_edges:1
-crates/public-pool/src/public_repo.rs:insert into public.source_closure:1
-crates/public-pool/src/public_repo.rs:insert into public.sources:1
-crates/public-pool/src/public_repo.rs:update public.claims:3
-crates/public-pool/src/public_repo.rs:update public.syntheses:1
 crates/public-pool/src/vocab.rs:insert into public.concept_labels:1
 crates/public-pool/src/vocab.rs:insert into public.concept_relations:1
 crates/public-pool/src/vocab.rs:insert into public.concepts:1
