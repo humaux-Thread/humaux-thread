@@ -202,6 +202,8 @@ pub struct CredentialFacts {
     pub live_user_security_epoch: Option<i64>,
     /// Current membership in the tenant.
     pub membership_state: Option<String>,
+    /// Tenant routing generation from the live credential snapshot (ADR-0133).
+    pub routing_revoke_epoch: i64,
 }
 
 /// §73.5 service-credential persistence boundary.
@@ -254,12 +256,24 @@ impl CredentialScope {
     }
 }
 
+/// A candidate routing tuple. Only authorization derived from live credential facts can be used by a guard.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct CredentialRouteHint {
+    /// Candidate account that owns the credential.
+    pub tenant_id: TenantId,
+    /// Candidate credential identity.
+    pub principal: PrincipalId,
+    /// Routing generation observed with the binding.
+    pub routing_revoke_epoch: i64,
+}
+
 /// An authenticated request, not a reusable session or a deserializable tool input.
 ///
 /// This contains no credential secret or verifier. Call the authenticator for each
 /// request so revocations, account state, membership, and epochs are re-read.
 pub struct VerifiedCredential {
     authorization: AuthorizationScope,
+    routing_revoke_epoch: i64,
     scopes: BTreeSet<CredentialScope>,
     workspace_id: Option<WorkspaceId>,
     /// The live §6.1.1 workspace ceiling for this request (ADR-0035): for a PAT the user's ACTIVE
@@ -271,6 +285,15 @@ pub struct VerifiedCredential {
 }
 
 impl VerifiedCredential {
+    /// Routing facts from this request's successful live check (ADR-0133).
+    pub fn route_hint(&self) -> CredentialRouteHint {
+        CredentialRouteHint {
+            tenant_id: self.authorization.tenant_id(),
+            principal: self.authorization.principal(),
+            routing_revoke_epoch: self.routing_revoke_epoch,
+        }
+    }
+
     /// RequestGuard may inspect the current authenticated identity for non-business
     /// protocol traffic. Business operations must still call `authorize` for a scope.
     pub fn identity(&self) -> &AuthorizationScope {
@@ -408,6 +431,7 @@ fn authenticated_binding(
         || record.principal.0.is_nil()
         || record.tenant_id.0.is_nil()
         || record.tenant_state != "ACTIVE"
+        || record.routing_revoke_epoch < 0
         || record.live_tenant_security_epoch < 0
         || record.tenant_security_epoch != Some(record.live_tenant_security_epoch)
         || record.workspace_id.is_some_and(|id| id.0.is_nil())
@@ -444,6 +468,7 @@ fn authenticated_binding(
         AuthorizationScope::new(record.tenant_id, record.principal, record.user_id, allowed);
     Ok(VerifiedCredential {
         authorization,
+        routing_revoke_epoch: record.routing_revoke_epoch,
         scopes,
         workspace_id,
         live_workspace_ids,
@@ -457,6 +482,7 @@ mod tests {
     #[test]
     fn grant_denial_precedes_invalid_workspace_ceiling() {
         let credential = VerifiedCredential {
+            routing_revoke_epoch: 0,
             authorization: AuthorizationScope::new(
                 TenantId::new(),
                 PrincipalId::new(),
@@ -543,6 +569,7 @@ mod tests {
         let workspace = WorkspaceId::new();
         let other = WorkspaceId::new();
         let credential = VerifiedCredential {
+            routing_revoke_epoch: 0,
             authorization: AuthorizationScope::new(
                 TenantId::new(),
                 PrincipalId::new(),
@@ -573,6 +600,7 @@ mod tests {
             Err(ErrorCode::Forbidden)
         );
         let unbound = VerifiedCredential {
+            routing_revoke_epoch: 0,
             authorization: AuthorizationScope::new(
                 TenantId::new(),
                 PrincipalId::new(),
