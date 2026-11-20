@@ -669,6 +669,7 @@ files = [
   "bins/billing-worker/src/creem_egress.rs",
   "bins/billing-worker/tests/support/fixture_credential.rs",
   "crates/adapters/src/retrieval_query_log.rs",
+  "crates/adapters/src/retrieval_query_reservation.rs",
   "crates/application/src/query_embedding_execution.rs",
   "crates/adapters/src/audit_sink.rs",
   "crates/adapters/src/independent_audit.rs",

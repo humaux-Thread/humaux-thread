@@ -2137,7 +2137,7 @@ fn hex_context_gate(root: &Path) -> Result<(Verdict, Verdict), Vec<String>> {
         ),
         Err(errors) => (actual, Verdict::Fail(errors)),
     };
-    errors.extend(hex_exact(&remaining, &baseline, 19, "HEX-CONTEXT"));
+    errors.extend(hex_exact(&remaining, &baseline, 12, "HEX-CONTEXT"));
     Ok((hex_verdict(errors), verdict))
 }
 
@@ -2151,7 +2151,7 @@ fn hex_context_verdicts(root: &Path) -> (Verdict, Verdict) {
 fn hex_writer_gate(root: &Path) -> Verdict {
     hex_verdict(match hex_writer_actual(root) {
         Ok(actual) => match hex_read(root, "xtask/hex_writer_baseline.txt") {
-            Ok(text) => hex_exact(&actual, &text, 25, "HEX-WRITER"),
+            Ok(text) => hex_exact(&actual, &text, 23, "HEX-WRITER"),
             Err(errors) => errors,
         },
         Err(errors) => errors,

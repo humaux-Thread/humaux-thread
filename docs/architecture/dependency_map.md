@@ -5189,12 +5189,11 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `ops.retrieval_query_log`
 - service `PostgreSQL(role_gateway)`
 
-#### `adapters::retrieval_query_source`
+#### `adapters::retrieval_query_reservation`
 - writes `private.retrieval_query_sources`
 - service `PostgreSQL(any)`
 - service `PostgreSQL(role_maintenance)`
 - service `PostgreSQL(role_retrieval_worker)`
-- service `subprocess(fake-gitleaks)`
 
 #### `adapters::retrieve`
 - reads `ops.outbox`
@@ -11720,13 +11719,14 @@ executed by:
 
 ### `private.retrieval_query_sources`
 read by:
+- (no process): `adapters::retrieval_query_source`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-retrieval-worker): `retrieval-provider::adapters`
 
 written by:
 - (no process): `adapters::tests::retrieval_query_sources`
-- process(humaux-retrieval-worker): `adapters::retrieval_query_source`
+- process(humaux-retrieval-worker): `adapters::retrieval_query_reservation`
 
 executed by:
 
@@ -13350,6 +13350,7 @@ executed by:
 - `adapters::read_gate`
 - `adapters::reasoning_route_admission`
 - `adapters::retrieval_embedding_rpc`
+- `adapters::retrieval_query_reservation`
 - `adapters::retrieval_query_source`
 - `adapters::role_hygiene`
 - `adapters::serving_repo`
@@ -13734,7 +13735,7 @@ executed by:
 - `adapters::reasoning_route_onboarding`
 - `adapters::rebuild`
 - `adapters::retrieval_provisioning`
-- `adapters::retrieval_query_source`
+- `adapters::retrieval_query_reservation`
 - `adapters::role_hygiene`
 - `adapters::serving_repo`
 - `adapters::stream_repo`
@@ -13878,6 +13879,7 @@ executed by:
 - `adapters::projection_worker`
 - `adapters::provider_budget`
 - `adapters::rebuild`
+- `adapters::retrieval_query_reservation`
 - `adapters::retrieval_query_source`
 - `adapters::selection_repo`
 - `adapters::stream_repo`
@@ -14220,6 +14222,7 @@ modules naming it:
 - `adapters::retrieval_embedding_rpc`
 - `adapters::retrieval_provisioning`
 - `adapters::retrieval_query_log`
+- `adapters::retrieval_query_reservation`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
 - `adapters::role_hygiene`
@@ -14382,6 +14385,7 @@ modules naming it:
 - `adapters::remember`
 - `adapters::request_guard_repo`
 - `adapters::retrieval_provisioning`
+- `adapters::retrieval_query_reservation`
 - `adapters::retrieval_query_source`
 - `adapters::retrieve`
 - `adapters::selection_repo`
@@ -14540,6 +14544,7 @@ modules naming it:
 - `adapters::contribution_scan`
 - `adapters::projection_worker`
 - `adapters::rebuild`
+- `adapters::retrieval_query_reservation`
 - `adapters::retrieval_query_source`
 - `adapters::tests::projection_claim`
 - `adapters::tests::projection_worker`
@@ -14858,7 +14863,7 @@ modules naming it:
 - `adapters::request_guard_repo`
 - `adapters::retrieval_provisioning`
 - `adapters::retrieval_query_log`
-- `adapters::retrieval_query_source`
+- `adapters::retrieval_query_reservation`
 - `adapters::scheduler`
 - `adapters::structured_reasoning`
 - `adapters::subject_repo`

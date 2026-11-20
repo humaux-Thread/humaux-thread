@@ -13565,13 +13565,14 @@ foreign keys (outgoing):
 - fk: tenant_id -> control.tenants (NOT NULL)
 
 read by:
+- (no process): `adapters::retrieval_query_source`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 - process(humaux-retrieval-worker): `retrieval-provider::adapters`
 
 written by:
 - (no process): `adapters::tests::retrieval_query_sources`
-- process(humaux-retrieval-worker): `adapters::retrieval_query_source`
+- process(humaux-retrieval-worker): `adapters::retrieval_query_reservation`
 
 executed by:
 

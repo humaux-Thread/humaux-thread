@@ -10,7 +10,7 @@
 //!   PostgreSQL(role_retrieval_worker), DashScope];
 //!   env=[HUMAUX_RETRIEVAL_WORKER_PG_DSN, HUMAUX_TEST_GITLEAKS_BIN, HUMAUX_TEST_GITLEAKS_SHA256,
 //!   HUMAUX_TEST_GITLEAKS_VERSION, HUMAUX_TEST_PG_DSN]; modules=[adapters::disclosure, adapters::model_call_ledger,
-//!   adapters::egress_policy, adapters::postgres, adapters::provider_budget, adapters::retrieval_query_source, domain::dataclass,
+//!   adapters::egress_policy, adapters::postgres, adapters::provider_budget, adapters::retrieval_query_reservation, domain::dataclass,
 //!   domain::egress, domain::error, domain::ids, domain::ledger, infra-egress::http, retrieval-provider::admission,
 //!   retrieval-provider::contract, retrieval-provider::metrics]
 //! Called-by: [retrieval-worker::main, tests]
@@ -42,7 +42,7 @@ use humaux_adapters::disclosure::{self, DeletionCapability, DisclosureOutcome, D
 use humaux_adapters::model_call_ledger;
 use humaux_adapters::postgres::RetrievalWorkerDbPool;
 use humaux_adapters::provider_budget::{self, ProviderBudgetRequest};
-use humaux_adapters::retrieval_query_source;
+use humaux_adapters::retrieval_query_reservation;
 use humaux_domain::dataclass::DataClass;
 use humaux_domain::egress::{
     self, AuthorizedEgressPayload, ExternalCall, PrivateDataPurpose, ProcessorId,
@@ -506,7 +506,7 @@ pub struct DashscopeEmbeddingProvider {
 }
 
 enum EmbeddingDispatchPayload<'a> {
-    Query(retrieval_query_source::SerializedRetrievalQueryBatch<'a>),
+    Query(retrieval_query_reservation::SerializedRetrievalQueryBatch<'a>),
     Card(AuthorizedEgressPayload),
 }
 
@@ -640,7 +640,7 @@ impl DashscopeEmbeddingProvider {
         humaux_adapters::egress_policy::authorize_retrieval(&self.pool, tenant_id).await?;
         let dispatch_payload = match query_call {
             Some((_, queries)) => EmbeddingDispatchPayload::Query(
-                retrieval_query_source::SerializedRetrievalQueryBatch::new(
+                retrieval_query_reservation::SerializedRetrievalQueryBatch::new(
                     &self.model.model_id.0,
                     dimension,
                     queries,
@@ -686,7 +686,7 @@ impl DashscopeEmbeddingProvider {
             .await?;
         let disclosure = match (&dispatch_payload, query_call) {
             (EmbeddingDispatchPayload::Query(wire), Some((context, _))) => {
-                retrieval_query_source::reserve_retrieval_query_batch(
+                retrieval_query_reservation::reserve_retrieval_query_batch(
                     &self.pool,
                     context,
                     wire,
@@ -709,7 +709,7 @@ impl DashscopeEmbeddingProvider {
                 },
             )
             .await
-            .map_err(retrieval_query_source::RetrievalQuerySourceError::Disclosure),
+            .map_err(retrieval_query_reservation::RetrievalQuerySourceError::Disclosure),
             _ => unreachable!("query call and dispatch payload are constructed together"),
         };
         let disclosure_id = match disclosure {
@@ -1937,15 +1937,16 @@ mod tests {
                     sealed_query_fixture("first provider query"),
                     sealed_query_fixture("second provider query"),
                 ];
-                let expected_wire = retrieval_query_source::SerializedRetrievalQueryBatch::new(
-                    &provider.model.model_id.0,
-                    2,
-                    &queries,
-                )
-                .expect("deterministic wire serialization")
-                .payload()
-                .bytes()
-                .to_vec();
+                let expected_wire =
+                    retrieval_query_reservation::SerializedRetrievalQueryBatch::new(
+                        &provider.model.model_id.0,
+                        2,
+                        &queries,
+                    )
+                    .expect("deterministic wire serialization")
+                    .payload()
+                    .bytes()
+                    .to_vec();
 
                 let batch = handle
                     .rt

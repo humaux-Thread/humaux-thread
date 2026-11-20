@@ -11,13 +11,6 @@ crates/application/src/contribute.rs:public_knowledge->identity_access:humaux_do
 crates/projection/src/fingerprint.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::evidence::EvidencePayloadSha256
 crates/projection/src/fingerprint.rs:retrieval_read_model->knowledge_lifecycle:humaux_domain::evidence::EvidencePayloadSha256::to_hex
 crates/public-pool/src/public_repo.rs:public_knowledge->identity_access:humaux_domain::identity::AuthorizationScope
-crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source
-crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source::RetrievalQuerySourceError::Disclosure
-crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source::SerializedRetrievalQueryBatch
-crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source::SerializedRetrievalQueryBatch::new
-crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source::reserve_retrieval_query_batch
-crates/retrieval-provider/src/adapters.rs:provider_execution->retrieval_read_model:humaux_retrieval_provider::contract::RetrievalQueryCallContext
-crates/retrieval-provider/src/contract.rs:provider_execution->retrieval_read_model:humaux_adapters::retrieval_query_source::RetrievalQueryCallContext
 crates/retrieval/src/compiler.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
 crates/retrieval/src/completeness.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow
 crates/retrieval/src/envelope.rs:retrieval_read_model->project_continuity:humaux_domain::context::MandatoryOverflow

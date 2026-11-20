@@ -42,7 +42,7 @@ use humaux_domain::ids::TenantId;
 // §1.2.3 / §41.4 canonical sealed egress types.
 // ============================================================================
 
-pub use humaux_adapters::retrieval_query_source::RetrievalQueryCallContext;
+pub use humaux_adapters::retrieval_query_reservation::RetrievalQueryCallContext;
 /// Canonical scanner-attested types live in `humaux-local-secret-scan`; this crate merely
 /// consumes them at external provider boundaries. There is no local constructor or wire decode.
 pub use humaux_local_secret_scan::{SealedRetrievalCard, SealedRetrievalQuery};
