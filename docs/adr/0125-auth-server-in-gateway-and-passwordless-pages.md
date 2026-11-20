@@ -202,3 +202,7 @@ another client's key. An unreadable peer keeps key 0.
   Migration 0311 enforces the same boundary at code issuance and stores the requested redirect URI for exact exchange.
 - DCR remains the compatibility option from M02 D5. Revisit its retirement after X-M02-2 establishes coverage through
   CIMD or pre-registration.
+- Anonymous registration also charges a route-specific bucket using the same trusted source IP as pre-auth. The
+  typed registry owns the DCR capacity and refill settings. PostgreSQL applies the configured unused-client quota
+  across sources before insertion. The quota counts DCR rows with no grant. Code exchange frees a slot by creating
+  the grant. STATIC clients do not consume the quota. Either exhausted budget returns HTTP 429 with RATE_LIMITED.

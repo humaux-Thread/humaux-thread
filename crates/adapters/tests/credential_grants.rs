@@ -150,14 +150,15 @@ const OAUTH_TABLES: [(&str, &str); 4] = [
     ("control.oauth_refresh_tokens", "status"),
 ];
 
-/// The named OAuth doors of migrations 0268 and 0308, ordered by `pg_proc.proname`.
-const OAUTH_DOORS: [&str; 12] = [
+/// The named OAuth doors of migrations 0268, 0308 and 0311, ordered by `pg_proc.proname`.
+const OAUTH_DOORS: [&str; 13] = [
     "oauth_client_lookup",
     "oauth_client_register",
     "oauth_code_consume",
     "oauth_code_issue",
     "oauth_consent_entitlement_lock",
     "oauth_consent_tenants",
+    "oauth_dcr_register",
     "oauth_grant_issue",
     "oauth_grant_lookup",
     "oauth_grant_revoke",
@@ -232,7 +233,7 @@ fn g_m02_1_an_oauth_table_acl_is_exactly_empty() {
     });
 }
 
-/// G-M02-1 for 0268/0308, doors: the `control.oauth_*` functions are exactly the twelve named, each owner SECURITY DEFINER with
+/// G-M02-1 for 0268/0308/0311: the `control.oauth_*` functions match the named set, each owner SECURITY DEFINER with
 /// `search_path=pg_catalog` alone, and EXECUTE is held by role_gateway alone (PUBLIC included).
 #[test]
 fn g_m02_1_the_oauth_doors_are_executable_by_gateway_alone() {

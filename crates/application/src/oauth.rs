@@ -522,7 +522,7 @@ fn parse_redirect(uri: &str) -> Result<RedirectShape, OAuthReason> {
             None => (authority, None),
         }
     };
-    if host.is_empty() || port.is_some_and(|p| p.parse::<u16>().is_err()) {
+    if host.is_empty() || port.is_some_and(|p| !p.parse::<u16>().is_ok_and(|port| port != 0)) {
         return Err(invalid);
     }
     Ok(RedirectShape {

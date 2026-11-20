@@ -24,6 +24,7 @@
 //!   HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS, HUMAUX_GATEWAY_AUTH_LOGIN_CODE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_AUTH_OAUTH_REFRESH_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE, HUMAUX_GATEWAY_AUTH_OAUTH_GRANT_MAX_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_OAUTH_STATIC_CLIENTS,
+//!   HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_CAPACITY, HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_REFILL_PER_SECOND, HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_MAX_UNUSED,
 //!   HUMAUX_GATEWAY_AUTH_SESSION_IDLE_TTL_SECONDS, HUMAUX_GATEWAY_AUTH_SESSION_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_EMBEDDING_DIMENSION, HUMAUX_GATEWAY_EMBEDDING_MODEL_ID, HUMAUX_GATEWAY_EMBEDDING_MODEL_REVISION,
 //!   HUMAUX_GATEWAY_EMBEDDING_PROVIDER_ID, HUMAUX_GATEWAY_EMBEDDING_VERSION, HUMAUX_GATEWAY_ENUMERATION_MANIFEST_CAP,
@@ -117,7 +118,7 @@ use crate::{
     context::ContextBootstrap,
     guard::{ConfirmationMint, GatewayGuard, GuardRatePolicies, GuardSettings},
     mcp_application::GatewayMcpApplication,
-    oauth_http::{OAuthHttpConfig, PublicClientMetadata},
+    oauth_http::{OAuthHttpConfig, PublicClientMetadata, RegistrationPolicy},
     recall::{SemanticRecallRuntime, SemanticRecallVersions},
     remember::{self, ProcessFamily, RememberEventKind, RememberPolicy},
     rerank_client::{GatewayRerankClient, RerankLane},
@@ -164,6 +165,12 @@ const EMAIL_RECIPIENT_ALLOWLIST_KEY: &str = "HUMAUX_GATEWAY_EMAIL_RECIPIENT_ALLO
 /// ADR-0125 8e (§78.1): the console session's absolute and idle lifetimes, the login code's lifetime and attempt cap,
 /// and the resend cooldown. Registry defaults are the former `AuthConfig::default()` values.
 const OAUTH_STATIC_CLIENTS_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_STATIC_CLIENTS";
+const OAUTH_REGISTER_RATE: (&str, &str, &str) = (
+    "OAUTH_REGISTER_IP",
+    "HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_CAPACITY",
+    "HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_REFILL_PER_SECOND",
+);
+const OAUTH_REGISTER_MAX_UNUSED: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_MAX_UNUSED";
 const OAUTH_RESOURCE_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE";
 const OAUTH_CODE_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_CODE_TTL_SECONDS";
 const OAUTH_ACCESS_TTL_KEY: &str = "HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS";
@@ -682,10 +689,7 @@ impl GatewayBootstrap {
         let token_keys = parse_token_keys(&effective)?;
         let auth_pages = parse_auth_pages(&effective, &token_keys, &guard)?;
         let oauth_http = parse_oauth_http(&effective, &token_keys)?;
-        let mut http = parse_http(&effective)?;
-        if let Some(oauth) = &oauth_http {
-            http = http.with_oauth_issuer(oauth.issuer.clone());
-        }
+        let http = parse_http(&effective, oauth_http.as_ref())?;
         let billing_webhook = parse_billing_webhook(&effective, admission.max_request_body_bytes)?;
         let metrics_addr = parse_metrics_addr(required(&effective, METRICS_ADDR_KEY)?)?;
         let readiness_refresh = seconds(
@@ -745,10 +749,7 @@ impl GatewayBootstrap {
             mood_half_life,
             token_keys,
             auth_pages,
-            oauth_static_clients: effective
-                .get(OAUTH_STATIC_CLIENTS_KEY)
-                .filter(|_| oauth_http.is_some())
-                .map_or_else(String::new, String::clone),
+            oauth_static_clients: configured_static_clients(&effective, oauth_http.is_some()),
             oauth_http,
             billing_webhook,
             metrics_addr,
@@ -972,7 +973,35 @@ fn parse_oauth_http(
         access_ttl,
         refresh_ttl,
         grant_max_ttl,
+        registration: parse_registration_policy(effective)?,
     }))
+}
+
+fn configured_static_clients(effective: &BTreeMap<String, String>, enabled: bool) -> String {
+    effective
+        .get(OAUTH_STATIC_CLIENTS_KEY)
+        .filter(|_| enabled)
+        .map_or_else(String::new, String::clone)
+}
+
+fn parse_registration_policy(
+    effective: &BTreeMap<String, String>,
+) -> Result<RegistrationPolicy, BootstrapError> {
+    let cap_key = RATE_MAX_SUBJECTS_KEYS[0];
+    let max_sources = parse_usize(required(effective, cap_key)?, cap_key)?;
+    let max_unused = required(effective, OAUTH_REGISTER_MAX_UNUSED)?
+        .parse::<i64>()
+        .ok()
+        .filter(|cap| *cap > 0)
+        .ok_or_else(|| {
+            BootstrapError::new(OAUTH_REGISTER_MAX_UNUSED, "must be a positive integer")
+        })?;
+    RegistrationPolicy::new(
+        rate(effective, OAUTH_REGISTER_RATE)?,
+        max_sources,
+        max_unused,
+    )
+    .map_err(|_| BootstrapError::new(cap_key, "must be a positive IP subject cap"))
 }
 
 #[derive(Deserialize)]
@@ -1236,8 +1265,11 @@ fn optional_hex(
         .map_err(|_| BootstrapError::new(key, "invalid hex"))
 }
 
-fn parse_http(effective: &BTreeMap<String, String>) -> Result<McpHttpConfig, BootstrapError> {
-    McpHttpConfig::new(
+fn parse_http(
+    effective: &BTreeMap<String, String>,
+    oauth: Option<&OAuthHttpConfig>,
+) -> Result<McpHttpConfig, BootstrapError> {
+    let mut http = McpHttpConfig::new(
         csv_nonempty(
             required(effective, "HUMAUX_GATEWAY_ALLOWED_HOSTS")?,
             "HUMAUX_GATEWAY_ALLOWED_HOSTS",
@@ -1251,7 +1283,11 @@ fn parse_http(effective: &BTreeMap<String, String>) -> Result<McpHttpConfig, Boo
             "HUMAUX_GATEWAY_MAX_REQUEST_BODY_BYTES",
         )?,
     )
-    .map_err(|_| BootstrapError::new("HUMAUX_GATEWAY_MAX_REQUEST_BODY_BYTES", "invalid"))
+    .map_err(|_| BootstrapError::new("HUMAUX_GATEWAY_MAX_REQUEST_BODY_BYTES", "invalid"))?;
+    if let Some(config) = oauth {
+        http = http.with_oauth_issuer(config.issuer.clone());
+    }
+    Ok(http)
 }
 
 fn parse_guard(effective: &BTreeMap<String, String>) -> Result<GuardSettings, BootstrapError> {
@@ -1851,6 +1887,14 @@ pub fn registry() -> Vec<ConfigEntry> {
         .map(|(name, default)| entry_with_default(name, "u64", false, default)),
     );
     entries.push(entry_with_default(OAUTH_RESOURCE_KEY, "string", false, ""));
+    entries.extend(
+        [
+            (OAUTH_REGISTER_RATE.1, "1"),
+            (OAUTH_REGISTER_RATE.2, "1"),
+            (OAUTH_REGISTER_MAX_UNUSED, "4096"),
+        ]
+        .map(|(name, default)| entry_with_default(name, "i64", false, default)),
+    );
     entries.push(entry_with_default(
         OAUTH_STATIC_CLIENTS_KEY,
         "string",
@@ -2529,27 +2573,25 @@ pub async fn provision_oauth_clients(
 pub(crate) async fn register_dynamic_oauth_client(
     pool: &RuntimeDbPool,
     client_id: &str,
-    metadata: &PublicClientMetadata,
+    redirect_uris: &[String],
     document: &Value,
+    max_unused: i64,
 ) -> Result<(), humaux_domain::error::ErrorCode> {
-    use humaux_adapters::oauth_repo::{self, ClientKind};
     use humaux_domain::error::ErrorCode;
 
-    let mut txn = oauth_repo::begin(pool).await?;
-    if txn.lookup_client(client_id).await?.is_some()
-        || !txn
-            .register_client(
-                client_id,
-                ClientKind::Dcr,
-                &metadata.redirect_uris,
-                document,
-                None,
-            )
-            .await?
+    if humaux_adapters::oauth_repo::register_dcr(
+        pool,
+        client_id,
+        redirect_uris,
+        document,
+        max_unused,
+    )
+    .await?
     {
-        return Err(ErrorCode::Internal);
+        Ok(())
+    } else {
+        Err(ErrorCode::RateLimited)
     }
-    txn.commit().await
 }
 
 /// Open the consent write transaction and keep the admitted entitlement locked through issuance.

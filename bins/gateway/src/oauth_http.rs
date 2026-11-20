@@ -1,11 +1,15 @@
 //! `gateway::oauth_http` — M02 browser authorization, token exchange, revocation, registration and AS metadata.
-//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, serde, serde_json, time, url, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::login, application::oauth, application::oauth_exchange, application::session, application::signed_token, domain::error, domain::identity, domain::ids, gateway::auth_pages, gateway::bootstrap, gateway::guard, protocol::edge]
+//! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, serde, serde_json, time, url, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::login, application::oauth, application::oauth_exchange, application::session, application::signed_token, domain::error, domain::identity, domain::ids, gateway::auth_pages, gateway::bootstrap, gateway::guard, gateway::limiter, protocol::edge]
 //! Called-by: [gateway::bootstrap, gateway::main, tests]
-//! Invariants: [refusals render only OAUTH_REASONS strings; precheck precedes consume; spent codes and revoking denies
+//! Invariants: [OAuth refusals render OAUTH_REASONS strings; DCR admission uses the bounded IP limiter; precheck precedes consume; spent codes and revoking denies
 //!   commit, other denies roll back; no raw code or refresh token is logged or stored]
 //! Spec: §73.5; §78.1; M02 D3; M02 D4; M02 D9; RFC 8414; RFC 8707; RFC 6749 §5; MCP 2026-07-28
 
-use crate::{auth_pages, guard::GatewayGuard};
+use crate::{
+    auth_pages,
+    guard::GatewayGuard,
+    limiter::{Limiter, RatePolicy, Subject},
+};
 use axum::{
     Form, Json, Router,
     extract::{
@@ -69,6 +73,8 @@ pub struct OAuthHttpConfig {
     pub refresh_ttl: Duration,
     /// Absolute grant lifetime.
     pub grant_max_ttl: Duration,
+    /// Admission policy for the anonymous registration route.
+    pub registration: RegistrationPolicy,
 }
 
 impl OAuthHttpConfig {
@@ -82,6 +88,25 @@ impl OAuthHttpConfig {
             allowed_resources: &[],
             supported_scopes: &[],
         }
+    }
+}
+
+/// DCR's separate source bucket and durable quota (§78.1).
+pub struct RegistrationPolicy {
+    ip: Limiter,
+    max_unused: i64,
+}
+
+impl RegistrationPolicy {
+    /// Construct a bounded source limiter and reject a non-positive registry quota.
+    pub fn new(rate: RatePolicy, max_sources: usize, max_unused: i64) -> Result<Self, ErrorCode> {
+        if max_unused <= 0 {
+            return Err(ErrorCode::InvalidInput);
+        }
+        Ok(Self {
+            ip: Limiter::new([rate; 5], [max_sources; 5])?,
+            max_unused,
+        })
     }
 }
 
@@ -116,7 +141,12 @@ pub fn router(
         .route(REVOKE, post(revoke))
         .route(
             REGISTER,
-            post(register).layer(DefaultBodyLimit::max(REGISTRATION_BODY_LIMIT)),
+            post(register)
+                .layer(DefaultBodyLimit::max(REGISTRATION_BODY_LIMIT))
+                .layer(middleware::from_fn_with_state(
+                    Arc::clone(&state),
+                    registration_gate,
+                )),
         )
         .layer(middleware::from_fn_with_state(Arc::clone(&state), gate))
         .with_state(state)
@@ -129,6 +159,34 @@ async fn gate(
     next: Next,
 ) -> Response {
     auth_pages::guarded(&state.guard, "oauth", peer, request, next).await
+}
+
+async fn registration_gate(
+    State(state): State<Arc<HttpState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: Request,
+    next: Next,
+) -> Response {
+    // The outer pre-auth gate already rejected malformed or repeated Forwarded headers.
+    let forwarded = auth_pages::header_str(request.headers(), "forwarded");
+    let Some(ip) = state.guard.bucket_ip(peer.ip(), forwarded) else {
+        return server_failure(ErrorCode::Internal);
+    };
+    if let Err(denial) = state.config.registration.ip.check(&[Subject::Ip(ip)]) {
+        return registration_denial(denial.code);
+    }
+    next.run(request).await
+}
+
+fn registration_denial(code: ErrorCode) -> Response {
+    if code == ErrorCode::RateLimited {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({"error": code.as_str()})),
+        )
+            .into_response();
+    }
+    server_failure(code)
 }
 
 #[derive(Serialize)]
@@ -206,6 +264,10 @@ impl PublicClientMetadata {
         let grants: HashSet<_> = self.grant_types.iter().map(String::as_str).collect();
         if self.token_endpoint_auth_method != "none"
             || self.response_types != ["code"]
+            || self
+                .client_name
+                .as_ref()
+                .is_some_and(|name| name.chars().any(char::is_control))
             || grants.len() != self.grant_types.len()
             || !grants.contains("authorization_code")
             || grants
@@ -252,8 +314,9 @@ async fn register(
     match crate::bootstrap::register_dynamic_oauth_client(
         &state.pool,
         &client_id,
-        &metadata,
+        &metadata.redirect_uris,
         &document,
+        state.config.registration.max_unused,
     )
     .await
     {
@@ -262,7 +325,7 @@ async fn register(
             (StatusCode::CREATED, Json(document)).into_response()
         }
         Err(ErrorCode::InvalidInput) => refusal(OAuthReason::REGISTRATION_METADATA_INVALID),
-        Err(code) => server_failure(code),
+        Err(code) => registration_denial(code),
     }
 }
 

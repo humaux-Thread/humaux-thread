@@ -57,3 +57,44 @@ BEGIN
   RETURN v_expires_at;
 END;
 $$;
+
+-- DCR abuse budget. Code exchange releases a slot by creating a grant; refresh/revocation do not reopen it.
+CREATE INDEX oauth_grants_client_idx ON control.oauth_grants (client_id);
+
+CREATE FUNCTION control.oauth_dcr_register(
+  p_client_id text,
+  p_redirect_uris text[],
+  p_metadata jsonb,
+  p_max_unused bigint
+)
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  IF p_max_unused IS NULL OR p_max_unused <= 0 THEN
+    RAISE EXCEPTION 'invalid OAuth registration quota' USING ERRCODE = '22023';
+  END IF;
+
+  -- Serialize across gateway callers. The following statement sees the prior insertion after an advisory-lock wait.
+  PERFORM pg_advisory_xact_lock(hashtextextended('oauth_dcr_register', 0));
+  IF (SELECT count(*) FROM (
+          SELECT FROM control.oauth_client_registrations r
+          WHERE r.kind = 'DCR'
+            AND NOT EXISTS (SELECT FROM control.oauth_grants g WHERE g.client_id = r.client_id)
+          LIMIT p_max_unused
+      ) AS unused_clients) >= p_max_unused THEN
+    RETURN false;
+  END IF;
+
+  INSERT INTO control.oauth_client_registrations (client_id, kind, redirect_uris, metadata)
+  VALUES (p_client_id, 'DCR', p_redirect_uris, p_metadata);
+  RETURN true;
+END;
+$$;
+
+ALTER FUNCTION control.oauth_dcr_register(text,text[],jsonb,bigint) OWNER TO role_migration_owner;
+REVOKE ALL ON FUNCTION control.oauth_dcr_register(text,text[],jsonb,bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION control.oauth_dcr_register(text,text[],jsonb,bigint) TO role_gateway;

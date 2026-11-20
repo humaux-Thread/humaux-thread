@@ -1,7 +1,7 @@
 //! `gateway::tests::oauth_flow` — G-M02-7/8/9/14 through real HTTP, role_gateway and PostgreSQL doors.
 //! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol,
 //!   humaux-testkit, postgres, rand, serde_json, time, tokio, url, uuid];
-//!   services=[HTTP(loopback), PostgreSQL(any) r=[control.oauth_authorization_codes, control.oauth_client_registrations, ops.email_outbox] w=[control.email_challenges, control.entitlement_snapshots, control.memberships, control.oauth_authorization_codes, control.oauth_client_registrations,
+//!   services=[HTTP(loopback), PostgreSQL(any) r=[control.oauth_authorization_codes, control.oauth_client_registrations, control.oauth_grants, ops.email_outbox] w=[control.email_challenges, control.entitlement_snapshots, control.memberships, control.oauth_authorization_codes, control.oauth_client_registrations,
 //!   control.oauth_grants, control.oauth_refresh_tokens, control.sessions, control.tenants, control.user_emails, control.users, ops.email_outbox]
 //!   x=[control.bump_user_security_epoch], PostgreSQL(role_gateway)]; env=[CI, HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::oauth_repo, adapters::postgres, adapters::session_repo, application::auth, application::login, application::oauth, application::session, application::signed_token, domain::error,
@@ -32,7 +32,7 @@ use humaux_gateway::{
     bootstrap::{passwordless_login_port, provision_oauth_clients},
     guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
     limiter::RatePolicy,
-    oauth_http::{self, OAuthHttpConfig},
+    oauth_http::{self, OAuthHttpConfig, RegistrationPolicy},
 };
 use humaux_protocol::edge::TrustedProxyConfig;
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
@@ -67,8 +67,18 @@ fn config(max: u64) -> OAuthHttpConfig {
         access_ttl: Duration::from_secs(3600),
         refresh_ttl: Duration::from_secs(3600),
         grant_max_ttl: Duration::from_secs(max),
+        registration: test_registration_policy(10_000, 10_000, 10_000),
     }
 }
+fn test_registration_policy(capacity: i64, refill: i64, max_unused: i64) -> RegistrationPolicy {
+    RegistrationPolicy::new(
+        RatePolicy::new(capacity, refill).unwrap(),
+        50_000,
+        max_unused,
+    )
+    .unwrap()
+}
+
 fn dsn_as_role(dsn: &str) -> String {
     let sep = if dsn.contains('?') { '&' } else { '?' };
     format!("{dsn}{sep}options=-c%20role%3Drole_gateway")
@@ -209,15 +219,17 @@ fn guard_settings() -> GuardSettings {
     }
 }
 fn serve(h: &Handle, max: u64) -> SocketAddr {
-    serve_surface(h, Some(max))
+    serve_surface(h, Some(config(max)))
 }
 
-fn serve_surface(h: &Handle, max: Option<u64>) -> SocketAddr {
+fn serve_surface(h: &Handle, config: Option<OAuthHttpConfig>) -> SocketAddr {
     // dep: PostgreSQL(role_gateway) — §79.2: exercise the runtime role.
     let pool =
         h.rt.block_on(RuntimeDbPool::connect(&dsn_as_role(&h.dsn)))
             .expect("gateway pool");
-    let guard = Arc::new(GatewayGuard::new(pool, guard_settings()).expect("guard"));
+    let mut settings = guard_settings();
+    settings.trusted_proxies.trusted_proxy_cidrs = vec!["127.0.0.1/32".parse().unwrap()];
+    let guard = Arc::new(GatewayGuard::new(pool, settings).expect("guard"));
     let pages = AuthPagesConfig {
         keys: keys(),
         public_origin: ORIGIN.to_owned(),
@@ -227,8 +239,9 @@ fn serve_surface(h: &Handle, max: Option<u64>) -> SocketAddr {
         recipient_allowlist: String::new(),
     };
     let login = passwordless_login_port(&guard, &pages);
-    let router = oauth_http::router(Arc::clone(&guard), max.map(config), Arc::clone(&login));
-    let router = if max.is_some() {
+    let enabled = config.is_some();
+    let router = oauth_http::router(Arc::clone(&guard), config, Arc::clone(&login));
+    let router = if enabled {
         router.merge(auth_pages::router(guard, pages, login))
     } else {
         router
@@ -1533,6 +1546,16 @@ fn m02_10b_consent_rejects_cross_origin() {
     });
 }
 
+// The quota is cluster-wide. Keep the lock until fixture cleanup, including across nextest processes.
+fn lock_registration_fixture(h: &mut Handle) {
+    h.admin
+        .execute(
+            "SELECT pg_advisory_lock(hashtext('humaux.test.oauth_registration'))",
+            &[],
+        )
+        .expect("serialize DCR fixtures");
+}
+
 fn registration_body(redirects: &[&str]) -> serde_json::Value {
     serde_json::json!({
         "redirect_uris": redirects,
@@ -1562,6 +1585,7 @@ fn recorded_client(h: &Handle, client_id: &str) -> Option<oauth_repo::ClientReco
 #[test]
 fn m02_10c_advertised_registration_persists_public_client() {
     run_db_fixture::<OAuthFixture, _>("M02-10c dynamic registration", |mut h| {
+        lock_registration_fixture(&mut h);
         let address = serve(&h, 7200);
         let metadata = h.rt.block_on(http(
             address,
@@ -1647,6 +1671,7 @@ fn m02_10c_disabled_surface_has_no_registration_or_advertisement() {
 #[test]
 fn m02_10c_rejects_invalid_registration_metadata_and_redirects() {
     run_db_fixture::<OAuthFixture, _>("M02-10c invalid registration", |mut h| {
+        lock_registration_fixture(&mut h);
         let address = serve(&h, 7200);
         let valid = registration_body(&[REDIRECT]);
         let mut metadata = vec!["{".into(), r#"{"token_endpoint_auth_method":"none","token_endpoint_auth_method":"none","redirect_uris":["https://example.test/cb"]}"#.into()];
@@ -1674,6 +1699,12 @@ fn m02_10c_rejects_invalid_registration_metadata_and_redirects() {
             body[key] = value;
             metadata.push(body.to_string());
         }
+        let mut name = valid.clone();
+        name["client_name"] = "control\0character".into();
+        metadata.push(name.to_string());
+        let mut too_large = valid.clone();
+        too_large["ignored"] = "x".repeat(8192).into();
+        metadata.push(too_large.to_string());
         let mut failures = Vec::new();
         for (error, bodies) in [
             ("invalid_client_metadata", metadata),
@@ -1694,6 +1725,7 @@ fn m02_10c_rejects_invalid_registration_metadata_and_redirects() {
                     vec!["https://username@client.example.test/cb"],
                     vec!["http://localhost:65536/cb"],
                     vec!["https://client.example.test:invalid/cb"],
+                    vec!["https://client.example.test:0/cb"],
                 ]
                 .into_iter()
                 .map(|uris| registration_body(&uris).to_string())
@@ -1736,6 +1768,23 @@ fn m02_10c_operator_preregistration_is_atomic_and_authorizes() {
             .is_err()
         );
         assert!(recorded_client(&h, &id).is_none());
+
+        h.admin.execute(
+            "UPDATE control.oauth_client_registrations SET disabled_at = now() WHERE client_id = $1",
+            &[&h.client_id],
+        ).unwrap();
+        let mut conflict = registration.clone();
+        conflict["client_id"] = h.client_id.clone().into();
+        let result = h.rt.block_on(provision_oauth_clients(
+            &h.gateway,
+            &serde_json::json!([registration, conflict]).to_string(),
+        ));
+        assert_eq!(result, Err(ErrorCode::Conflict));
+        assert!(
+            recorded_client(&h, &id).is_none(),
+            "the first write rolled back"
+        );
+
         h.rt.block_on(provision_oauth_clients(
             &h.gateway,
             &serde_json::json!([registration]).to_string(),
@@ -1897,5 +1946,94 @@ fn m02_10c_refuses_unregistered_redirect_in_http_and_pg() {
         }
         assert!(accepted.is_empty(), "{accepted:?}");
         assert_eq!(grant_count(&mut h), 0);
+    });
+}
+
+async fn registration_from(address: SocketAddr, forwarded: &str, body: &str) -> Reply {
+    http_with(
+        address,
+        "POST",
+        "/oauth/register",
+        &[
+            ("Content-Type", "application/json"),
+            ("Forwarded", forwarded),
+        ],
+        body,
+    )
+    .await
+}
+
+fn limited_registration(h: &mut Handle, reply: &Reply) -> u16 {
+    let value: Value = serde_json::from_str(&reply.body).expect("registration JSON");
+    match reply.status {
+        201 => {
+            let id = value["client_id"].as_str().expect("issued client ID");
+            h.registered_clients.push(id.to_owned());
+            assert!(recorded_client(h, id).is_some(), "registration committed");
+        }
+        429 => assert_eq!(value["error"], ErrorCode::RateLimited.as_str()),
+        _ => panic!(
+            "unexpected registration status {}: {}",
+            reply.status, reply.body
+        ),
+    }
+    assert_eq!(reply.headers["cache-control"], "no-store");
+    reply.status
+}
+
+#[test]
+fn m02_10c_registration_ip_rate_is_separate() {
+    run_db_fixture::<OAuthFixture, _>("M02-10c DCR per-source rate", |mut h| {
+        lock_registration_fixture(&mut h);
+        let mut limits = config(7200);
+        limits.registration = test_registration_policy(1, 1, 10_000);
+        let address = serve_surface(&h, Some(limits));
+        let body = registration_body(&[REDIRECT]).to_string();
+        let (one, two, separate_ip) = h.rt.block_on(async {
+            tokio::join!(
+                registration_from(address, "for=192.0.2.1", &body),
+                registration_from(address, "for=192.0.2.1", &body),
+                registration_from(address, "for=192.0.2.2", &body),
+            )
+        });
+        let mut shared = [
+            limited_registration(&mut h, &one),
+            limited_registration(&mut h, &two),
+        ];
+        shared.sort_unstable();
+        let independent = limited_registration(&mut h, &separate_ip);
+        assert_eq!(shared, [201, 429], "same source must share a budget");
+        assert_eq!(independent, 201, "another source keeps its own budget");
+    });
+}
+
+#[test]
+fn m02_10c_registration_unused_quota_is_atomic_across_ips() {
+    run_db_fixture::<OAuthFixture, _>("M02-10c DCR durable quota", |mut h| {
+        lock_registration_fixture(&mut h);
+        let existing: i64 = h.admin.query_one(
+            "SELECT count(*) FROM control.oauth_client_registrations r WHERE r.kind='DCR' AND NOT EXISTS (SELECT FROM control.oauth_grants g WHERE g.client_id=r.client_id)",
+            &[],
+        ).unwrap().get(0);
+        let mut limits = config(7200);
+        limits.registration = test_registration_policy(10_000, 10_000, existing + 1);
+        let address = serve_surface(&h, Some(limits));
+        let body = registration_body(&[REDIRECT]).to_string();
+        let (one, two) = h.rt.block_on(async {
+            tokio::join!(
+                registration_from(address, "for=192.0.2.3", &body),
+                registration_from(address, "for=192.0.2.4", &body),
+            )
+        });
+        let mut result = [
+            limited_registration(&mut h, &one),
+            limited_registration(&mut h, &two),
+        ];
+        result.sort_unstable();
+        assert_eq!(
+            result,
+            [201, 429],
+            "one global slot for the two distinct sources"
+        );
     });
 }
