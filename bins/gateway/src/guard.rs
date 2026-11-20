@@ -248,13 +248,14 @@ pub trait OAuthRequestContext {
     fn mark_insufficient_scope(&self, required_scope: &str);
 }
 
-// M26-DISCOVERY supplies these from the actual route and request extensions.
 impl OAuthRequestContext for McpHttpContext {
     fn expected_resource(&self) -> Option<&str> {
-        None
+        McpHttpContext::expected_resource(self)
     }
 
-    fn mark_insufficient_scope(&self, _required_scope: &str) {}
+    fn mark_insufficient_scope(&self, required_scope: &str) {
+        McpHttpContext::mark_insufficient_scope(self, required_scope);
+    }
 }
 
 pub struct GatewayGuard {
