@@ -1,12 +1,12 @@
 //! `application::oauth_exchange` — M02 token exchange use cases and transactional credential store port.
 //! Depends-on: crates=[async-trait, hex, humaux-domain, rand, serde_json, sha2, time, uuid]; services=[]; env=[]; modules=[application::oauth, domain::error, domain::ids]
-//! Called-by: [adapters::oauth_repo, gateway::oauth_http]
+//! Called-by: [adapters::oauth_repo, gateway::bootstrap, gateway::oauth_http]
 //! Invariants: [precheck before consume; spent codes and revoking refusals commit; other refusals roll back]
 //! Spec: ADR-0130; §73.5; §78.1; M02 D3/D4.
 
 use crate::oauth::{
-    self, AccessTerms, CodeExchangeRequest, ConsumedCodeView, GrantView, OAuthPolicy, OAuthReason,
-    OAuthRefusal, RefreshDecision, RefreshRequest, RevokeCause, RotationFact,
+    self, AccessTerms, CodeExchangeRequest, CodeTerms, ConsumedCodeView, GrantView, OAuthPolicy,
+    OAuthReason, OAuthRefusal, RefreshDecision, RefreshRequest, RevokeCause, RotationFact,
 };
 use humaux_domain::{
     error::ErrorCode,
@@ -283,6 +283,23 @@ pub enum RotateOutcome {
 /// The existing PG exchange transaction. Dropping without commit rolls back every door call.
 #[async_trait::async_trait]
 pub trait ExchangeTransaction: Send {
+    /// Read the registered client before establishing a trusted redirect.
+    async fn lookup_client(&mut self, client_id: &str) -> Result<Option<ClientRecord>, ErrorCode>;
+    /// Return at most two live targets for the current console user.
+    async fn consent_tenants(&mut self, user: UserId) -> Result<Vec<TenantId>, ErrorCode>;
+    /// Persist the code only if its consenting tenant is still the sole live target.
+    async fn issue_consent_code(
+        &mut self,
+        issue: &CodeIssue<'_>,
+        ttl: Duration,
+    ) -> Result<bool, ErrorCode>;
+    /// Resolve a refresh token only for the presenting client.
+    async fn refresh_grant(
+        &mut self,
+        hash: &SecretHash,
+        client: &str,
+    ) -> Result<Option<Uuid>, ErrorCode>;
+
     /// Consume a code once within this exchange.
     async fn consume_code(&mut self, hash: &SecretHash) -> Result<Option<ConsumedCode>, ErrorCode>;
     /// Issue the grant and initial refresh family atomically with consumption.
@@ -330,6 +347,48 @@ fn secret() -> Result<String, ErrorCode> {
         .try_fill_bytes(&mut bytes)
         .map_err(|_| ErrorCode::Internal)?;
     Ok(hex::encode(bytes))
+}
+
+/// Issue and commit an opaque authorization code in the already admitted consent transaction.
+pub async fn persist_consent_code(
+    mut txn: Box<dyn ExchangeTransaction>,
+    terms: &CodeTerms,
+) -> Result<Option<String>, ErrorCode> {
+    let code = secret()?;
+    let issued = txn
+        .issue_consent_code(
+            &CodeIssue {
+                code_hash: &SecretHash::of_secret(&code),
+                client_id: &terms.client_id,
+                redirect_uri: &terms.redirect_uri,
+                pkce_challenge: &terms.pkce_challenge,
+                resource: &terms.resource,
+                user_id: terms.user_id,
+                tenant_id: terms.tenant_id,
+                workspace_id: terms.workspace_id,
+                scopes: &terms.scopes,
+            },
+            terms.ttl,
+        )
+        .await?;
+    txn.commit().await?;
+    Ok(issued.then_some(code))
+}
+
+/// Revoke a refresh token and its grant, with no observable difference for an unknown token.
+pub async fn revoke_refresh(
+    store: &impl ExchangeStore,
+    client: &str,
+    token: &str,
+) -> Result<(), ErrorCode> {
+    let mut txn = store.begin_exchange().await?;
+    if let Some(grant) = txn
+        .refresh_grant(&SecretHash::of_secret(token), client)
+        .await?
+    {
+        txn.revoke_grant(grant, RevokeReason::UserRequest).await?;
+    }
+    txn.commit().await
 }
 
 async fn spent(
