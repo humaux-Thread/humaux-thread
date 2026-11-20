@@ -1,6 +1,6 @@
 //! `retrieval::completeness` — `LedgerCounts` / `CompletenessClass` / `FreshnessClass` / the `ledger::close` and
 //!   `classify()` sole constructors (§22.4 / §22.5 / §59).
-//! Depends-on: crates=[humaux-domain, humaux-telemetry, serde]; services=[]; env=[]; modules=[domain::context, domain::ledger, retrieval::envelope, retrieval::planner]
+//! Depends-on: crates=[humaux-domain, humaux-telemetry, serde]; services=[]; env=[]; modules=[domain::context::budget_views, domain::ledger, retrieval::envelope, retrieval::planner]
 //! Called-by: [adapters::context_repo, adapters::exact_census, adapters::read_materialize, adapters::retrieve, adapters::serving_repo, adapters::stream_repo, application::recall_read, gateway::context, gateway::memory, gateway::recall, retrieval::envelope, retrieval::signals, tests]
 //! Invariants: [ledger::close is the sole LedgerClosure constructor; A1 counts tickets, A2's PostgreSQL side
 //!   (ProjectionReads) counts memory points (ADR-0057 D-A); classify has six inputs and LedgerClosure::lagging
@@ -176,7 +176,7 @@ pub(crate) enum CannotEstablishReason {
 /// §25.5 的唯一映射：Mandatory Context 溢出 ⇒ `cannot_establish`。
 ///
 /// 「mandatory overflow 只能 `cannot_establish`，不能静默截断」这句话在类型上的落点。
-/// 收 [`humaux_domain::context::MandatoryOverflow`] 而不是收一个 bool：那个类型只可能来自
+/// 收 [`humaux_domain::context::budget_views::MandatoryOverflow`] 而不是收一个 bool：那个类型只可能来自
 /// `ContextBudget::reserve` 的 `Err` 臂，所以**造不出一个"假装溢出"的调用**；而它里面
 /// 没有任何可返回的 Context，所以调用方在这条路径上也拿不到"截断后的前半段"。
 ///
@@ -184,7 +184,7 @@ pub(crate) enum CannotEstablishReason {
 /// 一起变，分开返回就给了「reason 记了但 class 还是 exact」这条静默通道。
 #[must_use]
 pub(crate) const fn overflow_class(
-    _overflow: &humaux_domain::context::MandatoryOverflow,
+    _overflow: &humaux_domain::context::budget_views::MandatoryOverflow,
 ) -> CompletenessClass {
     CompletenessClass::CannotEstablish {
         reason: CannotEstablishReason::MandatoryContextOverflow,

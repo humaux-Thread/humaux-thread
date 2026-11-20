@@ -1,5 +1,5 @@
 //! `retrieval::envelope` — §23 Recall Result Envelope.
-//! Depends-on: crates=[humaux-domain, humaux-telemetry, serde, serde_json]; services=[]; env=[]; modules=[domain::context, domain::error, domain::grounding_read, retrieval::compiler, retrieval::completeness, retrieval::planner, retrieval::request, telemetry::degrade]
+//! Depends-on: crates=[humaux-domain, humaux-telemetry, serde, serde_json]; services=[]; env=[]; modules=[domain::context::budget_views, domain::error, domain::grounding_read, retrieval::compiler, retrieval::completeness, retrieval::planner, retrieval::request, telemetry::degrade]
 //! Called-by: [adapters::context_repo, adapters::processing_status, adapters::read_materialize, adapters::retrieve, application::continuity, application::recall_read, gateway::context, gateway::memory, gateway::recall, retrieval::compiler, retrieval::completeness, retrieval::rerank, retrieval::signals, tests]
 //! Invariants: [A2 compares the Qdrant point count with the ledger's ProjectionReads points, never with ticket
 //!   counts (ADR-0057 D-A); build_projection_block is the only place completeness_ratio / current are computed
@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use crate::completeness::{
     CannotEstablishReason, CensusResult, CompletenessClass, FreshnessClass, LedgerClosure, classify,
 };
-use humaux_domain::context::MandatoryOverflow;
+use humaux_domain::context::budget_views::MandatoryOverflow;
 
 use crate::compiler::ContextOutcome;
 use crate::planner::{PlannerDecision, QueryClass};

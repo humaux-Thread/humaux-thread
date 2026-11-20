@@ -1,6 +1,6 @@
 //! `domain::lifecycle_types` — shared lifecycle identifiers (§49) and subject kinds (§6.1.3, ADR-0078).
 //! Depends-on: crates=[uuid]; services=[]; env=[]; modules=[domain::error]
-//! Called-by: []
+//! Called-by: [domain::context::budget_views]
 //! Invariants: [§49 UUIDv7 mint and parse, §78.2 closed-set subject kinds]
 //! Spec: Baseline §6.1.3; §49; §59; ADR-0130
 //!
