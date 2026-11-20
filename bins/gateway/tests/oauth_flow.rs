@@ -1,11 +1,11 @@
 //! `gateway::tests::oauth_flow` — G-M02-7/8/9/14 through real HTTP, role_gateway and PostgreSQL doors.
-//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol,
+//! Depends-on: crates=[axum, hex, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-protocol,
 //!   humaux-testkit, postgres, rand, serde_json, time, tokio, url, uuid];
 //!   services=[HTTP(loopback), PostgreSQL(any) r=[control.oauth_authorization_codes, control.oauth_client_registrations, ops.email_outbox] w=[control.workspaces, control.workspace_memberships, control.email_challenges, control.entitlement_snapshots, control.memberships, control.oauth_authorization_codes, control.oauth_client_registrations,
 //!   control.oauth_grants, control.oauth_refresh_tokens, control.sessions, control.tenants, control.user_emails, control.users, ops.email_outbox]
 //!   x=[control.bump_user_security_epoch], PostgreSQL(role_gateway)]; env=[CI, HUMAUX_TEST_PG_DSN];
-//!   modules=[adapters::oauth_repo, adapters::postgres, adapters::session_repo, application::auth, application::login, application::oauth, application::session, application::signed_token, domain::error,
-//!   domain::ids, gateway::auth, gateway::auth_pages, gateway::bootstrap, gateway::guard, gateway::limiter, gateway::oauth_http, humaux-testkit, protocol::edge]
+//!   modules=[adapters::oauth_repo, adapters::postgres, adapters::session_repo, application::auth, application::login, application::oauth, application::session, application::signed_token, contracts::retrieval_config, domain::context, domain::dataclass, domain::error, domain::identity,
+//!   domain::ids, gateway::auth, gateway::auth_pages, gateway::bootstrap, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::remember, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]
 //! Invariants: [fixture rows are unique and cleaned; missing DB on CI fails; token comparisons use production
 //!   verification and the live grant; every expected refusal checks the exact wire object and no-store]
@@ -24,18 +24,28 @@ use humaux_application::{
     signed_token::TokenKeys,
 };
 use humaux_domain::{
+    context::ContextBudget,
+    dataclass::DataClass,
     error::ErrorCode,
+    identity::VisibilityClass,
     ids::{TenantId, UserId, WorkspaceId},
 };
 use humaux_gateway::{
     auth::AuthenticatedBearer,
     auth_pages::{self, AuthPagesConfig},
     bootstrap::passwordless_login_port,
+    context::ContextBootstrap,
     guard::{GatewayGuard, GuardRatePolicies, GuardSettings, OAuthRequestContext},
     limiter::RatePolicy,
+    mcp_application::GatewayMcpApplication,
     oauth_http::{self, OAuthHttpConfig},
+    remember::{ProcessFamily, RememberEventKind, RememberPolicy},
 };
-use humaux_protocol::edge::TrustedProxyConfig;
+use humaux_protocol::{
+    edge::TrustedProxyConfig,
+    mcp::{McpAdapter, McpHttpConfig},
+    mcp_catalog::CanonicalCatalog,
+};
 use humaux_testkit::{DbFixtureSkipReason, DbIntegrationFixture, run_db_fixture};
 use postgres::{Client, NoTls};
 use serde_json::Value;
@@ -224,6 +234,10 @@ fn serve(h: &Handle, max: u64) -> SocketAddr {
     let login = passwordless_login_port(&guard, &pages);
     let router = oauth_http::router(Arc::clone(&guard), config(max), Arc::clone(&login))
         .merge(auth_pages::router(guard, pages, login));
+    serve_router(h, router)
+}
+
+fn serve_router(h: &Handle, router: axum::Router) -> SocketAddr {
     h.rt.block_on(async {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let address = listener.local_addr().expect("address");
@@ -257,12 +271,17 @@ async fn http_with(
 ) -> Reply {
     // dep: HTTP(loopback) — production router and pre-auth guard
     let mut stream = TcpStream::connect(address).await.expect("connect");
+    let content_type = headers
+        .iter()
+        .find_map(|(name, value)| name.eq_ignore_ascii_case("content-type").then_some(*value))
+        .unwrap_or("application/x-www-form-urlencoded");
     let extra: String = headers
         .iter()
+        .filter(|(name, _)| !name.eq_ignore_ascii_case("content-type"))
         .map(|(name, value)| format!("{name}: {value}\r\n"))
         .collect();
     let raw = format!(
-        "{method} {path} HTTP/1.1\r\nHost: as.example.test\r\nConnection: close\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n{extra}\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: as.example.test\r\nConnection: close\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{extra}\r\n{body}",
         body.len()
     );
     stream.write_all(raw.as_bytes()).await.expect("write");
@@ -1106,6 +1125,168 @@ fn g_m02_10_bearer_cross_tenant_scope_is_not_widened() {
             );
             assert_eq!(*request.missing_scope.borrow(), None);
         });
+    });
+}
+
+fn native_mcp_router(guard: GatewayGuard) -> axum::Router {
+    let catalog = CanonicalCatalog::load().expect("canonical catalog");
+    let advertised = catalog.trusted_catalog().expect("trusted catalog");
+    let remember = RememberPolicy::new(
+        ProcessFamily::new("workspace", "knowledge", "ingest", "v1").unwrap(),
+        Uuid::new_v4(),
+        Duration::from_secs(60),
+        DataClass::Internal,
+        VisibilityClass::WorkspaceShared,
+    )
+    .unwrap();
+    let context = ContextBootstrap::new(
+        ContextBudget::new(4_096, 512).unwrap(),
+        humaux_contracts::retrieval_config::resolve_registered_retrieval_profile(
+            &Default::default(),
+        )
+        .unwrap(),
+        &remember,
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let app = GatewayMcpApplication::new(
+        catalog,
+        Arc::new(guard),
+        remember,
+        RememberEventKind::UserMessage,
+        context,
+    );
+    let config = McpHttpConfig::new(
+        vec!["as.example.test".into()],
+        vec![ORIGIN.into()],
+        64 * 1024,
+    )
+    .unwrap()
+    .with_oauth_issuer(ORIGIN.to_owned());
+    McpAdapter::new(Arc::new(app), advertised, config).router()
+}
+
+fn native_mcp_request(
+    h: &Handle,
+    address: SocketAddr,
+    path: &str,
+    token: Option<&str>,
+    tool: Option<(&str, Value)>,
+) -> Reply {
+    let mut params = serde_json::json!({"_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "oauth-flow", "version": "1"},
+        "io.modelcontextprotocol/clientCapabilities": {},
+    }});
+    let method = if tool.is_some() {
+        "tools/call"
+    } else {
+        "tools/list"
+    };
+    let mut headers = vec![
+        ("Content-Type", "application/json"),
+        ("Accept", "application/json, text/event-stream"),
+        ("MCP-Protocol-Version", "2026-07-28"),
+        ("Mcp-Method", method),
+    ];
+    if let Some((name, arguments)) = tool {
+        headers.push(("Mcp-Name", name));
+        params["name"] = name.into();
+        params["arguments"] = arguments;
+    }
+    let authorization = token.map(|value| format!("Bearer {value}"));
+    if let Some(header) = authorization.as_deref() {
+        headers.push(("Authorization", header));
+    }
+    h.rt.block_on(http_with(
+        address,
+        "POST",
+        path,
+        &headers,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params,
+        })
+        .to_string(),
+    ))
+}
+
+#[test]
+fn g_m02_10_bearer_native_http() {
+    run_db_fixture::<OAuthFixture, _>("G-M02-10 real native OAuth", |mut h| {
+        // A write-only token authenticates for protocol traffic. It cannot run memory.get.
+        h.scopes = vec!["memory:write".to_owned()];
+        let tenant = h.tenant_id;
+        add_active_membership(&mut h, tenant);
+        let as_address = serve(&h, 7200);
+        let mint = |resource: &str| {
+            let code = issue_code_for(&h, resource);
+            let reply = post(
+                &h,
+                as_address,
+                &code_form(&h, &code, &[("resource", Some(resource))]),
+            );
+            assert_eq!(reply.status, 200, "access token was not issued");
+            let tokens: Value = serde_json::from_str(&reply.body).unwrap();
+            let claims = decode(&tokens);
+            assert_eq!(claims.resource, resource);
+            assert_eq!(claims.scopes, ["memory:write"]);
+            raw_access(&tokens).to_owned()
+        };
+        let native = mint(NATIVE_RESOURCE);
+        let legacy = mint(&format!("{NATIVE_RESOURCE}/legacy"));
+        // dep: PostgreSQL(role_gateway) — same role and guard as the real MCP listener.
+        let pool =
+            h.rt.block_on(RuntimeDbPool::connect(&dsn_as_role(&h.dsn)))
+                .unwrap();
+        let guard = GatewayGuard::new(pool, guard_settings())
+            .unwrap()
+            .with_oauth_issuer(ORIGIN.to_owned(), Arc::new(keys()));
+        let address = serve_router(&h, native_mcp_router(guard));
+        let good = native_mcp_request(&h, address, "/mcp", Some(&native), None);
+        assert_eq!(good.status, 200, "native audience");
+        let catalog: Value = serde_json::from_str(&good.body).unwrap();
+        assert!(catalog["result"]["tools"].is_array());
+
+        let wrong = native_mcp_request(&h, address, "/mcp", Some(&legacy), None);
+        assert_eq!(wrong.status, 401, "legacy audience on native route");
+        let challenge = format!(
+            "Bearer resource_metadata=\"{ORIGIN}/.well-known/oauth-protected-resource/mcp\""
+        );
+        assert_eq!(
+            wrong.headers["www-authenticate"],
+            format!("{challenge}, error=\"invalid_token\"")
+        );
+
+        let scope = native_mcp_request(
+            &h,
+            address,
+            "/mcp",
+            Some(&native),
+            Some((
+                "memory",
+                serde_json::json!({"action":"get","memory_id":Uuid::now_v7()}),
+            )),
+        );
+        assert_eq!(scope.status, 403, "missing context:read");
+        assert_eq!(
+            scope.headers.get("www-authenticate"),
+            Some(&format!(
+                "{challenge}, error=\"insufficient_scope\", scope=\"context:read\""
+            ))
+        );
+
+        let query = native_mcp_request(
+            &h,
+            address,
+            &format!("/mcp?access_token={native}"),
+            None,
+            None,
+        );
+        assert_eq!(query.status, 401, "query transport cannot authenticate");
+        assert_eq!(query.headers["www-authenticate"], challenge);
     });
 }
 
