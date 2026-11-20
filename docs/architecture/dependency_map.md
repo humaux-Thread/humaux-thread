@@ -393,6 +393,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `adapters::request_guard_repo`
 - reads `control.entitlement_snapshots`
 - executes `control.audit_event_insert`
+- executes `control.oauth_consent_entitlement_lock`
 - service `PostgreSQL(role_gateway)`
 
 #### `adapters::retrieval_provisioning`
@@ -2038,6 +2039,20 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - writes `private.note_heads`
 - service `PostgreSQL(any)`
 
+#### `adapters::oauth_repo`
+- executes `control.oauth_client_lookup`
+- executes `control.oauth_client_register`
+- executes `control.oauth_code_consume`
+- executes `control.oauth_code_issue`
+- executes `control.oauth_consent_tenants`
+- executes `control.oauth_grant_issue`
+- executes `control.oauth_grant_lookup`
+- executes `control.oauth_grant_revoke`
+- executes `control.oauth_refresh_family_revoke`
+- executes `control.oauth_refresh_grant`
+- executes `control.oauth_refresh_rotate`
+- service `PostgreSQL(any)`
+
 #### `adapters::operation_receipt`
 - reads `control.memberships`
 - reads `control.tenants`
@@ -2169,6 +2184,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `adapters::request_guard_repo`
 - reads `control.entitlement_snapshots`
 - executes `control.audit_event_insert`
+- executes `control.oauth_consent_entitlement_lock`
 - service `PostgreSQL(role_gateway)`
 
 #### `adapters::retrieval_embedding_rpc`
@@ -3165,6 +3181,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `adapters::request_guard_repo`
 - reads `control.entitlement_snapshots`
 - executes `control.audit_event_insert`
+- executes `control.oauth_consent_entitlement_lock`
 - service `PostgreSQL(role_gateway)`
 
 #### `adapters::retrieval_provisioning`
@@ -4374,6 +4391,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `adapters::request_guard_repo`
 - reads `control.entitlement_snapshots`
 - executes `control.audit_event_insert`
+- executes `control.oauth_consent_entitlement_lock`
 - service `PostgreSQL(role_gateway)`
 
 #### `adapters::retrieval_query_log`
@@ -5227,6 +5245,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `adapters::request_guard_repo`
 - reads `control.entitlement_snapshots`
 - executes `control.audit_event_insert`
+- executes `control.oauth_consent_entitlement_lock`
 - service `PostgreSQL(role_gateway)`
 
 #### `adapters::retrieval_query_log`
@@ -6548,6 +6567,7 @@ executed by:
 ### `control.oauth_authorization_codes`
 read by:
 - (no process): `adapters::tests::credential_grants`
+- (no process): `gateway::tests::oauth_flow`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -6563,8 +6583,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_client_register`
@@ -6573,14 +6593,15 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_client_registrations`
 read by:
 - (no process): `adapters::tests::auth_contract`
 - (no process): `adapters::tests::credential_grants`
+- (no process): `gateway::tests::oauth_flow`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -6596,9 +6617,9 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - (no process): `adapters::tests::oauth_persistence`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_code_issue`
@@ -6607,9 +6628,21 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.oauth_consent_entitlement_lock`
+read by:
+
+written by:
+
+executed by:
+- process(cargo-xtask): `adapters::request_guard_repo`
+- process(humaux-gateway): `adapters::request_guard_repo`
+- process(humaux-maintenance): `adapters::request_guard_repo`
+- process(humaux-private-worker): `adapters::request_guard_repo`
+- process(humaux-retrieval-worker): `adapters::request_guard_repo`
 
 ### `control.oauth_consent_tenants`
 read by:
@@ -6617,7 +6650,7 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
+- process(humaux-gateway): `adapters::oauth_repo`
 
 ### `control.oauth_grant_issue`
 read by:
@@ -6625,8 +6658,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_lookup`
@@ -6635,8 +6668,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grant_revoke`
@@ -6645,8 +6678,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_grants`
@@ -6668,8 +6701,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_refresh_grant`
@@ -6678,7 +6711,7 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
+- process(humaux-gateway): `adapters::oauth_repo`
 
 ### `control.oauth_refresh_rotate`
 read by:
@@ -6686,8 +6719,8 @@ read by:
 written by:
 
 executed by:
-- (no process): `adapters::oauth_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::oauth_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
 ### `control.oauth_refresh_tokens`
@@ -21348,9 +21381,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:3904` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3909` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:3914` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3935` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3940` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:3945` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
