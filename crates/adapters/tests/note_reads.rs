@@ -1,9 +1,9 @@
 //! `adapters::tests::note_reads` — ADR-0067 card 40b acceptance for the verbatim note lane's reads (G11-G15, provenance,
 //!   the unchanged default), against a real PostgreSQL and an actual `role_gateway` login.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-testkit, serde_json, sha2, sqlx, tokio]; services=[PostgreSQL(role_gateway) r=[ops.outbox, private.identity_note_materializations, projection.stream_log] w=[private.memory_records, private.memory_subjects, private.subjects]]; env=[]; modules=[adapters::attribution_repo, adapters::context_repo, adapters::forget_repo, adapters::note_repo, adapters::operation_receipt, adapters::postgres, adapters::read_materialize, adapters::remember, adapters::tests::support::operation_receipt_fixture, application::recall_read, domain::audit, domain::authority, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, humaux-testkit, projection::serving, projection::stream]
+//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-projection, humaux-testkit, serde_json, sha2, sqlx, tokio]; services=[PostgreSQL(owner) w=[private.evidence_objects], PostgreSQL(role_gateway) r=[ops.outbox, private.evidence_objects, private.identity_note_materializations, projection.stream_log] w=[private.memory_records, private.memory_subjects, private.subjects]]; env=[]; modules=[adapters::attribution_repo, adapters::context_repo, adapters::forget_repo, adapters::note_repo, adapters::operation_receipt, adapters::postgres, adapters::read_materialize, adapters::remember, adapters::tests::support::operation_receipt_fixture, application::recall_read, domain::audit, domain::authority, domain::error, domain::evidence, domain::identity, domain::ids, domain::note, domain::subject, humaux-testkit, projection::serving, projection::stream]
 //! Called-by: [cargo-test]
-//! Invariants: [every read under test is a real role_gateway login through the production adapter entry points; the
-//!   owner connection only seeds, rewinds occurred_at, supersedes and reads back this fixture's tenant; every gate
+//! Invariants: [production reads use a real role_gateway login and the RLS witness sets that role in a transaction;
+//!   the owner connection only seeds, rewinds occurred_at, supersedes and reads back this fixture's tenant; every gate
 //!   asserts stored rows or real responses, never two literals]
 //! Spec: Baseline §20.4; §22.1; ADR-0067
 //!
@@ -460,12 +460,23 @@ fn g11_a_note_kind_page_and_its_total_share_one_snapshot_under_a_concurrent_writ
             );
             std::thread::sleep(Duration::from_millis(10));
         }
-        // The mint holds its id list; a matching note commits inside its window.
+        // A new note alone cannot distinguish READ COMMITTED once the readable set is frozen.
+        // Also revoke an ID already in that set before the parked mint reads its census.
         let late = memory_of(&put(
             &handle,
             "g11 decision committed mid-mint",
             NoteKind::Decision,
         ));
+        assert_eq!(
+            handle
+                .admin
+                .execute(
+                    "UPDATE private.memory_records SET status = 'revoked' WHERE memory_id = $1",
+                    &[&second],
+                )
+                .expect("revoke a decision already in the parked mint"),
+            1
+        );
         holder
             .execute("SELECT pg_advisory_unlock($1)", &[&advisory_key])
             .expect("release the census barrier");
@@ -485,12 +496,12 @@ fn g11_a_note_kind_page_and_its_total_share_one_snapshot_under_a_concurrent_writ
         assert_eq!(
             census_total(&page),
             Some(2),
-            "the census counted in the page's snapshot (a younger one would count 3 and fail the cross-check)"
+            "the census still includes the revoked decision from the mint snapshot"
         );
-        // Witness that the late note does match the filter: a fresh mint sees and counts it.
+        // A fresh mint sees both changes.
         let fresh = enumerate(&handle, None, 100, &decisions).expect("fresh enumerate");
-        assert_eq!(page_ids(&fresh), sorted(vec![first, second, late]));
-        assert_eq!(census_total(&fresh), Some(3));
+        assert_eq!(page_ids(&fresh), sorted(vec![first, late]));
+        assert_eq!(census_total(&fresh), Some(2));
         assert!(!page_ids(&fresh).contains(&other));
     });
 }
@@ -871,6 +882,66 @@ fn g15_a_tombstoned_note_is_gone_from_history_provenance_and_enumerate() {
             !rendered.contains(&body),
             "no page carries the forgotten body"
         );
+    });
+}
+
+#[test]
+fn enumerate_exclusions_preserve_readable_census_and_candidate_order() {
+    run_db_fixture::<Fixture, _>("enumerate_exclusions", |mut handle| {
+        handle.seed_current_entitlement_and_window(16);
+        let older = memory_of(&put(&handle, "enumerate older", NoteKind::Problem));
+        let hidden = put(&handle, "enumerate hidden backing", NoteKind::Problem);
+        let secret = put(&handle, "enumerate secret backing", NoteKind::Problem);
+        let newer = memory_of(&put(&handle, "enumerate newer", NoteKind::Problem));
+        let peer = handle.seed_peer_user();
+        // dep: PostgreSQL(owner) — set fixture-only Evidence visibility and classification
+        handle
+            .admin
+            .execute(
+                "UPDATE private.evidence_objects SET visibility_class = 'USER_PRIVATE', \
+                 visibility_user_id = $2, visibility_workspace_id = NULL WHERE evidence_id = $1",
+                &[&hidden.accepted.evidence_id, &peer],
+            )
+            .expect("make backing evidence private to the peer");
+        handle
+            .admin
+            .execute(
+                "UPDATE private.evidence_objects SET data_class = 'SECRET_MATERIAL' WHERE evidence_id = $1",
+                &[&secret.accepted.evidence_id],
+            )
+            .expect("mark readable backing evidence secret");
+
+        // dep: PostgreSQL(role_gateway) — distinguish RLS on the evidence row from the application's intersection
+        let mut rls = handle.admin.transaction().expect("RLS witness transaction");
+        rls.batch_execute(&format!(
+            "SET LOCAL ROLE role_gateway; SET LOCAL humaux.tenant_id = '{}'; SET LOCAL humaux.user_id = '{}';",
+            handle.tenant_id, handle.user_id,
+        ))
+        .expect("caller scope");
+        assert!(
+            rls.query_opt(
+                "SELECT evidence_id FROM private.evidence_objects WHERE evidence_id = $1",
+                &[&hidden.accepted.evidence_id],
+            )
+            .expect("gateway evidence read")
+            .is_none(),
+            "RLS hides the peer's evidence"
+        );
+        rls.rollback().expect("close RLS witness");
+
+        let problems = kinds(&[NoteKind::Problem]);
+        let first = enumerate(&handle, None, 1, &problems).expect("first page");
+        let cursor = first.next_cursor.as_deref().expect("second readable note");
+        let second = enumerate(&handle, Some(cursor), 1, &problems).expect("continuation page");
+        assert_eq!(page_ids(&first), vec![newer.max(older)]);
+        assert_eq!(page_ids(&second), vec![newer.min(older)]);
+        let census = first
+            .census
+            .as_ref()
+            .and_then(|value| value.census.enumeration())
+            .expect("exact census");
+        assert_eq!(census.total(), 3);
+        assert_eq!(census.excluded_secret(), 1);
     });
 }
 

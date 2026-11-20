@@ -48,6 +48,8 @@ const FIRST_P95_TARGET_MS: f64 = 300.0;
 /// Bar (c): the pages-2..n promise, ms (ruling E12).
 const LATER_P95_BAR_MS: f64 = 300.0;
 const BASELINE: &str = "tests/data/enumerate_scale_baseline.txt";
+/// ADR-0071 declared limits: baseline B's owner connection used JIT for the floor.
+const FLOOR_JIT: &str = "on";
 
 /// The numeric field `<name>=` of the checked-in Step-1 `ENUM` line (baseline B).
 fn baseline_field(name: &str) -> f64 {
@@ -61,6 +63,13 @@ fn baseline_field(name: &str) -> f64 {
     assert!(
         line.starts_with(&format!("ENUM n={N} runs={RUNS} ")),
         "baseline B {} was measured at another scale: {line}",
+        path.display()
+    );
+    assert_eq!(
+        line.split_whitespace()
+            .find_map(|field| field.strip_prefix("floor_jit=")),
+        Some(FLOOR_JIT),
+        "baseline B {} must use the same floor JIT setting",
         path.display()
     );
     line.split_whitespace()
@@ -172,7 +181,8 @@ fn floor_ms_once(admin: &mut Client, tenant: Uuid, workspace: Uuid) -> f64 {
     // dep: PostgreSQL(role_gateway) — the floor scan, SET LOCAL ROLE on the owner connection
     let mut txn = admin.transaction().expect("floor txn");
     txn.batch_execute(&format!(
-        "SET LOCAL ROLE role_gateway; SET LOCAL humaux.tenant_id = '{tenant}'; \
+        "SET LOCAL ROLE role_gateway; SET LOCAL jit = {FLOOR_JIT}; \
+         SET LOCAL humaux.tenant_id = '{tenant}'; \
          SELECT set_config('humaux.user_id', '{}', true)",
         Uuid::nil()
     ))
