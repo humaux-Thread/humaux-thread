@@ -150,8 +150,11 @@ const OAUTH_TABLES: [(&str, &str); 4] = [
     ("control.oauth_refresh_tokens", "status"),
 ];
 
-/// The named OAuth doors of migrations 0268, 0308 and 0311, ordered by `pg_proc.proname`.
-const OAUTH_DOORS: [&str; 13] = [
+/// The named OAuth doors of migrations 0268, 0308, 0311 and 0314, ordered by `pg_proc.proname`.
+const OAUTH_DOORS: [&str; 16] = [
+    "oauth_chooser_identity_targets",
+    "oauth_chooser_lock_memberships",
+    "oauth_chooser_session_facts",
     "oauth_client_lookup",
     "oauth_client_register",
     "oauth_code_consume",
@@ -233,8 +236,8 @@ fn g_m02_1_an_oauth_table_acl_is_exactly_empty() {
     });
 }
 
-/// G-M02-1 for 0268/0308/0311: the `control.oauth_*` functions match the named set, each owner SECURITY DEFINER with
-/// `search_path=pg_catalog` alone, and EXECUTE is held by role_gateway alone (PUBLIC included).
+/// G-M02-1: the `control.oauth_*` functions match the named set, each owner SECURITY DEFINER with
+/// an exact runtime configuration, and EXECUTE is held by role_gateway alone (PUBLIC included).
 #[test]
 fn g_m02_1_the_oauth_doors_are_executable_by_gateway_alone() {
     run_db_fixture::<GrantsFixture, _>(
@@ -264,11 +267,15 @@ fn g_m02_1_the_oauth_doors_are_executable_by_gateway_alone() {
                 let executors: Vec<String> = row.get(4);
                 assert!(secdef, "{name}: SECURITY DEFINER");
                 assert_eq!(owner, "role_migration_owner", "{name}: owner");
-                assert_eq!(
-                    config,
-                    vec!["search_path=pg_catalog".to_owned()],
-                    "{name}: config"
-                );
+                let expected_config: &[&str] = match name.as_str() {
+                    "oauth_chooser_identity_targets" | "oauth_chooser_lock_memberships" => &[
+                        "search_path=pg_catalog",
+                        "humaux.tenant_id=",
+                        "humaux.user_id=",
+                    ],
+                    _ => &["search_path=pg_catalog"],
+                };
+                assert_eq!(config, expected_config, "{name}: config");
                 assert_eq!(
                     executors,
                     vec!["role_gateway".to_owned()],
