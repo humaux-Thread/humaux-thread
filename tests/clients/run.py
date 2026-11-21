@@ -508,7 +508,7 @@ def cli(name, version, package, binary, unavailable, env):
             if binary == "qwen":
                 status, reason = asyncio.run(qwen_probe(executable, workspace, url, env, model, events, ttl))
             else:
-                status, reason = kimi_probe(executable, workspace, url, env, model, events, ttl)
+                status, reason = asyncio.run(kimi_probe(executable, workspace, url, env, model, events, ttl))
         if FAULT == "qwen-consent":
             denied = ("consent denied", True) in events and not any(key == "exchange status" for key, _ in events)
             record(name, version, "FAIL", "consent denied by fixture; no exchange" if denied else

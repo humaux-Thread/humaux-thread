@@ -2,18 +2,10 @@
 
 import asyncio
 from contextlib import suppress
-import errno
-import fcntl
 import json
 import os
-import pty
-import re
-import selectors
 import signal
-import struct
-import subprocess
-import termios
-import time
+from urllib.parse import urlsplit
 
 from model_stub import KEY, MODEL
 
@@ -120,78 +112,64 @@ async def qwen_probe(executable, workspace, url, env, model, events, ttl):
         await process.wait()
 
 
-def kimi_probe(executable, workspace, url, env, model, events, ttl):
+async def kimi_probe(executable, workspace, url, env, model, events, ttl):
     home = workspace / "kimi"
     home.mkdir()
     (home / "mcp.json").write_text(json.dumps({"mcpServers": {SERVER: {"url": url}}}))
-    env = {**local_env(env), "KIMI_CODE_HOME": str(home), "TERM": "xterm-256color",
+    (home / "config.toml").write_text('default_permission_mode = "yolo"\n')
+    env = {**local_env(env), "KIMI_CODE_HOME": str(home),
            "KIMI_MODEL_NAME": MODEL, "KIMI_MODEL_PROVIDER_TYPE": "openai", "KIMI_MODEL_API_KEY": KEY,
            "KIMI_MODEL_BASE_URL": model.url, "KIMI_MODEL_CAPABILITIES": "tool_use",
            "KIMI_DISABLE_TELEMETRY": "1", "KIMI_CODE_NO_AUTO_UPDATE": "1"}
-    master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 38, 125, 0, 0))
-    process = subprocess.Popen(
-        [executable, "--yolo"], cwd=workspace, env=env, stdin=slave, stdout=slave, stderr=slave,
-        start_new_session=True,
-    )
-    os.close(slave)
-    try:
-        with selectors.DefaultSelector() as selector:
-            selector.register(master, selectors.EVENT_READ)
-            screen = b""
-            trusted = False
+    expected_origin = env["OAUTH_TEST_ORIGIN"]
 
-            def pump(predicate, timeout):
-                nonlocal screen, trusted
-                deadline = time.monotonic() + timeout
-                while not predicate() and time.monotonic() < deadline and process.poll() is None:
-                    if not selector.select(min(.2, max(0, deadline - time.monotonic()))):
+    async def turn(prompt, oauth=False):
+        process = await asyncio.create_subprocess_exec(
+            executable, "-p", prompt, "--output-format", "stream-json", cwd=workspace, env=env,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE, limit=4 * 1024 * 1024, start_new_session=True,
+        )
+        opened = False
+        try:
+            async with asyncio.timeout(65 if oauth else 40):
+                while line := await process.stderr.readline():
+                    # Kimi print mode reports the native tool's URL on its own line.
+                    # Only pass the exact fixture's authorize URL to the existing browser shim.
+                    address = line.decode(errors="replace").strip()
+                    if not oauth or opened or not address.startswith(expected_origin + "/oauth/authorize?"):
                         continue
-                    try:
-                        chunk = os.read(master, 8192)
-                    except OSError as error:
-                        if error.errno == errno.EIO:
-                            break
-                        raise
-                    if not chunk:
-                        break
-                    # Keep raw terminal data, including any OAuth URL, in memory only.
-                    screen = (screen + chunk)[-65536:]
-                    clean = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", screen).lower()
-                    if not trusted and b"trust this folder?" in clean:
-                        os.write(master, b"\r")
-                        trusted = True
-                        screen = b""
-                return predicate()
+                    parsed = urlsplit(address)
+                    if parsed.fragment or not parsed.query or any(char.isspace() for char in address):
+                        continue
+                    opened = True
+                    browser = await asyncio.create_subprocess_exec(
+                        env["BROWSER"], address, env=env, stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    if await browser.wait():
+                        return False
+                return await process.wait() == 0
+        finally:
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            await process.wait()
 
-            if not pump(lambda: b"no session yet" in screen.lower() or b"type a message" in screen.lower(), 30):
-                return "FAIL", "Kimi configured PTY did not reach the input prompt"
-            select_tool(model, "authenticate")
-            os.write(master, b"/mcp-config login humaux_ci\r")
-            if not pump(lambda: completed_auth(events), 50):
-                if (model.turns and not model.emitted and
-                        not any(key == "authorize" for key, _ in events)):
-                    return "not_applicable", "Kimi reached the local model but did not expose its MCP authenticate tool or send authorize"
-                return "FAIL", "Kimi MCP login did not complete"
-            if ("consent denied", True) in events:
-                return "FAIL", "Native OAuth denial"
-            if not pump(lambda: ("tools/list", True) in events, 25):
-                return "FAIL", "Kimi did not catalogue remember after OAuth"
-            # The auth turn must finish before submitting the next terminal command.
-            if not pump(lambda: b"Fixture turn complete." in screen, 25):
-                return "FAIL", "Kimi OAuth turn did not return to the prompt"
-            for expected in (1, 2):
-                screen = b""
-                select_tool(model, "remember")
-                os.write(master, (PROMPT + "\r").encode())
-                if not pump(lambda: events.count(("tools/call", True)) >= expected and
-                            b"Fixture turn complete." in screen, 40):
-                    return "FAIL", "Kimi tool turn did not complete"
-                if expected == 1:
-                    pump(lambda: False, ttl + 1)
-            return "PASS", "Kimi PTY prompts used the local provider"
-    finally:
-        os.close(master)
-        with suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
-        process.wait()
+    stage = "Kimi native MCP login"
+    try:
+        select_tool(model, "authenticate")
+        completed = await turn("/mcp-config login humaux_ci", oauth=True)
+        if not completed or ("code", True) not in events:
+            if (completed and model.turns and not model.emitted and
+                    not any(key == "authorize" for key, _ in events)):
+                return "not_applicable", "Kimi reached its local model but exposed no MCP authenticate tool and sent no authorize request"
+            return "FAIL", stage + " did not complete"
+        for attempt in (1, 2):
+            stage = "Kimi tool turn" if attempt == 1 else "Kimi post-expiry tool turn"
+            select_tool(model, "remember")
+            if not await turn(PROMPT) or events.count(("tools/call", True)) < attempt:
+                return "FAIL", stage + " produced no successful remember call"
+            if attempt == 1:
+                await asyncio.sleep(ttl + 1)
+        return "PASS", "Kimi native print mode used the local provider"
+    except (OSError, ValueError, TimeoutError, EOFError):
+        return "FAIL", stage + " did not complete"
