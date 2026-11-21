@@ -565,7 +565,7 @@ async fn request_boundary(
         raw_arguments: None,
         http_status: status.clone(),
         capacity_denied: capacity_denied.clone(),
-        expected_resource: config.expected_resource,
+        expected_resource: config.expected_resource.clone(),
         insufficient_scope: insufficient_scope.clone(),
     };
     let mut context = match http_context(&parts, &request_state) {
@@ -577,37 +577,8 @@ async fn request_boundary(
             .split_once(' ')
             .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
     });
-    let mut access = config
-        .application
-        .check_access(&context, McpOperation::Preflight)
-        .await;
-    if is_head && access.is_ok() {
-        // OAuth clients probe with HEAD before sending any MCP protocol headers.
-        access = if has_bearer {
-            config
-                .application
-                .check_access(&context, McpOperation::Initialize)
-                .await
-        } else {
-            Err(ErrorCode::Unauthorized)
-        };
-    }
-    if let Err(code) = access {
-        let mapping = error_map::lookup(code);
-        let response = (
-            StatusCode::from_u16(mapping.http_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-            code.as_str(),
-        )
-            .into_response();
-        return with_bearer_challenge(
-            with_capacity_retry(response, &capacity_denied),
-            config.metadata_url.as_deref(),
-            has_bearer && !is_head,
-            None,
-        );
-    }
-    if is_head {
-        return (StatusCode::METHOD_NOT_ALLOWED, [("allow", "POST")]).into_response();
+    if let Some(response) = boundary_access_response(&config, &context, is_head, has_bearer).await {
+        return response;
     }
     if config.legacy {
         let message = match mcp_legacy::decode(&parts.headers, &bytes) {
@@ -646,6 +617,47 @@ async fn request_boundary(
         has_bearer,
         insufficient_scope.get().copied(),
     )
+}
+
+async fn boundary_access_response(
+    config: &BoundaryConfig,
+    context: &McpHttpContext,
+    is_head: bool,
+    has_bearer: bool,
+) -> Option<Response> {
+    let mut access = config
+        .application
+        .check_access(context, McpOperation::Preflight)
+        .await;
+    if is_head && access.is_ok() {
+        // OAuth clients probe with HEAD before sending any MCP protocol headers.
+        access = if has_bearer {
+            config
+                .application
+                .check_access(context, McpOperation::Initialize)
+                .await
+        } else {
+            Err(ErrorCode::Unauthorized)
+        };
+    }
+    if let Err(code) = access {
+        let mapping = error_map::lookup(code);
+        let response = (
+            StatusCode::from_u16(mapping.http_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            code.as_str(),
+        )
+            .into_response();
+        return Some(with_bearer_challenge(
+            with_capacity_retry(response, &context.capacity_denied),
+            config.metadata_url.as_deref(),
+            has_bearer && !is_head,
+            None,
+        ));
+    }
+    if is_head {
+        return Some((StatusCode::METHOD_NOT_ALLOWED, [("allow", "POST")]).into_response());
+    }
+    None
 }
 
 fn with_bearer_challenge(
