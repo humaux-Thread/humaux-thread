@@ -40,8 +40,8 @@ async def qwen_probe(executable, workspace, url, env, model, events, ttl):
         "model": {"name": MODEL},
         "modelProviders": {"openai": [{"id": MODEL, "envKey": "OPENAI_API_KEY", "baseUrl": model.url}]},
         "tools": {"visible": [f"mcp__{SERVER}__remember"]},
-        "mcpServers": {SERVER: {"httpUrl": url, "trust": True,
-                                "oauth": {"enabled": True, "scopes": ["memory:write"]}}},
+        # Dynamic discovery uses the client ID Qwen saved during DCR when refreshing.
+        "mcpServers": {SERVER: {"httpUrl": url, "trust": True}},
     }))
     env = {**local_env(env), "QWEN_HOME": str(home), "QWEN_RUNTIME_DIR": str(workspace / "runtime"),
            "OPENAI_API_KEY": KEY, "OPENAI_BASE_URL": model.url, "QWEN_USAGE_STATISTICS_ENABLED": "false"}
@@ -92,7 +92,7 @@ async def qwen_probe(executable, workspace, url, env, model, events, ttl):
             return "FAIL", "Native OAuth denial"
         stage = "Qwen tool discovery"
         await wait_for(lambda: ("tools/list", True) in events)
-        for number in (4, 5):
+        for number in (4, 6):
             stage = "Qwen tool turn" if number == 4 else "Qwen post-expiry tool turn"
             select_tool(model, "remember")
             result = await request(number, "session/prompt", {"sessionId": session_id,
@@ -103,6 +103,10 @@ async def qwen_probe(executable, workspace, url, env, model, events, ttl):
                 if ("tools/call", True) not in events:
                     return "FAIL", stage + " produced no successful remember call"
                 await asyncio.sleep(ttl + 1)
+                stage = "Qwen MCP reconnect after expiry"
+                # The transport captures a bearer at connection time. Native reconnect
+                # resolves and refreshes the stored credentials without test-side token access.
+                await request(5, "qwen/control/workspace/mcp/restart", {"serverName": SERVER})
         return "PASS", "Qwen ACP prompts used the local provider"
     except (OSError, ValueError, TimeoutError, EOFError):
         return "FAIL", stage + " did not complete"
