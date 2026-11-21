@@ -1,8 +1,8 @@
 //! `application::oauth_exchange` — M02 token exchange use cases and transactional credential store port.
 //! Depends-on: crates=[async-trait, hex, humaux-domain, rand, serde_json, sha2, time, uuid]; services=[]; env=[]; modules=[application::oauth, domain::error, domain::ids]
 //! Called-by: [adapters::oauth_repo, application::api_key, application::bearer, gateway::bootstrap, gateway::oauth_http, tests]
-//! Invariants: [precheck before consume; spent codes and revoking refusals commit; other refusals roll back]
-//! Spec: ADR-0130; §73.5; §78.1; M02 D3/D4.
+//! Invariants: [precheck before consume; spent codes and revoking refusals commit; refresh checks the live policy and groups of its exact grant before committing]
+//! Spec: ADR-0130; ADR-0137; §73.5; §78.1; M02 D3/D4.
 
 use crate::oauth::{
     self, AccessTerms, CodeExchangeRequest, CodeTerms, ConsumedCodeView, GrantView, OAuthPolicy,
@@ -316,6 +316,8 @@ pub trait ExchangeTransaction: Send {
         successor: &SecretHash,
         ttl: Duration,
     ) -> Result<RotateOutcome, ErrorCode>;
+    /// Lock and recheck the current chooser policy and groups of the persisted grant's exact target.
+    async fn refresh_target_allowed(&mut self, grant: &GrantRecord) -> Result<bool, ErrorCode>;
     /// Close a refresh family.
     async fn revoke_family(&mut self, id: Uuid, reason: RevokeReason) -> Result<bool, ErrorCode>;
     /// Close a grant.
@@ -535,6 +537,10 @@ pub async fn refresh_token(
     // RFC 6749 §6 / OPEN-5: requested scope is ignored; only the stored grant's scopes are returned.
     match oauth::decide_refresh(fact, view.as_ref(), &request, now, policy) {
         RefreshDecision::Issue { access, .. } => {
+            let grant = grant.as_ref().ok_or(ErrorCode::Internal)?;
+            if !txn.refresh_target_allowed(grant).await? {
+                return Ok(Err(OAuthReason::REFRESH_REJECTED));
+            }
             let response = Ok(TokenExchange {
                 access,
                 refresh: successor,

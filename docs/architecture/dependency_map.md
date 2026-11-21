@@ -6732,6 +6732,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `gateway::tests::oauth_chooser`
 - process(humaux-gateway): `adapters::oauth_repo`
 
 ### `control.oauth_chooser_session_facts`
@@ -6740,6 +6741,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `gateway::tests::oauth_chooser`
 - process(humaux-gateway): `adapters::session_repo`
 
 ### `control.oauth_client_lookup`
@@ -6861,6 +6863,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::auth_contract`
 - (no process): `adapters::tests::credential_grants`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -6903,6 +6906,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::auth_contract`
 - (no process): `adapters::tests::credential_grants`
+- (no process): `gateway::tests::oauth_chooser`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
 

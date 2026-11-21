@@ -2,7 +2,7 @@
 //!   client registry, one-time authorization codes, grants and single-use refresh rotation. Writes only through definers; no
 //!   runtime role holds any privilege on the four tables, so every read goes through a door too.
 //!   The chooser settings door (0312) checks live tenant-admin authority and returns a committed row version.
-//!   The chooser read door (0313) returns the policy/group subset and holds shared locks through this transaction.
+//!   The chooser read door (0313) returns the policy/group subset and holds shared locks through consent and refresh commits.
 //! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users] x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_consent_tenants, control.oauth_dcr_register, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_chooser_identity_targets, control.oauth_chooser_lock_memberships, control.oauth_refresh_family_revoke, control.oauth_refresh_grant, control.oauth_refresh_rotate, control.read_mcp_chooser_decisions, control.write_mcp_chooser_settings]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, adapters::session_repo, application::oauth, application::oauth_exchange, application::session, domain::error, domain::identity, domain::ids]
 //! Called-by: [gateway::auth, gateway::bootstrap, tests]
 //! Invariants: [a raw code or refresh token never reaches this module: callers pass a SecretHash, whose Debug is redacted;
@@ -44,6 +44,22 @@ const CHECK_VIOLATION: &str = "23514";
 fn db_failure(error: sqlx::Error) -> ErrorCode {
     match error.as_database_error().and_then(|db| db.code()) {
         Some(code) if code == CHECK_VIOLATION => ErrorCode::InvalidInput,
+        _ => ErrorCode::DependencyUnavailable,
+    }
+}
+
+fn chooser_read_failure(error: sqlx::Error) -> ErrorCode {
+    if matches!(error, sqlx::Error::ColumnDecode { .. }) {
+        return ErrorCode::Internal;
+    }
+    match error
+        .as_database_error()
+        .and_then(|db| db.code())
+        .as_deref()
+    {
+        Some("22023") => ErrorCode::InvalidInput,
+        Some("25000") => ErrorCode::Internal,
+        Some("40001" | "40P01") => ErrorCode::Conflict,
         _ => ErrorCode::DependencyUnavailable,
     }
 }
@@ -108,7 +124,7 @@ pub async fn persist_chooser_consent_code(
             .bind(workspace.map(|id| id.0))
             .fetch_one(&mut *txn.txn)
             .await
-            .map_err(db_failure)?;
+            .map_err(chooser_read_failure)?;
     if !members_live {
         return Err(ErrorCode::Forbidden);
     }
@@ -205,6 +221,16 @@ impl OAuthTxn {
         client: ValidatedClientId<'_>,
         candidates: &[ConsentTarget],
     ) -> Result<AllowedSubset, ErrorCode> {
+        self.read_mcp_target_decisions(user, client.as_str(), candidates)
+            .await
+    }
+
+    async fn read_mcp_target_decisions(
+        &mut self,
+        user: UserId,
+        client: &str,
+        candidates: &[ConsentTarget],
+    ) -> Result<AllowedSubset, ErrorCode> {
         if candidates.len() > BoundedSet::<ConsentTarget>::MAX_LEN {
             return Err(ErrorCode::InvalidInput);
         }
@@ -219,26 +245,12 @@ impl OAuthTxn {
              ORDER BY candidate_no",
         )
         .bind(user.0)
-        .bind(client.as_str())
+        .bind(client)
         .bind(tenants)
         .bind(workspaces)
         .fetch_all(&mut *self.txn)
         .await
-        .map_err(|error| {
-            if matches!(error, sqlx::Error::ColumnDecode { .. }) {
-                return ErrorCode::Internal;
-            }
-            match error
-                .as_database_error()
-                .and_then(|db| db.code())
-                .as_deref()
-            {
-                Some("22023") => ErrorCode::InvalidInput,
-                Some("25000") => ErrorCode::Internal,
-                Some("40001" | "40P01") => ErrorCode::Conflict,
-                _ => ErrorCode::DependencyUnavailable,
-            }
-        })?;
+        .map_err(chooser_read_failure)?;
 
         if decisions.len() != candidates.len()
             || (1_i64..)
@@ -678,6 +690,13 @@ impl humaux_application::oauth_exchange::ExchangeTransaction for OAuthTxn {
         ttl: Duration,
     ) -> Result<RotateOutcome, ErrorCode> {
         OAuthTxn::rotate_refresh(self, presented, successor, ttl).await
+    }
+    async fn refresh_target_allowed(&mut self, grant: &GrantRecord) -> Result<bool, ErrorCode> {
+        let target = (grant.tenant_id, grant.workspace_id);
+        let allowed = self
+            .read_mcp_target_decisions(grant.user_id, &grant.client_id, &[target])
+            .await?;
+        Ok(allowed.contains(&target))
     }
     async fn revoke_family(&mut self, id: Uuid, reason: RevokeReason) -> Result<bool, ErrorCode> {
         OAuthTxn::revoke_family(self, id, reason).await

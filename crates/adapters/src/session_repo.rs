@@ -159,7 +159,16 @@ pub(crate) async fn chooser_session_live(
         .bind(lock)
         .fetch_optional(&mut **txn)
         .await
-        .map_err(db_failure)?;
+        .map_err(|error| {
+            match error
+                .as_database_error()
+                .and_then(|db| db.code())
+                .as_deref()
+            {
+                Some("40001" | "40P01") => ErrorCode::Conflict,
+                _ => db_failure(error),
+            }
+        })?;
     let Some(row) = row else {
         return Ok(false);
     };

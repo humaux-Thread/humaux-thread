@@ -1,5 +1,5 @@
-//! `gateway::tests::oauth_chooser` — ADR-0137 candidate and atomic code acceptance with real PostgreSQL.
-//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-testkit, postgres, serde_json, tokio, uuid]; services=[PostgreSQL(owner) r=[control.oauth_authorization_codes] w=[control.entitlement_snapshots, control.memberships, control.sessions, control.tenants, control.users, control.workspace_memberships, control.workspaces], PostgreSQL(role_gateway) x=[control.write_mcp_chooser_settings]]; env=[]; modules=[adapters::oauth_repo, adapters::postgres, adapters::session_repo, adapters::tests::support::throwaway_db, application::auth, application::login, application::oauth, application::oauth_exchange, application::session, domain::error, domain::identity, domain::ids, gateway::bootstrap, humaux-testkit]
+//! `gateway::tests::oauth_chooser` — ADR-0137 candidate, atomic code and refresh acceptance with real PostgreSQL.
+//! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-testkit, postgres, serde_json, tokio, uuid]; services=[PostgreSQL(owner) r=[control.oauth_authorization_codes, control.oauth_grants, control.oauth_refresh_tokens] w=[control.entitlement_snapshots, control.memberships, control.sessions, control.tenants, control.users, control.workspace_memberships, control.workspaces] x=[control.oauth_chooser_lock_memberships, control.oauth_chooser_session_facts], PostgreSQL(role_gateway) x=[control.write_mcp_chooser_settings]]; env=[]; modules=[adapters::oauth_repo, adapters::postgres, adapters::session_repo, adapters::tests::support::throwaway_db, application::api_key, application::auth, application::bearer, application::login, application::oauth, application::oauth_exchange, application::session, application::signed_token, domain::error, domain::identity, domain::ids, gateway::bootstrap, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [every test owns a migrated disposable database; decisions and issuance run through the gateway-role pool]
 //! Spec: ADR-0137; Baseline §33; §73.6; §79.2
@@ -7,19 +7,23 @@
 use std::time::Duration;
 
 use humaux_adapters::{
-    oauth_repo::{self, ClientKind, McpChooserChange},
+    oauth_repo::{self, ClientKind, GrantIssue, McpChooserChange, SecretHash},
     postgres::RuntimeDbPool,
     session_repo,
 };
 use humaux_application::{
+    api_key::VerifiedCredential,
     auth::AuthConfig,
+    bearer::VerifiedAccess,
     login::LoginVerifyOutcome,
     oauth::{
-        AuthorizeRequest, ClientView, CodeExchangeRequest, ConsentTarget, OAuthPolicy,
-        ValidatedAuthorize, authorize_request,
+        ACCESS_TOKEN_LABEL, AuthorizeRequest, ClientView, CodeExchangeRequest, ConsentTarget,
+        OAuthPolicy, OAuthReason, RefreshRequest, ValidatedAuthorize, access_token_payload,
+        authorize_request,
     },
-    oauth_exchange::exchange_code,
+    oauth_exchange::{TokenExchange, exchange_code, refresh_token},
     session::{SessionPolicy, VerifiedSession},
+    signed_token::TokenKeys,
 };
 use humaux_domain::{
     error::ErrorCode,
@@ -153,7 +157,7 @@ impl Harness {
                 .unwrap()
         });
         let resources = vec![RESOURCE.to_owned()];
-        let scopes = vec!["memory:read".to_owned()];
+        let scopes = vec!["context:read".to_owned()];
         let validated = authorize_request(
             &AuthorizeRequest {
                 response_type: Some("code"),
@@ -162,7 +166,7 @@ impl Harness {
                 code_challenge: Some(CHALLENGE),
                 code_challenge_method: Some("S256"),
                 resource: Some(RESOURCE),
-                scope: Some("memory:read"),
+                scope: Some("context:read"),
                 state: None,
             },
             Some(&ClientView {
@@ -221,6 +225,107 @@ impl Harness {
             &self.validated,
             &policy(&self.resources, &self.scopes),
         ))
+    }
+
+    fn grant_tokens(&self) -> TokenExchange {
+        let presented = Uuid::new_v4().to_string();
+        let oauth = policy(&self.resources, &self.scopes);
+        self.rt.block_on(async {
+            let mut txn = oauth_repo::begin(&self.pool).await.unwrap();
+            txn.issue_grant(&GrantIssue {
+                user_id: self.session.user_id,
+                tenant_id: self.workspace().0,
+                workspace_id: self.workspace().1,
+                client_id: CLIENT,
+                resource: RESOURCE,
+                scopes: &self.scopes,
+                refresh_hash: &SecretHash::of_secret(&presented),
+                refresh_ttl: oauth.refresh_ttl,
+                grant_max_ttl: oauth.grant_max_ttl,
+            })
+            .await
+            .unwrap()
+            .expect("seed a refresh family with an exact workspace binding");
+            txn.commit().await.unwrap();
+        });
+        self.refresh(&self.pool, &presented).unwrap().unwrap()
+    }
+
+    fn refresh(
+        &self,
+        pool: &RuntimeDbPool,
+        token: &str,
+    ) -> Result<Result<TokenExchange, OAuthReason>, ErrorCode> {
+        self.rt.block_on(refresh_token(
+            pool,
+            &policy(&self.resources, &self.scopes),
+            RefreshRequest {
+                client_id: CLIENT,
+                resource: Some(RESOURCE),
+            },
+            Some(token),
+        ))
+    }
+
+    fn refresh_rows(&mut self, grant_id: Uuid) -> Vec<String> {
+        // dep: PostgreSQL(owner) — assert persisted rotation state, including invisible successors.
+        self.owner
+            .query(
+                "SELECT status FROM control.oauth_refresh_tokens WHERE grant_id = $1 ORDER BY status",
+                &[&grant_id],
+            )
+            .unwrap()
+            .iter()
+            .map(|row| row.get(0))
+            .collect()
+    }
+
+    fn assert_refresh_refused(&mut self, original: &TokenExchange) {
+        assert_eq!(
+            self.refresh(&self.pool, &original.refresh).unwrap().err(),
+            Some(OAuthReason::REFRESH_REJECTED),
+            "revoked target must return no new tokens"
+        );
+        assert_eq!(
+            self.refresh_rows(original.access.grant_id),
+            ["ACTIVE", "ROTATED"],
+            "refused rotation must roll back both the consume and the successor"
+        );
+    }
+
+    fn timed_pool(&self) -> RuntimeDbPool {
+        // dep: PostgreSQL(role_gateway) — observe the guard without a client sleep.
+        self.rt
+            .block_on(RuntimeDbPool::connect(&format!(
+                "{}%20-c%20lock_timeout%3D150ms",
+                self.gateway_dsn
+            )))
+            .unwrap()
+    }
+
+    fn write_first_deny(&self, writer: &mut postgres::Transaction<'_>) {
+        let sql = "SELECT control.write_mcp_chooser_settings($1,$2,$1,$3,$4)";
+        let tenant = self.tenants[0].0;
+        let user = self.session.user_id.0;
+        for (action, values) in [
+            (
+                "configure",
+                json!({"policy_enabled":true,"groups_restricted":false}),
+            ),
+            (
+                "rule",
+                json!({"workspace_id":self.workspaces[0].0,"client_id":CLIENT,"effect":"DENY","active":true}),
+            ),
+        ] {
+            // dep: PostgreSQL(role_gateway) — hold the actual write door in one separate transaction.
+            assert_eq!(
+                writer
+                    .query_one(sql, &[&tenant, &user, &action, &values])
+                    .unwrap()
+                    .get::<_, i64>(0),
+                1
+            );
+        }
     }
 
     fn assert_refused(&mut self, target: ConsentTarget, reason: ErrorCode, label: &str) {
@@ -521,36 +626,9 @@ fn chooser_serializes_first_deny_with_code_issuance() {
         assert!(h.candidates().unwrap().contains(&target));
         // dep: PostgreSQL(role_gateway) — retain the administrator's 0312 guard until the attempt finishes.
         let mut admin = Client::connect(&h.gateway_dsn, NoTls).unwrap();
-        // dep: PostgreSQL(role_gateway) — hold the actual write door in one separate transaction.
         let mut writer = admin.transaction().unwrap();
-        let sql = "SELECT control.write_mcp_chooser_settings($1,$2,$1,$3,$4)";
-        let tenant = target.0.0;
-        let user = h.session.user_id.0;
-        for (action, values) in [
-            (
-                "configure",
-                json!({"policy_enabled":true,"groups_restricted":false}),
-            ),
-            (
-                "rule",
-                json!({"workspace_id":h.workspaces[0].0,"client_id":CLIENT,"effect":"DENY","active":true}),
-            ),
-        ] {
-            assert_eq!(
-                writer
-                    .query_one(sql, &[&tenant, &user, &action, &values])
-                    .unwrap()
-                    .get::<_, i64>(0),
-                1
-            );
-        }
-        // dep: PostgreSQL(role_gateway) — fail the blocked statement deterministically without a client sleep.
-        let timed =
-            h.rt.block_on(RuntimeDbPool::connect(&format!(
-                "{}%20-c%20lock_timeout%3D150ms",
-                h.gateway_dsn
-            )))
-            .unwrap();
+        h.write_first_deny(&mut writer);
+        let timed = h.timed_pool();
         assert_eq!(
             h.issue_with_pool(&timed, target).err(),
             Some(ErrorCode::DependencyUnavailable),
@@ -564,4 +642,230 @@ fn chooser_serializes_first_deny_with_code_issuance() {
             "committed first deny must refuse the stale selection",
         );
     });
+}
+
+#[test]
+fn refresh_uses_current_policy_version_and_rolls_back() {
+    run_db_fixture::<Fixture, _>("refresh_uses_current_policy_version_and_rolls_back", |db| {
+        let mut h = Harness::new(db);
+        h.configure(true, false);
+        let rule = |active| McpChooserChange::Rule {
+            workspace_id: h.workspace().1,
+            client_id: Some(CLIENT),
+            effect: McpPolicyEffect::Allow,
+            active,
+        };
+        let (allow, withdraw) = (rule(true), rule(false));
+        h.write(allow);
+        let original = h.grant_tokens();
+        h.write(withdraw);
+        h.assert_refresh_refused(&original);
+
+        let keys = TokenKeys::new(vec![1; 32], None).unwrap();
+        let token = keys.sign(&ACCESS_TOKEN_LABEL, &access_token_payload(&original.access));
+        let expiry = original.access.expires_at.replace_nanosecond(0).unwrap();
+        let before_expiry = expiry - Duration::from_secs(1);
+        h.rt.block_on(async {
+            let mut txn = oauth_repo::begin(&h.pool).await.unwrap();
+            let grant = txn
+                .lookup_grant(original.access.grant_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(txn.subject_is_active(&grant).await.unwrap());
+            let access = VerifiedAccess::verify(&keys, &token, RESOURCE, before_expiry).unwrap();
+            VerifiedCredential::from_oauth(
+                access,
+                grant,
+                h.workspace().1.into_iter().collect(),
+                before_expiry,
+            )
+            .expect("policy revocation does not revoke an unexpired access token");
+            txn.commit().await.unwrap();
+        });
+        assert_eq!(
+            VerifiedAccess::verify(&keys, &token, RESOURCE, expiry).err(),
+            Some(ErrorCode::Unauthorized),
+            "the existing access token still expires at its original TTL"
+        );
+
+        h.rule(McpPolicyEffect::Allow);
+        let next = h.refresh(&h.pool, &original.refresh).unwrap().unwrap();
+        assert_eq!(next.access.grant_id, original.access.grant_id);
+        assert_eq!(
+            h.refresh_rows(original.access.grant_id),
+            ["ACTIVE", "ROTATED", "ROTATED"]
+        );
+    });
+}
+
+#[test]
+fn refresh_rechecks_groups_without_suppressing_reuse_revocation() {
+    run_db_fixture::<Fixture, _>(
+        "refresh_rechecks_groups_without_suppressing_reuse_revocation",
+        |db| {
+            let mut h = Harness::new(db);
+            let group = Uuid::new_v4();
+            let user = h.session.user_id;
+            let member = |active| McpChooserChange::Member {
+                group_id: group,
+                user_id: user,
+                active,
+            };
+            h.configure(false, true);
+            h.write(McpChooserChange::Group {
+                group_id: group,
+                allowed: true,
+            });
+            h.write(member(true));
+            let original = h.grant_tokens();
+            h.write(member(false));
+            h.assert_refresh_refused(&original);
+
+            h.write(member(true));
+            let next = h.refresh(&h.pool, &original.refresh).unwrap().unwrap();
+            h.write(member(false));
+            assert_eq!(
+                h.refresh(&h.pool, &original.refresh).unwrap().err(),
+                Some(OAuthReason::REFRESH_REUSED)
+            );
+            assert_eq!(
+                h.refresh_rows(original.access.grant_id),
+                ["REVOKED", "ROTATED", "ROTATED"]
+            );
+            // dep: PostgreSQL(owner) — reuse revokes the persisted grant and the successor together.
+            let grant = h
+                .owner
+                .query_one(
+                    "SELECT status, revoke_reason FROM control.oauth_grants WHERE grant_id = $1",
+                    &[&original.access.grant_id],
+                )
+                .unwrap();
+            assert_eq!(grant.get::<_, String>(0), "REVOKED");
+            assert_eq!(grant.get::<_, String>(1), "REFRESH_REUSE");
+            assert_eq!(
+                h.refresh(&h.pool, &next.refresh).unwrap().err(),
+                Some(OAuthReason::REFRESH_REJECTED)
+            );
+        },
+    );
+}
+
+#[test]
+fn refresh_refuses_workspace_without_tenant_fallback() {
+    run_db_fixture::<Fixture, _>("refresh_refuses_workspace_without_tenant_fallback", |db| {
+        let mut h = Harness::new(db);
+        h.configure(true, false);
+        h.write(McpChooserChange::Rule {
+            workspace_id: None,
+            client_id: Some(CLIENT),
+            effect: McpPolicyEffect::Allow,
+            active: true,
+        });
+        let original = h.grant_tokens();
+        h.rule(McpPolicyEffect::Deny);
+        let candidates = h.candidates().unwrap();
+        assert!(candidates.contains(&(h.tenants[0], None)));
+        assert!(!candidates.contains(&h.workspace()));
+        h.assert_refresh_refused(&original);
+    });
+}
+
+#[test]
+fn refresh_serializes_first_deny_with_rotation() {
+    run_db_fixture::<Fixture, _>("refresh_serializes_first_deny_with_rotation", |db| {
+        let mut h = Harness::new(db);
+        let original = h.grant_tokens();
+        // dep: PostgreSQL(role_gateway) — retain the first policy write until refresh attempts its lock.
+        let mut admin = Client::connect(&h.gateway_dsn, NoTls).unwrap();
+        let mut writer = admin.transaction().unwrap();
+        h.write_first_deny(&mut writer);
+        assert_eq!(
+            h.refresh(&h.timed_pool(), &original.refresh).err(),
+            Some(ErrorCode::DependencyUnavailable),
+            "uncommitted first deny must block refresh"
+        );
+        assert_eq!(
+            h.refresh_rows(original.access.grant_id),
+            ["ACTIVE", "ROTATED"]
+        );
+        writer.commit().unwrap();
+        h.assert_refresh_refused(&original);
+    });
+}
+
+#[test]
+fn chooser_candidates_refuse_the_257th_identity_target() {
+    run_db_fixture::<Fixture, _>(
+        "chooser_candidates_refuse_the_257th_identity_target",
+        |db| {
+            let mut h = Harness::new(db);
+            // dep: PostgreSQL(owner) — seed 252 additional live workspace grants alongside four existing identity targets.
+            h.owner
+                .execute(
+                    "WITH added AS (
+                  INSERT INTO control.workspaces (tenant_id, workspace_id, name)
+                  SELECT $1, gen_random_uuid(), 'chooser capacity' FROM generate_series(1, 252)
+                  RETURNING tenant_id, workspace_id
+              )
+              INSERT INTO control.workspace_memberships (tenant_id, workspace_id, user_id, role)
+              SELECT tenant_id, workspace_id, $2, 'MEMBER' FROM added",
+                    &[&h.tenants[0].0, &h.session.user_id.0],
+                )
+                .unwrap();
+            assert_eq!(
+                h.candidates().unwrap().len(),
+                255,
+                "256 identity targets, one without entitlement"
+            );
+            h.owner.execute(
+            "INSERT INTO control.workspace_memberships (tenant_id, workspace_id, user_id, role)
+             VALUES ($1, $2, $3, 'MEMBER')",
+            &[&h.tenants[0].0, &h.workspaces[1].0, &h.session.user_id.0],
+        ).unwrap();
+            assert_eq!(
+                h.candidates(),
+                Err(ErrorCode::InvalidInput),
+                "the full candidate door must surface the overflow sentinel"
+            );
+        },
+    );
+}
+
+#[test]
+fn chooser_consent_lock_conflicts_use_the_conflict_error() {
+    run_db_fixture::<Fixture, _>(
+        "chooser_consent_lock_conflicts_use_the_conflict_error",
+        |db| {
+            let mut h = Harness::new(db);
+            for door in [
+                "control.oauth_chooser_lock_memberships(uuid,uuid,uuid)",
+                "control.oauth_chooser_session_facts(uuid,uuid,boolean)",
+            ] {
+                // dep: PostgreSQL(owner) — inject only the real PG error across each isolated door boundary.
+                let original: String = h
+                    .owner
+                    .query_one(
+                        "SELECT pg_get_functiondef($1::text::regprocedure)",
+                        &[&door],
+                    )
+                    .unwrap()
+                    .get(0);
+                for sqlstate in ["40001", "40P01"] {
+                    let injected = original.replacen(
+                    "\nBEGIN\n",
+                    &format!("\nBEGIN\n  RAISE EXCEPTION 'test lock conflict' USING ERRCODE = '{sqlstate}';\n"),
+                    1,
+                );
+                    assert_ne!(
+                        injected, original,
+                        "expected the definer body to contain BEGIN"
+                    );
+                    h.owner.batch_execute(&injected).unwrap();
+                    h.assert_refused(h.workspace(), ErrorCode::Conflict, door);
+                }
+                h.owner.batch_execute(&original).unwrap();
+            }
+        },
+    );
 }
