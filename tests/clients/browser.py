@@ -29,6 +29,15 @@ class ConsentFields(HTMLParser):
             self.fields[attrs["name"]] = attrs["value"]
 
 
+def postgres_command(env, statement):
+    container = env["OAUTH_TEST_POSTGRES_CONTAINER"]
+    assert re.fullmatch(r"[a-f0-9]{64}", container), "disposable PG service id"
+    return [
+        "docker", "exec", container, "psql", "-U", "postgres", "-d", "humaux_thread_ci",
+        "-XAt", "-v", "ON_ERROR_STOP=1", "-c", statement,
+    ]
+
+
 def open_authorization(url):
     origin = os.environ["OAUTH_TEST_ORIGIN"]
     parsed = urlsplit(url)
@@ -65,10 +74,8 @@ def open_authorization(url):
     user = os.environ["OAUTH_TEST_USER"]
     assert re.fullmatch(r"[a-f0-9-]{36}", user)
     code = subprocess.check_output(
-        ["psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-c",
-         f"SELECT payload->>'code' FROM ops.email_outbox WHERE user_id='{user}' "
-         "ORDER BY created_at DESC LIMIT 1"],
-        env={**os.environ, "PGDATABASE": os.environ["HUMAUX_TEST_PG_DSN"]},
+        postgres_command(os.environ, f"SELECT payload->>'code' FROM ops.email_outbox WHERE user_id='{user}' "
+                         "ORDER BY created_at DESC LIMIT 1"),
         stderr=subprocess.DEVNULL,
         text=True,
         timeout=10,

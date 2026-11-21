@@ -21,7 +21,7 @@ from urllib.request import ProxyHandler, Request, build_opener, urlopen
 from uuid import UUID, uuid4
 from xml.etree import ElementTree as xml
 
-from browser import NoRedirect
+from browser import NoRedirect, postgres_command
 
 HERE = Path(__file__).resolve().parent
 TEMP = Path(os.environ["RUNNER_TEMP"])
@@ -178,8 +178,7 @@ def required(command, env, title, timeout=70):
 
 
 def query(sql, env):
-    return required(["psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-c", sql],
-                    {**env, "PGDATABASE": env["HUMAUX_TEST_PG_DSN"]}, "fixture query")
+    return required(postgres_command(env, sql), env, "fixture query")
 
 
 @contextmanager
