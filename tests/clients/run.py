@@ -128,6 +128,15 @@ class Wire(BaseHTTPRequestHandler):
                      metadata.get("client_id_metadata_document_supported") is True)
         elif path == "/oauth/register":
             event = ("DCR", status == 201)
+            if status != 201:
+                submitted = json.loads(body) if body else {}
+                method = submitted.get("token_endpoint_auth_method", "absent")
+                method = method if method in ("absent", "none", "client_secret_basic") else "other"
+                media = response.getheader("Content-Type", "").partition(";")[0]
+                oauth_error = json.loads(output).get("error") if media == "application/json" else None
+                if oauth_error not in ("invalid_client_metadata", "invalid_redirect_uri"):
+                    oauth_error = "other"
+                self.server.events.append(("DCR refusal", f"HTTP {status} {oauth_error}, token_endpoint_auth_method={method}"))
         elif path == "/oauth/authorize" and self.command == "GET":
             query = parse_qs(parsed.query)
             self.server.pkce_challenge = query.get("code_challenge", [""])[0]
@@ -316,6 +325,8 @@ def sdk(name, version, command, env, *, direct_discovery=False, input_data=None)
         why = ("consent denied by fixture; no exchange" if FAULT in {"consent", "gemini-consent"} and
                ("consent denied", True) in snapshot and not any(k == "exchange status" for k, _ in snapshot)
                else f"exit {result.returncode}{detail}; missing: {', '.join(missing) or 'none'}")
+        if refusal := next((value for key, value in snapshot if key == "DCR refusal"), None):
+            why += f"; DCR refused: {refusal}"
         record(name, version, "FAIL", why)
     else:
         record(name, version, "PASS", f"{discovery_route(snapshot)}; DCR; consent callback; S256; equal resources; 2025-06-18; tools and refresh")
