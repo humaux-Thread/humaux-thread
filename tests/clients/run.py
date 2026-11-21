@@ -1,7 +1,7 @@
 """X-M02-2 acceptance against the real gateway and a disposable, migrated PG19 service."""
 
+import asyncio
 import base64
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
 from http.client import HTTPConnection
@@ -17,11 +17,11 @@ import threading
 import time
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlencode, urlsplit
-from urllib.request import Request, urlopen
-from uuid import UUID
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
+from uuid import UUID, uuid4
 from xml.etree import ElementTree as xml
 
-from browser import NoRedirect, ProxyHandler, build_opener
+from browser import NoRedirect
 
 HERE = Path(__file__).resolve().parent
 TEMP = Path(os.environ["RUNNER_TEMP"])
@@ -87,7 +87,7 @@ class Wire(BaseHTTPRequestHandler):
         resource = origin + "/mcp/legacy"
         event = None
         if path.startswith("/mcp"):
-            if status == 401:
+            if status == 401 and not self.headers.get("Authorization"):
                 metadata_path = "/.well-known/oauth-protected-resource" + path
                 expected = f'resource_metadata="{origin + metadata_path}"'
                 event = ("challenge", expected in response.getheader("WWW-Authenticate", ""))
@@ -117,6 +117,7 @@ class Wire(BaseHTTPRequestHandler):
             event = ("DCR", status == 201)
         elif path == "/oauth/authorize" and self.command == "GET":
             query = parse_qs(parsed.query)
+            self.server.pkce_challenge = query.get("code_challenge", [""])[0]
             event = ("authorize", query.get("resource") == [resource] and
                      query.get("code_challenge_method") == ["S256"] and
                      len(query.get("code_challenge", [""])[0]) == 43)
@@ -131,11 +132,15 @@ class Wire(BaseHTTPRequestHandler):
             if grant_type == ["authorization_code"]:
                 self.server.events.append(("exchange status", status))
                 event = ("code", status == 200 and form.get("resource") == [resource] and
-                         len(form.get("code_verifier", [""])[0]) >= 43)
+                         s256(form.get("code_verifier", [""])[0]) == self.server.pkce_challenge)
             elif grant_type == ["refresh_token"]:
                 event = ("refresh", status == 200 and form.get("resource") == [resource])
         if event:
             self.server.events.append(event)
+
+
+def s256(verifier):
+    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
 
 
 @contextmanager
@@ -144,6 +149,7 @@ def witness():
     # clients run serially on the same port with fresh storage.
     with ThreadingHTTPServer(("127.0.0.1", 18171), Wire) as server:
         server.events = []
+        server.pkce_challenge = ""
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
@@ -178,7 +184,7 @@ def gateway():
     env = {**os.environ}
     assert urlsplit(env["HUMAUX_TEST_PG_DSN"]).hostname == "127.0.0.1"
     assert urlsplit(env["HUMAUX_TEST_PG_DSN"]).path == "/humaux_thread_ci"
-    assert env["HUMAUX_TEST_DISPOSABLE_CLUSTER"] == "1"
+    assert env["GITHUB_ACTIONS"] == "true" and env["HUMAUX_TEST_DISPOSABLE_CLUSTER"] == "1"
     for line in Path("deploy/env/values/gateway.env").read_text().splitlines():
         if line.startswith(("HUMAUX_GATEWAY_", "HUMAUX_CONTINUITY_", "HUMAUX_BILLING_")):
             key, value = line.split("=", 1)
@@ -319,7 +325,7 @@ def hosted(name, document, redirect, env):
         valid = authorize(redirect)
         invalid = authorize(redirect + "/oauth-ci-mismatch")
     if valid == (303, "/auth/login") and invalid == (400, None):
-        record(name, "hosted", "PASS", f"CIMD and exact HTTPS redirect; SDK consent surrogate; {document}")
+        record(name, "hosted", "PASS", f"Metadata only: CIMD and exact HTTPS redirect; {document}")
     else:
         method = data.get("token_endpoint_auth_method")
         method = method if method in ("none", "private_key_jwt", "client_secret_basic") else "other"
@@ -341,18 +347,78 @@ def cli(name, version, package, binary, unavailable, env):
     if unavailable:
         record(name, version, "not_applicable", f"Binary version verified; {unavailable}")
         return
-    # Native CLI login uses CIMD (or the public DCR fallback); this call has no model or vendor login.
-    state = prefix / "state"
-    state.mkdir(exist_ok=True)
-    client_env = {**env, "CODEX_HOME": str(state)}
-    mcp_config = state / "config.toml"
-    mcp_config.write_text('[mcp_servers.humaux_ci]\nurl = "' + env["OAUTH_TEST_ORIGIN"] + '/mcp/legacy"\n')
+    # One model-free app-server session can call a configured MCP tool directly.
+    config = [
+        "-c", "mcp_oauth_credentials_store=\"file\"",
+        "-c", f'mcp_servers.humaux_ci.url="{env["OAUTH_TEST_ORIGIN"]}/mcp/legacy"',
+    ]
     with witness() as events:
-        login = run([executable, "mcp", "login", "humaux_ci", "--scopes", "memory:write"], client_env)
-    if login.returncode or ("consent", True) not in events or ("exchange status", 200) not in events:
-        record(name, version, "FAIL", f"Native mcp login exit {login.returncode}; callback/exchange not confirmed")
+        login = run([executable, *config, "mcp", "login", "humaux_ci", "--scopes", "memory:write",
+                     "--oauth-client-registration", "dcr"], env)
+        if login.returncode or ("consent", True) not in events or ("exchange status", 200) not in events:
+            record(name, version, "FAIL", f"Native mcp login exit {login.returncode}; callback/exchange not confirmed")
+            return
+        try:
+            asyncio.run(asyncio.wait_for(codex_tools(executable, config, env), timeout=360))
+        except (AssertionError, KeyError, ValueError, OSError, TimeoutError):
+            record(name, version, "FAIL", "Native login succeeded; app-server list/call or recovery failed")
+            return
+    missing = [key for key in ("challenge", "PRM", "ASM", "DCR", "authorize", "consent", "code", "protocol", *TOOLS, "refresh")
+               if (key, True) not in events]
+    if missing or events.count(("tools/call", True)) < 2:
+        record(name, version, "FAIL", f"Missing wire evidence: {', '.join(missing) or 'tool recovery'}")
     else:
-        record(name, version, "not_applicable", "Native mcp login succeeded; model-free tool invocation has not been verified")
+        record(name, version, "PASS", "Native CLI login, app-server tools/list and remember; automatic refresh")
+
+
+async def codex_tools(executable, config, env):
+    process = await asyncio.create_subprocess_exec(
+        executable, *config, "app-server", env=env, stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    request_id = 0
+
+    async def send(method, params=None, *, notification=False):
+        nonlocal request_id
+        message = {"method": method}
+        if params is not None:
+            message["params"] = params
+        if not notification:
+            request_id += 1
+            message["id"] = request_id
+        process.stdin.write((json.dumps(message) + "\n").encode())
+        await process.stdin.drain()
+        if notification:
+            return None
+        while line := await process.stdout.readline():
+            reply = json.loads(line)
+            if reply.get("id") == request_id:
+                return reply["result"]
+        raise ValueError("Codex app-server closed")
+
+    try:
+        await send("initialize", {"clientInfo": {"name": "humaux-ci", "version": "1"}})
+        await send("initialized", notification=True)
+        thread = await send("thread/start", {"ephemeral": True})
+
+        async def remember():
+            reply = await send("mcpServer/tool/call", {
+                "threadId": thread["thread"]["id"], "server": "humaux_ci", "tool": "remember",
+                "arguments": {
+                    "operation": "put", "content": "Synthetic Codex OAuth acceptance",
+                    "workspace_id": env["OAUTH_TEST_WORKSPACE"], "idempotency_key": str(uuid4()),
+                },
+            })
+            assert not reply.get("isError") and reply["structuredContent"]["evidence_id"]
+
+        await send("mcpServerStatus/list", {})
+        await remember()
+        await asyncio.sleep(301)
+        await remember()
+    finally:
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
 
 
 def reports():

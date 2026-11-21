@@ -71,7 +71,7 @@ async function main() {
         stage = "code exchange";
         await transport.finishAuth(result.code);
         stage = "first tools/list and remember";
-        await connect(initial, transport);
+        await connect(initial, new StreamableHTTPClientTransport(mcp, { authProvider: provider }));
         await initial.close();
         if (process.argv.includes("--refresh")) {
             stage = "expiry and automatic refresh";
