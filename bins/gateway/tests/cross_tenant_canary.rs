@@ -673,7 +673,7 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
                     address,
                     "continuity",
                     bearer,
-                    json!({"project_id":own.project}),
+                    json!({"action":"get","project_id":own.project}),
                 )
                 .await;
                 assert_eq!(
@@ -774,8 +774,8 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
                     bearer,
                     "continuity",
                     "continuity.get foreign project id",
-                    json!({"project_id":foreign.project}),
-                    json!({"project_id":absent_project}),
+                    json!({"action":"get","project_id":foreign.project}),
+                    json!({"action":"get","project_id":absent_project}),
                     &probed,
                     200,
                     Some("NOT_FOUND"),
@@ -786,8 +786,8 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
                     bearer,
                     "continuity",
                     "continuity.get foreign project in its own workspace",
-                    json!({"project_id":foreign.project,"workspace_id":foreign.workspace}),
-                    json!({"project_id":absent_project,"workspace_id":absent_workspace}),
+                    json!({"action":"get","project_id":foreign.project,"workspace_id":foreign.workspace}),
+                    json!({"action":"get","project_id":absent_project,"workspace_id":absent_workspace}),
                     &probed,
                     200,
                     Some("NOT_FOUND"),
