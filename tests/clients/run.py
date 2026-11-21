@@ -29,6 +29,7 @@ from model_stub import model_stub
 HERE = Path(__file__).resolve().parent
 TEMP = Path(os.environ["RUNNER_TEMP"])
 FAULT = os.environ["OAUTH_CLIENT_FAULT"]
+FOCUS = os.environ.get("OAUTH_CLIENT_FOCUS", "all")
 GATEWAY = 18170
 ROWS = []
 TOOLS = ("tools/list", "tools/call")
@@ -531,6 +532,9 @@ def cli(name, version, package, binary, unavailable, env):
                     prm = next((value for key, value in events if key == "PRM mismatch"), None)
                     if prm:
                         reason += f"; {prm}"
+                if "tools/call" in missing:
+                    trace = [value for key, value in events if key == "MCP HTTP" and value.startswith("tools/call ")]
+                    reason += f"; model requests: {model.turns}, tool emitted: {model.emitted}, MCP call: {', '.join(trace) or 'absent'}"
             elif status == "PASS":
                 reason = f"{discovery_route(events)}; DCR; consent callback; S256; equal resources; 2025-06-18; local model tools and refresh"
         record(name, version, status, reason)
@@ -635,7 +639,7 @@ def reports():
                         failures=str(sum(row[2] == "FAIL" for row in ROWS)),
                         skipped=str(sum(row[2] == "not_applicable" for row in ROWS)))
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    lines = [f"# X-M02-2 OAuth clients\n\nGateway SHA `{head}`. Fault `{FAULT}`.\n",
+    lines = [f"# X-M02-2 OAuth clients\n\nGateway SHA `{head}`. Fault `{FAULT}`. Focus `{FOCUS}`.\n",
              "| Client | Version | Result | Evidence |", "| --- | --- | --- | --- |"]
     for name, version, status, reason in ROWS:
         lines.append(f"| {name} | {version} | {status} | {reason} |")
@@ -656,7 +660,7 @@ def main():
                 sdk("MCP TypeScript SDK", "1.32.2", ts, env)
             elif FAULT == "gemini-consent":
                 gemini(env)
-            elif FAULT == "qwen-consent":
+            elif FAULT == "qwen-consent" or FOCUS == "qwen":
                 cli(*next(row for row in CLI if row[3] == "qwen"), env)
             else:
                 sdk("MCP TypeScript SDK", "1.32.2", [*ts, "--refresh"], env)

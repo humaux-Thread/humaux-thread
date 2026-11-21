@@ -8,6 +8,11 @@ on:
         type: choice
         options: [none, pkce, consent, gemini-consent, qwen-consent]
         default: none
+      focus:
+        description: Run the full matrix or reproduce the Qwen row alone
+        type: choice
+        options: [all, qwen]
+        default: all
   schedule:
     - cron: '23 8 * * *'
 
@@ -44,6 +49,7 @@ jobs:
       DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/humaux_thread_ci
       HUMAUX_TEST_DISPOSABLE_CLUSTER: '1'
       OAUTH_CLIENT_FAULT: ${{ inputs.fault || 'none' }}
+      OAUTH_CLIENT_FOCUS: ${{ inputs.focus || 'all' }}
     steps:
       - uses: actions/checkout@v4
         with:
