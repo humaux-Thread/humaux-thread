@@ -184,7 +184,7 @@ fn chooser_policy_matches_both_dimensions_and_deny_wins() {
 
             let rule = |target: ConsentTarget, effect, active| McpChooserChange::Rule {
                 workspace_id: target.1,
-                client_id: CLIENT,
+                client_id: Some(CLIENT),
                 effect,
                 active,
             };
@@ -212,19 +212,75 @@ fn chooser_policy_matches_both_dimensions_and_deny_wins() {
             h.write(rule(tenant_target, McpPolicyEffect::Allow, true));
             assert_eq!(
                 h.read(CLIENT, &candidates),
-                Ok(vec![exact, open, tenant_target]),
-                "explicit tenant-level rule"
+                Ok(candidates.to_vec()),
+                "NULL workspace rule admits every workspace for the exact client"
             );
 
             h.write(rule(exact, McpPolicyEffect::Deny, true));
             assert_eq!(
                 h.read(CLIENT, &candidates),
-                Ok(vec![open, tenant_target]),
+                Ok(vec![other_workspace, open, tenant_target]),
                 "deny overrides matching allow"
             );
 
             let overflow = vec![exact; BoundedSet::<ConsentTarget>::MAX_LEN + 1];
             assert_eq!(h.read(CLIENT, &overflow), Err(ErrorCode::InvalidInput));
+        },
+    );
+}
+
+#[test]
+fn chooser_null_rule_dimensions_match_all_values_and_denies_win() {
+    run_db_fixture::<Fixture, _>(
+        "chooser_null_rule_dimensions_match_all_values_and_denies_win",
+        |db| {
+            let h = Harness::new(db);
+            let [first, second] = h.workspaces.map(|workspace| (h.tenant, Some(workspace)));
+            let candidates = [first, second, (h.tenant, None)];
+            let rule = |workspace_id, client_id, effect| McpChooserChange::Rule {
+                workspace_id,
+                client_id,
+                effect,
+                active: true,
+            };
+
+            h.configure(true, false);
+            h.write(rule(first.1, None, McpPolicyEffect::Allow));
+            assert_eq!(
+                h.read(CLIENT, &candidates),
+                Ok(vec![first]),
+                "NULL client matches the first client"
+            );
+            assert_eq!(
+                h.read(OTHER_CLIENT, &candidates),
+                Ok(vec![first]),
+                "NULL client matches another client"
+            );
+
+            h.write(rule(None, None, McpPolicyEffect::Allow));
+            assert_eq!(
+                h.read(CLIENT, &candidates),
+                Ok(candidates.to_vec()),
+                "both NULL rule dimensions match all targets"
+            );
+            assert_eq!(
+                h.read(OTHER_CLIENT, &candidates),
+                Ok(candidates.to_vec()),
+                "both NULL rule dimensions match all clients"
+            );
+
+            h.write(rule(first.1, Some(CLIENT), McpPolicyEffect::Allow));
+            h.write(rule(None, None, McpPolicyEffect::Deny));
+            assert_eq!(
+                h.read(CLIENT, &candidates),
+                Ok(vec![]),
+                "wildcard deny overrides the exact allow"
+            );
+            assert_eq!(
+                h.read(OTHER_CLIENT, &candidates),
+                Ok(vec![]),
+                "wildcard deny applies to the other client"
+            );
         },
     );
 }
@@ -276,7 +332,7 @@ fn chooser_groups_require_any_allowed_active_membership() {
             h.configure(true, true);
             h.write(McpChooserChange::Rule {
                 workspace_id: None,
-                client_id: CLIENT,
+                client_id: Some(CLIENT),
                 effect: McpPolicyEffect::Allow,
                 active: true,
             });
@@ -367,6 +423,24 @@ fn chooser_shared_guard_blocks_first_configuration_until_commit() {
                 &[&h.user.0, &CLIENT, &h.tenant.0],
             ).unwrap_err();
             assert_eq!(error.code(), Some(&SqlState::INVALID_TRANSACTION_STATE));
+
+            // dep: PostgreSQL(role_gateway) — set non-default isolation on the checked pool.
+            let serializable =
+                h.rt.block_on(RuntimeDbPool::connect(&format!(
+                    "{}%20-c%20default_transaction_isolation%3Dserializable",
+                    h.gateway_dsn
+                )))
+                .unwrap();
+            let result = h.rt.block_on(async {
+                let mut txn = begin(&serializable).await?;
+                txn.allowed_mcp_targets(h.user, client.validated_client_id(), &[target])
+                    .await
+            });
+            assert_eq!(
+                result,
+                Err(ErrorCode::Internal),
+                "invalid transaction isolation is an internal error"
+            );
         },
     );
 }

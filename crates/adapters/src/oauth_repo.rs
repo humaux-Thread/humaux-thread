@@ -129,6 +129,7 @@ impl OAuthTxn {
                 .as_deref()
             {
                 Some("22023") => ErrorCode::InvalidInput,
+                Some("25000") => ErrorCode::Internal,
                 Some("40001" | "40P01") => ErrorCode::Conflict,
                 _ => ErrorCode::DependencyUnavailable,
             }
@@ -572,10 +573,10 @@ pub enum McpChooserChange<'a> {
         policy_enabled: bool,
         groups_restricted: bool,
     },
-    /// Activate or withdraw one effect for an exact tenant/workspace and client.
+    /// Activate or withdraw one rule effect. `None` matches every value for that dimension.
     Rule {
         workspace_id: Option<WorkspaceId>,
-        client_id: &'a str,
+        client_id: Option<&'a str>,
         effect: McpPolicyEffect,
         active: bool,
     },

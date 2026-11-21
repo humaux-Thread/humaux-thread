@@ -1,3 +1,9 @@
+-- ADR-0137 U1: either NULL rule dimension is a wildcard. Keep the 0312 writer and uniqueness.
+ALTER TABLE control.mcp_connection_rules ALTER COLUMN client_id DROP NOT NULL;
+
+COMMENT ON TABLE control.mcp_connection_rules IS
+  'ADR-0137: NULL rule workspace or client matches every value in that dimension. Active ALLOW and DENY may coexist.';
+
 -- ADR-0137 U1–U3. Ordinals give the adapter one decision for every input.
 CREATE FUNCTION control.read_mcp_chooser_decisions(
   p_user_id uuid,
@@ -65,18 +71,18 @@ BEGIN
         WITH ORDINALITY AS c(tenant_id, workspace_id, ord)
        WHERE c.tenant_id = v_tenant
     ), matching_rules AS MATERIALIZED (
-      SELECT r.workspace_id, r.effect FROM control.mcp_connection_rules r
-       WHERE v_group_allowed AND v_policy_enabled AND r.tenant_id = v_tenant
-         AND r.client_id = p_client_id AND r.active
-         AND EXISTS (SELECT 1 FROM candidates c WHERE r.workspace_id IS NOT DISTINCT FROM c.workspace_id)
-       FOR SHARE
+      SELECT c.ord, r.effect FROM control.mcp_connection_rules r
+        JOIN candidates c ON r.workspace_id IS NULL OR r.workspace_id = c.workspace_id
+       WHERE v_group_allowed AND v_policy_enabled AND r.tenant_id = v_tenant AND r.active
+         AND (r.client_id IS NULL OR r.client_id = p_client_id)
+       FOR SHARE OF r
     ), effects AS (
-      SELECT r.workspace_id, bool_or(r.effect = 'ALLOW') AS permits, bool_or(r.effect = 'DENY') AS denies
-        FROM matching_rules r GROUP BY r.workspace_id
+      SELECT r.ord, bool_or(r.effect = 'ALLOW') AS permits, bool_or(r.effect = 'DENY') AS denies
+        FROM matching_rules r GROUP BY r.ord
     )
     SELECT c.ord, v_group_allowed AND
            (NOT v_policy_enabled OR (COALESCE(e.permits, false) AND NOT COALESCE(e.denies, false)))
-      FROM candidates c LEFT JOIN effects e ON e.workspace_id IS NOT DISTINCT FROM c.workspace_id;
+      FROM candidates c LEFT JOIN effects e ON e.ord = c.ord;
   END LOOP;
 END;
 $$;
