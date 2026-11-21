@@ -1,0 +1,76 @@
+name: OAuth clients
+
+on:
+  workflow_dispatch:
+    inputs:
+      fault:
+        description: Negative control for the isolated runner
+        type: choice
+        options: [none, pkce, consent]
+        default: none
+  schedule:
+    - cron: '23 8 * * *'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-fuse-ld=lld'
+
+jobs:
+  oauth-clients:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 50
+    services:
+      postgres:
+        image: postgres:19.0@sha256:bb6e70add742cd868fb62cb3b2f67d1dd2bdd2b65a521e778420748753687c60
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: humaux_thread_ci
+          POSTGRES_INITDB_ARGS: '--locale-provider=libc --lc-collate=en_US.utf8 --lc-ctype=en_US.utf8'
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      qdrant:
+        image: qdrant/qdrant:v1.19.0
+        ports: ['6333:6333', '6334:6334']
+    env:
+      HUMAUX_TEST_PG_DSN: postgres://postgres:ci@127.0.0.1:5432/humaux_thread_ci
+      HUMAUX_MIGRATOR_PG_DSN: postgres://postgres:ci@127.0.0.1:5432/humaux_thread_ci
+      DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/humaux_thread_ci
+      HUMAUX_TEST_DISPOSABLE_CLUSTER: '1'
+      OAUTH_CLIENT_FAULT: ${{ inputs.fault || 'none' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          save_cache: 'false'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.15.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install baseline SDKs
+        run: |
+          npm install --prefix "$RUNNER_TEMP/oauth-npm" --no-audit --no-fund @modelcontextprotocol/sdk@1.32.2
+          python -m pip install mcp==1.29.1
+      - name: Build isolated gateway
+        run: python tests/clients/build_gateway.py
+      - name: Run real-client acceptance
+        env:
+          OAUTH_TEST_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: python tests/clients/run.py
+      - name: Upload client results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oauth-clients-${{ github.run_id }}
+          path: ${{ runner.temp }}/oauth-results/
+          if-no-files-found: error
