@@ -354,7 +354,7 @@ fn commercial_entitlement_batch_reads_current_policy_without_writes() {
 }
 
 #[test]
-#[ignore = "lane(a:request_guard) requires the dedicated request-guard PostgreSQL fixture"]
+#[ignore = "lane(a:disposable) takes an exclusive lock on the entitlement projection"]
 fn commercial_entitlement_batch_rejects_dependency_timeout() {
     run_db_fixture::<Fixture, _>(
         "commercial_entitlement_batch_rejects_dependency_timeout",
