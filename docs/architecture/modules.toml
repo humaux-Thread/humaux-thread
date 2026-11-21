@@ -201,6 +201,7 @@ files = [
   "crates/adapters/src/oauth_repo.rs",
   "crates/adapters/src/request_guard_repo.rs",
   "crates/adapters/src/session_repo.rs",
+  "crates/adapters/tests/mcp_chooser_read.rs",
   "crates/adapters/tests/mcp_chooser_storage.rs",
   "crates/application/src/api_key.rs",
   "crates/application/src/bearer.rs",

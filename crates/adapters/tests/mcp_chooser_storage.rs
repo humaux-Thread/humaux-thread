@@ -154,7 +154,7 @@ fn assert_rules_and_groups(
 ) {
     let rule = |workspace_id, effect, active| McpChooserChange::Rule {
         workspace_id,
-        client_id: "chooser-test-client",
+        client_id: Some("chooser-test-client"),
         effect,
         active,
     };

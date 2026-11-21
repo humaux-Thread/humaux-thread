@@ -2,7 +2,8 @@
 //!   client registry, one-time authorization codes, grants and single-use refresh rotation. Writes only through definers; no
 //!   runtime role holds any privilege on the four tables, so every read goes through a door too.
 //!   The chooser settings door (0312) checks live tenant-admin authority and returns a committed row version.
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users] x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_consent_tenants, control.oauth_dcr_register, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_grant, control.oauth_refresh_rotate, control.write_mcp_chooser_settings]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, application::oauth, application::oauth_exchange, domain::error, domain::identity, domain::ids]
+//!   The chooser read door (0313) returns the policy/group subset and holds shared locks through this transaction.
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users] x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_consent_tenants, control.oauth_dcr_register, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_grant, control.oauth_refresh_rotate, control.read_mcp_chooser_decisions, control.write_mcp_chooser_settings]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, application::oauth, application::oauth_exchange, domain::error, domain::identity, domain::ids]
 //! Called-by: [gateway::auth, gateway::bootstrap, tests]
 //! Invariants: [a raw code or refresh token never reaches this module: callers pass a SecretHash, whose Debug is redacted;
 //!   consume and rotate are single conditional statements inside the doors, so of two concurrent exchanges of one secret
@@ -16,8 +17,9 @@
 
 use std::time::Duration;
 
+use humaux_application::oauth::{AllowedSubset, ConsentTarget, ValidatedClientId};
 use humaux_domain::error::ErrorCode;
-use humaux_domain::identity::{AuthorizationScope, McpPolicyEffect};
+use humaux_domain::identity::{AuthorizationScope, BoundedSet, McpPolicyEffect};
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use serde_json::json;
 use sqlx::Row;
@@ -88,6 +90,68 @@ pub async fn register_dcr(
 }
 
 impl OAuthTxn {
+    /// Apply policy and allowed groups to authenticated, server-derived candidates (ADR-0137).
+    ///
+    /// The shared decision locks stay held until this transaction ends, including when no
+    /// configuration exists. Use the same transaction for a subsequent protected write.
+    pub async fn allowed_mcp_targets(
+        &mut self,
+        user: UserId,
+        client: ValidatedClientId<'_>,
+        candidates: &[ConsentTarget],
+    ) -> Result<AllowedSubset, ErrorCode> {
+        if candidates.len() > BoundedSet::<ConsentTarget>::MAX_LEN {
+            return Err(ErrorCode::InvalidInput);
+        }
+        let (tenants, workspaces): (Vec<_>, Vec<_>) = candidates
+            .iter()
+            .map(|(tenant, workspace)| (tenant.0, workspace.map(|id| id.0)))
+            .unzip();
+
+        // dep: PostgreSQL(any) — chooser decision and shared locks on the current exchange.
+        let decisions = sqlx::query_as::<_, (i64, bool)>(
+            "SELECT candidate_no, allowed FROM control.read_mcp_chooser_decisions($1, $2, $3, $4)
+             ORDER BY candidate_no",
+        )
+        .bind(user.0)
+        .bind(client.as_str())
+        .bind(tenants)
+        .bind(workspaces)
+        .fetch_all(&mut *self.txn)
+        .await
+        .map_err(|error| {
+            if matches!(error, sqlx::Error::ColumnDecode { .. }) {
+                return ErrorCode::Internal;
+            }
+            match error
+                .as_database_error()
+                .and_then(|db| db.code())
+                .as_deref()
+            {
+                Some("22023") => ErrorCode::InvalidInput,
+                Some("25000") => ErrorCode::Internal,
+                Some("40001" | "40P01") => ErrorCode::Conflict,
+                _ => ErrorCode::DependencyUnavailable,
+            }
+        })?;
+
+        if decisions.len() != candidates.len()
+            || (1_i64..)
+                .zip(&decisions)
+                .any(|(expected, (ordinal, _))| expected != *ordinal)
+        {
+            return Err(ErrorCode::Internal);
+        }
+
+        BoundedSet::new(
+            candidates
+                .iter()
+                .copied()
+                .zip(decisions)
+                .filter_map(|(target, (_, allowed))| allowed.then_some(target)),
+        )
+    }
+
     /// Lock and validate consent entitlement, retaining the same policy for the post-insert check.
     pub async fn admit_consent(
         &mut self,
@@ -509,10 +573,10 @@ pub enum McpChooserChange<'a> {
         policy_enabled: bool,
         groups_restricted: bool,
     },
-    /// Activate or withdraw one effect for an exact tenant/workspace and client.
+    /// Activate or withdraw one rule effect. `None` matches every value for that dimension.
     Rule {
         workspace_id: Option<WorkspaceId>,
-        client_id: &'a str,
+        client_id: Option<&'a str>,
         effect: McpPolicyEffect,
         active: bool,
     },
