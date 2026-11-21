@@ -6,7 +6,7 @@ on:
       fault:
         description: Negative control for the isolated runner
         type: choice
-        options: [none, pkce, consent]
+        options: [none, pkce, consent, gemini-consent]
         default: none
   schedule:
     - cron: '23 8 * * *'
@@ -21,7 +21,7 @@ env:
 jobs:
   oauth-clients:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 50
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:19.0@sha256:bb6e70add742cd868fb62cb3b2f67d1dd2bdd2b65a521e778420748753687c60
