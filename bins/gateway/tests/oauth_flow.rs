@@ -2274,12 +2274,16 @@ fn m02_10c_advertised_registration_persists_public_client() {
         let registration =
             url::Url::parse(metadata["registration_endpoint"].as_str().unwrap()).unwrap();
         assert_eq!(registration.origin().ascii_serialization(), ORIGIN);
-        let input = registration_body(&[
+        let mut input = registration_body(&[
             REDIRECT,
             "http://localhost:37123/cb",
             "http://127.0.0.1/cb",
             "http://[::1]/cb",
         ]);
+        input
+            .as_object_mut()
+            .unwrap()
+            .remove("token_endpoint_auth_method");
         let reply = register_client_http(&h, address, registration.path(), &input.to_string());
         assert_eq!(reply.status, 201, "{}", reply.body);
         assert_eq!(reply.headers["cache-control"], "no-store");
@@ -2307,13 +2311,28 @@ fn m02_10c_advertised_registration_persists_public_client() {
         let tenant = h.tenant_id;
         add_active_membership(&mut h, tenant);
         add_entitlement(&mut h, tenant);
-        let page = browser_get(
+        let uri = "http://localhost:37124/cb";
+        let session = session_cookie(&h);
+        let page = browser_get(&h, address, &authorize_url(client, uri, "S256"), &session);
+        assert_eq!(page.status, 200, "dynamic authorize: {}", page.body);
+        let consent = browser_consent(&h, address, &session, ORIGIN, &consent_body(&page, "allow"));
+        assert_eq!(consent.status, 303, "{}", consent.body);
+        let callback = url::Url::parse(&consent.headers["location"]).unwrap();
+        let code = callback
+            .query_pairs()
+            .find(|(key, _)| key == "code")
+            .unwrap()
+            .1;
+        let reply = post(
             &h,
             address,
-            &authorize_url(client, "http://localhost:37124/cb", "S256"),
-            &session_cookie(&h),
+            &code_form(
+                &h,
+                &code,
+                &[("client_id", Some(client)), ("redirect_uri", Some(uri))],
+            ),
         );
-        assert_eq!(page.status, 200, "dynamic authorize: {}", page.body);
+        assert_eq!(reply.status, 200, "{}", reply.body);
     });
 }
 
@@ -2360,11 +2379,6 @@ fn m02_10c_rejects_invalid_registration_metadata_and_redirects() {
             body["token_endpoint_auth_method"] = method.into();
             metadata.push(body.to_string());
         }
-        let mut body = valid.clone();
-        body.as_object_mut()
-            .unwrap()
-            .remove("token_endpoint_auth_method");
-        metadata.push(body.to_string());
         for (key, value) in [
             ("client_id", serde_json::json!(h.client_id)),
             ("client_secret", serde_json::json!("not-a-real-secret")),
