@@ -117,7 +117,10 @@ class Wire(BaseHTTPRequestHandler):
                 elif method == "server/discover":
                     event = ("protocol", self.headers.get("MCP-Protocol-Version") == "2026-07-28")
                 elif method == "tools/list":
-                    event = (method, any(tool["name"] == "remember" for tool in result.get("tools", [])))
+                    remember = next((tool for tool in result.get("tools", []) if tool["name"] == "remember"), None)
+                    if remember and "oneOf" in remember.get("inputSchema", {}):
+                        self.server.events.append(("remember schema", "top-level oneOf"))
+                    event = (method, remember is not None)
                 elif method == "tools/call":
                     event = (method, not result.get("isError") and
                              isinstance(result.get("structuredContent", {}).get("evidence_id"), str))
@@ -626,6 +629,8 @@ def cli(name, version, package, binary, env):
                 if "tools/call" in missing:
                     trace = [value for key, value in events if key == "MCP HTTP" and value.startswith("tools/call ")]
                     reason += f"; model requests: {model.turns}, tool emitted: {model.emitted}, MCP call: {', '.join(trace) or 'absent'}"
+                    if ("remember schema", "top-level oneOf") in events:
+                        reason += "; gateway tools/list provided remember with top-level oneOf"
             elif status == "PASS":
                 reason = f"{discovery_route(events)}; {registration}; consent callback; S256; equal resources; 2025-06-18; local model tools and refresh"
         record(name, version, status, reason)

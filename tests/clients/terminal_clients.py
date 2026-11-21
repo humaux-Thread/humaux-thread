@@ -11,6 +11,7 @@ import select
 import signal
 import struct
 import subprocess
+import sys
 import termios
 import time
 
@@ -66,8 +67,9 @@ def terminal(command, cwd, env):
     master, slave = pty.openpty()
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 125, 0, 0))
-        process = subprocess.Popen(command, cwd=cwd, env=env, stdin=slave, stdout=slave, stderr=slave,
-                                   start_new_session=True)
+        # Open /dev/tty and terminal queries against the child PTY, even on a headless runner.
+        launcher = [sys.executable, "-c", "import os,sys; os.login_tty(0); os.execv(sys.argv[1], sys.argv[1:])"]
+        process = subprocess.Popen([*launcher, *command], cwd=cwd, env=env, stdin=slave, stdout=slave, stderr=slave)
     except OSError:
         os.close(master)
         raise
@@ -84,8 +86,13 @@ def terminal(command, cwd, env):
 
 def open_mcp(ui, claude):
     prompt = r"foragents|forshortcuts|forhelp|automodeon"
+    if not claude:
+        prompt += r"|humaux-ci-stub"
     if not ui.expect(rf"doyouwanttousethisapikey|doyoutrustthefilesinthisfolder|{prompt}", 30):
-        return "startup did not reach the command prompt"
+        status = ui.process.poll()
+        rendered = "rendered terminal output" if ui.screen else "no terminal output"
+        state = "running" if status is None else f"exit {status}"
+        return f"startup did not reach the command prompt ({rendered}, process {state})"
     if "doyouwanttousethisapikey" in ui.text():
         if not ui.expect(r"❯no\(recommended\)"):
             return "dummy API key approval prompt did not finish rendering"
