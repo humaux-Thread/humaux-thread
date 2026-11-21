@@ -170,6 +170,9 @@ def required(command, env, title, timeout=70):
     result = run(command, env, timeout)
     if result.returncode:
         # Never print runner or client stdout/stderr, even on errors.
+        stage = re.search(r"e2e-seed: fail \(missing required flag (--[a-z-]+)", result.stderr)
+        if title == "e2e-seed" and stage:
+            raise RuntimeError(f"{title}: missing flag {stage[1]}")
         raise RuntimeError(f"{title} exited {result.returncode}")
     return result.stdout
 
@@ -195,7 +198,8 @@ def gateway():
         "--pepper-hex-env", "HUMAUX_GATEWAY_CREDENTIAL_PEPPER_HEX",
         "--scopes", "memory:write,context:read",
         "--processor-id", "87ee52db-a623-4a61-8826-e8539ddf7c2b",
-        "--collection", "oauth_clients", "--dimension", "4",
+        "--collection", "oauth_clients", "--dimension", "1024",
+        "--embedding-provider", "dashscope", "--embedding-region", "cn-beijing",
     ], env, "e2e-seed", 120)
     ids = dict(re.findall(r"^(user_id|workspace_id|reasoning_domain_id): ([0-9a-f-]+)$", seed, re.M))
     ids = {key: str(UUID(value)) for key, value in ids.items()}
@@ -232,12 +236,14 @@ def gateway():
         HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH="",
     )
     with subprocess.Popen(["target/debug/humaux-gateway"], env=env,
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as proc:
+                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True) as proc:
         try:
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 if proc.poll() is not None:
-                    raise RuntimeError(f"gateway exited {proc.returncode}")
+                    config = re.search(r"gateway bootstrap configuration (HUMAUX_[A-Z0-9_]+):", proc.stderr.read())
+                    detail = f" during {config[1]} validation" if config else ""
+                    raise RuntimeError(f"gateway exited {proc.returncode}{detail}")
                 try:
                     connection = HTTPConnection("127.0.0.1", GATEWAY, timeout=1)
                     connection.request("GET", "/livez", headers={"Host": "127.0.0.1:18171"})
@@ -274,9 +280,13 @@ def sdk(name, version, command, env):
     if snapshot.count(("tools/call", True)) < 2:
         missing.append("tool recovery")
     if result.returncode or missing:
+        stages = ("first connect", "consent callback", "code exchange", "first tools/list and remember",
+                  "expiry and automatic refresh")
+        phase = next((stage for stage in stages if f"TypeScript SDK failed: {stage}\n" == result.stderr), None)
+        detail = f" at {phase}" if phase else ""
         why = ("consent denied by fixture; no exchange" if FAULT == "consent" and
                ("consent denied", True) in snapshot and not any(k == "exchange status" for k, _ in snapshot)
-               else f"exit {result.returncode}; missing: {', '.join(missing) or 'none'}")
+               else f"exit {result.returncode}{detail}; missing: {', '.join(missing) or 'none'}")
         record(name, version, "FAIL", why)
     else:
         record(name, version, "PASS", "401 → PRM → ASM; DCR; consent callback; S256; equal resources; 2025-06-18; tools and refresh")
