@@ -846,6 +846,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::facet_contract`
+- (no process): `adapters::tests::request_guard`
 - (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -1832,6 +1833,7 @@ foreign keys (outgoing):
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_slot_handover`
+- (no process): `adapters::tests::request_guard`
 - (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
@@ -3810,6 +3812,7 @@ read by:
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::governance_quota`
 - (no process): `adapters::tests::operation_receipts`
+- (no process): `adapters::tests::request_guard`
 - (no process): `gateway::tests::coordinate_task`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `maintenance::tests::onboarding`
@@ -5637,6 +5640,7 @@ read by:
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::operation_receipts`
+- (no process): `adapters::tests::request_guard`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
