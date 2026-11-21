@@ -92,6 +92,14 @@ async def qwen_probe(executable, workspace, url, env, model, events, ttl):
             return "FAIL", "Native OAuth denial"
         stage = "Qwen tool discovery"
         await wait_for(lambda: ("tools/list", True) in events)
+        # The wire reply arrives before Qwen registers its tools for model turns.
+        for number in range(10, 26):
+            catalog = await request(number, "qwen/status/workspace/mcp/tools", {"serverName": SERVER})
+            if any(tool.get("name") == f"mcp__{SERVER}__remember" for tool in catalog.get("result", {}).get("tools", [])):
+                break
+            await asyncio.sleep(.2)
+        else:
+            return "FAIL", "Qwen native catalog did not contain remember"
         for number in (4, 6):
             stage = "Qwen tool turn" if number == 4 else "Qwen post-expiry tool turn"
             select_tool(model, "remember")

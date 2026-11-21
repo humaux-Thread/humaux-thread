@@ -121,6 +121,8 @@ class Wire(BaseHTTPRequestHandler):
         elif path.startswith("/.well-known/oauth-protected-resource") and status == 200:
             prm = json.loads(output)
             event = ("PRM", prm.get("resource") == resource and prm.get("authorization_servers") == [origin])
+            if path == "/.well-known/oauth-protected-resource" and prm.get("resource") == origin + "/mcp":
+                self.server.events.append(("PRM mismatch", "root PRM returned /mcp for the /mcp/legacy connection"))
         elif path == "/.well-known/oauth-authorization-server" and status == 200:
             metadata = json.loads(output)
             event = ("ASM", metadata.get("issuer") == origin and
@@ -525,6 +527,10 @@ def cli(name, version, package, binary, unavailable, env):
             if missing:
                 status = "FAIL"
                 reason += f"; missing: {', '.join(missing)}"
+                if "PRM" in missing:
+                    prm = next((value for key, value in events if key == "PRM mismatch"), None)
+                    if prm:
+                        reason += f"; {prm}"
             elif status == "PASS":
                 reason = f"{discovery_route(events)}; DCR; consent callback; S256; equal resources; 2025-06-18; local model tools and refresh"
         record(name, version, status, reason)
