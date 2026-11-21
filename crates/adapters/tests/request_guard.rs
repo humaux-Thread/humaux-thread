@@ -341,6 +341,22 @@ fn commercial_entitlement_batch_reads_current_policy_without_writes() {
 
             h.admin
                 .execute(
+                    "UPDATE control.entitlement_snapshots \
+                     SET effective=jsonb_set(effective, ARRAY['mcp.billable_operations.per_period','limit'], '\"broken\"') \
+                     WHERE tenant_id=$1",
+                    &[&tenants[4]],
+                )
+                .expect("inject a malformed BMO limit after a readable candidate");
+            assert_eq!(
+                h.rt.block_on(mcp_entitlement_for_tenants(
+                    &h.runtime,
+                    &[scopes[0].clone(), scopes[4].clone()]
+                )),
+                Err(ErrorCode::Internal),
+            );
+
+            h.admin
+                .execute(
                     "UPDATE control.entitlement_snapshots SET effective='[]' WHERE tenant_id=$1",
                     &[&tenants[2]],
                 )
@@ -375,6 +391,12 @@ fn commercial_entitlement_batch_rejects_dependency_timeout() {
             assert_eq!(
                 h.rt.block_on(mcp_entitlement_for_tenants(&runtime, &scopes)),
                 Err(ErrorCode::DependencyUnavailable),
+            );
+            assert_eq!(
+                h.rt.block_on(request_guard_repo::read_effective_entitlements(
+                    &runtime, &scopes[0]
+                )),
+                Err(ErrorCode::Internal),
             );
         },
     );
