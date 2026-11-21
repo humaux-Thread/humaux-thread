@@ -828,7 +828,7 @@ fn get_args(pair: &Pair) -> Value {
 }
 
 fn recall_args(pair: &Pair) -> Value {
-    json!({"query":QUERY,"workspace_id":pair.workspace_id,"mode":"semantic"})
+    json!({"action":"search","query":QUERY,"workspace_id":pair.workspace_id,"mode":"semantic"})
 }
 
 /// G-M13-1 over MCP: the frontier is exactly the checkpoint row's reading, and the same app that answers a get without

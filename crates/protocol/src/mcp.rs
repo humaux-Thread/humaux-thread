@@ -1,6 +1,6 @@
 //! `protocol::mcp` — Native MCP codec and shared stateless HTTP/application boundary.
 //! Depends-on: crates=[async-trait, axum, humaux-domain, rmcp, serde, serde_json, uuid]; services=[]; env=[];
-//!   modules=[domain::error, protocol::error_map, protocol::mcp_catalog, protocol::mcp_legacy]
+//!   modules=[domain::error, protocol::error_map, protocol::mcp_catalog, protocol::mcp_legacy, protocol::mcp_profile]
 //! Called-by: [gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, protocol::mcp_catalog, protocol::mcp_legacy, protocol::mcp_profile, tests]
 //! Invariants: [Retry-After is restricted to limiter capacity refusals (§67.2; ADR-0100)]
 //! Spec: Baseline §33, §67.2; ADR-0100, ADR-0125 D1
@@ -270,8 +270,8 @@ impl McpHttpContext {
     }
 }
 
-/// Parsed and raw arguments travel together.  `decoded` is the SDK-validated
-/// object; `raw_json` is only the original `params.arguments` JSON slice.
+/// Parsed and raw arguments travel together. `decoded` is the restored canonical
+/// action object. `raw_json` preserves the original `params.arguments` JSON slice.
 pub struct McpToolArguments<'a> {
     decoded: &'a JsonObject,
     raw_json: Option<&'a RawValue>,
@@ -881,11 +881,22 @@ impl HandlerState {
     ) -> Result<CallToolResult, ErrorData> {
         let tool = ToolName::parse(&request.name)
             .ok_or_else(ErrorData::method_not_found::<rmcp::model::CallToolRequestMethod>)?;
-        let empty_arguments = JsonObject::new();
-        let decoded = request.arguments.as_ref().unwrap_or(&empty_arguments);
+        let profile_input = Value::Object(request.arguments.unwrap_or_default());
+        let raw_json = context
+            .raw_arguments
+            .as_deref()
+            .filter(|raw| {
+                serde_json::from_str::<Value>(raw.get()).is_ok_and(|raw| raw == profile_input)
+            })
+            .ok_or_else(|| protocol_error(state, ErrorCode::InvalidInput))?;
+        let validated = crate::mcp_profile::validate(tool, &profile_input)
+            .map_err(|error| protocol_error(state, error.code()))?;
         let arguments = McpToolArguments {
-            decoded,
-            raw_json: context.raw_arguments.as_deref(),
+            decoded: validated
+                .args
+                .as_object()
+                .ok_or_else(|| protocol_error(state, ErrorCode::Internal))?,
+            raw_json: Some(raw_json),
         };
         match self.application.invoke(context, tool, arguments).await {
             Ok(output) => {

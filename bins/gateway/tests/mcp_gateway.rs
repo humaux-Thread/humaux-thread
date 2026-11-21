@@ -1276,7 +1276,12 @@ fn receipt_outcome_counts(handle: &mut Handle) -> (i64, i64, i64) {
     (row.get(0), row.get(1), row.get(2))
 }
 
-fn call_params(name: &str, arguments: Value) -> Value {
+fn call_params(name: &str, mut arguments: Value) -> Value {
+    match name {
+        "recall" => arguments["action"] = json!("search"),
+        "context" => arguments["action"] = json!("assemble"),
+        _ => {}
+    }
     json!({"name": name, "arguments": arguments, "_meta": metadata()})
 }
 
@@ -1580,7 +1585,7 @@ async fn assert_remember_replay(
 ) -> (i64, i64, i64, i64, i64) {
     let key = format!("mcp-replay-{}", Uuid::now_v7());
     let args = json!({
-        "operation": "put",
+        "action": "put",
         "content": "native MCP atomic evidence",
         "idempotency_key": key,
         "workspace_id": handle.workspace_id,
@@ -1641,7 +1646,7 @@ async fn assert_host_origin_rejections(
         ("Origin", "https://bad.test"),
     ];
     let before_bad_origin = blocking_counts(handle);
-    let (status, response) = raw_request(address, &bad_origin_headers, &rpc(10, "tools/call", call_params("remember", json!({"operation":"put","content":"never reached","idempotency_key":"origin-rejected"})))).await;
+    let (status, response) = raw_request(address, &bad_origin_headers, &rpc(10, "tools/call", call_params("remember", json!({"action":"put","content":"never reached","idempotency_key":"origin-rejected"})))).await;
     assert_eq!(
         status, 403,
         "host/origin boundary precedes business dispatch: {response}"
@@ -1659,7 +1664,19 @@ async fn assert_host_origin_rejections(
         ("Host", "bad.test"),
     ];
     let before_bad_host = blocking_counts(handle);
-    let (status, response) = raw_request(address, &bad_host_headers, &rpc(11, "tools/call", call_params("remember", json!({"operation":"put","content":"never reached","idempotency_key":"host-rejected"})))).await;
+    let (status, response) = raw_request(
+        address,
+        &bad_host_headers,
+        &rpc(
+            11,
+            "tools/call",
+            call_params(
+                "remember",
+                json!({"action":"put","content":"never reached","idempotency_key":"host-rejected"}),
+            ),
+        ),
+    )
+    .await;
     assert_eq!(
         status, 403,
         "host boundary precedes business dispatch: {response}"
@@ -1696,7 +1713,7 @@ async fn assert_request_boundary_denials(
     let foreign = call_params(
         "remember",
         json!({
-            "operation":"put", "content":"must not route", "idempotency_key":format!("foreign-{}", Uuid::now_v7()), "workspace_id":Uuid::now_v7()
+            "action":"put", "content":"must not route", "idempotency_key":format!("foreign-{}", Uuid::now_v7()), "workspace_id":Uuid::now_v7()
         }),
     );
     let denials_before = denials_after_login(handle, "MCP_SCOPE_DENIED", "FORBIDDEN");
@@ -1726,7 +1743,7 @@ async fn assert_request_boundary_denials(
     let (status, response) = raw_request(
         address,
         &no_auth,
-        &rpc(9, "tools/call", call_params("remember", json!({"operation":"put","content":"unauthenticated","idempotency_key":"missing-auth"}))),
+        &rpc(9, "tools/call", call_params("remember", json!({"action":"put","content":"unauthenticated","idempotency_key":"missing-auth"}))),
     )
     .await;
     assert_eq!(
@@ -1751,7 +1768,7 @@ async fn assert_request_boundary_denials(
             "tools/call",
             call_params(
                 "remember",
-                json!({"operation":"put", "content":"revoked", "idempotency_key":"revoked-request"}),
+                json!({"action":"put", "content":"revoked", "idempotency_key":"revoked-request"}),
             ),
         ),
     )
@@ -1776,7 +1793,7 @@ async fn assert_authenticated_transport_negatives(
     let unsupported = call_params(
         "remember",
         json!({
-            "operation":"begin_batch", "client_batch_id":Uuid::now_v7(), "declared_count":1
+            "action":"begin_batch", "client_batch_id":Uuid::now_v7(), "declared_count":1
         }),
     );
     let no_bmo_before = blocking_counts(handle);
@@ -1828,15 +1845,28 @@ fn missing_grant_precedes_entitlement_and_entitlement_precedes_batch() {
             for (scopes, expected_status, code, action) in cases {
                 let prefix = format!("batch{}", Uuid::now_v7().simple());
                 let wire = format!("{prefix}.{}", "a".repeat(32));
-                let key = tokio::task::block_in_place(|| handle.seed_synthetic_service_credential(
-                    scopes, &prefix, &wire, &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
-                ));
+                let key = tokio::task::block_in_place(|| {
+                    handle.seed_synthetic_service_credential(
+                        scopes,
+                        &prefix,
+                        &wire,
+                        &compute_api_key_hash(SYNTHETIC_CREDENTIAL_PEPPER, &wire),
+                    )
+                });
                 let audits = denials_after_login(&mut handle, action, code);
                 let before = durable_counts(blocking_counts(&mut handle));
-                let params = call_params("remember", json!({
-                    "operation":"begin_batch", "client_batch_id":Uuid::now_v7(), "declared_count":1
-                }));
-                let (status, response) = raw_request(address, &tool_call_headers("remember",&key.bearer), &rpc(1,"tools/call",params)).await;
+                let params = call_params(
+                    "remember",
+                    json!({
+                        "action":"begin_batch", "client_batch_id":Uuid::now_v7(), "declared_count":1
+                    }),
+                );
+                let (status, response) = raw_request(
+                    address,
+                    &tool_call_headers("remember", &key.bearer),
+                    &rpc(1, "tools/call", params),
+                )
+                .await;
                 assert_eq!(status, expected_status, "{response}");
                 assert_eq!(response["error"]["data"]["code"], code);
                 assert_eq!(denials_after_login(&mut handle, action, code), audits + 1);
@@ -3050,7 +3080,7 @@ fn native_gateway_semantic_recall_real_qdrant_pg_and_ryw_acceptance() {
                 }
 
                 let remember_args = json!({
-                    "operation":"put",
+                    "action":"put",
                     "content":"semantic write awaiting projection",
                     "idempotency_key":format!("semantic-ryw-{}",Uuid::now_v7()),
                     "workspace_id":workspace_id,
@@ -3587,7 +3617,7 @@ fn recall_with_a_consistency_token_answers_and_a_caller_chosen_limit_is_refused(
                         call_params(
                             "remember",
                             json!({
-                                "operation":"put",
+                                "action":"put",
                                 "content":"soak-shaped write awaiting projection",
                                 "idempotency_key":format!("ryw-limit-{}", Uuid::now_v7()),
                                 "workspace_id":workspace_id,
@@ -5989,7 +6019,7 @@ fn native_mcp_gateway_commit_ack_loss_is_unknown_and_replays_the_committed_recei
             let app = application(&handle, proxied_runtime);
             let key = format!("ack-loss-{}", Uuid::now_v7());
             let arguments = json!({
-                "operation": "put",
+                "action": "put",
                 "content": "COMMIT acknowledgement must not decide durable truth",
                 "idempotency_key": key,
                 "workspace_id": handle.workspace_id,
@@ -6547,7 +6577,7 @@ fn gateway_binary_real_bootstrap_mcp_interaction_and_sigterm_acceptance() {
                 assert_memory_response(&response, context_row.memory_id, 7);
 
                 let args = json!({
-                    "operation": "put",
+                    "action": "put",
                     "content": "real binary MCP receipt",
                     "idempotency_key": format!("binary-replay-{}", Uuid::now_v7()),
                     "workspace_id": handle.workspace_id,
@@ -11075,7 +11105,7 @@ async fn remember_with_subjects(
     subject_keys: Vec<(&str, &str)>,
 ) -> (u16, Value) {
     let mut args = json!({
-        "operation": "put",
+        "action": "put",
         "content": content,
         "idempotency_key": format!("card8-{}", Uuid::now_v7()),
         "workspace_id": workspace_id,
@@ -11595,7 +11625,7 @@ async fn remember_with_affects(
     affects: Value,
 ) -> (u16, Value) {
     let args = json!({
-        "operation": "put",
+        "action": "put",
         "content": content,
         "idempotency_key": format!("cardE1-{}", Uuid::now_v7()),
         "workspace_id": workspace_id,
@@ -13137,7 +13167,7 @@ fn native_mcp_one_process_serves_three_stream_pairs_per_request() {
                         let key = format!("card29-cross-workspace-{}", Uuid::now_v7());
                         let mut evidence = BTreeSet::new();
                         for workspace in [pair_a.workspace_id, pair_b.workspace_id] {
-                            let arguments = json!({"operation":"put",
+                            let arguments = json!({"action":"put",
                                 "content":format!("card29 receipt in {workspace}"),
                                 "idempotency_key":key,"workspace_id":workspace});
                             let (status, first) =
@@ -13385,7 +13415,7 @@ fn native_mcp_remember_put_p50_speed_record() {
                     "remember",
                     &credential.bearer,
                     json!({
-                        "operation": "put",
+                        "action": "put",
                         "content": format!("speed record {n}"),
                         "idempotency_key": format!("p50-{n}-{}", Uuid::now_v7()),
                         "workspace_id": workspace,
@@ -13628,7 +13658,7 @@ fn native_mcp_remember_put_per_call_visibility_and_per_request_stream() {
                 let (status, private) = put(
                     credential_a.bearer.clone(),
                     json!({
-                        "operation": "put", "content": "card11 private note",
+                        "action": "put", "content": "card11 private note",
                         "idempotency_key": format!("c11-private-{}", Uuid::now_v7()),
                         "workspace_id": workspace_a,
                         "visibility_class": "USER_PRIVATE", "data_class": "PRIVATE",
@@ -13641,7 +13671,7 @@ fn native_mcp_remember_put_per_call_visibility_and_per_request_stream() {
                 let (status, shared) = put(
                     credential_a.bearer.clone(),
                     json!({
-                        "operation": "put", "content": "card11 shared note",
+                        "action": "put", "content": "card11 shared note",
                         "idempotency_key": format!("c11-shared-{}", Uuid::now_v7()),
                         "workspace_id": workspace_a,
                         "visibility_class": "WORKSPACE_SHARED",
@@ -13654,7 +13684,7 @@ fn native_mcp_remember_put_per_call_visibility_and_per_request_stream() {
                 let (status, defaulted) = put(
                     credential_a.bearer.clone(),
                     json!({
-                        "operation": "put", "content": "card11 defaulted note",
+                        "action": "put", "content": "card11 defaulted note",
                         "idempotency_key": format!("c11-default-{}", Uuid::now_v7()),
                         "workspace_id": workspace_a,
                     }),
@@ -13669,7 +13699,7 @@ fn native_mcp_remember_put_per_call_visibility_and_per_request_stream() {
                 let (status, refused) = put(
                     credential_a.bearer.clone(),
                     json!({
-                        "operation": "put", "content": "card11 tenant note as member",
+                        "action": "put", "content": "card11 tenant note as member",
                         "idempotency_key": format!("c11-tenant-member-{}", Uuid::now_v7()),
                         "workspace_id": workspace_a,
                         "visibility_class": "TENANT_SHARED",
@@ -13685,7 +13715,7 @@ fn native_mcp_remember_put_per_call_visibility_and_per_request_stream() {
                 let (status, unknown) = put(
                     credential_a.bearer.clone(),
                     json!({
-                        "operation": "put", "content": "card11 unknown class",
+                        "action": "put", "content": "card11 unknown class",
                         "idempotency_key": format!("c11-unknown-{}", Uuid::now_v7()),
                         "workspace_id": workspace_a,
                         "visibility_class": "EVERYONE",
@@ -13738,7 +13768,7 @@ fn native_mcp_remember_put_per_call_visibility_and_per_request_stream() {
                 let (status, tenant) = put(
                     credential_a.bearer.clone(),
                     json!({
-                        "operation": "put", "content": "card11 tenant note as owner",
+                        "action": "put", "content": "card11 tenant note as owner",
                         "idempotency_key": format!("c11-tenant-owner-{}", Uuid::now_v7()),
                         "workspace_id": workspace_a,
                         "visibility_class": "TENANT_SHARED",
@@ -13799,7 +13829,7 @@ fn native_mcp_remember_put_per_call_visibility_and_per_request_stream() {
                 let (status, on_b) = put(
                     credential_b.bearer.clone(),
                     json!({
-                        "operation": "put", "content": "card11 note on pair B",
+                        "action": "put", "content": "card11 note on pair B",
                         "idempotency_key": format!("c11-pair-b-{}", Uuid::now_v7()),
                         "workspace_id": workspace_b,
                     }),
@@ -13833,7 +13863,7 @@ fn native_mcp_remember_put_per_call_visibility_and_per_request_stream() {
                 let (status, forbidden) = put(
                     credential_a.bearer.clone(),
                     json!({
-                        "operation": "put", "content": "card11 A naming B",
+                        "action": "put", "content": "card11 A naming B",
                         "idempotency_key": format!("c11-a-on-b-{}", Uuid::now_v7()),
                         "workspace_id": workspace_b,
                     }),
@@ -13854,7 +13884,7 @@ fn native_mcp_remember_put_per_call_visibility_and_per_request_stream() {
                 let (status, unresolved) = put(
                     credential_c.bearer.clone(),
                     json!({
-                        "operation": "put", "content": "card11 tenant C before its domain is bound",
+                        "action": "put", "content": "card11 tenant C before its domain is bound",
                         "idempotency_key": format!("c11-pair-c-unbound-{}", Uuid::now_v7()),
                         "workspace_id": workspace_c,
                     }),
@@ -13890,7 +13920,7 @@ fn native_mcp_remember_put_per_call_visibility_and_per_request_stream() {
                 let (status, on_c) = put(
                     credential_c.bearer.clone(),
                     json!({
-                        "operation": "put", "content": "card11 note on tenant C",
+                        "action": "put", "content": "card11 note on tenant C",
                         "idempotency_key": format!("c11-pair-c-{}", Uuid::now_v7()),
                         "workspace_id": workspace_c,
                     }),
@@ -13948,7 +13978,7 @@ fn native_mcp_remember_put_per_call_visibility_and_per_request_stream() {
                 let (status, forbidden_c) = put(
                     credential_c.bearer.clone(),
                     json!({
-                        "operation": "put", "content": "card11 C naming A",
+                        "action": "put", "content": "card11 C naming A",
                         "idempotency_key": format!("c11-c-on-a-{}", Uuid::now_v7()),
                         "workspace_id": workspace_a,
                     }),
@@ -14031,7 +14061,7 @@ fn native_mcp_remember_put_per_call_visibility_and_per_request_stream() {
                     let (status, response) = put(
                         credential_a.bearer.clone(),
                         json!({
-                            "operation": "put", "content": format!("card11 speed {n}"),
+                            "action": "put", "content": format!("card11 speed {n}"),
                             "idempotency_key": format!("c11-p50-{n}-{}", Uuid::now_v7()),
                             "workspace_id": workspace_a,
                             "visibility_class": "USER_PRIVATE",
@@ -14892,7 +14922,7 @@ fn every_text_storing_write_refuses_u0000_at_ingress() {
                     "remember.put",
                     "remember",
                     json!({
-                        "operation": "put",
+                        "action": "put",
                         "content": nul,
                         "idempotency_key": format!("r8b-{}", Uuid::now_v7()),
                         "workspace_id": workspace,
@@ -14902,7 +14932,7 @@ fn every_text_storing_write_refuses_u0000_at_ingress() {
                     "remember.put (subject_keys)",
                     "remember",
                     json!({
-                        "operation": "put",
+                        "action": "put",
                         "content": "clean text",
                         "idempotency_key": format!("r8b-{}", Uuid::now_v7()),
                         "workspace_id": workspace,
@@ -15214,7 +15244,7 @@ fn native_mcp_memory_note_put_is_listed_called_refused_and_remember_put_is_uncha
             let remember_headers = tool_call_headers("remember", bearer);
             for (n, extra) in ["note_kind", "title", "requested_authority"].into_iter().enumerate() {
                 let mut arguments = json!({
-                    "operation": "put", "content": "plain evidence",
+                    "action": "put", "content": "plain evidence",
                     "idempotency_key": format!("g25-{n}-{}", Uuid::now_v7()), "workspace_id": workspace,
                 });
                 arguments[extra] = json!("decision");
@@ -15234,7 +15264,7 @@ fn native_mcp_memory_note_put_is_listed_called_refused_and_remember_put_is_uncha
                     "tools/call",
                     call_params(
                         "remember",
-                        json!({"operation":"put","content":"plain evidence",
+                        json!({"action":"put","content":"plain evidence",
                                "idempotency_key": format!("g25-ok-{}", Uuid::now_v7()),
                                "workspace_id": workspace}),
                     ),
@@ -15307,7 +15337,7 @@ fn t04c_put(id: u64, key: &str, workspace: Uuid, task_run: (Uuid, i64)) -> Strin
         "tools/call",
         call_params(
             "remember",
-            json!({"operation": "put", "content": format!("g-t04c-4 {key}"), "idempotency_key": key,
+            json!({"action": "put", "content": format!("g-t04c-4 {key}"), "idempotency_key": key,
                    "workspace_id": workspace,
                    "task_run": {"task_run_id": task_run.0, "fencing_token": task_run.1}}),
         ),
@@ -15474,7 +15504,7 @@ fn t06c_put(id: u64, key: &str, workspace: Uuid, project: Uuid) -> String {
         "tools/call",
         call_params(
             "remember",
-            json!({"operation": "put", "content": format!("g-t06c-1 {key}"), "idempotency_key": key,
+            json!({"action": "put", "content": format!("g-t06c-1 {key}"), "idempotency_key": key,
                    "workspace_id": workspace, "project_id": project}),
         ),
     )
@@ -17154,7 +17184,7 @@ fn native_mcp_sourced_put_source_version_conflict() {
             let headers = tool_call_headers("remember", credential.bearer.as_str());
             let before = sourced_wire_state(&mut handle).0;
             let put = |id, content, key| rpc(id, "tools/call", call_params("remember", json!({
-                "operation":"put", "content":content, "idempotency_key":key,
+                "action":"put", "content":content, "idempotency_key":key,
                 "visibility_class":"USER_PRIVATE",
                 "source":{"kind":"EmailMessage", "object_key":"synthetic-message", "version":"v1",
                     "thread_key":"synthetic-thread"}

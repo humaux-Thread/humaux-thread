@@ -738,8 +738,8 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
                     bearer,
                     "recall",
                     "recall foreign workspace",
-                    json!({"query":FOREIGN_LITERAL,"workspace_id":foreign.workspace,"mode":"semantic"}),
-                    json!({"query":FOREIGN_LITERAL,"workspace_id":absent_workspace,"mode":"semantic"}),
+                    json!({"action":"search","query":FOREIGN_LITERAL,"workspace_id":foreign.workspace,"mode":"semantic"}),
+                    json!({"action":"search","query":FOREIGN_LITERAL,"workspace_id":absent_workspace,"mode":"semantic"}),
                     &probed,
                     403,
                     None,
@@ -825,7 +825,7 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
                     address,
                     "recall",
                     bearer,
-                    json!({"query":FOREIGN_LITERAL,"workspace_id":own.workspace,"mode":"semantic"}),
+                    json!({"action":"search","query":FOREIGN_LITERAL,"workspace_id":own.workspace,"mode":"semantic"}),
                 )
                 .await;
                 assert_eq!(recalled.0, 200, "{}", recalled.1);

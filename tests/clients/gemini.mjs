@@ -45,7 +45,7 @@ async function main() {
             const reply = await client.callTool({
                 name: "remember",
                 arguments: {
-                    operation: "put",
+                    action: "put",
                     content: "Synthetic Gemini OAuth acceptance",
                     workspace_id: process.env.OAUTH_TEST_WORKSPACE,
                     idempotency_key: randomUUID(),

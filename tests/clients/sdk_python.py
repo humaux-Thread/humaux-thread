@@ -73,7 +73,7 @@ async def main():
         catalog = await session.list_tools()
         assert any(tool.name == "remember" for tool in catalog.tools)
         reply = await session.call_tool("remember", {
-            "operation": "put",
+            "action": "put",
             "content": "Synthetic OAuth SDK acceptance",
             "workspace_id": os.environ["OAUTH_TEST_WORKSPACE"],
             "idempotency_key": str(uuid4()),

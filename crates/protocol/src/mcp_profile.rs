@@ -1,7 +1,7 @@
 //! `protocol::mcp_profile` — Flat MCP tool profile generated from the registry's per-action input schemas, and the per-action argument gate that serves it (§33.1; M26 D3).
 //! Depends-on: crates=[humaux-domain, jsonschema, serde_json]; services=[];
 //!   env=[]; modules=[domain::error, protocol::mcp, protocol::mcp_catalog]
-//! Called-by: [tests]
+//! Called-by: [protocol::mcp, protocol::mcp_catalog, tests]
 //! Invariants: [the flat profile is a pure function of the registry (actions in registry order, fields sorted, never a
 //!   root oneOf/anyOf) and fails closed on a field two actions define incompatibly; validate checks only the chosen
 //!   action's own schema, null never fills a required field, and every rejection is ErrorCode::InvalidInput naming
@@ -10,8 +10,7 @@
 //!
 //! Hosts that reject a root `oneOf` (B22 matrix) get one object: a root `action` enum plus the union of every
 //! action's fields. The union is only what the model sees. The server decodes a flat call back to the exact wire
-//! shape of the chosen action, so dispatch never sees a union (M26 D3). Listing the profile in `tools/list` and the
-//! gateway wiring belong to later cards (M26-3).
+//! shape of the chosen action, so dispatch never sees a union (M26 D3). Both HTTP routes share this profile and validator.
 //!
 //! Field merge across actions (M26 ruling 1'): schemas are compared with annotation keywords removed; equal ones merge
 //! and keep the first action's annotations; a schema that is another plus extra constraint keywords makes the profile

@@ -1078,6 +1078,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `protocol::mcp_legacy`
 - env `CARGO_PKG_VERSION`
 
+#### `protocol::mcp_profile`
+
 #### `public-pool::vocab::model`
 
 #### `retrieval::candidate`
@@ -2720,6 +2722,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 
 #### `protocol::mcp_legacy`
 - env `CARGO_PKG_VERSION`
+
+#### `protocol::mcp_profile`
 
 #### `retrieval::candidate`
 
