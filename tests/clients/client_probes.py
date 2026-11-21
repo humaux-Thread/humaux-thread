@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import suppress
+from itertools import count
 import json
 import os
 import signal
@@ -50,8 +51,10 @@ async def qwen_probe(executable, workspace, url, env, model, events, ttl):
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         limit=4 * 1024 * 1024, start_new_session=True,
     )
+    ids = count(1)
 
-    async def request(number, method, params):
+    async def request(method, params):
+        number = next(ids)
         message = {"jsonrpc": "2.0", "id": number, "method": method, "params": params}
         process.stdin.write((json.dumps(message) + "\n").encode())
         await process.stdin.drain()
@@ -71,11 +74,11 @@ async def qwen_probe(executable, workspace, url, env, model, events, ttl):
 
     stage = "ACP initialize"
     try:
-        initial = await request(1, "initialize", {"protocolVersion": 1, "clientCapabilities": {}})
+        initial = await request("initialize", {"protocolVersion": 1, "clientCapabilities": {}})
         if "result" not in initial:
             return "FAIL", stage + " returned no result"
         stage = "ACP session/new with configured provider"
-        session = await request(2, "session/new", {"cwd": str(workspace), "mcpServers": []})
+        session = await request("session/new", {"cwd": str(workspace), "mcpServers": []})
         session_id = session.get("result", {}).get("sessionId")
         if not session_id:
             message = session.get("error", {}).get("message", "")
@@ -83,7 +86,7 @@ async def qwen_probe(executable, workspace, url, env, model, events, ttl):
                 return "not_applicable", "Pinned public ACP refused session/new despite configured local OpenAI provider"
             return "FAIL", stage + " returned no session"
         stage = "Qwen native OAuth"
-        auth = await request(3, "qwen/control/workspace/mcp/manage", {"serverName": SERVER, "action": "authenticate"})
+        auth = await request("qwen/control/workspace/mcp/manage", {"serverName": SERVER, "action": "authenticate"})
         if "result" not in auth and not completed_auth(events):
             code = auth.get("error", {}).get("code")
             return "FAIL", f"{stage} returned RPC error {code if type(code) is int else 'unknown'}"
@@ -93,28 +96,33 @@ async def qwen_probe(executable, workspace, url, env, model, events, ttl):
         stage = "Qwen tool discovery"
         await wait_for(lambda: ("tools/list", True) in events)
         # The wire reply arrives before Qwen registers its tools for model turns.
-        for number in range(10, 26):
-            catalog = await request(number, "qwen/status/workspace/mcp/tools", {"serverName": SERVER})
+        for _ in range(16):
+            catalog = await request("qwen/status/workspace/mcp/tools", {"serverName": SERVER})
             if any(tool.get("name") == f"mcp__{SERVER}__remember" for tool in catalog.get("result", {}).get("tools", [])):
                 break
             await asyncio.sleep(.2)
         else:
             return "FAIL", "Qwen native catalog did not contain remember"
-        for number in (4, 6):
-            stage = "Qwen tool turn" if number == 4 else "Qwen post-expiry tool turn"
+        for attempt in (1, 2):
+            stage = "Qwen tool turn" if attempt == 1 else "Qwen post-expiry tool turn"
             select_tool(model, "remember")
-            result = await request(number, "session/prompt", {"sessionId": session_id,
-                                   "prompt": [{"type": "text", "text": PROMPT}]})
-            if "result" not in result:
-                return "FAIL", stage + " returned no result"
-            if number == 4:
+            for _ in range(3):
+                result = await request("session/prompt", {"sessionId": session_id,
+                                       "prompt": [{"type": "text", "text": PROMPT}]})
+                if "result" not in result:
+                    return "FAIL", stage + " returned no result"
+                # An early model turn may see the pre-auth catalog. Never replay a tool request.
+                if model.emitted:
+                    break
+                await asyncio.sleep(.3)
+            if attempt == 1:
                 if ("tools/call", True) not in events:
                     return "FAIL", stage + " produced no successful remember call"
                 await asyncio.sleep(ttl + 1)
                 stage = "Qwen MCP reconnect after expiry"
                 # The transport captures a bearer at connection time. Native reconnect
                 # resolves and refreshes the stored credentials without test-side token access.
-                await request(5, "qwen/control/workspace/mcp/restart", {"serverName": SERVER})
+                await request("qwen/control/workspace/mcp/restart", {"serverName": SERVER})
         return "PASS", "Qwen ACP prompts used the local provider"
     except (OSError, ValueError, TimeoutError, EOFError):
         return "FAIL", stage + " did not complete"
