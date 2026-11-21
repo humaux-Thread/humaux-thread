@@ -1980,13 +1980,13 @@ fn hex_file_owners(
     }
     let mut problems = Vec::new();
     let ids: BTreeSet<_> = catalog.module.iter().map(|m| &m.id).collect();
-    let actual: BTreeSet<_> = ["crates", "bins"]
+    let actual: BTreeSet<_> = ["crates", "bins", "xtask"]
         .into_iter()
         .flat_map(|d| walk_files(&root.join(d), &["rs"]))
         .map(|p| display(root, &p))
         .collect();
     if actual.is_empty() {
-        problems.push("missing source objects crates/**, bins/**".into());
+        problems.push("missing source objects crates/**, bins/**, xtask/**".into());
     }
     for path in &actual {
         if owners.get(path).map_or(0, Vec::len) != 1 {
@@ -2228,6 +2228,10 @@ fn hex_index(root: &Path, catalog: &HexCatalog) -> Result<HexIndex, Vec<String>>
         references: BTreeMap::new(),
     };
     for path in index.owners.keys() {
+        // ADR-0130 D5: xtask owns engineering tools outside the application dependency graph.
+        if path.starts_with("xtask/") {
+            continue;
+        }
         let Some((pkg, tail)) = path.split_once("/src/") else {
             continue;
         };
@@ -15148,6 +15152,7 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
     fn hex_copy_boundary_fixture(source: &Path, root: &Path) {
         let mut inputs = walk_files(&source.join("crates"), &["rs", "toml"]);
         inputs.extend(walk_files(&source.join("bins"), &["rs", "toml"]));
+        inputs.extend(walk_files(&source.join("xtask"), &["rs"]));
         inputs.extend(hex_context_exception_adrs(source).unwrap());
         inputs.extend(
             [
@@ -15280,6 +15285,29 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         check(2);
         println!("COVERAGE orphan: restored GREEN");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn m01_5_gap_xtask_orphan_fails_hex_coverage() {
+        let root = fresh_tmp("m01-5-gap-xtask-coverage");
+        hex_copy_boundary_fixture(&real_root(), &root);
+        let path = "xtask/src/boundary_orphan.rs";
+        let orphan = root.join(path);
+        assert_eq!(hex_coverage_gate(&root), Verdict::Pass);
+
+        fs::write(&orphan, "fn orphan() {}\n").unwrap();
+        let red = hex_coverage_gate(&root);
+        fs::remove_file(orphan).unwrap();
+        let restored = hex_coverage_gate(&root);
+        fs::remove_dir_all(root).unwrap();
+
+        assert_eq!(
+            red,
+            Verdict::Fail(vec![format!("{path}: expected exactly one file owner")]),
+        );
+        println!("HEX-COVERAGE RED {red:?}");
+        assert_eq!(restored, Verdict::Pass);
+        println!("HEX-COVERAGE restored GREEN");
     }
 
     #[test]
