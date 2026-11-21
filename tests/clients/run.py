@@ -24,28 +24,33 @@ from xml.etree import ElementTree as xml
 
 from browser import NoRedirect, postgres_command
 from client_probes import kimi_probe, qwen_probe
+from model_stub import model_stub
+from terminal_clients import terminal_probe
 
 HERE = Path(__file__).resolve().parent
 TEMP = Path(os.environ["RUNNER_TEMP"])
 FAULT = os.environ["OAUTH_CLIENT_FAULT"]
+FOCUS = os.environ.get("OAUTH_CLIENT_FOCUS", "all")
 GATEWAY = 18170
 ROWS = []
 TOOLS = ("tools/list", "tools/call")
+CLAUDE_CIMD = json.loads((HERE / "claude_cimd.json").read_text())
+CLAUDE_CALLBACK, = CLAUDE_CIMD["redirect_uris"]
+CLAUDE_STATIC_ID = "ci-claude-web-static"
+CLAUDE_CONNECTOR_DOCS = "https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp"
 HOSTED = [
-    # Anthropic's published identity document declares its client_id and callback below.
-    # https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp
-    ("claude.ai", "https://claude.ai/oauth/mcp-oauth-client-metadata", "https://claude.ai/api/mcp/auth_callback"),
+    ("claude.ai", CLAUDE_CIMD["client_id"], CLAUDE_CALLBACK),
     ("ChatGPT", "https://chatgpt.com/oauth/client.json", "https://chatgpt.com/connector_platform_oauth_redirect"),
     ("Antigravity", "https://antigravity.google/oauth/client-metadata.json", "https://antigravity.google/oauth-callback"),
-    ("Cursor Web", None, "https://prod.cursor.com/docs/mcp"),
+    ("Cursor Web", None, "https://www.cursor.com/agents/mcp/oauth/callback"),
     ("vscode.dev", "https://vscode.dev/oauth/client-metadata.json", "https://vscode.dev/redirect"),
 ]
 CLI = [
-    ("Claude Code", "2.1.328", "@anthropic-ai/claude-code", "claude", "Clean Linux PTY reached Select login method before /mcp; https://code.claude.com/docs/en/setup"),
-    ("Codex CLI", "0.169.0", "@openai/codex", "codex", None),
-    ("Qwen Code", "0.28.3", "@qwen-code/qwen-code", "qwen", None),
-    ("Kimi Code", "2.5.3", "@moonshot-ai/kimi-code", "kimi", None),
-    ("CodeBuddy Code", "2.185.0", "@tencent-ai/codebuddy-code", "codebuddy", "Vendor documents mandatory login before first interactive use; https://www.codebuddy.ai/docs/cli/quickstart"),
+    ("Claude Code", "2.1.328", "@anthropic-ai/claude-code", "claude"),
+    ("Codex CLI", "0.169.0", "@openai/codex", "codex"),
+    ("Qwen Code", "0.28.3", "@qwen-code/qwen-code", "qwen"),
+    ("Kimi Code", "2.5.3", "@moonshot-ai/kimi-code", "kimi"),
+    ("CodeBuddy Code", "2.185.0", "@tencent-ai/codebuddy-code", "codebuddy"),
 ]
 
 
@@ -113,13 +118,18 @@ class Wire(BaseHTTPRequestHandler):
                 elif method == "server/discover":
                     event = ("protocol", self.headers.get("MCP-Protocol-Version") == "2026-07-28")
                 elif method == "tools/list":
-                    event = (method, any(tool["name"] == "remember" for tool in result.get("tools", [])))
+                    remember = next((tool for tool in result.get("tools", []) if tool["name"] == "remember"), None)
+                    if remember and "oneOf" in remember.get("inputSchema", {}):
+                        self.server.events.append(("remember schema", "top-level oneOf"))
+                    event = (method, remember is not None)
                 elif method == "tools/call":
                     event = (method, not result.get("isError") and
                              isinstance(result.get("structuredContent", {}).get("evidence_id"), str))
         elif path.startswith("/.well-known/oauth-protected-resource") and status == 200:
             prm = json.loads(output)
             event = ("PRM", prm.get("resource") == resource and prm.get("authorization_servers") == [origin])
+            if path == "/.well-known/oauth-protected-resource" and prm.get("resource") == origin + "/mcp":
+                self.server.events.append(("PRM mismatch", "root PRM returned /mcp for the /mcp/legacy connection"))
         elif path == "/.well-known/oauth-authorization-server" and status == 200:
             metadata = json.loads(output)
             event = ("ASM", metadata.get("issuer") == origin and
@@ -153,6 +163,8 @@ class Wire(BaseHTTPRequestHandler):
             grant_type = form.get("grant_type")
             if grant_type == ["authorization_code"]:
                 self.server.events.append(("exchange status", status))
+                if status == 200 and form.get("client_id", [""])[0].startswith("https://"):
+                    self.server.events.append(("CIMD", True))
                 event = ("code", status == 200 and form.get("resource") == [resource] and
                          s256(form.get("code_verifier", [""])[0]) == self.server.pkce_challenge)
             elif grant_type == ["refresh_token"]:
@@ -251,6 +263,12 @@ def gateway():
         HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS="300",
         HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS="1",
         HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_CAPACITY="16",
+        # All fixture clients share a loopback source and may register within one second.
+        HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_REFILL_PER_MINUTE="60",
+        HUMAUX_GATEWAY_AUTH_OAUTH_STATIC_CLIENTS=json.dumps([{
+            "client_id": CLAUDE_STATIC_ID, "redirect_uris": [CLAUDE_CALLBACK],
+            "token_endpoint_auth_method": "none",
+        }]),
         HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE=origin + "/mcp",
         HUMAUX_GATEWAY_MCP_LEGACY_ENABLED="true",
         HUMAUX_GATEWAY_REMEMBER_REASONING_DOMAIN_ID=ids["reasoning_domain_id"],
@@ -408,7 +426,16 @@ def deepseek(env):
     if re.search(r"oauth|authorization.?code", declaration, re.IGNORECASE):
         record(name, version, "FAIL", "Pinned plugin exposes an OAuth declaration; its direct adapter needs a real journey")
         return
-    record(name, version, "not_applicable", "Fetched matching CLI/client/manager; MCP client types lack OAuth and tagged manager docs say No OAuth flow; https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.5/packages/mcp/mcp-manager/README.md#known-limitations")
+    with tarfile.open(target / releases["@deepseek-ai/dsh-mcp-manager"]["filename"]) as archive:
+        manager_files = archive.getnames()
+    if any(re.search(r"(?:^|/)oauth(?:[./_-]|$)", path, re.IGNORECASE) for path in manager_files):
+        record(name, version, "FAIL", "Pinned manager ships an OAuth module; its native route needs a real journey")
+        return
+    # The documented OAuth manager and client postdate both the requested and latest release.
+    source = "https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/packages/mcp/mcp-client/README.md#oauth"
+    callback_key = hashlib.sha256(b"mcp-client/humaux_ci").hexdigest()
+    doc_oauth(name, version, f"http://127.0.0.1:18772/mcp/oauth/callback/{callback_key}", source, env,
+              "; requested 0.2.1-rc.5 and latest dsh-v0.2.2-rc.5 predate the OAuth plugin, so the published CLI was not the OAuth subject")
 
 
 def metadata_http(response):
@@ -419,10 +446,81 @@ def metadata_http(response):
     return f"HTTP {response.status}, content-type={media}, redirect={redirect}"
 
 
-def hosted(name, document, redirect, env):
-    if document is None:
-        record(name, "hosted", "not_applicable", f"No public CIMD URL established; official reference {redirect}")
+def doc_sdk_probe(redirect, env, client_id=None):
+    command = ["node", str(HERE / "doc_oauth.mjs"), redirect]
+    if client_id:
+        command.append(client_id)
+    with witness() as events:
+        result = run(command, env, timeout=45)
+    if result.returncode:
+        stages = ("discovery", "public DCR", "PKCE, redirect and RFC 8707 resource")
+        phase = next((stage for stage in stages if result.stderr == f"Documented OAuth probe failed: {stage}\n"), "unknown stage")
+        refusal = next((value for key, value in events if key == "DCR refusal"), None)
+        return f"{phase} ({refusal})" if refusal else phase
+    return None
+
+
+def doc_oauth(name, version, redirect, source, env, note=""):
+    if failure := doc_sdk_probe(redirect, env):
+        record(name, version, "FAIL", f"Documented OAuth SDK probe failed at {failure}; {source}{note}")
         return
+    record(name, version, "doc-verified", f"SDK verified public DCR, exact callback {redirect}, S256 and RFC 8707 resource; {source}{note}")
+
+
+def claude_hosted(document, redirect, env):
+    failure = []
+    for label, client_id in (("DCR", None), ("static", CLAUDE_STATIC_ID)):
+        if problem := doc_sdk_probe(redirect, env, client_id):
+            failure.append(f"{label} failed at {problem}")
+    source = f"{CLAUDE_CONNECTOR_DOCS} (accessed 2026-11-21)"
+    try:
+        with build_opener(NoRedirect()).open(Request(document, headers={"Accept": "application/json"}), timeout=12) as response:
+            facts = metadata_http(response)
+        cimd = f"public CIMD GET {facts}; live AS fetch"
+        if problem := doc_sdk_probe(redirect, env, document):
+            failure.append(f"CIMD failed at {problem}")
+    except HTTPError as response:
+        with response:
+            facts = metadata_http(response)
+        cimd = f"public CIMD GET {facts}, JSON=not read"
+        if response.code == 403:
+            fixture_source = "https://claude.com/docs/connectors/building/lazy-authentication#identify-claude-with-a-client-id-metadata-document"
+            cimd += f"; local CIMD fixture from {fixture_source} (accessed 2026-11-21)"
+            fixture = Path("bins/gateway/tests/ci_claude_cimd.rs")
+            # Cargo discovers integration tests in the package on this disposable checkout.
+            with fixture.open("x") as output:
+                output.write((HERE / "claude_cimd.rs").read_text())
+            try:
+                result = run(["cargo", "test", "--locked", "-q", "-p", "humaux-gateway",
+                              "--test", "ci_claude_cimd"], {**env, "CARGO_PROFILE_TEST_DEBUG": "0"}, timeout=390)
+                if result.returncode:
+                    failure.append(f"CIMD fixture assertion exited {result.returncode}")
+            finally:
+                fixture.unlink()
+        else:
+            failure.append("CIMD public GET failed")
+    except (OSError, HTTPException) as error:
+        cimd = f"public CIMD GET unavailable ({type(error).__name__})"
+        failure.append("CIMD public GET failed")
+    if failure:
+        record("claude.ai", "hosted", "FAIL", f"{', '.join(failure)}; {cimd}; {document}; {source}")
+    else:
+        record("claude.ai", "hosted", "doc-verified",
+               f"DCR, static public client and CIMD each accepted {redirect} and refused a different callback; "
+               f"{cimd}; {document}; hosted sign-in deferred; {source}")
+
+
+def hosted(name, document, redirect, env):
+    if name == "Cursor Web":
+        doc_oauth(name, "hosted", redirect, "https://prod.cursor.com/docs/mcp", env)
+        return
+    if name == "claude.ai":
+        claude_hosted(document, redirect, env)
+        return
+
+    def preflight(reason):
+        record(name, "hosted", "FAIL", reason)
+
     # Match the gateway's CIMD fetch rule. Record redirect presence without logging Location values.
     fetch = build_opener(NoRedirect())
     facts = "HTTP unavailable, content-type=absent, redirect=unknown"
@@ -432,18 +530,18 @@ def hosted(name, document, redirect, env):
             raw = response.read(8193)
     except HTTPError as response:
         with response:
-            record(name, "hosted", "FAIL", f"environment: CIMD GET; {metadata_http(response)}, JSON=not read; {document}")
+            preflight(f"environment: CIMD GET; {metadata_http(response)}, JSON=not read; {document}")
         return
     except (OSError, HTTPException) as error:
-        record(name, "hosted", "FAIL", f"environment: CIMD GET {type(error).__name__}; {facts}, JSON=not read; {document}")
+        preflight(f"environment: CIMD GET {type(error).__name__}; {facts}, JSON=not read; {document}")
         return
     if len(raw) > 8192:
-        record(name, "hosted", "FAIL", f"CIMD JSON exceeds size limit; {facts}, JSON=oversize; {document}")
+        preflight(f"CIMD JSON exceeds size limit; {facts}, JSON=oversize; {document}")
         return
     try:
         data = json.loads(raw)
     except (ValueError, RecursionError):
-        record(name, "hosted", "FAIL", f"CIMD JSON parsing failed; {facts}, JSON=invalid; {document}")
+        preflight(f"CIMD JSON parsing failed; {facts}, JSON=invalid; {document}")
         return
     shape = {dict: "object", list: "array", str: "string", bool: "boolean", type(None): "null"}.get(type(data), "number")
     facts = f"{facts}, JSON={shape}"
@@ -485,27 +583,56 @@ def hosted(name, document, redirect, env):
         record(name, "hosted", "FAIL", f"CIMD redirect checks returned {valid[0]}/{invalid[0]}; auth method {method}; {facts}; {document}")
 
 
-def cli(name, version, package, binary, unavailable, env):
+def cli(name, version, package, binary, env):
     prefix = TEMP / ("oauth-cli-" + binary)
     installed = run(["npm", "install", "--prefix", str(prefix), "--no-audit", "--no-fund",
                      f"{package}@{version}"], env, timeout=240)
     executable = str(prefix / "node_modules" / ".bin" / binary)
     version_check = run([executable, "--version"], env) if Path(executable).is_file() else installed
     if installed.returncode or version_check.returncode or version not in version_check.stdout:
-        record(name, version, "not_applicable", f"Pinned package {package} install/version probe failed on Linux ARM64")
+        status = "FAIL" if FAULT == "qwen-consent" else "not_applicable"
+        record(name, version, status, f"Pinned package {package} install/version probe failed on Linux ARM64")
         return
-    if unavailable:
-        record(name, version, "not_applicable", f"Binary version verified; {unavailable}")
-        return
-    if binary in {"qwen", "kimi"}:
+    if binary in {"qwen", "kimi", "claude", "codebuddy"}:
         workspace = prefix / "probe-workspace"
         workspace.mkdir()
         url = env["OAUTH_TEST_ORIGIN"] + "/mcp/legacy"
-        with witness() as events:
+        ttl = int(env["HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS"])
+        with witness() as events, model_stub(env["OAUTH_TEST_WORKSPACE"]) as model:
             if binary == "qwen":
-                status, reason = asyncio.run(qwen_probe(executable, workspace, url, env))
+                status, reason = asyncio.run(qwen_probe(executable, workspace, url, env, model, events, ttl))
+            elif binary == "kimi":
+                status, reason = asyncio.run(kimi_probe(executable, workspace, url, env, model, events, ttl))
             else:
-                status, reason = kimi_probe(executable, workspace, url, env, events)
+                status, reason = terminal_probe(executable, binary, workspace, url, env, model, events, ttl)
+        if FAULT == "qwen-consent":
+            denied = ("consent denied", True) in events and not any(key == "exchange status" for key, _ in events)
+            record(name, version, "FAIL", "consent denied by fixture; no exchange" if denied else
+                   f"Consent denial not verified ({reason})")
+            return
+        if status != "not_applicable":
+            registration = "CIMD" if binary == "claude" and ("CIMD", True) in events else "DCR"
+            missing = [key for key in ("PRM", "ASM", registration, "authorize", "consent", "code", "protocol", *TOOLS)
+                       if (key, True) not in events]
+            after_first_call = events[events.index(("tools/call", True)) + 1:] if ("tools/call", True) in events else []
+            if ("refresh", True) not in after_first_call or ("tools/call", True) not in after_first_call:
+                missing.append("post-expiry refresh and tool recovery")
+            if refusal := next((value for key, value in events if key == "DCR refusal"), None):
+                reason += f"; DCR refused: {refusal}"
+            if missing:
+                status = "FAIL"
+                reason += f"; missing: {', '.join(missing)}"
+                if "PRM" in missing:
+                    prm = next((value for key, value in events if key == "PRM mismatch"), None)
+                    if prm:
+                        reason += f"; {prm}"
+                if "tools/call" in missing:
+                    trace = [value for key, value in events if key == "MCP HTTP" and value.startswith("tools/call ")]
+                    reason += f"; model requests: {model.turns}, tool emitted: {model.emitted}, MCP call: {', '.join(trace) or 'absent'}"
+                    if ("remember schema", "top-level oneOf") in events:
+                        reason += "; gateway tools/list provided remember with top-level oneOf"
+            elif status == "PASS":
+                reason = f"{discovery_route(events)}; {registration}; consent callback; S256; equal resources; 2025-06-18; local model tools and refresh"
         record(name, version, status, reason)
         return
     # One model-free app-server session can call a configured MCP tool directly.
@@ -608,13 +735,15 @@ def reports():
                         failures=str(sum(row[2] == "FAIL" for row in ROWS)),
                         skipped=str(sum(row[2] == "not_applicable" for row in ROWS)))
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    lines = [f"# X-M02-2 OAuth clients\n\nGateway SHA `{head}`. Fault `{FAULT}`.\n",
+    lines = [f"# X-M02-2 OAuth clients\n\nGateway SHA `{head}`. Fault `{FAULT}`. Focus `{FOCUS}`.\n",
              "| Client | Version | Result | Evidence |", "| --- | --- | --- | --- |"]
     for name, version, status, reason in ROWS:
         lines.append(f"| {name} | {version} | {status} | {reason} |")
         case = xml.SubElement(suite, "testcase", name=f"{name} {version}")
-        if status != "PASS":
+        if status in {"FAIL", "not_applicable"}:
             xml.SubElement(case, "failure" if status == "FAIL" else "skipped", message=reason)
+        elif status == "doc-verified":
+            xml.SubElement(case, "system-out").text = f"doc-verified: {reason}"
     (output / "clients.md").write_text("\n".join(lines) + "\n")
     xml.ElementTree(suite).write(output / "clients.xml", encoding="utf-8", xml_declaration=True)
 
@@ -629,6 +758,14 @@ def main():
                 sdk("MCP TypeScript SDK", "1.32.2", ts, env)
             elif FAULT == "gemini-consent":
                 gemini(env)
+            elif FAULT == "qwen-consent" or FOCUS in {"qwen", "claude", "codebuddy"}:
+                binary = "qwen" if FAULT == "qwen-consent" else FOCUS
+                cli(*next(row for row in CLI if row[3] == binary), env)
+            elif FOCUS == "docs":
+                for row in HOSTED:
+                    if row[0] in {"claude.ai", "Cursor Web"}:
+                        hosted(*row, env)
+                deepseek(env)
             else:
                 sdk("MCP TypeScript SDK", "1.32.2", [*ts, "--refresh"], env)
                 check_pkce(ts, env)
