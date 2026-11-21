@@ -17,6 +17,7 @@ import time
 
 async def qwen_probe(executable, workspace, url, env):
     """Check the public ACP initialize and session/new door without sending a model prompt."""
+    env = {**env, "QWEN_HOME": str(workspace / "qwen"), "QWEN_RUNTIME_DIR": str(workspace / "runtime")}
     process = await asyncio.create_subprocess_exec(
         executable, "--acp", cwd=workspace, env=env, stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=4 * 1024 * 1024,

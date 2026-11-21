@@ -333,12 +333,11 @@ def gemini(env):
     prefix = TEMP / "oauth-cli-gemini"
     install = run(["npm", "install", "--prefix", str(prefix), "--no-audit", "--no-fund",
                    f"@google/gemini-cli-core@{version}"], env, timeout=240)
-    provider = prefix / "node_modules/@google/gemini-cli-core/dist/src/mcp/oauth-provider.js"
-    if install.returncode or not provider.is_file():
+    if install.returncode:
         status = "FAIL" if FAULT == "gemini-consent" else "not_applicable"
-        record(name, version, status, f"Pinned core install/provider probe failed (npm exit {install.returncode})")
+        record(name, version, status, f"Pinned core install failed (npm exit {install.returncode})")
         return
-    sdk(name, version, ["node", str(HERE / "gemini.mjs"), str(provider)], env,
+    sdk(name, version, ["node", str(HERE / "gemini.mjs"), str(prefix)], env,
         direct_discovery=True, input_data="y\n")
 
 

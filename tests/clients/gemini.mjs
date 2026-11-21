@@ -8,9 +8,10 @@ import { pathToFileURL } from "node:url";
 let stage = "load provider";
 
 async function main() {
-    const providerPath = pathToFileURL(process.argv[2]);
-    const { MCPOAuthProvider } = await import(providerPath);
-    const { MCPOAuthTokenStorage } = await import(new URL("./oauth-token-storage.js", providerPath));
+    const resolveCore = createRequire(process.argv[2] + "/package.json");
+    // The public entry initializes storage before other modules in Gemini's import cycle.
+    const core = pathToFileURL(resolveCore.resolve("@google/gemini-cli-core"));
+    const { MCPOAuthProvider, MCPOAuthTokenStorage } = await import(core);
     const require = createRequire(process.env.RUNNER_TEMP + "/oauth-npm/package.json");
     const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
     const { StreamableHTTPClientTransport } = require("@modelcontextprotocol/sdk/client/streamableHttp.js");
