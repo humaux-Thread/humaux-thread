@@ -147,7 +147,7 @@ pub fn projected_bmo_policy(facts: &QuotaPolicyFacts) -> Result<ChargePolicy, Er
             Some("calendar_month" | "subscription_period")
         )
     {
-        return Err(ErrorCode::Internal);
+        return Err(ErrorCode::EntitlementRequired);
     }
     let parse = |key| {
         policy
