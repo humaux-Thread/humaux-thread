@@ -50,13 +50,18 @@ class ModelHandler(BaseHTTPRequestHandler):
         wanted = self.server.wanted
         candidates = {wanted, f"humaux_ci__{wanted}", f"{prefix}{wanted}"}
         name = next((name for name in names if name in candidates), None)
+        arguments = {"operation": "put", "content": "Synthetic native OAuth acceptance",
+                     "workspace_id": self.server.workspace, "idempotency_key": str(uuid4())} if wanted == "remember" else {}
         # A model can only ask the real CLI to call a tool it received in its catalog.
         if self.server.emitted:
             name = None
-        arguments = {"operation": "put", "content": "Synthetic native OAuth acceptance",
-                     "workspace_id": self.server.workspace, "idempotency_key": str(uuid4())} if wanted == "remember" else {}
         if name:
             self.server.emitted = True
+        elif wanted == "remember" and not (self.server.emitted or self.server.waited) and "WaitForMcpServers" in names:
+            # Native print-mode CLIs can start the model before their MCP connection finishes.
+            self.server.waited = True
+            name = "WaitForMcpServers"
+            arguments = {"servers": ["humaux_ci"]}
         if anthropic:
             self.messages(name, arguments, body.get("stream"))
             return
@@ -123,6 +128,7 @@ def model_stub(workspace):
         server.turns = 0
         server.wanted = None
         server.emitted = False
+        server.waited = False
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:

@@ -83,7 +83,8 @@ def terminal(command, cwd, env):
 
 
 def open_mcp(ui, claude):
-    if not ui.expect(r"doyouwanttousethisapikey|doyoutrustthefilesinthisfolder|foragents|forshortcuts|automodeon", 18):
+    prompt = r"foragents|forshortcuts|forhelp|automodeon"
+    if not ui.expect(rf"doyouwanttousethisapikey|doyoutrustthefilesinthisfolder|{prompt}", 30):
         return "startup did not reach the command prompt"
     if "doyouwanttousethisapikey" in ui.text():
         if not ui.expect(r"❯no\(recommended\)"):
@@ -99,19 +100,21 @@ def open_mcp(ui, claude):
         if not ui.expect(r"[❯>](?:1\.)?trustfolderonly"):
             return "isolated workspace trust option was unavailable"
         ui.send(b"\r")
-    if not ui.expect(r"foragents|forshortcuts|automodeon", 18):
+    if not ui.expect(prompt, 25):
         return "local model did not reach the interactive prompt"
     ui.send(b"/mcp")
     if not ui.expect(r"/mcp", 5):
         return "terminal did not echo /mcp"
     ui.send(b"\r")
     menu = r"managemcpservers|humaux_cimcpserver|❯authenticate"
+    if claude:
+        menu += r"|mcpservers[0-9]+server"
     if not ui.expect(menu, 8) and "/mcp" in ui.text():
         ui.send(b"\r")
     if not ui.expect(menu, 8):
         return "/mcp did not open the native menu"
-    if "managemcpservers" in ui.text() and "humaux_cimcpserver" not in ui.text():
-        if not ui.expect(r"[❯>]humaux_ci", 6):
+    if ("managemcpservers" in ui.text() or re.search(r"mcpservers[0-9]+server", ui.text())) and "humaux_cimcpserver" not in ui.text():
+        if not ui.expect(r"[❯>](?:\.{3}|…)??humaux_ci", 6):
             return "MCP server was missing from the native menu"
         ui.send(b"\r")
     actions = r"authenticate|connectwithoauth"
@@ -147,6 +150,7 @@ def terminal_probe(executable, binary, workspace, url, env, model, events, ttl):
         model_id = CLAUDE_MODEL
     else:
         env.update(CODEBUDDY_CONFIG_DIR=str(config), OPENAI_API_KEY=KEY)
+        (config / "settings.json").write_text(json.dumps({"trustedDirectories": [str(workspace)]}))
         model_dir = workspace / ".codebuddy"
         model_dir.mkdir()
         (model_dir / "models.json").write_text(json.dumps({"models": [{"id": MODEL, "name": "Local CI",
@@ -154,6 +158,9 @@ def terminal_probe(executable, binary, workspace, url, env, model, events, ttl):
             "maxInputTokens": 16384, "maxOutputTokens": 256, "supportsToolCall": True}], "availableModels": [MODEL]}))
         model_id = MODEL
     command = [executable, "--model", model_id, "--allowedTools", REMEMBER]
+    if binary == "codebuddy":
+        # https://www.codebuddy.ai/docs/cli/tool-defer-overlay
+        command.extend(["--tools", f"WaitForMcpServers,NoDefer({REMEMBER})"])
     try:
         probe = subprocess.run([*command, "-p", "Acknowledge the local CI model."], env=env, cwd=workspace,
                                capture_output=True, timeout=30)

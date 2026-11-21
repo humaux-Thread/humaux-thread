@@ -27,6 +27,7 @@ def local_env(env):
 def select_tool(model, name):
     model.wanted = name
     model.emitted = False
+    model.waited = False
 
 
 def completed_auth(events):
