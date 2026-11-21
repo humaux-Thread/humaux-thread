@@ -2864,7 +2864,8 @@ impl humaux_application::cimd::CimdFetch for CimdFixture {
             body: serde_json::to_vec(&serde_json::json!({
                 "client_id": self.0, "client_name": "<Desktop>",
                 "redirect_uris": ["http://127.0.0.1:18001/cb"],
-                "token_endpoint_auth_method": "none",
+                "token_endpoint_auth_method": "private_key_jwt",
+                "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
             }))
             .unwrap(),
             cache_control: vec!["max-age=30".into()],

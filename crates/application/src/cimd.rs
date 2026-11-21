@@ -78,9 +78,30 @@ struct Document {
     client_id: String,
     client_name: String,
     redirect_uris: Vec<String>,
-    token_endpoint_auth_method: String,
+    #[serde(default)]
+    token_endpoint_auth_method: serde_json::Value,
+    #[serde(default, deserialize_with = "present_auth_methods")]
+    token_endpoint_auth_methods_supported: Option<Vec<String>>,
     #[serde(flatten)]
     other: serde_json::Map<String, serde_json::Value>,
+}
+
+// Distinguish an absent field from an explicit null, which is invalid.
+fn present_auth_methods<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error> {
+    Vec::<String>::deserialize(deserializer).map(Some)
+}
+
+impl Document {
+    fn supports_public_auth(&self) -> bool {
+        // ponytail: CIMD is public + PKCE only, matching the AS's sole advertised method.
+        // Add jwks_uri signature validation in a separate card before enabling private_key_jwt.
+        match &self.token_endpoint_auth_methods_supported {
+            Some(methods) => methods.iter().any(|method| method == "none"),
+            None => self.token_endpoint_auth_method.as_str() == Some("none"),
+        }
+    }
 }
 
 struct Cached {
@@ -165,7 +186,7 @@ impl CimdResolver {
         if doc.client_id != client_id
             || doc.client_name.trim().is_empty()
             || doc.client_name.chars().any(char::is_control)
-            || doc.token_endpoint_auth_method != "none"
+            || !doc.supports_public_auth()
             || doc.other.contains_key("client_secret")
             || doc.other.contains_key("client_secret_expires_at")
             || doc.redirect_uris.is_empty()
@@ -295,6 +316,7 @@ mod tests {
 
     struct Fixture {
         id: &'static str,
+        auth: Option<serde_json::Value>,
         headers: &'static [&'static str],
         age: Option<&'static str>,
         calls: AtomicUsize,
@@ -304,11 +326,19 @@ mod tests {
     impl CimdFetch for Fixture {
         async fn fetch(&self, _: &str) -> Result<FetchedDocument, CimdError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
+            let mut body = serde_json::json!({
+                "client_id": self.id, "client_name": "Desktop",
+                "redirect_uris": ["http://127.0.0.1:3000/callback"],
+            });
+            if let Some(auth) = &self.auth {
+                body.as_object_mut()
+                    .unwrap()
+                    .extend(auth.as_object().unwrap().clone());
+            } else {
+                body["token_endpoint_auth_method"] = "none".into();
+            }
             Ok(FetchedDocument {
-                body: serde_json::to_vec(&serde_json::json!({
-                    "client_id": self.id, "client_name": "Desktop", "token_endpoint_auth_method": "none",
-                    "redirect_uris": ["http://127.0.0.1:3000/callback"],
-                })).unwrap(),
+                body: serde_json::to_vec(&body).unwrap(),
                 cache_control: self.headers.iter().map(|value| (*value).into()).collect(),
                 age: self.age.map(str::to_owned),
             })
@@ -325,10 +355,74 @@ mod tests {
         )
     }
 
+    async fn resolve_auth(auth: serde_json::Value) -> Result<Arc<CimdClient>, CimdError> {
+        lookup(
+            ISSUER,
+            Arc::new(Fixture {
+                id: ID,
+                auth: Some(auth),
+                headers: &[],
+                age: None,
+                calls: AtomicUsize::new(0),
+            }),
+        )
+        .resolve(ID)
+        .await
+    }
+
+    #[tokio::test]
+    async fn accepts_common_public_auth_method() {
+        for auth in [
+            serde_json::json!({
+                "token_endpoint_auth_method": "private_key_jwt",
+                "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+            }),
+            serde_json::json!({"token_endpoint_auth_methods_supported": ["none"]}),
+            serde_json::json!({"token_endpoint_auth_method": "none"}),
+        ] {
+            assert!(resolve_auth(auth.clone()).await.is_ok(), "{auth}");
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_private_key_jwt_only_array() {
+        assert!(matches!(
+            resolve_auth(serde_json::json!({
+                "token_endpoint_auth_method": "none",
+                "token_endpoint_auth_methods_supported": ["private_key_jwt"],
+            }))
+            .await,
+            Err(CimdError::Invalid)
+        ));
+    }
+
+    #[tokio::test]
+    async fn rejects_malformed_auth_methods_without_singular_fallback() {
+        for methods in [
+            serde_json::json!(null),
+            serde_json::json!("none"),
+            serde_json::json!([]),
+            serde_json::json!(["none", 1]),
+        ] {
+            assert!(
+                matches!(
+                    resolve_auth(serde_json::json!({
+                        "token_endpoint_auth_method": "none",
+                        "token_endpoint_auth_methods_supported": methods,
+                    }))
+                    .await,
+                    Err(CimdError::Invalid)
+                ),
+                "{methods}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn exact_id_mismatch_never_enters_cache() {
         let source = Arc::new(Fixture {
             id: "https://CLIENT.example/metadata.json",
+            auth: None,
             headers: &[],
             age: None,
             calls: AtomicUsize::new(0),
@@ -348,6 +442,10 @@ mod tests {
         use crate::oauth::{self, AuthorizeRequest, ClientView, OAuthPolicy, OAuthReason};
         let source = Arc::new(Fixture {
             id: ID,
+            auth: Some(serde_json::json!({
+                "token_endpoint_auth_method": "private_key_jwt",
+                "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+            })),
             headers: &[],
             age: None,
             calls: AtomicUsize::new(0),
@@ -387,6 +485,7 @@ mod tests {
     async fn refreshes_at_expiry_and_separates_issuers() {
         let source = Arc::new(Fixture {
             id: ID,
+            auth: None,
             headers: &["max-age=4"],
             age: Some("1"),
             calls: AtomicUsize::new(0),
@@ -424,6 +523,7 @@ mod tests {
         for (headers, age) in [(&["public, no-store"][..], None), (&[][..], Some(""))] {
             let source = Arc::new(Fixture {
                 id: ID,
+                auth: None,
                 headers,
                 age,
                 calls: AtomicUsize::new(0),
