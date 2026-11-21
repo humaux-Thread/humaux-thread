@@ -7,16 +7,16 @@
 
 ## 权威与产品决策
 
-[Baseline 2.9:8294–8345](../architecture/Baseline_2.9.md#L8294) 要求登录后的候选同时考虑身份、成员关系、策略、组、租户状态与有效权益，允许选择租户或项目级连接的工作区，由授权服务器将选择绑定到 Grant。M02 D6（`module_design_M02.md:123–128`，SHA-256 `e947c6751a4df7e39e857c4ae351c92b64faee0e1d43d4e0bfed7e96bc27d943`）规定服务端会话及同源、CSRF、撤销、过期和 epoch 校验。M02-10-CHOOSER `DRAFT.md:5–18`（SHA-256 `4c888f8d0db5acb1325717074c45fe62c1e751d0ff85684676a3e11600f06dd5`）规定选择边界和验收。以上行号均对应所列版本。
+[Baseline 2.9 §33（Tenant / Workspace Chooser，:8294–8345）](../architecture/Baseline_2.9.md#L8294) 要求登录后的候选同时考虑身份、成员关系、策略、组、租户状态与有效权益，允许选择租户或项目级连接的工作区，由授权服务器将选择绑定到 Grant。[Baseline 2.9 §73.6（Web Console Session，:14812–14828）](../architecture/Baseline_2.9.md#L14812) 及现行会话与 CSRF 实现（`crates/application/src/session.rs`、`bins/gateway/src/auth_pages.rs`、`bins/gateway/src/oauth_http.rs`）规定服务端会话及同源、CSRF、撤销、过期和 epoch 校验。以上行号均对应源码基线 `ecff6d0f`。
 
-U1–U3 的产品依据为「主人裁定 2026-11-21，主控转述 msg 本条」（Orca dispatch `ctx_db9215120815`）。以下为获裁定的契约，具体表名和迁移由实施卡确定。
+U1–U3 的产品依据为『主人裁定 2026-11-21』。以下为获裁定的契约，具体表名和迁移由实施卡确定。
 
 | 输入 | 语义 | 表归属及唯一写入方 | 决策版本来源 |
 |---|---|---|---|
-| MCP Connection Policy（U1） | 仅租户管理员可设置。按工作区与客户端匹配。无策略或策略停用时沿用 M02-10b 的现行准入，无额外策略限制。匹配冲突时 deny 优先。 | `identity_access` 拥有策略持久化，唯一写入方为同租户的租户管理员接口（U3）。 | Baseline 2.9:8296–8310 定义判定输入。此 ADR 所引主人裁定确定规则，生效值取当前策略行版本（U3）。 |
-| Allowed Groups（U2） | 组是租户内组，由 `identity_access` 提供组与成员资格事实。未配置允许组时无组限制。已配置时，用户必须是至少一个允许组的成员。空组没有成员。 | `identity_access` 拥有允许组配置、租户组及成员关系，唯一写入方为同租户的租户管理员接口（U3）。 | Baseline 2.9:8296–8310 定义判定输入。此 ADR 所引主人裁定确定规则，生效值取当前配置、组及相关成员资格行版本（U3）。 |
-| 会话、成员关系、候选、选择、授权码与 Grant | `identity_access` 从已验证会话及其活跃成员关系派生候选。工作区还须有同租户的活跃工作区成员关系及当前授权范围。 | [模块目录:220–246](../architecture/modules.toml#L220) 登记会话、租户、成员关系、工作区、授权码和 Grant 的唯一写主 `identity_access`。[ADR-0035:24–37](0035-workspace-membership-and-scope.md#L24) 规定工作区成员关系的唯一运行时写门。 | M02 D6、ADR-0035 D-A/D-B/D-D/D-F、Baseline 2.9:8294–8345。 |
-| 有效权益 | 由 `commercial` 按当前 MCP BMO 准入谓词解释每租户权益快照，用同一观察时间选取生效值（含 successor）并判断有效期。 | [模块目录:291–308](../architecture/modules.toml#L291) 登记 `commercial` 为订阅、权益来源与快照的唯一写主。 | [ADR-0072:19–30](0072-quota-period-renewal.md#L19) D-A、Baseline §76，以及当前 `request_guard_repo.rs:111–176`、`read_quota.rs:115–156`、`bootstrap.rs:2648–2657`。 |
+| MCP Connection Policy（U1） | 仅租户管理员可设置。按工作区与客户端匹配。无策略或策略停用时沿用 M02-10b 的现行准入，无额外策略限制。匹配冲突时 deny 优先。 | `identity_access` 拥有策略持久化，唯一写入方为同租户的租户管理员接口（U3）。 | [Baseline 2.9 §33:8296–8310](../architecture/Baseline_2.9.md#L8296) 定义判定输入；『主人裁定 2026-11-21』确定规则，生效值取当前策略行版本（U3）。 |
+| Allowed Groups（U2） | 组是租户内组，由 `identity_access` 提供组与成员资格事实。未配置允许组时不按组限制。已配置时，用户必须在至少一个允许组内，否则拒绝；空组没有成员（无人满足）。 | `identity_access` 拥有允许组配置、租户组及成员关系，唯一写入方为同租户的租户管理员接口（U3）。 | [Baseline 2.9 §33:8296–8310](../architecture/Baseline_2.9.md#L8296) 定义判定输入；『主人裁定 2026-11-21』确定规则，生效值取当前配置、组及相关成员资格行版本（U3）。 |
+| 会话、成员关系、候选、选择、授权码与 Grant | `identity_access` 从已验证会话及其活跃成员关系派生候选。工作区还须有同租户的活跃工作区成员关系及当前授权范围。 | [模块目录:220–246](../architecture/modules.toml#L220) 登记会话、租户、成员关系、工作区、授权码和 Grant 的唯一写主 `identity_access`。[ADR-0035:24–37](0035-workspace-membership-and-scope.md#L24) 规定工作区成员关系的唯一运行时写门。 | Baseline §73.6（`crates/application/src/session.rs`）、ADR-0035 D-A/D-B/D-D/D-F、Baseline 2.9 §33:8294–8345。 |
+| 有效权益 | 由 `commercial` 按当前 MCP BMO 准入谓词解释每租户权益快照，用同一观察时间选取生效值（含 successor）并判断有效期。 | [模块目录:291–308](../architecture/modules.toml#L291) 登记 `commercial` 为订阅、权益来源与快照的唯一写主。 | [ADR-0072:19–30](0072-quota-period-renewal.md#L19) D-A、Baseline §76，以及当前 `crates/adapters/src/request_guard_repo.rs:111–176`、`crates/application/src/read_quota.rs:115–156`、`bins/gateway/src/bootstrap.rs:2648–2657`。 |
 
 无策略、策略停用或未配置允许组必须由成功读取的权威状态确认。无法作出判定或读取失败一律拒绝。以上规则只作用于已获准的精确目标，出码或 refresh 失败时禁止回退到其他工作区或更宽的租户范围。
 
@@ -43,7 +43,7 @@ mcp_entitlement_for_tenants(
 // McpEntitlement 有 Enabled 和 EntitlementRequired 两种判定
 ```
 
-成功时逐个覆盖输入租户，使用同一读取快照和商业观察时间。快照缺失或现有谓词判定无有效权益时，该租户为 `EntitlementRequired`。依赖不可用、超时或批次缺项时整批终止；依赖故障映射 `DependencyUnavailable`，数据损坏或返回集合违反契约映射 `Internal`。出码仍以选中租户套用现行准入和事务保护（`0308_oauth_consent_revoke.sql:26–46`、`bootstrap.rs:2740–2785` 和 `oauth_repo.rs:417–455`）。候选及出码均只读权益，无订阅写入、预留、用量或计费写入。
+成功时逐个覆盖输入租户，使用同一读取快照和商业观察时间。快照缺失或现有谓词判定无有效权益时，该租户为 `EntitlementRequired`。依赖不可用、超时或批次缺项时整批终止；依赖故障映射 `DependencyUnavailable`，数据损坏或返回集合违反契约映射 `Internal`。出码仍以选中租户套用现行准入和事务保护（`migrations/0308_oauth_consent_revoke.sql:26–46`、`bins/gateway/src/bootstrap.rs:2740–2785` 和 `crates/adapters/src/oauth_repo.rs:417–455`）。候选及出码均只读权益，无订阅写入、预留、用量或计费写入。
 
 **依赖。** [ADR-0130 D2/D4/D5/D7a/D8:53–112](0130-bounded-context-modules-ddd-hexagonal.md#L53) 要求应用端口依赖无环、表唯一写主，PG 同事务协作单独登记。
 
@@ -58,14 +58,14 @@ mcp_entitlement_for_tenants(
 
 ## 生成候选、出码与 refresh
 
-1. **GET** 按 M02 D6 认证会话，先完成现有 OAuth client、redirect、PKCE S256、resource 与 scopes 校验。只从该用户的活跃租户、租户成员关系与同租户工作区授权范围取候选，取策略、组及商业准入交集。沿用现有集合约束。超界时明确拒绝，禁静默截断。现行 `oauth_consent_tenants` 的 `LIMIT 2` 只够证明单租户阶段的基数（`0308_oauth_consent_revoke.sql:2–14`），完整 chooser 须走受限候选读取。
+1. **GET** 按 Baseline §73.6（`crates/application/src/session.rs`）认证会话，先完成现有 OAuth client、redirect、PKCE S256、resource 与 scopes 校验。只从该用户的活跃租户、租户成员关系与同租户工作区授权范围取候选，取策略、组及商业准入交集。沿用现有受限集合上限（`crates/domain/src/identity.rs:67–88` 的 `BoundedSet::MAX_LEN = 256` 与 [ADR-0035 D-D:52–56](0035-workspace-membership-and-scope.md#L52) 的 `LIMIT 257` 机械判界），超界时以 `ErrorCode::InvalidInput` 明确拒绝，禁静默截断。现行 `oauth_consent_tenants` 的 `LIMIT 2` 只够证明单租户阶段的基数（`migrations/0308_oauth_consent_revoke.sql:2–14`），完整 chooser 须走受限候选读取。
 2. **页面** 展示允许的目标及经验证的请求。签名绑定本页目标（包含 tenant/workspace）、会话、有效期及原请求（client、redirect、PKCE、resource、scope、state）。用户显式提交本页签入的那一个目标。服务端仅从校验成功的签名材料取得选择。延续同源和会话绑定的 CSRF 验证。
 3. **POST 重验** 在出码前复核同一活会话（含撤销、expiry、epoch）、请求有效性、已签入目标且用户确认、活跃 user/tenant/tenant membership，以及工作区归属、活跃 membership 和当前允许范围。再从现行来源复核策略、组和选中租户的权益。其他候选变化既不能替换选中目标，也不能扩大其授权。
-4. **出码事务** 保留 `persist_consent_code` 的单次提交边界（`oauth_exchange.rs:352–378`）。在写码的同一 PG 事务内先共享锁定稳定的租户内保护行，再读取并共享锁定策略、组及相关成员资格的当前行版本，锁保持至提交。管理员写门须先对此保护行加冲突锁，使无配置、空组、首次配置、插入 deny 或删除配置与读取同样可排序。现有会话、成员与权益检查也必须与相应撤权写入可排序。依赖故障、撤权、事务冲突或失效均回滚，提交成功后才返回 code。
-5. **绑定** 以原样的已选 `tenant_id` 和可选 `workspace_id` 写入授权码，兑换从该码传给 Grant（`oauth_exchange.rs:418–449`，`0268_oauth_persistence.sql:216–268,274–323`）。浏览器外的客户端参数无权替换它们。继续验证 workspace 绑定只收窄（ADR-0035 D-D/D-F），并保留现行 refresh、Grant 生命周期与资源绑定闸。
-6. **Refresh 事务** 从持久化 Grant 取用户、租户、工作区和客户端来重验策略与组。在轮换的同一 PG 事务内锁定相关行及保护行，沿用出码的行版本与共享锁协议。明确拒绝或读取失败时回滚本次轮换，无新 token，也无范围回退。保留现有 refresh 重用导致 family／Grant 撤销的提交分支（`oauth_exchange.rs:509–565`）。策略或组的撤权一经提交，即阻止新的出码和 refresh。仅由此类变更触发的撤权对已签发的 access token 以其 TTL 到期为界，原有 Grant 撤销、epoch 等检查仍适用。
+4. **出码事务** 保留 `persist_consent_code` 的单次提交边界（`crates/application/src/oauth_exchange.rs:352–378`）。在写码的同一 PG 事务内先共享锁定稳定的租户内保护行，再读取并共享锁定策略、组及相关成员资格的当前行版本，锁保持至提交。管理员写门须先对此保护行加冲突锁，使无配置、空组、首次配置、插入 deny 或删除配置与读取同样可排序。现有会话、成员与权益检查也必须与相应撤权写入可排序。依赖故障、撤权、事务冲突或失效均回滚，提交成功后才返回 code。
+5. **绑定** 以原样的已选 `tenant_id` 和可选 `workspace_id` 写入授权码，兑换从该码传给 Grant（`crates/application/src/oauth_exchange.rs:418–449`，`migrations/0268_oauth_persistence.sql:216–268,274–323`）。浏览器外的客户端参数无权替换它们。继续验证 workspace 绑定只收窄（ADR-0035 D-D/D-F），并保留现行 refresh、Grant 生命周期与资源绑定闸。
+6. **Refresh 事务** 从持久化 Grant 取用户、租户、工作区和客户端来重验策略与组。在轮换的同一 PG 事务内锁定相关行及保护行，沿用出码的行版本与共享锁协议。明确拒绝或读取失败时回滚本次轮换，无新 token，也无范围回退。保留现有 refresh 重用导致 family／Grant 撤销的提交分支（`crates/application/src/oauth_exchange.rs:509–565`）。策略或组的撤权一经提交，即阻止新的出码和 refresh。仅由此类变更触发的撤权对已签发的 access token 以其 TTL 到期为界，原有 Grant 撤销、epoch 等检查仍适用。
 
-**错误。** 沿用 [ADR-0130 D7:98–104](0130-bounded-context-modules-ddd-hexagonal.md#L98) 和 `domain::error::ErrorCode`。目标不可见、不在本页、被策略或组拒绝、撤权或没有可选目标时，以 `Forbidden` 结束。有效目标缺权益时为 `EntitlementRequired`。无效登录、CSRF、客户端请求与用户主动拒绝走原有 M02/OAuth 映射；依赖失败走 `DependencyUnavailable`（现 handler 为 503），内部损坏走 `Internal`，并发冲突保留原映射（`oauth_http.rs:563–568,685–728,846–852`）。浏览器不获知其他主体、租户、组或未展示目标的存在。权限失败全部终止，无 `DegradeCode` 成功回退，也无第三种业务错误枚举。
+**错误。** 沿用 [ADR-0130 D7:98–104](0130-bounded-context-modules-ddd-hexagonal.md#L98) 和 `domain::error::ErrorCode`（`crates/domain/src/error.rs:56–95`，Baseline §52.1）。目标不可见、不在本页、被策略或组拒绝、撤权或没有可选目标时，以 `Forbidden` 结束。有效目标缺权益时为 `EntitlementRequired`。候选集超过受限上限（`crates/domain/src/identity.rs:73–86` 的 `BoundedSet::MAX_LEN = 256`、[ADR-0035 D-D:54–56](0035-workspace-membership-and-scope.md#L54)）时映射 `InvalidInput`，禁静默截断。无效登录、CSRF、客户端请求与用户主动拒绝走原有 M02/OAuth 映射；依赖失败走 `DependencyUnavailable`（现 handler 为 503），内部损坏走 `Internal`，并发冲突保留原映射（`bins/gateway/src/oauth_http.rs:563–568,685–728,846–852`）。浏览器不获知其他主体、租户、组或未展示目标的存在。权限失败全部终止，无 `DegradeCode` 成功回退，也无第三种业务错误枚举。
 
 ## 实现卡与验收
 
@@ -80,4 +80,8 @@ mcp_entitlement_for_tenants(
 | 身份原子 refresh / ≤12 | 身份读取契约可调用后，在现有轮换事务内对 Grant 的精确绑定接入策略与组重验。 | 真 PG 验证政策和组撤权提交后无新 token，失败轮换回滚，同时保留重用撤销和既有 access token 的 TTL 行为。分别注错使用旧行版本、绕过共享锁、失败仍提交轮换或回退到租户，各自红后恢复绿。 |
 | 浏览器 consent / ≤12 | 原子出码和 refresh 验收后，把签入选择与出码接到现有 OAuth 路由。 | HTTP 加真 PG 验证显式选择、空候选、签入目标篡改、另一会话复用、同源/CSRF、策略或商业依赖不可用及无回退。分别注错允许未签入目标、取消会话绑定和在依赖失败时默认选租户，各自红后恢复绿。 |
 
-保留 M02 §8（同一固定版本 :174–183）的 G-M02-5（跨会话或跨站 CSRF）、6（PKCE plain／非 loopback HTTP）、7（code 重放／错误 resource 或 verifier）、8（refresh 重放撤销整 family）、9（Grant 最长时限／epoch）、14（metadata golden，包括适用 URL）原判据。按当前入口跑受影响的全部 OAuth 模式。每卡交付最终 SHA、真 PG 正反例和逐项注错红→恢复绿的 CI 证据，再由独立复核验收。保持现有 HEX 基线。本文只提交 Proposed 设计与编号登记，chooser 产品实现及对应运行验证仍待执行。
+保留现行 OAuth 与会话门禁（Baseline §33 / §73.6，`crates/application/src/oauth.rs`、`crates/application/src/session.rs`、`bins/gateway/src/oauth_http.rs`）：G-M02-5（跨会话或跨站 CSRF）、6（PKCE plain／非 loopback HTTP）、7（code 重放／错误 resource 或 verifier）、8（refresh 重放撤销整 family）、9（Grant 最长时限／epoch）、14（metadata golden，包括适用 URL）原判据。按当前入口跑受影响的全部 OAuth 模式。每卡交付最终 SHA、真 PG 正反例和逐项注错红→恢复绿的 CI 证据，再由独立复核验收。保持现有 HEX 基线。本文只提交 Proposed 设计，chooser 产品实现及对应运行验证仍待执行。
+
+## Provenance
+
+设计来源（**只记出处，不作依据**）：外部规划稿 `module_design_M02.md`（`:123–128`，SHA-256 `e947c6751a4df7e39e857c4ae351c92b64faee0e1d43d4e0bfed7e96bc27d943`；§8 `:174–183`）与 M02-10-CHOOSER 草案 `DRAFT.md`（`:5–18`，SHA-256 `4c888f8d0db5acb1325717074c45fe62c1e751d0ff85684676a3e11600f06dd5`）。本 ADR 的全部可执行主张均锚定仓库内已提交文件、§ 号与『主人裁定 2026-11-21』。
