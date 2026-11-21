@@ -39,6 +39,7 @@ async def qwen_probe(executable, workspace, url, env, model, events, ttl):
         "security": {"auth": {"selectedType": "openai"}, "folderTrust": {"enabled": False}},
         "model": {"name": MODEL},
         "modelProviders": {"openai": [{"id": MODEL, "envKey": "OPENAI_API_KEY", "baseUrl": model.url}]},
+        "tools": {"visible": [f"mcp__{SERVER}__remember"]},
         "mcpServers": {SERVER: {"httpUrl": url, "trust": True,
                                 "oauth": {"enabled": True, "scopes": ["memory:write"]}}},
     }))
