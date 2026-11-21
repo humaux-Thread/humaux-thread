@@ -47,7 +47,6 @@ jobs:
       HUMAUX_MIGRATOR_PG_DSN: postgres://postgres:ci@127.0.0.1:5432/humaux_thread_ci
       DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/humaux_thread_ci
       HUMAUX_TEST_DISPOSABLE_CLUSTER: '1'
-      OAUTH_TEST_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
       OAUTH_CLIENT_FAULT: ${{ inputs.fault || 'none' }}
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +69,8 @@ jobs:
       - name: Build isolated gateway
         run: python tests/clients/build_gateway.py
       - name: Run real-client acceptance
+        env:
+          OAUTH_TEST_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: python tests/clients/run.py
       - name: Upload client results
         if: always()
