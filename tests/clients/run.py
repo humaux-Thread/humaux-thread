@@ -159,6 +159,8 @@ class Wire(BaseHTTPRequestHandler):
             grant_type = form.get("grant_type")
             if grant_type == ["authorization_code"]:
                 self.server.events.append(("exchange status", status))
+                if status == 200 and form.get("client_id", [""])[0].startswith("https://"):
+                    self.server.events.append(("CIMD", True))
                 event = ("code", status == 200 and form.get("resource") == [resource] and
                          s256(form.get("code_verifier", [""])[0]) == self.server.pkce_challenge)
             elif grant_type == ["refresh_token"]:
@@ -606,7 +608,8 @@ def cli(name, version, package, binary, env):
                    f"Consent denial not verified ({reason})")
             return
         if status != "not_applicable":
-            missing = [key for key in ("PRM", "ASM", "DCR", "authorize", "consent", "code", "protocol", *TOOLS)
+            registration = "CIMD" if binary == "claude" and ("CIMD", True) in events else "DCR"
+            missing = [key for key in ("PRM", "ASM", registration, "authorize", "consent", "code", "protocol", *TOOLS)
                        if (key, True) not in events]
             after_first_call = events[events.index(("tools/call", True)) + 1:] if ("tools/call", True) in events else []
             if ("refresh", True) not in after_first_call or ("tools/call", True) not in after_first_call:
@@ -624,7 +627,7 @@ def cli(name, version, package, binary, env):
                     trace = [value for key, value in events if key == "MCP HTTP" and value.startswith("tools/call ")]
                     reason += f"; model requests: {model.turns}, tool emitted: {model.emitted}, MCP call: {', '.join(trace) or 'absent'}"
             elif status == "PASS":
-                reason = f"{discovery_route(events)}; DCR; consent callback; S256; equal resources; 2025-06-18; local model tools and refresh"
+                reason = f"{discovery_route(events)}; {registration}; consent callback; S256; equal resources; 2025-06-18; local model tools and refresh"
         record(name, version, status, reason)
         return
     # One model-free app-server session can call a configured MCP tool directly.

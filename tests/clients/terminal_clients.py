@@ -114,7 +114,7 @@ def open_mcp(ui, claude):
     if not ui.expect(menu, 8):
         return "/mcp did not open the native menu"
     if ("managemcpservers" in ui.text() or re.search(r"mcpservers[0-9]+server", ui.text())) and "humaux_cimcpserver" not in ui.text():
-        if not ui.expect(r"[❯>](?:\.{3}|…)??humaux_ci", 6):
+        if not ui.expect(r"[❯>](?:\.{3}|…)?humaux_ci", 6):
             return "MCP server was missing from the native menu"
         ui.send(b"\r")
     actions = r"authenticate|connectwithoauth"
@@ -158,7 +158,9 @@ def terminal_probe(executable, binary, workspace, url, env, model, events, ttl):
             "maxInputTokens": 16384, "maxOutputTokens": 256, "supportsToolCall": True}], "availableModels": [MODEL]}))
         model_id = MODEL
     command = [executable, "--model", model_id, "--allowedTools", REMEMBER]
-    if binary == "codebuddy":
+    if binary == "claude":
+        command.extend(["--permission-mode", "default"])
+    else:
         # https://www.codebuddy.ai/docs/cli/tool-defer-overlay
         command.extend(["--tools", f"WaitForMcpServers,NoDefer({REMEMBER})"])
     try:
@@ -179,6 +181,23 @@ def terminal_probe(executable, binary, workspace, url, env, model, events, ttl):
                 return "FAIL", "native OAuth denial"
             if not ui.wait_for(lambda: ("tools/list", True) in events, 25):
                 return "FAIL", "native menu did not reconnect after OAuth"
+            if binary == "claude":
+                # Keep the authenticated MCP connection alive for both tool turns.
+                if not ui.expect(r"signedinandconnectedtohumaux_ci", 25):
+                    return "FAIL", "native menu did not confirm the authenticated connection"
+                for attempt in (1, 2):
+                    select_tool(model, "remember")
+                    ui.send(PROMPT.encode())
+                    if not ui.expect(r"usethehumaux_ciremembertool", 5):
+                        return "FAIL", "native terminal did not echo the fixture tool prompt"
+                    ui.send(b"\r")
+                    if not ui.wait_for(lambda: events.count(("tools/call", True)) >= attempt, 50):
+                        return "FAIL", "native terminal did not produce a successful remember call"
+                    if attempt == 1:
+                        if not ui.expect("fixtureturncomplete", 20):
+                            return "FAIL", "native terminal did not finish the first tool turn"
+                        time.sleep(ttl + 1)
+                return "PASS", "local model and native MCP OAuth menu"
         for attempt in (1, 2):
             select_tool(model, "remember")
             for _ in range(2):
