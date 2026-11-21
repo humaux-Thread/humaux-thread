@@ -174,6 +174,26 @@ class = "KNOWLEDGE"
 owner = "M02"
 basis = "M02:61; D1 principle"
 
+["control.mcp_connection_policies"]
+class = "KNOWLEDGE"
+owner = "M02"
+basis = "ADR-0137 U1–U3; D1 principle: retain tenant-authored access constraints on restore"
+
+["control.mcp_connection_rules"]
+class = "KNOWLEDGE"
+owner = "M02"
+basis = "ADR-0137 U1–U3; D1 principle: retain tenant-authored access constraints on restore"
+
+["control.mcp_group_members"]
+class = "KNOWLEDGE"
+owner = "M02"
+basis = "ADR-0137 U1–U3; D1 principle: retain tenant-authored access constraints on restore"
+
+["control.mcp_groups"]
+class = "KNOWLEDGE"
+owner = "M02"
+basis = "ADR-0137 U1–U3; D1 principle: retain tenant-authored access constraints on restore"
+
 ["control.memberships"]
 class = "KNOWLEDGE"
 owner = "M02"

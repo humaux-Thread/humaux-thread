@@ -712,6 +712,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.email_challenges`
 - reads `control.email_change_requests`
 - reads `control.entitlement_grants`
+- reads `control.mcp_connection_policies`
+- reads `control.mcp_connection_rules`
+- reads `control.mcp_group_members`
+- reads `control.mcp_groups`
 - reads `control.memberships`
 - reads `control.oauth_authorization_codes`
 - reads `control.oauth_client_registrations`
@@ -2062,6 +2066,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.oauth_refresh_family_revoke`
 - executes `control.oauth_refresh_grant`
 - executes `control.oauth_refresh_rotate`
+- executes `control.write_mcp_chooser_settings`
 - service `PostgreSQL(any)`
 
 #### `adapters::operation_receipt`
@@ -3632,6 +3637,10 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.email_challenges`
 - reads `control.email_change_requests`
 - reads `control.entitlement_grants`
+- reads `control.mcp_connection_policies`
+- reads `control.mcp_connection_rules`
+- reads `control.mcp_group_members`
+- reads `control.mcp_groups`
 - reads `control.memberships`
 - reads `control.oauth_authorization_codes`
 - reads `control.oauth_client_registrations`
@@ -6538,6 +6547,46 @@ executed by:
 - process(humaux-maintenance): `adapters::maintenance_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
+### `control.mcp_connection_policies`
+read by:
+- (no process): `adapters::tests::mcp_chooser_storage`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `control.mcp_connection_rules`
+read by:
+- (no process): `adapters::tests::mcp_chooser_storage`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `control.mcp_group_members`
+read by:
+- (no process): `adapters::tests::mcp_chooser_storage`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `control.mcp_groups`
+read by:
+- (no process): `adapters::tests::mcp_chooser_storage`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
 ### `control.memberships`
 read by:
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
@@ -6587,6 +6636,7 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::mcp_chooser_storage`
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_subjects_link`
@@ -7811,6 +7861,7 @@ executed by:
 ### `control.tenants`
 read by:
 - (no process): `adapters::billing_processor_repo`
+- (no process): `adapters::tests::mcp_chooser_storage`
 - (no process): `adapters::tests::project_continuity_read_0137_acceptance`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `maintenance::tests::onboarding`
@@ -7872,6 +7923,7 @@ written by:
 - (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::mcp_chooser_storage`
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_attribution`
@@ -8078,6 +8130,7 @@ written by:
 - (no process): `adapters::tests::login_challenge`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::mcp_chooser_storage`
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_subjects_link`
@@ -8190,6 +8243,7 @@ written by:
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::mcp_chooser_storage`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::project_continuity_0136`
@@ -8231,6 +8285,15 @@ executed by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `adapters::entitlement_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.write_mcp_chooser_settings`
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::mcp_chooser_storage`
+- process(humaux-gateway): `adapters::oauth_repo`
 
 ### `coord.task_runs`
 read by:
@@ -13683,6 +13746,7 @@ executed by:
 - `adapters::tests::ledger_frontier`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
+- `adapters::tests::mcp_chooser_storage`
 - `adapters::tests::memory_attribution`
 - `adapters::tests::memory_evidence_grounding`
 - `adapters::tests::memory_in_project`
@@ -13853,6 +13917,7 @@ executed by:
 - `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
+- `adapters::tests::mcp_chooser_storage`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
 - `adapters::tests::memory_in_project`
@@ -14647,6 +14712,7 @@ modules naming it:
 - `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
+- `adapters::tests::mcp_chooser_storage`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
@@ -15106,6 +15172,7 @@ modules naming it:
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::governance_quota`
 - `adapters::tests::mandatory_context_lane`
+- `adapters::tests::mcp_chooser_storage`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_attribution`
 - `adapters::tests::memory_security_lifecycle_eval`
@@ -15319,6 +15386,7 @@ modules naming it:
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::ledger_append_only`
 - `adapters::tests::mandatory_context_lane`
+- `adapters::tests::mcp_chooser_storage`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_evidence_grounding`
@@ -15432,6 +15500,7 @@ modules naming it:
 - `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
+- `adapters::tests::mcp_chooser_storage`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
@@ -15568,6 +15637,7 @@ modules naming it:
 - `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
+- `adapters::tests::mcp_chooser_storage`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_evidence_grounding`
@@ -15706,6 +15776,7 @@ modules naming it:
 - `adapters::tests::g80_31_handoff`
 - `adapters::tests::ledger_append_only`
 - `adapters::tests::mandatory_context_lane`
+- `adapters::tests::mcp_chooser_storage`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_evidence_grounding`
@@ -15801,6 +15872,7 @@ modules naming it:
 - `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
+- `adapters::tests::mcp_chooser_storage`
 - `adapters::tests::membership_lifecycle`
 - `adapters::tests::memory_affects`
 - `adapters::tests::memory_attribution`
@@ -15912,6 +15984,7 @@ modules naming it:
 - `adapters::tests::login_challenge`
 - `adapters::tests::maintenance_doors`
 - `adapters::tests::mandatory_context_lane`
+- `adapters::tests::mcp_chooser_storage`
 - `adapters::tests::minimax_live_smoke`
 - `adapters::tests::model_call_ledger`
 - `adapters::tests::note_put`
@@ -20570,6 +20643,15 @@ default run:
 - PostgreSQL
 
 ### `crates/adapters/tests/mandatory_context_lane.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
+
+### `crates/adapters/tests/mcp_chooser_storage.rs`
 db-bound (default run): yes
 
 services (computed):

@@ -1,13 +1,14 @@
 //! `adapters::oauth_repo` — OAuth 2.1 Authorization Server persistence over the `control.oauth_*` doors (migrations 0268/0308/0311):
 //!   client registry, one-time authorization codes, grants and single-use refresh rotation. Writes only through definers; no
 //!   runtime role holds any privilege on the four tables, so every read goes through a door too.
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users] x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_consent_tenants, control.oauth_dcr_register, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_grant, control.oauth_refresh_rotate]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, application::oauth, application::oauth_exchange, domain::error, domain::identity, domain::ids]
+//!   The chooser settings door (0312) checks live tenant-admin authority and returns a committed row version.
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users] x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_consent_tenants, control.oauth_dcr_register, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_grant, control.oauth_refresh_rotate, control.write_mcp_chooser_settings]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, application::oauth, application::oauth_exchange, domain::error, domain::identity, domain::ids]
 //! Called-by: [gateway::auth, gateway::bootstrap, tests]
 //! Invariants: [a raw code or refresh token never reaches this module: callers pass a SecretHash, whose Debug is redacted;
 //!   consume and rotate are single conditional statements inside the doors, so of two concurrent exchanges of one secret
 //!   at most one succeeds; a reused refresh token revokes its family and grant and the transaction still commits; a
 //!   database failure is DependencyUnavailable, a TTL that does not fit the door is Internal]
-//! Spec: §6.2.1; §73.5; §52; §78.1; §78.2
+//! Spec: ADR-0137; §6.2.1; §73.5; §52; §78.1; §78.2
 //!
 //! This module executes; the verdicts (PKCE, redirect, resource, epoch compare, lifetime) belong to the pure state machine
 //! (M02-9). TTLs and the grant ceiling are the caller's §78.1 policy values. Every step of one exchange runs on one
@@ -16,8 +17,9 @@
 use std::time::Duration;
 
 use humaux_domain::error::ErrorCode;
-use humaux_domain::identity::AuthorizationScope;
+use humaux_domain::identity::{AuthorizationScope, McpPolicyEffect};
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
+use serde_json::json;
 use sqlx::Row;
 use sqlx::types::Uuid;
 use time::OffsetDateTime;
@@ -498,4 +500,96 @@ impl humaux_application::oauth_exchange::ExchangeTransaction for OAuthTxn {
     async fn commit(self: Box<Self>) -> Result<(), ErrorCode> {
         OAuthTxn::commit(*self).await
     }
+}
+
+/// One change through the tenant-admin write door.
+pub enum McpChooserChange<'a> {
+    /// Enable the policy and configure whether the allowed-group condition applies.
+    Configure {
+        policy_enabled: bool,
+        groups_restricted: bool,
+    },
+    /// Activate or withdraw one effect for an exact tenant/workspace and client.
+    Rule {
+        workspace_id: Option<WorkspaceId>,
+        client_id: &'a str,
+        effect: McpPolicyEffect,
+        active: bool,
+    },
+    /// Create a tenant-local group or set whether it is an allowed group.
+    Group { group_id: Uuid, allowed: bool },
+    /// Add or revoke a tenant member's group membership.
+    Member {
+        group_id: Uuid,
+        user_id: UserId,
+        active: bool,
+    },
+}
+
+/// Apply a change on behalf of a verified human actor and return the row's new version.
+pub async fn write_settings(
+    pool: &RuntimeDbPool,
+    actor: &AuthorizationScope,
+    tenant_id: TenantId,
+    change: McpChooserChange<'_>,
+) -> Result<i64, ErrorCode> {
+    let user = actor.user_id().ok_or(ErrorCode::Forbidden)?;
+    let (action, values) = match change {
+        McpChooserChange::Configure {
+            policy_enabled,
+            groups_restricted,
+        } => (
+            "configure",
+            json!({ "policy_enabled": policy_enabled, "groups_restricted": groups_restricted }),
+        ),
+        McpChooserChange::Rule {
+            workspace_id,
+            client_id,
+            effect,
+            active,
+        } => (
+            "rule",
+            json!({
+                "workspace_id": workspace_id.map(|id| id.0),
+                "client_id": client_id,
+                "effect": effect.as_db_str(),
+                "active": active,
+            }),
+        ),
+        McpChooserChange::Group { group_id, allowed } => {
+            ("group", json!({ "group_id": group_id, "allowed": allowed }))
+        }
+        McpChooserChange::Member {
+            group_id,
+            user_id,
+            active,
+        } => (
+            "member",
+            json!({ "group_id": group_id, "user_id": user_id.0, "active": active }),
+        ),
+    };
+
+    // dep: PostgreSQL(any) — calls the chooser write door (gateway role only).
+    sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT control.write_mcp_chooser_settings($1, $2, $3, $4, $5)",
+    )
+    .bind(actor.tenant_id().0)
+    .bind(user.0)
+    .bind(tenant_id.0)
+    .bind(action)
+    .bind(values)
+    .fetch_one(pool.pool())
+    .await
+    .map_err(|error| {
+        match error
+            .as_database_error()
+            .and_then(|db| db.code())
+            .as_deref()
+        {
+            Some("22023" | "22P02" | "23502" | "23503" | "23514") => ErrorCode::InvalidInput,
+            Some("40001" | "40P01") => ErrorCode::Conflict,
+            _ => ErrorCode::DependencyUnavailable,
+        }
+    })?
+    .ok_or(ErrorCode::Forbidden)
 }
