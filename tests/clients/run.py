@@ -25,6 +25,7 @@ from xml.etree import ElementTree as xml
 from browser import NoRedirect, postgres_command
 from client_probes import kimi_probe, qwen_probe
 from model_stub import model_stub
+from terminal_clients import terminal_probe
 
 HERE = Path(__file__).resolve().parent
 TEMP = Path(os.environ["RUNNER_TEMP"])
@@ -43,11 +44,11 @@ HOSTED = [
     ("vscode.dev", "https://vscode.dev/oauth/client-metadata.json", "https://vscode.dev/redirect"),
 ]
 CLI = [
-    ("Claude Code", "2.1.328", "@anthropic-ai/claude-code", "claude", "Clean Linux PTY reached Select login method before /mcp; https://code.claude.com/docs/en/setup"),
-    ("Codex CLI", "0.169.0", "@openai/codex", "codex", None),
-    ("Qwen Code", "0.28.3", "@qwen-code/qwen-code", "qwen", None),
-    ("Kimi Code", "2.5.3", "@moonshot-ai/kimi-code", "kimi", None),
-    ("CodeBuddy Code", "2.185.0", "@tencent-ai/codebuddy-code", "codebuddy", "Vendor documents mandatory login before first interactive use; https://www.codebuddy.ai/docs/cli/quickstart"),
+    ("Claude Code", "2.1.328", "@anthropic-ai/claude-code", "claude"),
+    ("Codex CLI", "0.169.0", "@openai/codex", "codex"),
+    ("Qwen Code", "0.28.3", "@qwen-code/qwen-code", "qwen"),
+    ("Kimi Code", "2.5.3", "@moonshot-ai/kimi-code", "kimi"),
+    ("CodeBuddy Code", "2.185.0", "@tencent-ai/codebuddy-code", "codebuddy"),
 ]
 
 
@@ -433,12 +434,14 @@ def metadata_http(response):
 
 
 def doc_oauth(name, version, redirect, source, env, note=""):
-    with witness():
+    with witness() as events:
         result = run(["node", str(HERE / "doc_oauth.mjs"), redirect], env, timeout=45)
     if result.returncode:
         stages = ("discovery", "public DCR", "PKCE, redirect and RFC 8707 resource")
         phase = next((stage for stage in stages if result.stderr == f"Documented OAuth probe failed: {stage}\n"), "unknown stage")
-        record(name, version, "FAIL", f"Documented OAuth SDK probe failed at {phase}; {source}{note}")
+        refusal = next((value for key, value in events if key == "DCR refusal"), None)
+        evidence = f"; DCR refused: {refusal}" if refusal else ""
+        record(name, version, "FAIL", f"Documented OAuth SDK probe failed at {phase}{evidence}; {source}{note}")
         return
     record(name, version, "doc-verified", f"SDK verified public DCR, exact callback {redirect}, S256 and RFC 8707 resource; {source}{note}")
 
@@ -521,7 +524,7 @@ def hosted(name, document, redirect, env):
         record(name, "hosted", "FAIL", f"CIMD redirect checks returned {valid[0]}/{invalid[0]}; auth method {method}; {facts}; {document}")
 
 
-def cli(name, version, package, binary, unavailable, env):
+def cli(name, version, package, binary, env):
     prefix = TEMP / ("oauth-cli-" + binary)
     installed = run(["npm", "install", "--prefix", str(prefix), "--no-audit", "--no-fund",
                      f"{package}@{version}"], env, timeout=240)
@@ -531,10 +534,7 @@ def cli(name, version, package, binary, unavailable, env):
         status = "FAIL" if FAULT == "qwen-consent" else "not_applicable"
         record(name, version, status, f"Pinned package {package} install/version probe failed on Linux ARM64")
         return
-    if unavailable:
-        record(name, version, "not_applicable", f"Binary version verified; {unavailable}")
-        return
-    if binary in {"qwen", "kimi"}:
+    if binary in {"qwen", "kimi", "claude", "codebuddy"}:
         workspace = prefix / "probe-workspace"
         workspace.mkdir()
         url = env["OAUTH_TEST_ORIGIN"] + "/mcp/legacy"
@@ -542,8 +542,10 @@ def cli(name, version, package, binary, unavailable, env):
         with witness() as events, model_stub(env["OAUTH_TEST_WORKSPACE"]) as model:
             if binary == "qwen":
                 status, reason = asyncio.run(qwen_probe(executable, workspace, url, env, model, events, ttl))
-            else:
+            elif binary == "kimi":
                 status, reason = asyncio.run(kimi_probe(executable, workspace, url, env, model, events, ttl))
+            else:
+                status, reason = terminal_probe(executable, binary, workspace, url, env, model, events, ttl)
         if FAULT == "qwen-consent":
             denied = ("consent denied", True) in events and not any(key == "exchange status" for key, _ in events)
             record(name, version, "FAIL", "consent denied by fixture; no exchange" if denied else
@@ -694,8 +696,9 @@ def main():
                 sdk("MCP TypeScript SDK", "1.32.2", ts, env)
             elif FAULT == "gemini-consent":
                 gemini(env)
-            elif FAULT == "qwen-consent" or FOCUS == "qwen":
-                cli(*next(row for row in CLI if row[3] == "qwen"), env)
+            elif FAULT == "qwen-consent" or FOCUS in {"qwen", "claude", "codebuddy"}:
+                binary = "qwen" if FAULT == "qwen-consent" else FOCUS
+                cli(*next(row for row in CLI if row[3] == binary), env)
             elif FOCUS == "docs":
                 for row in HOSTED:
                     if row[0] in {"claude.ai", "Cursor Web"}:

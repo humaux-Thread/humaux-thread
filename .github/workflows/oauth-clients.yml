@@ -11,7 +11,7 @@ on:
       focus:
         description: Run the full matrix or an isolated acceptance scope
         type: choice
-        options: [all, qwen, docs]
+        options: [all, qwen, claude, codebuddy, docs]
         default: all
   schedule:
     - cron: '23 8 * * *'
