@@ -65,7 +65,6 @@ class Wire(BaseHTTPRequestHandler):
             upstream.request(self.command, self.path, body or None, headers)
             response = upstream.getresponse()
             output = response.read()
-            self.record(parsed, body, response, output)
             self.send_response(response.status)
             for name, value in response.getheaders():
                 if name.lower() not in {"connection", "transfer-encoding", "content-length", "server", "date"}:
@@ -73,6 +72,11 @@ class Wire(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(output)))
             self.end_headers()
             self.wfile.write(output)
+            try:
+                self.record(parsed, body, response, output)
+            except (ValueError, TypeError, AttributeError, KeyError):
+                # An unrecognized evidence payload must never prevent forwarding the reply.
+                pass
         except (OSError, ValueError):
             return
         finally:
@@ -87,13 +91,21 @@ class Wire(BaseHTTPRequestHandler):
         resource = origin + "/mcp/legacy"
         event = None
         if path.startswith("/mcp"):
+            request = json.loads(body) if body else {}
+            method = request.get("method", self.command)
+            methods = (*TOOLS, "initialize", "notifications/initialized", "server/discover", "GET", "DELETE")
+            method = method if method in methods else "other"
+            version = self.headers.get("MCP-Protocol-Version", request.get("params", {}).get("protocolVersion"))
+            version = version if version in {"2025-06-18", "2025-11-25", "2026-07-28"} else "absent/other"
+            media = response.getheader("Content-Type", "").partition(";")[0]
+            media = media if media in {"application/json", "text/event-stream", "text/plain"} else "absent/other"
+            self.server.events.append(("MCP HTTP", f"{method} {version} → {status} {media}"))
             if status == 401 and not self.headers.get("Authorization"):
                 metadata_path = "/.well-known/oauth-protected-resource" + path
                 expected = f'resource_metadata="{origin + metadata_path}"'
                 event = ("challenge", expected in response.getheader("WWW-Authenticate", ""))
             elif body and status == 200:
-                request, reply = json.loads(body), json.loads(output)
-                method = request.get("method")
+                reply = json.loads(output)
                 result = reply.get("result", {})
                 if method == "initialize":
                     event = ("protocol", result.get("protocolVersion") == "2025-06-18")
@@ -249,9 +261,10 @@ def gateway():
                     if connection.getresponse().status == 200:
                         break
                 except OSError:
-                    time.sleep(0.15)
+                    pass
                 finally:
                     connection.close()
+                time.sleep(0.15)
             else:
                 raise RuntimeError("gateway readiness timed out")
             yield env
@@ -373,8 +386,10 @@ def cli(name, version, package, binary, unavailable, env):
             return
         try:
             asyncio.run(asyncio.wait_for(codex_tools(executable, config, env), timeout=360))
-        except (AssertionError, KeyError, ValueError, OSError, TimeoutError):
-            record(name, version, "FAIL", "Native login succeeded; app-server list/call or recovery failed")
+        except (AssertionError, KeyError, ValueError, OSError, TimeoutError, RuntimeError) as error:
+            reason = str(error) if isinstance(error, CodexRpcError) else type(error).__name__
+            trace = ", ".join(value for key, value in events if key == "MCP HTTP")
+            record(name, version, "FAIL", f"Native login succeeded; {reason}; MCP HTTP: {trace or 'none'}")
             return
     missing = [key for key in ("challenge", "PRM", "ASM", "DCR", "authorize", "consent", "code", "protocol", *TOOLS, "refresh")
                if (key, True) not in events]
@@ -382,6 +397,19 @@ def cli(name, version, package, binary, unavailable, env):
         record(name, version, "FAIL", f"Missing wire evidence: {', '.join(missing) or 'tool recovery'}")
     else:
         record(name, version, "PASS", "Native CLI login, app-server tools/list and remember; automatic refresh")
+
+
+class CodexRpcError(RuntimeError):
+    """Keep only fixed diagnostics from a vendor RPC error."""
+
+    def __init__(self, method, error):
+        code = error.get("code")
+        code = code if type(code) is int else "unknown"
+        message = error.get("message", "")
+        hints = ("MCP startup failed", "when send initialize request", "HTTP status client error",
+                 "Invalid params", "unknown MCP server", "unknown tool", "missing field")
+        matched = ", ".join(hint for hint in hints if hint in message)
+        super().__init__(f"{method} error {code}" + (f" ({matched})" if matched else ""))
 
 
 async def codex_tools(executable, config, env):
@@ -406,6 +434,8 @@ async def codex_tools(executable, config, env):
         while line := await process.stdout.readline():
             reply = json.loads(line)
             if reply.get("id") == request_id:
+                if "error" in reply:
+                    raise CodexRpcError(method, reply["error"])
                 return reply["result"]
         raise ValueError("Codex app-server closed")
 
