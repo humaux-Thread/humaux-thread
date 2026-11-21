@@ -306,8 +306,12 @@ def sdk(name, version, command, env, *, direct_discovery=False, input_data=None)
         stages = ("first connect", "consent callback", "code exchange", "first tools/list and remember",
                   "expiry and automatic refresh", "load provider", "provider authorize and exchange",
                   "load built adapter", "connect and authorize")
+        stderr_lines = result.stderr.splitlines()
         phase = next((stage for stage in stages for client in ("TypeScript SDK", "Gemini CLI", "ZCode adapter")
-                      if f"{client} failed: {stage}\n" == result.stderr), None)
+                      if f"{client} failed: {stage}" in stderr_lines), None)
+        loader_error = re.search(r"^ZCode adapter loader: (ERR_[A-Z_]+)$", result.stderr, re.MULTILINE)
+        if phase and loader_error:
+            phase += f" ({loader_error[1]})"
         detail = f" at {phase}" if phase else ""
         why = ("consent denied by fixture; no exchange" if FAULT in {"consent", "gemini-consent"} and
                ("consent denied", True) in snapshot and not any(k == "exchange status" for k, _ in snapshot)
@@ -368,7 +372,10 @@ def zcode(env):
     if not (adapter / "mcp/index.js").is_file():
         record(name, version, "not_applicable", "Official workspace build did not produce packages/adapters/dist/mcp/index.js")
         return
-    sdk(name, version, ["node", str(HERE / "zcode.mjs"), str(adapter)], env, direct_discovery=True)
+    # The built adapter imports workspace exports that still point to TypeScript sources.
+    command = [*pnpm, "--filter", "zcode-cli", "exec", "tsx", str(HERE / "zcode.mjs"), str(adapter)]
+    zcode_env = {**env, "ZCODE_CREDENTIAL_SECRET": secrets.token_urlsafe(32)}
+    sdk(name, version, command, zcode_env, direct_discovery=True)
 
 
 def deepseek(env):

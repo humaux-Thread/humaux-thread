@@ -61,7 +61,11 @@ async function main() {
     }
 }
 
-main().catch(() => {
+main().catch(error => {
     process.stderr.write(`ZCode adapter failed: ${stage}\n`);
+    if (stage === "load built adapter" && ["ERR_MODULE_NOT_FOUND", "ERR_DLOPEN_FAILED",
+        "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX", "ERR_PACKAGE_PATH_NOT_EXPORTED"].includes(error?.code)) {
+        process.stderr.write(`ZCode adapter loader: ${error.code}\n`);
+    }
     process.exit(1);
 });
