@@ -1,6 +1,6 @@
 //! `application::read_quota` — Commercial read charging from the effective entitlement projection (§72.2.1, §76).
 //! Depends-on: crates=[async-trait, humaux-domain, serde_json, time]; services=[]; env=[]; modules=[domain::error, domain::identity]
-//! Called-by: [adapters::audited_read_quota, gateway::bootstrap, gateway::guard]
+//! Called-by: [adapters::audited_read_quota, adapters::entitlement_repo, gateway::bootstrap, gateway::guard]
 //! Invariants: [each quota transition and its audit share a commit; the projection clock comes from the database]
 //! Spec: Baseline §72.2.1; §77; ADR-0130 D2/D5
 
@@ -10,6 +10,15 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 /// Feature key of the projected BMO entitlement.
 pub const BMO_ENTITLEMENT: &str = "mcp.billable_operations.per_period";
+
+/// Commercial admission decision for one authorized OAuth candidate tenant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum McpEntitlement {
+    /// The effective BMO policy permits the connection.
+    Enabled,
+    /// The tenant has no currently valid BMO entitlement.
+    EntitlementRequired,
+}
 
 /// Projected terms and the database times observed together with them (§76).
 pub struct QuotaPolicyFacts {
