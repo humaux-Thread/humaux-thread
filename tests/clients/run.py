@@ -30,11 +30,11 @@ GATEWAY = 18170
 ROWS = []
 TOOLS = ("tools/list", "tools/call")
 HOSTED = [
-    ("claude.ai", None, "https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp"),
+    ("claude.ai", "https://claude.ai/oauth/mcp-oauth-client-metadata", "https://claude.ai/api/mcp/auth_callback"),
     ("ChatGPT", "https://chatgpt.com/oauth/client.json", "https://chatgpt.com/connector_platform_oauth_redirect"),
     ("Antigravity", "https://antigravity.google/oauth/client-metadata.json", "https://antigravity.google/oauth-callback"),
     ("Cursor Web", None, "https://prod.cursor.com/docs/mcp"),
-    ("vscode.dev", None, "https://code.visualstudio.com/docs/agents/reference/mcp-configuration"),
+    ("vscode.dev", "https://vscode.dev/oauth/client-metadata.json", "https://vscode.dev/redirect"),
 ]
 CLI = [
     ("Claude Code", "2.1.328", "@anthropic-ai/claude-code", "claude", "MCP OAuth uses the signed-in /mcp UI"),
@@ -44,7 +44,7 @@ CLI = [
     ("Kimi Code", "2.5.3", "@moonshot-ai/kimi-code", "kimi", "MCP auth requires the interactive /mcp-config login command"),
     ("CodeBuddy Code", "2.185.0", "@tencent-ai/codebuddy-code", "codebuddy", "MCP OAuth requires the interactive /mcp UI"),
     ("ZCode CLI", "0.17.1", None, None, "No pinned Linux ARM64 distribution configured for the desktop-bundled CLI"),
-    ("DeepSeek Harness", "0.2.1-rc.5", None, None, "No pinned Linux ARM64 release asset for this version in deepseek-ai/deepseek-harness"),
+    ("DeepSeek Harness", "0.2.1-rc.5", "@deepseek-ai/dsh", "dsh", "MCP OAuth requires the interactive plugin-manager surface"),
 ]
 
 
@@ -298,7 +298,7 @@ def hosted(name, document, redirect, env):
         record(name, "hosted", "not_applicable", f"No public CIMD URL established; official reference {redirect}")
         return
     try:
-        with urlopen(document, timeout=12) as response:
+        with urlopen(Request(document, headers={"Accept": "application/json"}), timeout=12) as response:
             data = json.loads(response.read(8193))
         assert data["client_id"] == document and redirect in data["redirect_uris"]
     except (OSError, ValueError, KeyError, AssertionError):
@@ -325,7 +325,11 @@ def hosted(name, document, redirect, env):
         valid = authorize(redirect)
         invalid = authorize(redirect + "/oauth-ci-mismatch")
     if valid == (303, "/auth/login") and invalid == (400, None):
-        record(name, "hosted", "PASS", f"Metadata only: CIMD and exact HTTPS redirect; {document}")
+        surrogate_passed = any(row[0] == "MCP TypeScript SDK" and row[2] == "PASS" for row in ROWS)
+        if surrogate_passed:
+            record(name, "hosted", "PASS", f"CIMD and exact HTTPS redirect; consent covered by loopback SDK; {document}")
+        else:
+            record(name, "hosted", "FAIL", f"CIMD and exact HTTPS redirect passed; SDK consent surrogate failed; {document}")
     else:
         method = data.get("token_endpoint_auth_method")
         method = method if method in ("none", "private_key_jwt", "client_secret_basic") else "other"
