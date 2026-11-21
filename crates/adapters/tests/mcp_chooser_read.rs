@@ -97,7 +97,7 @@ impl Harness {
         }
     }
 
-    fn write(&self, change: McpChooserChange<'_>) {
+    fn write(&self, change: McpChooserChange<'_>) -> i64 {
         let actor = AuthorizationScope::new(
             self.tenant,
             PrincipalId(self.user.0),
@@ -106,7 +106,7 @@ impl Harness {
         );
         self.rt
             .block_on(write_settings(&self.gateway, &actor, self.tenant, change))
-            .unwrap();
+            .unwrap()
     }
 
     fn configure(&self, policy_enabled: bool, groups_restricted: bool) {
@@ -270,7 +270,12 @@ fn chooser_null_rule_dimensions_match_all_values_and_denies_win() {
             );
 
             h.write(rule(first.1, Some(CLIENT), McpPolicyEffect::Allow));
-            h.write(rule(None, None, McpPolicyEffect::Deny));
+            assert_eq!(h.write(rule(None, None, McpPolicyEffect::Deny)), 1);
+            assert_eq!(
+                h.write(rule(None, None, McpPolicyEffect::Deny)),
+                2,
+                "NULL selector upserts the same rule"
+            );
             assert_eq!(
                 h.read(CLIENT, &candidates),
                 Ok(vec![]),
@@ -280,6 +285,20 @@ fn chooser_null_rule_dimensions_match_all_values_and_denies_win() {
                 h.read(OTHER_CLIENT, &candidates),
                 Ok(vec![]),
                 "wildcard deny applies to the other client"
+            );
+            assert_eq!(
+                h.write(McpChooserChange::Rule {
+                    workspace_id: None,
+                    client_id: None,
+                    effect: McpPolicyEffect::Deny,
+                    active: false,
+                }),
+                3
+            );
+            assert_eq!(
+                h.read(OTHER_CLIENT, &candidates),
+                Ok(candidates.to_vec()),
+                "withdrawn wildcard no longer applies"
             );
         },
     );

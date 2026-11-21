@@ -3,7 +3,7 @@
 //!   runtime role holds any privilege on the four tables, so every read goes through a door too.
 //!   The chooser settings door (0312) checks live tenant-admin authority and returns a committed row version.
 //!   The chooser read door (0313) returns the policy/group subset and holds shared locks through this transaction.
-//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users] x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_consent_tenants, control.oauth_dcr_register, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_refresh_family_revoke, control.oauth_refresh_grant, control.oauth_refresh_rotate, control.read_mcp_chooser_decisions, control.write_mcp_chooser_settings]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, application::oauth, application::oauth_exchange, domain::error, domain::identity, domain::ids]
+//! Depends-on: crates=[async-trait, humaux-application, humaux-domain, serde_json, sqlx, time]; services=[PostgreSQL(any) r=[control.memberships, control.tenants, control.users] x=[control.oauth_client_lookup, control.oauth_client_register, control.oauth_code_consume, control.oauth_code_issue, control.oauth_consent_tenants, control.oauth_dcr_register, control.oauth_grant_issue, control.oauth_grant_lookup, control.oauth_grant_revoke, control.oauth_chooser_identity_targets, control.oauth_chooser_lock_memberships, control.oauth_refresh_family_revoke, control.oauth_refresh_grant, control.oauth_refresh_rotate, control.read_mcp_chooser_decisions, control.write_mcp_chooser_settings]]; env=[]; modules=[adapters::postgres, adapters::request_guard_repo, adapters::session_repo, application::oauth, application::oauth_exchange, application::session, domain::error, domain::identity, domain::ids]
 //! Called-by: [gateway::auth, gateway::bootstrap, tests]
 //! Invariants: [a raw code or refresh token never reaches this module: callers pass a SecretHash, whose Debug is redacted;
 //!   consume and rotate are single conditional statements inside the doors, so of two concurrent exchanges of one secret
@@ -17,16 +17,20 @@
 
 use std::time::Duration;
 
-use humaux_application::oauth::{AllowedSubset, ConsentTarget, ValidatedClientId};
+use humaux_application::oauth::{
+    self, AllowedSubset, ConsentSubject, ConsentTarget, OAuthPolicy, ValidatedAuthorize,
+    ValidatedClientId,
+};
+use humaux_application::session::{SessionPolicy, VerifiedSession};
 use humaux_domain::error::ErrorCode;
-use humaux_domain::identity::{AuthorizationScope, BoundedSet, McpPolicyEffect};
+use humaux_domain::identity::{AuthorizationScope, BoundedSet, McpPolicyEffect, PrincipalId};
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use serde_json::json;
 use sqlx::Row;
 use sqlx::types::Uuid;
 use time::OffsetDateTime;
 
-use crate::{postgres::RuntimeDbPool, request_guard_repo};
+use crate::{postgres::RuntimeDbPool, request_guard_repo, session_repo};
 
 // Compatibility exports for existing persistence callers; vocabulary belongs to identity's application port.
 pub use humaux_application::oauth_exchange::{
@@ -53,17 +57,89 @@ fn ttl_seconds(ttl: Duration) -> Result<i32, ErrorCode> {
 
 type ConsentCheck = fn(request_guard_repo::EffectiveEntitlementFacts) -> Result<(), ErrorCode>;
 
+#[derive(Clone, Copy)]
+struct LockedSelection {
+    session: VerifiedSession,
+    session_policy: SessionPolicy,
+    target: ConsentTarget,
+}
+
 /// One open transaction of an OAuth exchange. Dropping it without [`OAuthTxn::commit`] rolls everything back.
 pub struct OAuthTxn {
     txn: sqlx::Transaction<'static, sqlx::Postgres>,
     consent: Option<(AuthorizationScope, ConsentCheck)>,
+    chooser: Option<LockedSelection>,
 }
 
 /// Opens an [`OAuthTxn`] on the gateway pool.
 pub async fn begin(pool: &RuntimeDbPool) -> Result<OAuthTxn, ErrorCode> {
     // dep: PostgreSQL(any) — opens a PostgreSQL transaction
     let txn = pool.pool().begin().await.map_err(db_failure)?;
-    Ok(OAuthTxn { txn, consent: None })
+    Ok(OAuthTxn {
+        txn,
+        consent: None,
+        chooser: None,
+    })
+}
+
+/// Persist the trusted selected target. Browser selection verification belongs to the caller.
+pub async fn persist_chooser_consent_code(
+    pool: &RuntimeDbPool,
+    session: VerifiedSession,
+    session_policy: &SessionPolicy,
+    target: ConsentTarget,
+    validated: &ValidatedAuthorize,
+    oauth_policy: &OAuthPolicy<'_>,
+    check: ConsentCheck,
+) -> Result<String, ErrorCode> {
+    let mut txn = begin(pool).await?;
+    let allowed = txn
+        .allowed_mcp_targets(session.user_id, validated.validated_client_id(), &[target])
+        .await?;
+    if !allowed.contains(&target) {
+        return Err(ErrorCode::Forbidden);
+    }
+    let (tenant, workspace) = target;
+    // dep: PostgreSQL(any) — exact tenant/workspace grants stay locked until the code commits.
+    let members_live =
+        sqlx::query_scalar::<_, bool>("SELECT control.oauth_chooser_lock_memberships($1, $2, $3)")
+            .bind(session.user_id.0)
+            .bind(tenant.0)
+            .bind(workspace.map(|id| id.0))
+            .fetch_one(&mut *txn.txn)
+            .await
+            .map_err(db_failure)?;
+    if !members_live {
+        return Err(ErrorCode::Forbidden);
+    }
+    if !session_repo::chooser_session_live(&mut txn.txn, session, session_policy, true).await? {
+        return Err(ErrorCode::Forbidden);
+    }
+    let scope = AuthorizationScope::new(
+        tenant,
+        PrincipalId(session.user_id.0),
+        Some(session.user_id),
+        BoundedSet::new(workspace)?,
+    );
+    txn.admit_consent(&scope, check).await?;
+    txn.chooser = Some(LockedSelection {
+        session,
+        session_policy: *session_policy,
+        target,
+    });
+
+    let terms = oauth::issue_code(
+        validated,
+        &ConsentSubject {
+            user_id: session.user_id,
+            tenant_id: tenant,
+            workspace_id: workspace,
+        },
+        oauth_policy,
+    )?;
+    humaux_application::oauth_exchange::persist_consent_code(Box::new(txn), &terms)
+        .await?
+        .ok_or(ErrorCode::Forbidden)
 }
 
 /// Atomically insert a dynamic client if there is unused-client capacity.
@@ -90,6 +166,35 @@ pub async fn register_dcr(
 }
 
 impl OAuthTxn {
+    /// Derive this console session's live identity targets and apply the chooser's settings.
+    pub async fn chooser_identity_candidates(
+        &mut self,
+        session: VerifiedSession,
+        session_policy: &SessionPolicy,
+        client: ValidatedClientId<'_>,
+    ) -> Result<AllowedSubset, ErrorCode> {
+        if !session_repo::chooser_session_live(&mut self.txn, session, session_policy, false)
+            .await?
+        {
+            return Err(ErrorCode::Forbidden);
+        }
+        // dep: PostgreSQL(any) — authority derives targets from this session; 257 rows is the overflow sentinel.
+        let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>)>(
+            "SELECT out_tenant_id, out_workspace_id FROM control.oauth_chooser_identity_targets($1) \
+             ORDER BY out_tenant_id, out_workspace_id NULLS FIRST",
+        )
+        .bind(session.session_id.0)
+        .fetch_all(&mut *self.txn)
+        .await
+        .map_err(db_failure)?;
+        let candidates: Vec<_> = rows
+            .into_iter()
+            .map(|(tenant, workspace)| (TenantId(tenant), workspace.map(WorkspaceId)))
+            .collect();
+        self.allowed_mcp_targets(session.user_id, client, &candidates)
+            .await
+    }
+
     /// Apply policy and allowed groups to authenticated, server-derived candidates (ADR-0137).
     ///
     /// The shared decision locks stay held until this transaction ends, including when no
@@ -485,11 +590,17 @@ impl humaux_application::oauth_exchange::ExchangeTransaction for OAuthTxn {
         request: &CodeIssue<'_>,
         ttl: Duration,
     ) -> Result<bool, ErrorCode> {
-        let (scope, check) = self.consent.as_ref().ok_or(ErrorCode::Internal)?;
+        let (scope, _) = self.consent.as_ref().ok_or(ErrorCode::Internal)?;
         if scope.tenant_id() != request.tenant_id || scope.user_id() != Some(request.user_id) {
             return Err(ErrorCode::Forbidden);
         }
-        let issued = sqlx::query_scalar::<_, bool>(
+        let issued = if let Some(chooser) = self.chooser {
+            if chooser.target != (request.tenant_id, request.workspace_id) {
+                return Err(ErrorCode::Forbidden);
+            }
+            self.issue_code(request, ttl).await?.is_some()
+        } else {
+            sqlx::query_scalar::<_, bool>(
             "SELECT CASE WHEN ARRAY(SELECT control.oauth_consent_tenants($6)) = ARRAY[$7::uuid] \
              THEN control.oauth_code_issue($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) IS NOT NULL ELSE false END",
         )
@@ -506,15 +617,28 @@ impl humaux_application::oauth_exchange::ExchangeTransaction for OAuthTxn {
         // dep: PostgreSQL(any) — recheck membership and persist in one statement.
         .fetch_one(&mut *self.txn)
         .await
-        .map_err(db_failure)?;
+        .map_err(db_failure)?
+        };
         if issued {
+            let (scope, check) = self.consent.as_ref().ok_or(ErrorCode::Internal)?;
             // The row is still locked, but the clock may have advanced during the insert.
             let facts =
                 request_guard_repo::read_effective_entitlements_in_txn(&mut self.txn, scope, false)
                     .await?;
             check(facts)?;
             // The insert may have waited while the subject's memberships changed.
-            if self.consent_tenants(request.user_id).await?.as_slice() != [request.tenant_id] {
+            let live = if let Some(chooser) = self.chooser {
+                session_repo::chooser_session_live(
+                    &mut self.txn,
+                    chooser.session,
+                    &chooser.session_policy,
+                    false,
+                )
+                .await?
+            } else {
+                self.consent_tenants(request.user_id).await?.as_slice() == [request.tenant_id]
+            };
+            if !live {
                 return Err(ErrorCode::Forbidden);
             }
         }

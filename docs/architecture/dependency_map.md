@@ -1968,6 +1968,13 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - env `CARGO_MANIFEST_DIR`
 - service `PostgreSQL(any)`
 
+#### `adapters::entitlement_repo`
+- reads `control.entitlement_snapshots`
+- executes `control.entitlement_grants_for_projection`
+- executes `control.write_entitlement_snapshot`
+- service `PostgreSQL(role_maintenance)`
+- service `PostgreSQL(role_gateway)`
+
 #### `adapters::evidence_repo`
 - writes `private.events`
 - writes `private.evidence_objects`
@@ -2057,6 +2064,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - reads `control.memberships`
 - reads `control.tenants`
 - reads `control.users`
+- executes `control.oauth_chooser_identity_targets`
+- executes `control.oauth_chooser_lock_memberships`
 - executes `control.oauth_client_lookup`
 - executes `control.oauth_client_register`
 - executes `control.oauth_code_consume`
@@ -2241,6 +2250,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - service `PostgreSQL(role_maintenance)`
 
 #### `adapters::session_repo`
+- executes `control.oauth_chooser_session_facts`
 - executes `control.session_issue`
 - executes `control.session_lookup`
 - executes `control.session_revoke`
@@ -2315,6 +2325,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::distill`
 
 #### `application::distill_execution`
+
+#### `application::entitlement`
 
 #### `application::forget`
 
@@ -6452,6 +6464,7 @@ executed by:
 - (no process): `adapters::tests::entitlement_projector`
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::entitlement_repo`
 - process(humaux-maintenance): `adapters::entitlement_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -6466,6 +6479,7 @@ read by:
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `adapters::request_guard_repo`
 - process(cargo-xtask): `xtask::e2e_onboard`
+- process(humaux-gateway): `adapters::entitlement_repo`
 - process(humaux-gateway): `adapters::request_guard_repo`
 - process(humaux-maintenance): `adapters::entitlement_repo`
 - process(humaux-maintenance): `adapters::request_guard_repo`
@@ -6478,6 +6492,7 @@ written by:
 - (no process): `adapters::tests::request_guard`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `maintenance::tests::serve`
 
@@ -6675,6 +6690,7 @@ written by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
@@ -6691,6 +6707,7 @@ executed by:
 ### `control.oauth_authorization_codes`
 read by:
 - (no process): `adapters::tests::credential_grants`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -6700,6 +6717,30 @@ written by:
 - (no process): `gateway::tests::oauth_flow`
 
 executed by:
+
+### `control.oauth_chooser_identity_targets`
+read by:
+
+written by:
+
+executed by:
+- process(humaux-gateway): `adapters::oauth_repo`
+
+### `control.oauth_chooser_lock_memberships`
+read by:
+
+written by:
+
+executed by:
+- process(humaux-gateway): `adapters::oauth_repo`
+
+### `control.oauth_chooser_session_facts`
+read by:
+
+written by:
+
+executed by:
+- process(humaux-gateway): `adapters::session_repo`
 
 ### `control.oauth_client_lookup`
 read by:
@@ -7796,6 +7837,7 @@ read by:
 written by:
 - (no process): `adapters::tests::console_session`
 - (no process): `gateway::tests::auth_pages`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 
 executed by:
@@ -8003,6 +8045,7 @@ written by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::billing_legacy_migration`
@@ -8186,6 +8229,7 @@ written by:
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `gateway::tests::auth_pages`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::partitions`
@@ -8234,6 +8278,7 @@ written by:
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -8286,6 +8331,7 @@ written by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::service_credentials`
@@ -8308,6 +8354,7 @@ executed by:
 - (no process): `adapters::tests::entitlement_projector`
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::entitlement_repo`
 - process(humaux-maintenance): `adapters::entitlement_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -8319,6 +8366,7 @@ written by:
 executed by:
 - (no process): `adapters::tests::mcp_chooser_read`
 - (no process): `adapters::tests::mcp_chooser_storage`
+- (no process): `gateway::tests::oauth_chooser`
 - process(humaux-gateway): `adapters::oauth_repo`
 
 ### `coord.task_runs`
@@ -13822,6 +13870,7 @@ executed by:
 - `gateway::tests::cross_tenant_canary`
 - `gateway::tests::mcp_forget`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_chooser`
 - `gateway::tests::ops_listener`
 - `gateway::tests::read_decoupling`
 - `gateway::tests::singleton`
@@ -13996,6 +14045,7 @@ executed by:
 - `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_chooser`
 - `gateway::tests::oauth_flow`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::recall_embedding_cache`
@@ -17858,6 +17908,7 @@ modules naming it:
 - `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_chooser`
 - `gateway::tests::oauth_flow`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
@@ -17894,6 +17945,7 @@ modules naming it:
 - `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_chooser`
 - `gateway::tests::oauth_flow`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
@@ -17957,6 +18009,7 @@ modules naming it:
 - `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_chooser`
 - `gateway::tests::oauth_flow`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
@@ -18153,6 +18206,7 @@ modules naming it:
 - `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_chooser`
 - `gateway::tests::oauth_flow`
 - `gateway::tests::ops_listener`
 - `gateway::tests::query_embedding_rpc`
@@ -18232,6 +18286,7 @@ modules naming it:
 - `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_chooser`
 - `gateway::tests::oauth_flow`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
@@ -18270,6 +18325,7 @@ modules naming it:
 - `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_chooser`
 - `gateway::tests::oauth_flow`
 - `gateway::tests::ops_listener`
 - `gateway::tests::query_embedding_rpc`
@@ -18320,6 +18376,7 @@ modules naming it:
 - `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_chooser`
 - `gateway::tests::oauth_flow`
 - `gateway::tests::query_embedding_rpc`
 - `gateway::tests::read_decoupling`
@@ -18344,6 +18401,7 @@ modules naming it:
 - `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_chooser`
 - `gateway::tests::oauth_flow`
 - `gateway::tests::ops_listener`
 - `gateway::tests::read_decoupling`
@@ -18374,6 +18432,7 @@ modules naming it:
 - `gateway::tests::mcp_forget`
 - `gateway::tests::mcp_gateway`
 - `gateway::tests::memory_get_frontier`
+- `gateway::tests::oauth_chooser`
 - `gateway::tests::oauth_flow`
 - `gateway::tests::ops_listener`
 - `gateway::tests::semantic_recall_wiring`
@@ -19665,6 +19724,15 @@ db-bound (default run): no
 services (computed):
 
 default run:
+
+### `bins/gateway/tests/oauth_chooser.rs`
+db-bound (default run): yes
+
+services (computed):
+- PostgreSQL
+
+default run:
+- PostgreSQL
 
 ### `bins/gateway/tests/oauth_flow.rs`
 db-bound (default run): yes
@@ -21673,9 +21741,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:4549` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:4554` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:4559` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4622` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4627` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4632` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection
