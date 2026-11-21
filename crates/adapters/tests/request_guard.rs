@@ -1,23 +1,28 @@
 //! `adapters::tests::request_guard` — RequestGuard persistence acceptance against the dedicated real gateway-login
 //!   fixture.
 //! Depends-on: crates=[humaux-adapters, humaux-application, humaux-domain, humaux-testkit, postgres, sqlx, tokio];
-//!   services=[PostgreSQL(owner) r=[control.audit_events] w=[control.entitlement_snapshots, control.memberships,
+//!   services=[PostgreSQL(owner) r=[control.audit_events, control.billing_payments, control.entitlement_snapshots,
+//!   control.quota_windows, control.usage_reservations] w=[control.entitlement_snapshots, control.memberships,
 //!   control.tenants, control.users] x=[control.audit_event_insert], PostgreSQL(role_gateway)];
-//!   env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::independent_audit, application::independent_audit, adapters::postgres, adapters::request_guard_repo,
+//!   env=[HUMAUX_GATEWAY_PG_DSN, HUMAUX_TEST_PG_DSN]; modules=[adapters::entitlement_repo, adapters::independent_audit, application::independent_audit, application::read_quota, adapters::postgres, adapters::request_guard_repo,
 //!   domain::audit, domain::error, domain::identity, domain::ids, humaux-testkit]
 //! Called-by: [cargo-test]
 //! Invariants: [the effective entitlement snapshot gates every read request (missing = EntitlementRequired,
 //!   cross-tenant = TenantBoundary) and the §77 audit row commits with the quota transition; the gateway tests are
 //!   #[ignore] lane tests]
-//! Spec: ADR-0047
+//! Spec: ADR-0047; ADR-0137
 
 use std::str::FromStr;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use humaux_adapters::{
-    independent_audit::PostgresIndependentAudit, postgres::RuntimeDbPool, request_guard_repo,
+    entitlement_repo::mcp_entitlement_for_tenants,
+    independent_audit::PostgresIndependentAudit,
+    postgres::{RuntimeDbPool, load_pool_settings},
+    request_guard_repo,
 };
 use humaux_application::independent_audit::{AuditIdentity, record_independent_audit};
+use humaux_application::read_quota::McpEntitlement::{Enabled, EntitlementRequired};
 use humaux_domain::{
     audit::{AuditEvent, AuditEventId, AuditMetadata, SYSTEM_TENANT_ID},
     error::ErrorCode,
@@ -235,6 +240,163 @@ fn effective_entitlements_are_read_only_from_the_projected_snapshot() {
                         &handle.authorization,
                     )),
                 Err(ErrorCode::Internal)
+            );
+        },
+    );
+}
+
+fn batch_scopes(admin: &mut Client, tenants: &[Uuid]) -> Vec<AuthorizationScope> {
+    admin
+        .execute(
+            "INSERT INTO control.tenants(tenant_id,name,state) \
+             SELECT tenant_id,'chooser batch fixture','ACTIVE' FROM unnest($1::uuid[]) AS t(tenant_id)",
+            &[&tenants],
+        )
+        .expect("seed candidate tenants");
+    admin
+        .execute(
+            "INSERT INTO control.memberships(tenant_id,user_id,role,state) \
+             SELECT tenant_id,$2,'member','ACTIVE' FROM unnest($1::uuid[]) AS t(tenant_id)",
+            &[&tenants, &USER_ID],
+        )
+        .expect("seed the session user's candidate memberships");
+    tenants
+        .iter()
+        .map(|tenant| {
+            AuthorizationScope::new(
+                TenantId(*tenant),
+                PrincipalId(USER_ID),
+                Some(UserId(USER_ID)),
+                BoundedSet::new([]).unwrap(),
+            )
+        })
+        .collect()
+}
+
+fn batch_table_state(admin: &mut Client, tenants: &[Uuid]) -> Vec<Option<String>> {
+    admin
+        .query_one(
+            "SELECT ARRAY[
+               (SELECT jsonb_agg(to_jsonb(s) ORDER BY to_jsonb(s))::text FROM control.entitlement_snapshots s WHERE tenant_id=ANY($1)),
+               (SELECT jsonb_agg(to_jsonb(w) ORDER BY to_jsonb(w))::text FROM control.quota_windows w WHERE tenant_id=ANY($1)),
+               (SELECT jsonb_agg(to_jsonb(r) ORDER BY to_jsonb(r))::text FROM control.usage_reservations r WHERE tenant_id=ANY($1)),
+               (SELECT jsonb_agg(to_jsonb(p) ORDER BY to_jsonb(p))::text FROM control.billing_payments p WHERE tenant_id=ANY($1))
+             ]",
+            &[&tenants],
+        )
+        .expect("read commercial rows for change detection")
+        .get(0)
+}
+
+#[test]
+#[ignore = "lane(a:request_guard) requires the dedicated request-guard PostgreSQL fixture"]
+fn commercial_entitlement_batch_reads_current_policy_without_writes() {
+    run_db_fixture::<Fixture, _>(
+        "commercial_entitlement_batch_reads_current_policy_without_writes",
+        |mut h| {
+            let tenants: [Uuid; 5] = std::array::from_fn(|_| Uuid::now_v7());
+            let scopes = batch_scopes(&mut h.admin, &tenants);
+            h.admin
+                .execute(
+                    "WITH clock AS (SELECT clock_timestamp() AS at),
+                     terms AS (
+                       SELECT at, jsonb_build_object('limit',4,'period','subscription_period',
+                                'charge_policy','success_only','period_start',at - interval '2 days',
+                                'period_end',at + interval '2 days') AS active FROM clock
+                     ), policies AS (
+                       SELECT at,
+                              jsonb_build_object('mcp.billable_operations.per_period', active) AS valid,
+                              jsonb_build_object('mcp.billable_operations.per_period',
+                                  active || jsonb_build_object('period_end',at - interval '1 day')) AS expired
+                       FROM terms
+                     )
+                     INSERT INTO control.entitlement_snapshots
+                         (tenant_id,effective,source_grant_ids,computed_at,successor,successor_from)
+                     SELECT v.tenant_id,v.effective,ARRAY[]::uuid[],p.at,v.successor,v.successor_from
+                     FROM policies p CROSS JOIN LATERAL (VALUES
+                        ($1::uuid,p.valid,NULL::jsonb,NULL::timestamptz),
+                        ($2::uuid,p.expired,NULL,NULL),
+                        ($3::uuid,p.expired,p.valid,p.at - interval '1 day'),
+                        ($4::uuid,p.valid,p.expired,p.at + interval '1 day')
+                     ) v(tenant_id,effective,successor,successor_from)",
+                    &[&tenants[0], &tenants[2], &tenants[3], &tenants[4]],
+                )
+                .expect("seed distinct valid, expired and before/after successor projections");
+
+            let before = batch_table_state(&mut h.admin, &tenants);
+            let decisions =
+                h.rt.block_on(mcp_entitlement_for_tenants(&h.runtime, &scopes))
+                    .expect("entitlement absence is an explicit decision in a complete batch");
+            assert_eq!(decisions.len(), tenants.len());
+            for (tenant, expected) in tenants.iter().zip([
+                Enabled,
+                EntitlementRequired,
+                EntitlementRequired,
+                Enabled,
+                Enabled,
+            ]) {
+                assert_eq!(decisions[&TenantId(*tenant)], expected, "tenant {tenant}");
+            }
+            assert_eq!(batch_table_state(&mut h.admin, &tenants), before);
+
+            h.admin
+                .execute(
+                    "UPDATE control.entitlement_snapshots \
+                     SET effective=jsonb_set(effective, ARRAY['mcp.billable_operations.per_period','limit'], '\"broken\"') \
+                     WHERE tenant_id=$1",
+                    &[&tenants[4]],
+                )
+                .expect("inject a malformed BMO limit after a readable candidate");
+            assert_eq!(
+                h.rt.block_on(mcp_entitlement_for_tenants(
+                    &h.runtime,
+                    &[scopes[0].clone(), scopes[4].clone()]
+                )),
+                Err(ErrorCode::Internal),
+            );
+
+            h.admin
+                .execute(
+                    "UPDATE control.entitlement_snapshots SET effective='[]' WHERE tenant_id=$1",
+                    &[&tenants[2]],
+                )
+                .expect("inject malformed projection after the first readable candidates");
+            assert_eq!(
+                h.rt.block_on(mcp_entitlement_for_tenants(&h.runtime, &scopes)),
+                Err(ErrorCode::Internal),
+            );
+        },
+    );
+}
+
+#[test]
+#[ignore = "lane(a:disposable) takes an exclusive lock on the entitlement projection"]
+fn commercial_entitlement_batch_rejects_dependency_timeout() {
+    run_db_fixture::<Fixture, _>(
+        "commercial_entitlement_batch_rejects_dependency_timeout",
+        |mut h| {
+            let tenants: [Uuid; 2] = std::array::from_fn(|_| Uuid::now_v7());
+            let scopes = batch_scopes(&mut h.admin, &tenants);
+            let dsn = std::env::var("HUMAUX_GATEWAY_PG_DSN").expect("fixture gateway DSN");
+            let mut settings = load_pool_settings(Some("1")).expect("test pool settings");
+            settings.statement_timeout = Duration::from_secs(1);
+            // dep: PostgreSQL(role_gateway) — fixture-only statement timeout for the blocked read.
+            let runtime =
+                h.rt.block_on(RuntimeDbPool::connect_with(&dsn, &settings))
+                    .expect("connect timed gateway pool");
+
+            let mut lock = h.admin.transaction().expect("isolated fault transaction");
+            lock.batch_execute("LOCK TABLE control.entitlement_snapshots IN ACCESS EXCLUSIVE MODE")
+                .expect("hold projection lock until the gateway times out");
+            assert_eq!(
+                h.rt.block_on(mcp_entitlement_for_tenants(&runtime, &scopes)),
+                Err(ErrorCode::DependencyUnavailable),
+            );
+            assert_eq!(
+                h.rt.block_on(request_guard_repo::read_effective_entitlements(
+                    &runtime, &scopes[0]
+                )),
+                Err(ErrorCode::Internal),
             );
         },
     );

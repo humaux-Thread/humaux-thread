@@ -1,9 +1,10 @@
 //! `adapters::entitlement_repo` — the persisted entitlement projector: reads a tenant's grants through the owner door,
-//!   runs `application::entitlement::project`, and stores the snapshot through the owner door (module design M04 D3, C2).
+//!   runs `application::entitlement::project`, and stores the snapshot through the owner door. Also supplies
+//!   the read-only commercial MCP entitlement decision for a batch of authorized tenant scopes.
 //! Depends-on: crates=[humaux-application, humaux-domain, serde_json, sqlx, uuid];
 //!   services=[PostgreSQL(role_maintenance) r=[control.entitlement_snapshots]
-//!   x=[control.entitlement_grants_for_projection, control.write_entitlement_snapshot]]; env=[];
-//!   modules=[adapters::postgres, application::entitlement, domain::error, domain::ids, domain::plan]
+//!   x=[control.entitlement_grants_for_projection, control.write_entitlement_snapshot], PostgreSQL(role_gateway)]; env=[];
+//!   modules=[adapters::postgres, adapters::request_guard_repo, application::entitlement, application::read_quota, domain::error, domain::identity, domain::ids, domain::plan]
 //! Called-by: [adapters::billing_processor_repo, adapters::provisioning, tests]
 //! Invariants: [the only writer of control.entitlement_snapshots besides control.renew_quota_period (§76): no table
 //!   INSERT or UPDATE here, the write is the owner door; the raw grants are read only through
@@ -11,28 +12,103 @@
 //!   advisory lock first, so it serializes with a renewal and never overwrites a period the renewal just advanced;
 //!   recompute is deterministic from the grants and the stored period boundaries and idempotent: a second call with
 //!   nothing changed writes nothing; a tenant with no grant row is left alone (NoGrants), never overwritten with an
-//!   empty snapshot]
-//! Spec: Baseline §76; §72.2.1; §71.1
+//!   empty snapshot; batch admission reads every tenant under RLS at one observation time and snapshot]
+//! Spec: Baseline §76; §72.2.1; §71.1; ADR-0137
 //!
 //! The clock is the database's (`clock_timestamp()`), the same one that stamps a grant's `valid_from`, so a grant written
 //! a moment ago is never "not yet valid" because of clock skew between this process and PostgreSQL.
 
-use std::time::SystemTime;
+use std::{collections::HashMap, time::SystemTime};
 
 use humaux_application::entitlement::{
     EntitlementGrant, GrantSource, carry_period_boundaries, project,
 };
+use humaux_application::read_quota::{McpEntitlement, QuotaPolicyFacts, projected_bmo_policy};
 use humaux_domain::error::ErrorCode;
-use humaux_domain::ids::TenantId;
+use humaux_domain::identity::{AuthorizationScope, BoundedSet};
+use humaux_domain::ids::{TenantId, WorkspaceId};
 use humaux_domain::plan::EntitlementKey;
 use serde_json::Value;
 use sqlx::Row;
 use sqlx::types::time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::postgres::MaintenanceDbPool;
+use crate::{
+    postgres::{MaintenanceDbPool, RuntimeDbPool},
+    request_guard_repo::{self, read_scoped_entitlement, set_authorized_ids_local},
+};
 
 type Txn<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
+
+/// Decide BMO admission once per tenant in a verified session's candidate batch.
+/// Only the trusted candidate derivation may supply these scopes. An error aborts the entire read.
+pub async fn mcp_entitlement_for_tenants(
+    pool: &RuntimeDbPool,
+    candidates: &[AuthorizationScope],
+) -> Result<HashMap<TenantId, McpEntitlement>, ErrorCode> {
+    let Some(first) = candidates.first() else {
+        return Ok(HashMap::new());
+    };
+    if candidates.len() > BoundedSet::<WorkspaceId>::MAX_LEN {
+        return Err(ErrorCode::InvalidInput);
+    }
+    let user = first.user_id().ok_or(ErrorCode::Forbidden)?;
+    if candidates.iter().any(|scope| scope.user_id() != Some(user)) {
+        return Err(ErrorCode::Forbidden);
+    }
+
+    // dep: PostgreSQL(role_gateway) — one MVCC snapshot, with the original RLS scope set for each read.
+    let mut txn = pool
+        .pool()
+        .begin()
+        .await
+        .map_err(request_guard_repo::db_error)?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .execute(&mut *txn)
+        .await
+        .map_err(request_guard_repo::db_error)?;
+    let observed_at = sqlx::query_scalar::<_, OffsetDateTime>("SELECT clock_timestamp()")
+        .fetch_one(&mut *txn)
+        .await
+        .map_err(request_guard_repo::db_error)?;
+
+    let mut decisions = HashMap::with_capacity(candidates.len());
+    for scope in candidates {
+        let tenant = scope.tenant_id();
+        if decisions.contains_key(&tenant) {
+            continue;
+        }
+        set_authorized_ids_local(&mut txn, tenant, Some(user)).await?;
+        let result = read_scoped_entitlement(&mut txn, tenant, Some(observed_at), batch_read_error)
+            .await
+            .and_then(|facts| {
+                projected_bmo_policy(&QuotaPolicyFacts {
+                    effective: facts.effective,
+                    computed_at: facts.computed_at,
+                    observed_at: facts.observed_at,
+                })
+            });
+        let decision = match result {
+            Ok(_) => McpEntitlement::Enabled,
+            Err(ErrorCode::EntitlementRequired) => McpEntitlement::EntitlementRequired,
+            Err(error) => return Err(error),
+        };
+        decisions.insert(tenant, decision);
+    }
+    txn.commit().await.map_err(request_guard_repo::db_error)?;
+    Ok(decisions)
+}
+
+fn batch_read_error(error: sqlx::Error) -> ErrorCode {
+    match &error {
+        sqlx::Error::Database(db)
+            if matches!(db.code().as_deref(), Some("55P03" | "57014" | "57P01")) =>
+        {
+            ErrorCode::DependencyUnavailable
+        }
+        _ => request_guard_repo::db_error(error),
+    }
+}
 
 /// What one recompute did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

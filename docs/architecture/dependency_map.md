@@ -177,6 +177,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.entitlement_grants_for_projection`
 - executes `control.write_entitlement_snapshot`
 - service `PostgreSQL(role_maintenance)`
+- service `PostgreSQL(role_gateway)`
 
 #### `adapters::evidence_repo`
 - writes `private.events`
@@ -512,6 +513,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::private_reasoning`
 
 #### `application::projection_maintenance`
+
+#### `application::read_quota`
 
 #### `application::reasoning_route_admin`
 
@@ -2930,6 +2933,7 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 - executes `control.entitlement_grants_for_projection`
 - executes `control.write_entitlement_snapshot`
 - service `PostgreSQL(role_maintenance)`
+- service `PostgreSQL(role_gateway)`
 
 #### `adapters::evidence_repo`
 - writes `private.events`
@@ -3365,6 +3369,8 @@ Per module, one line per element: `reads` / `writes` / `executes` = the tables a
 #### `application::projection_execution`
 
 #### `application::projection_maintenance`
+
+#### `application::read_quota`
 
 #### `application::reasoning_route_admin`
 
@@ -6031,6 +6037,7 @@ executed by:
 ### `control.billing_payments`
 read by:
 - (no process): `adapters::tests::facet_contract`
+- (no process): `adapters::tests::request_guard`
 - (no process): `billing-worker::tests::process`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -6451,6 +6458,7 @@ executed by:
 read by:
 - (no process): `adapters::tests::billing_doors`
 - (no process): `adapters::tests::billing_slot_handover`
+- (no process): `adapters::tests::request_guard`
 - (no process): `billing-worker::tests::process`
 - (no process): `maintenance::tests::billing_legacy_migration`
 - (no process): `maintenance::tests::onboarding`
@@ -7307,6 +7315,7 @@ read by:
 - (no process): `adapters::tests::evidence_task_runs`
 - (no process): `adapters::tests::governance_quota`
 - (no process): `adapters::tests::operation_receipts`
+- (no process): `adapters::tests::request_guard`
 - (no process): `gateway::tests::coordinate_task`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `maintenance::tests::onboarding`
@@ -8035,6 +8044,7 @@ read by:
 - (no process): `adapters::tests::note_put`
 - (no process): `adapters::tests::note_replace`
 - (no process): `adapters::tests::operation_receipts`
+- (no process): `adapters::tests::request_guard`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
@@ -13869,6 +13879,7 @@ executed by:
 - `adapters::context_repo::g8031_snapshot_tests`
 - `adapters::coord_task_repo`
 - `adapters::coord_tree_repo`
+- `adapters::entitlement_repo`
 - `adapters::grep_repo`
 - `adapters::maintenance_repo`
 - `adapters::postgres`
