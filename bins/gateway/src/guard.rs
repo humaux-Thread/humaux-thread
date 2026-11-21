@@ -1,12 +1,14 @@
 //! `gateway::guard` — §83: one business admission path for every canonical MCP operation.
-//! Depends-on: crates=[hex, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[adapters::postgres, application::signed_token, application::read_quota, application::independent_audit, application::lifecycle_execution, application::remember, application::supersede, domain::affect, domain::audit, domain::confirm, domain::error, domain::identity, domain::ids, domain::selection, domain::subject, gateway::auth, gateway::bootstrap, gateway::limiter, gateway::route_cache, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
+//! Depends-on: crates=[async-trait, hex, humaux-application, humaux-domain, humaux-protocol, humaux-telemetry, sha2, time, tokio, uuid]; services=[]; env=[]; modules=[application::signed_token, application::read_quota, application::independent_audit, application::lifecycle_execution, application::remember, application::supersede, domain::affect, domain::audit, domain::confirm, domain::error, domain::identity, domain::ids, domain::selection, domain::subject, gateway::auth, gateway::bootstrap, gateway::limiter, gateway::route_cache, protocol::edge, protocol::mcp, protocol::mcp_catalog, telemetry::admission, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::admission, gateway::auth_pages, gateway::billing_webhook, gateway::bootstrap, gateway::main, gateway::mcp_application, gateway::memory, gateway::oauth_http, gateway::status, tests]
 //! Invariants: [no path mints and accepts in one call; transport owns HTTP validation only; this layer is the sole place that authenticates, authorizes and admits a request, so an operation that bypasses it is a bug, not a variant path]
 //! Spec: Baseline §83; §52.1; ADR-0018; ADR-0028; ADR-0030; ADR-0054; ADR-0065 D-D; ADR-0125
 //!
 //! Transport owns HTTP validation; this layer owns authentication through finalization.
 
-use humaux_application::independent_audit::{AuditIdentity, record_independent_audit};
+use humaux_application::independent_audit::{
+    AuditIdentity, IndependentAuditStore, record_independent_audit,
+};
 use humaux_application::lifecycle_execution::LifecycleConfirmation;
 use humaux_application::read_quota::{self, ChargePolicy, ReadQuotaStore, ReservationLease};
 use humaux_application::remember::{
@@ -21,13 +23,12 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_domain::{
     affect::AffectWriteOp,
     audit::{AuditEvent, AuditEventId, AuditMetadata, McpAuditAction, SYSTEM_TENANT_ID},
     confirm::{ConfirmToken, DestructiveOp, RISK_TAG_CONFIRMATION_MINTED},
     error::ErrorCode,
-    identity::AuthorizationScope,
+    identity::{AuthorizationScope, PrincipalId},
     ids::WorkspaceId,
     subject::SubjectWriteOp,
 };
@@ -48,7 +49,7 @@ use crate::limiter::{Limiter, RatePolicy, Subject};
 
 use crate::auth::{
     AuthenticatedBearer, BatchTouch, CredentialScope, MIN_BATCH_TOUCH_SECONDS, TouchThrottle,
-    authenticate_access_token, authenticate_live, parse_bearer_header,
+    parse_bearer_header,
 };
 
 use crate::route_cache::CredentialRouteCache;
@@ -259,8 +260,7 @@ impl OAuthRequestContext for McpHttpContext {
 }
 
 pub struct GatewayGuard {
-    pool: Arc<RuntimeDbPool>,
-    confirmation_minter: ConfirmationMinter,
+    ports: GuardPorts,
     settings: GuardSettings,
     metrics: GuardMetrics,
     /// M02 D8: when a credential's `last_used_at` is written again; never consulted for a validity decision.
@@ -269,6 +269,45 @@ pub struct GatewayGuard {
     route_cache: Option<Arc<CredentialRouteCache>>,
     limiter: Limiter,
     oauth_issuer: Option<(String, Arc<TokenKeys>)>,
+}
+
+pub(crate) struct GuardPorts {
+    pub(crate) credentials: Arc<dyn GuardCredentials>,
+    pub(crate) quota: Arc<
+        dyn ReadQuotaStore<Audit = AuditEvent, Reservation = crate::bootstrap::GuardReservation>,
+    >,
+    pub(crate) audit: Arc<dyn IndependentAuditStore>,
+    pub(crate) confirmation_minter: ConfirmationMinter,
+}
+
+#[async_trait::async_trait]
+pub(crate) trait GuardCredentials: Send + Sync {
+    async fn authenticate_live(
+        &self,
+        header: &str,
+        pepper: &[u8],
+        previous_pepper: Option<&[u8]>,
+        ip: IpAddr,
+        now: SystemTime,
+        cache: Option<&CredentialRouteCache>,
+    ) -> Result<AuthenticatedBearer, ErrorCode>;
+
+    async fn authenticate_access_token(
+        &self,
+        keys: &TokenKeys,
+        token: &str,
+        resource: &str,
+        now: OffsetDateTime,
+    ) -> Result<AuthenticatedBearer, ErrorCode>;
+
+    async fn stamp(
+        &self,
+        throttle: &TouchThrottle,
+        principal: PrincipalId,
+        now: SystemTime,
+    ) -> Result<(), ErrorCode>;
+
+    fn batch_touch(&self, interval: Duration, seconds: i32) -> BatchTouch;
 }
 
 /// §33.10: persist a confirmation challenge and its finished audit in one commit.
@@ -376,12 +415,8 @@ impl AtomicRememberOp {
 }
 
 impl GatewayGuard {
-    /// §83: the composition root supplies the confirmation persistence port.
-    pub(crate) fn with_confirmation_minter(
-        pool: Arc<RuntimeDbPool>,
-        settings: GuardSettings,
-        confirmation_minter: ConfirmationMinter,
-    ) -> Result<Self, ErrorCode> {
+    /// §83: the composition root supplies the persistence ports.
+    pub(crate) fn new(settings: GuardSettings, ports: GuardPorts) -> Result<Self, ErrorCode> {
         let execution_budget = settings
             .handler_timeout
             .checked_add(settings.finalize_timeout)
@@ -402,8 +437,7 @@ impl GatewayGuard {
         )?;
         Ok(Self {
             limiter,
-            pool,
-            confirmation_minter,
+            ports,
             settings,
             metrics: GuardMetrics::default(),
             touch: TouchThrottle::new(Duration::ZERO),
@@ -446,16 +480,12 @@ impl GatewayGuard {
         if interval.as_secs() < MIN_BATCH_TOUCH_SECONDS {
             return Err(ErrorCode::InvalidInput);
         }
-        self.batch_touch = Some(BatchTouch::new(Arc::clone(&self.pool), interval, seconds));
+        self.batch_touch = Some(self.ports.credentials.batch_touch(interval, seconds));
         Ok(self)
     }
 
     pub fn metrics(&self) -> &GuardMetrics {
         &self.metrics
-    }
-
-    pub(crate) fn runtime_pool(&self) -> Arc<RuntimeDbPool> {
-        Arc::clone(&self.pool)
     }
 
     pub(crate) fn enumeration_mac_key(&self) -> [u8; 32] {
@@ -550,30 +580,34 @@ impl GatewayGuard {
         if !raw.contains('.') {
             let (_, keys) = self.oauth_issuer.as_ref().ok_or(ErrorCode::Unauthorized)?;
             let resource = context.expected_resource().ok_or(ErrorCode::Unauthorized)?;
-            return authenticate_access_token(
-                &self.pool,
-                keys,
-                raw,
-                resource,
-                OffsetDateTime::now_utc(),
-            )
-            .await;
+            return self
+                .ports
+                .credentials
+                .authenticate_access_token(keys, raw, resource, OffsetDateTime::now_utc())
+                .await;
         }
         let now = SystemTime::now();
-        let credential = authenticate_live(
-            &self.pool,
-            header,
-            &self.settings.credential_pepper,
-            self.settings.credential_pepper_previous.as_deref(),
-            client_ip,
-            now,
-            self.route_cache.as_deref(),
-        )
-        .await?;
+        let credential = self
+            .ports
+            .credentials
+            .authenticate_live(
+                header,
+                &self.settings.credential_pepper,
+                self.settings.credential_pepper_previous.as_deref(),
+                client_ip,
+                now,
+                self.route_cache.as_deref(),
+            )
+            .await?;
         let principal = credential.identity().principal();
         match &self.batch_touch {
             Some(batch) => batch.stamp(principal, now).await?,
-            None => self.touch.stamp(&self.pool, principal, now).await?,
+            None => {
+                self.ports
+                    .credentials
+                    .stamp(&self.touch, principal, now)
+                    .await?
+            }
         }
         Ok(credential)
     }
@@ -1305,7 +1339,7 @@ impl GatewayGuard {
         let token = humaux_application::supersede::mint_confirm_token();
         let minted = tokio::time::timeout(
             self.settings.handler_timeout,
-            (self.confirmation_minter)(ConfirmationMint {
+            (self.ports.confirmation_minter)(ConfirmationMint {
                 authorization: &authorization,
                 op: gate.op,
                 target_id: gate.target_id,
@@ -1448,12 +1482,12 @@ impl GatewayGuard {
             }
             self.postauth_rate(context, request.authorization(), operation.operation_key())
                 .await?;
-            let policy = read_quota::charge_policy_for(
-                &crate::bootstrap::read_quota_store(&self.pool),
-                request.authorization(),
-                operation.feature_key(),
-            )
-            .await?;
+            let facts = self
+                .ports
+                .quota
+                .policy_facts(request.authorization())
+                .await?;
+            let policy = read_quota::quota_policy(&facts, operation.feature_key())?;
             if matches!(
                 operation.meter_kind(),
                 MeterKind::BatchReservation | MeterKind::BatchConsumption
@@ -1515,10 +1549,10 @@ impl GatewayGuard {
         F: FnOnce(AuthorizedRequest) -> Fut,
         Fut: Future<Output = Result<T, ErrorCode>>,
     {
-        let store = crate::bootstrap::read_quota_store(&self.pool);
+        let store = self.ports.quota.as_ref();
         let reservation_started = Instant::now();
         let reservation = match self
-            .reserve_read(&store, context, operation, raw_arguments, admitted)
+            .reserve_read(store, context, operation, raw_arguments, admitted)
             .await
         {
             Ok(value) => value,
@@ -1548,7 +1582,7 @@ impl GatewayGuard {
         };
         let settled = tokio::time::timeout(
             self.settings.finalize_timeout,
-            self.finish_read(&store, context, operation, admitted, completion),
+            self.finish_read(store, context, operation, admitted, completion),
         )
         .await
         .map_err(|_| ErrorCode::DependencyUnavailable)??;
@@ -1558,7 +1592,7 @@ impl GatewayGuard {
         result
     }
 
-    async fn reserve_read<S: ReadQuotaStore<Audit = AuditEvent>>(
+    async fn reserve_read<S: ReadQuotaStore<Audit = AuditEvent> + ?Sized>(
         &self,
         store: &S,
         context: &McpHttpContext,
@@ -1580,8 +1614,7 @@ impl GatewayGuard {
         let digest = hex::encode(Sha256::digest(raw_arguments.as_bytes()));
         let result = tokio::time::timeout(
             self.settings.finalize_timeout,
-            read_quota::reserve_read(
-                store,
+            store.reserve(
                 admitted.request.authorization(),
                 operation.operation_key(),
                 &digest,
@@ -1599,7 +1632,7 @@ impl GatewayGuard {
         result
     }
 
-    async fn finish_read<S: ReadQuotaStore<Audit = AuditEvent>>(
+    async fn finish_read<S: ReadQuotaStore<Audit = AuditEvent> + ?Sized>(
         &self,
         store: &S,
         context: &McpHttpContext,
@@ -1615,14 +1648,14 @@ impl GatewayGuard {
             operation.operation_key(),
             completion.error,
         );
-        let settled = read_quota::settle_read(
-            store,
-            admitted.request.authorization(),
-            completion.reservation,
-            completion.consume,
-            &event,
-        )
-        .await?;
+        let settled = store
+            .settle(
+                admitted.request.authorization(),
+                completion.reservation,
+                completion.consume,
+                &event,
+            )
+            .await?;
         if settled && completion.reservation.is_some() && completion.consume {
             self.metrics
                 .increment(&families::MCP_BMO_CONSUMED_TOTAL, &[PLAN_CLASS]);
@@ -1653,12 +1686,7 @@ impl GatewayGuard {
                 user_id: authorization.user_id(),
             }
         });
-        record_independent_audit(
-            &crate::bootstrap::independent_audit_store(&self.pool),
-            identity,
-            event,
-        )
-        .await?;
+        record_independent_audit(self.ports.audit.as_ref(), identity, event).await?;
         Ok(())
     }
 

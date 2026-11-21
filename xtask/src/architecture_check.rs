@@ -396,20 +396,8 @@ impl GuardModuleGraph {
         active: &mut BTreeSet<GuardPath>,
         found: &mut BTreeSet<String>,
     ) {
-        if let [krate, rest @ ..] = path
-            && krate == "humaux_adapters"
-        {
-            let rest: Vec<_> = rest.iter().map(String::as_str).collect();
-            if !matches!(
-                rest.as_slice(),
-                // M02 credentials, M04 admission/metering, M05 denials audit.
-                ["credential_repo" | "request_guard_repo" | "quota_repo"
-                    | "audited_read_quota" | "independent_audit", ..]
-                // The typed pool is a handle, not an adapter door.
-                | ["postgres", "RuntimeDbPool"]
-            ) {
-                found.insert(path.join("::"));
-            }
+        if path.first().is_some_and(|krate| krate == "humaux_adapters") {
+            found.insert(path.join("::"));
             return;
         }
         if let Some((last, module)) = path.split_last()
@@ -480,7 +468,7 @@ fn guard_module_file(
     (file, child_dir)
 }
 
-/// M03 design §4 / §8 G-M03-12: Guard can reach request-policy adapters, never operation adapters.
+/// M03 design §4 / §8 G-M03-12: Guard has no adapter imports or qualified references.
 fn m03_12_guard_adapter_boundary(root: &Path) -> Verdict {
     let result = (|| {
         let root = root.canonicalize().map_err(|e| e.to_string())?;
@@ -1992,13 +1980,13 @@ fn hex_file_owners(
     }
     let mut problems = Vec::new();
     let ids: BTreeSet<_> = catalog.module.iter().map(|m| &m.id).collect();
-    let actual: BTreeSet<_> = ["crates", "bins"]
+    let actual: BTreeSet<_> = ["crates", "bins", "xtask"]
         .into_iter()
         .flat_map(|d| walk_files(&root.join(d), &["rs"]))
         .map(|p| display(root, &p))
         .collect();
     if actual.is_empty() {
-        problems.push("missing source objects crates/**, bins/**".into());
+        problems.push("missing source objects crates/**, bins/**, xtask/**".into());
     }
     for path in &actual {
         if owners.get(path).map_or(0, Vec::len) != 1 {
@@ -2240,6 +2228,10 @@ fn hex_index(root: &Path, catalog: &HexCatalog) -> Result<HexIndex, Vec<String>>
         references: BTreeMap::new(),
     };
     for path in index.owners.keys() {
+        // ADR-0130 D5: xtask owns engineering tools outside the application dependency graph.
+        if path.starts_with("xtask/") {
+            continue;
+        }
         let Some((pkg, tail)) = path.split_once("/src/") else {
             continue;
         };
@@ -14140,7 +14132,7 @@ pub fn run(_args: &[String]) -> i32 {
             m03_2_no_pg_rate_path(&root),
         ),
         (
-            "G-M03-12 (request guard imports no operation adapter)",
+            "G-M03-12 (request guard has no adapter references)",
             m03_12_guard_adapter_boundary(&root),
         ),
         (
@@ -14465,6 +14457,18 @@ mod tests {
         );
         for (fault, forbidden) in [
             (
+                "use humaux_adapters::postgres::RuntimeDbPool;",
+                "humaux_adapters::postgres::RuntimeDbPool",
+            ),
+            (
+                "fn fault() { let _: Option<::humaux_adapters::postgres::RuntimeDbPool> = None; }",
+                "humaux_adapters::postgres::RuntimeDbPool",
+            ),
+            (
+                "use humaux_adapters::credential_repo;",
+                "humaux_adapters::credential_repo",
+            ),
+            (
                 "use humaux_adapters::remember;",
                 "humaux_adapters::remember",
             ),
@@ -14583,10 +14587,7 @@ mod tests {
                 case,
                 &[
                     ("lib.rs", "pub mod guard; pub mod bridge;"),
-                    (
-                        "guard.rs",
-                        "use crate::bridge::links::store::credential_repo;",
-                    ),
+                    ("guard.rs", ""),
                     (
                         "bridge.rs",
                         "pub use humaux_adapters::confirm_token_repo as token; \
@@ -15151,6 +15152,7 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
     fn hex_copy_boundary_fixture(source: &Path, root: &Path) {
         let mut inputs = walk_files(&source.join("crates"), &["rs", "toml"]);
         inputs.extend(walk_files(&source.join("bins"), &["rs", "toml"]));
+        inputs.extend(walk_files(&source.join("xtask"), &["rs"]));
         inputs.extend(hex_context_exception_adrs(source).unwrap());
         inputs.extend(
             [
@@ -15283,6 +15285,29 @@ const U: &str = "https://real.example.com"; // "https://tail.example.com"
         check(2);
         println!("COVERAGE orphan: restored GREEN");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn m01_5_gap_xtask_orphan_fails_hex_coverage() {
+        let root = fresh_tmp("m01-5-gap-xtask-coverage");
+        hex_copy_boundary_fixture(&real_root(), &root);
+        let path = "xtask/src/boundary_orphan.rs";
+        let orphan = root.join(path);
+        assert_eq!(hex_coverage_gate(&root), Verdict::Pass);
+
+        fs::write(&orphan, "fn orphan() {}\n").unwrap();
+        let red = hex_coverage_gate(&root);
+        fs::remove_file(orphan).unwrap();
+        let restored = hex_coverage_gate(&root);
+        fs::remove_dir_all(root).unwrap();
+
+        assert_eq!(
+            red,
+            Verdict::Fail(vec![format!("{path}: expected exactly one file owner")]),
+        );
+        println!("HEX-COVERAGE RED {red:?}");
+        assert_eq!(restored, Verdict::Pass);
+        println!("HEX-COVERAGE restored GREEN");
     }
 
     #[test]

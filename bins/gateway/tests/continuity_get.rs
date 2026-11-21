@@ -9,7 +9,7 @@
 //!   HTTP(gateway)]; env=[HUMAUX_CONTINUITY_W2_FORCE_NATIVE_CLEANUP_FAILURE,
 //!   HUMAUX_CONTINUITY_W2_FORCE_NATIVE_PANIC]; modules=[adapters::postgres, gateway::limiter,
 //!   adapters::tests::support::operation_receipt_fixture, contracts::retrieval_config, domain::context,
-//!   domain::dataclass, domain::identity, gateway::context, gateway::guard, gateway::mcp_application,
+//!   domain::dataclass, domain::identity, gateway::context, gateway::bootstrap, gateway::guard, gateway::mcp_application,
 //!   gateway::remember, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]
 //! Invariants: [each test connects, seeds and tears down its own PostgreSQL fixture; no test shares state across HUMAUX_CONTINUITY_W2_* fault-injection runs]
@@ -28,6 +28,7 @@ use std::{
 use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_domain::{context::ContextBudget, dataclass::DataClass, identity::VisibilityClass};
 use humaux_gateway::{
+    bootstrap::build_gateway_guard,
     context::ContextBootstrap,
     guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
     mcp_application::GatewayMcpApplication,
@@ -67,9 +68,9 @@ fn rate() -> RatePolicy {
     RatePolicy::new(100, 100).expect("explicit fixture rate")
 }
 
-fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
+fn guard(runtime: Arc<RuntimeDbPool>) -> Arc<GatewayGuard> {
     Arc::new(
-        GatewayGuard::new(
+        build_gateway_guard(
             runtime,
             GuardSettings {
                 credential_pepper: SYNTHETIC_CREDENTIAL_PEPPER.to_vec(),
@@ -121,9 +122,11 @@ fn application(handle: &Handle, runtime: RuntimeDbPool) -> GatewayMcpApplication
         std::time::Duration::from_secs(60),
     )
     .unwrap();
+    let runtime = Arc::new(runtime);
     GatewayMcpApplication::new(
         CanonicalCatalog::load().unwrap(),
-        guard(runtime),
+        guard(Arc::clone(&runtime)),
+        runtime,
         policy,
         RememberEventKind::UserMessage,
         bootstrap,

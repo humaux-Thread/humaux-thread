@@ -1,6 +1,6 @@
 //! `gateway::tests::memory_get_frontier` — M13-2 / ADR-0110 D-A: `memory.get` reports the ledger frontier from the
 //!   `stream_checkpoints` row alone (G-M13-1, G-M13-2).
-//! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-infra-cell, humaux-projection, humaux-protocol, humaux-testkit, postgres, serde_json, tokio, uuid]; services=[HTTP(gateway), PostgreSQL(owner) r=[ops.commit_seq_seq] w=[control.api_keys, control.entitlement_snapshots, control.memberships, control.private_reasoning_domains, control.tenants, control.users, control.workspace_memberships, control.workspaces, private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log, projection.tenant_placements] x=[projection.stream_point_ledger], PostgreSQL(role_gateway), PostgreSQL(role_maintenance), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::postgres, adapters::quota_repo, adapters::serving_repo, adapters::stream_repo, adapters::tests::support::operation_receipt_fixture, adapters::tests::support::throwaway_db, application::recall_read, application::retrieval_embedding_port, contracts::retrieval_config, domain::authority, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::recall, gateway::remember, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::serving, projection::stream, protocol::edge, protocol::mcp, protocol::mcp_catalog]
+//! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-contracts, humaux-domain, humaux-infra-cell, humaux-projection, humaux-protocol, humaux-testkit, postgres, serde_json, tokio, uuid]; services=[HTTP(gateway), PostgreSQL(owner) r=[ops.commit_seq_seq] w=[control.api_keys, control.entitlement_snapshots, control.memberships, control.private_reasoning_domains, control.tenants, control.users, control.workspace_memberships, control.workspaces, private.evidence_objects, private.memory_evidence, private.memory_records, projection.stream_checkpoints, projection.stream_log, projection.tenant_placements] x=[projection.stream_point_ledger], PostgreSQL(role_gateway), PostgreSQL(role_maintenance), Qdrant(*)]; env=[HUMAUX_TEST_PG_DSN, HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::postgres, adapters::quota_repo, adapters::serving_repo, adapters::stream_repo, adapters::tests::support::operation_receipt_fixture, adapters::tests::support::throwaway_db, application::recall_read, application::retrieval_embedding_port, contracts::retrieval_config, domain::authority, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::context, gateway::bootstrap, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::recall, gateway::remember, humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport, projection::serving, projection::stream, protocol::edge, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]
 //! Invariants: [the door tests run in their own throwaway database because they REVOKE role_gateway's SELECT on
 //!   `projection.stream_log` (leaving only the three columns the get's own tombstone gate reads, read_materialize.rs,
@@ -53,6 +53,7 @@ use humaux_domain::{
     ids::{Scope, TenantId, UserId, WorkspaceId},
 };
 use humaux_gateway::{
+    bootstrap::build_gateway_guard,
     context::ContextBootstrap,
     guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
     limiter::RatePolicy,
@@ -486,9 +487,9 @@ fn rate() -> RatePolicy {
     RatePolicy::new(100, 100).expect("explicit fixture rate")
 }
 
-fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
+fn guard(runtime: Arc<RuntimeDbPool>) -> Arc<GatewayGuard> {
     Arc::new(
-        GatewayGuard::new(
+        build_gateway_guard(
             runtime,
             GuardSettings {
                 credential_pepper: SYNTHETIC_CREDENTIAL_PEPPER.to_vec(),
@@ -606,9 +607,11 @@ fn plain_app(reasoning_domain_id: Uuid, runtime: RuntimeDbPool) -> GatewayMcpApp
         Duration::from_secs(60),
     )
     .expect("actual executable identity");
+    let runtime = Arc::new(runtime);
     GatewayMcpApplication::new(
         CanonicalCatalog::load().expect("closed canonical MCP catalog"),
-        guard(runtime),
+        guard(Arc::clone(&runtime)),
+        runtime,
         policy,
         RememberEventKind::UserMessage,
         bootstrap,

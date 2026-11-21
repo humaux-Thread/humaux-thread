@@ -35,6 +35,7 @@ use humaux_application::session::{SessionPolicy, SessionSecret, VerifiedSession,
 use humaux_application::signed_token::{FIELD_SEP, TokenKeys, TokenLabel};
 use humaux_gateway::admission::{self, Admission, AdmissionSettings};
 use humaux_gateway::auth_pages::{self, AuthPagesConfig, PENDING_LABEL};
+use humaux_gateway::bootstrap::build_gateway_guard;
 use humaux_gateway::guard::{GatewayGuard, GuardRatePolicies, GuardSettings};
 use humaux_gateway::limiter::RatePolicy;
 use humaux_protocol::edge::{CSRF_HEADER_NAME, Cidr, SESSION_COOKIE_NAME, TrustedProxyConfig};
@@ -197,9 +198,8 @@ fn guard_settings(preauth_capacity: i64) -> GuardSettings {
     }
 }
 
-fn guard(h: &Handle, preauth_capacity: i64) -> Arc<GatewayGuard> {
-    let pool = gateway_pool(&h.rt, &h.dsn).expect("role_gateway pool");
-    Arc::new(GatewayGuard::new(pool, guard_settings(preauth_capacity)).expect("guard settings"))
+fn guard(pool: Arc<RuntimeDbPool>, preauth_capacity: i64) -> Arc<GatewayGuard> {
+    Arc::new(build_gateway_guard(pool, guard_settings(preauth_capacity)).expect("guard settings"))
 }
 
 fn pages_config() -> AuthPagesConfig {
@@ -214,16 +214,16 @@ fn pages_config() -> AuthPagesConfig {
 }
 
 fn login_port(
-    guard: &GatewayGuard,
+    pool: Arc<RuntimeDbPool>,
     config: &AuthPagesConfig,
 ) -> Arc<dyn humaux_application::login::PasswordlessLoginPort> {
-    humaux_gateway::bootstrap::passwordless_login_port(guard, config)
+    humaux_gateway::bootstrap::passwordless_login_port(pool, config)
 }
 
 /// The production router on a loopback socket, with connect info as `main` serves it.
-async fn start(guard: Arc<GatewayGuard>) -> (SocketAddr, JoinHandle<()>) {
+async fn start(guard: Arc<GatewayGuard>, pool: Arc<RuntimeDbPool>) -> (SocketAddr, JoinHandle<()>) {
     let config = pages_config();
-    let login = login_port(&guard, &config);
+    let login = login_port(pool, &config);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind loopback");
@@ -244,6 +244,7 @@ async fn start(guard: Arc<GatewayGuard>) -> (SocketAddr, JoinHandle<()>) {
 /// client as `bootstrap` builds it (per-key limit 8). `GET /hold` signals `entered`, then waits for a `release` permit.
 async fn start_admitted(
     guard: Arc<GatewayGuard>,
+    pool: Arc<RuntimeDbPool>,
     entered: Arc<Semaphore>,
     release: Arc<Semaphore>,
 ) -> (SocketAddr, JoinHandle<()>) {
@@ -267,7 +268,7 @@ async fn start_admitted(
     let app = admission::wrap(
         {
             let config = pages_config();
-            let login = login_port(&guard, &config);
+            let login = login_port(pool, &config);
             auth_pages::router(guard, config, login)
         }
         .merge(Router::new().route("/hold", hold)),
@@ -290,17 +291,21 @@ async fn start_admitted(
 }
 
 /// A guard that trusts the loopback peer as a proxy, so a `Forwarded` header names the client a test speaks as.
-fn guard_behind_loopback_proxy(h: &Handle) -> Arc<GatewayGuard> {
+fn guard_behind_loopback_proxy(pool: Arc<RuntimeDbPool>) -> Arc<GatewayGuard> {
     let mut settings = guard_settings(10_000);
     settings.trusted_proxies.trusted_proxy_cidrs =
         vec![Cidr::from_str("127.0.0.1/32").expect("cidr")];
-    let pool = gateway_pool(&h.rt, &h.dsn).expect("role_gateway pool");
-    Arc::new(GatewayGuard::new(pool, settings).expect("guard settings"))
+    Arc::new(build_gateway_guard(pool, settings).expect("guard settings"))
+}
+
+fn fixture_pool(h: &Handle) -> Arc<RuntimeDbPool> {
+    Arc::new(gateway_pool(&h.rt, &h.dsn).expect("role_gateway pool"))
 }
 
 fn serve(h: &Handle) -> SocketAddr {
-    let guard = guard(h, 10_000);
-    h.rt.block_on(start(guard)).0
+    let pool = fixture_pool(h);
+    let guard = guard(Arc::clone(&pool), 10_000);
+    h.rt.block_on(start(guard, pool)).0
 }
 
 /// One parsed HTTP/1.1 response: lowercase header names, in wire order.
@@ -807,11 +812,12 @@ fn g_m02_3_expired_forged_or_foreign_pending_cookie_gets_the_uniform_rejection()
 #[test]
 fn g_m03_1_one_clients_held_requests_do_not_starve_another_clients_login() {
     run_db_fixture::<PagesFixture, _>("g_m03_1_http_admission_client_key", |h| {
-        let guard = guard_behind_loopback_proxy(&h);
+        let pool = fixture_pool(&h);
+        let guard = guard_behind_loopback_proxy(Arc::clone(&pool));
         let (entered, release) = (Arc::new(Semaphore::new(0)), Arc::new(Semaphore::new(0)));
         h.rt.block_on(async {
             let (address, server) =
-                start_admitted(guard, Arc::clone(&entered), Arc::clone(&release)).await;
+                start_admitted(guard, pool, Arc::clone(&entered), Arc::clone(&release)).await;
             let get_as = |client: &'static str, path: &'static str| async move {
                 http(address, "GET", path, &[("Forwarded", client)], "").await
             };
@@ -921,7 +927,8 @@ fn g_m02_3_every_route_carries_the_hardening_headers() {
 #[test]
 fn g_m03_1_the_pre_auth_limiter_applies_to_the_auth_pages() {
     run_db_fixture::<PagesFixture, _>("g_m03_1_http_preauth_limiter", |h| {
-        let limited = guard(&h, 2);
+        let pool = fixture_pool(&h);
+        let limited = guard(Arc::clone(&pool), 2);
         let rendered = Arc::clone(&limited);
         let frozen = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -935,7 +942,7 @@ fn g_m03_1_the_pre_auth_limiter_applies_to_the_auth_pages() {
                     tokio::task::yield_now().await;
                 }
             });
-            let (address, server) = start(limited).await;
+            let (address, server) = start(limited, pool).await;
             let mut statuses = Vec::new();
             for _ in 0..3 {
                 statuses.push(http(address, "GET", "/auth/login", &[], "").await.status);
@@ -964,9 +971,10 @@ fn g_m03_13_auth_pages_global_deny_is_preauth() {
         settings.trusted_proxies.trusted_proxy_cidrs =
             vec![Cidr::from_str("127.0.0.1/32").expect("cidr")];
         settings.global_denylist = vec![Cidr::from_str("203.0.113.0/24").expect("cidr")];
-        let pool = gateway_pool(&h.rt, &h.dsn).expect("role_gateway pool");
-        let guard = Arc::new(GatewayGuard::new(pool, settings).expect("guard settings"));
-        let address = h.rt.block_on(start(guard)).0;
+        let pool = fixture_pool(&h);
+        let guard =
+            Arc::new(build_gateway_guard(Arc::clone(&pool), settings).expect("guard settings"));
+        let address = h.rt.block_on(start(guard, pool)).0;
         let body = format!("email={}", h.email);
         let login_as = |h: &Handle, client: &str| {
             let headers = [("Origin", ORIGIN), ("Forwarded", client)];

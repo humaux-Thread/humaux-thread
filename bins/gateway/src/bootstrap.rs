@@ -4,7 +4,7 @@
 //!   stream cache) — the same family the 14 governance / subject / affect writes attach to since ADR-0054, so
 //!   the process holds no default write pair at all.
 //! Depends-on: crates=[async-trait, axum, hex, humaux-adapters, humaux-application, humaux-cache, humaux-contracts, humaux-domain,
-//!   humaux-infra-cell, humaux-infra-egress, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde, serde_json, sha2, tokio, uuid];
+//!   humaux-infra-cell, humaux-infra-egress, humaux-protocol, humaux-retrieval, humaux-retrieval-worker, humaux-telemetry, serde, serde_json, sha2, time, tokio, uuid];
 //!   services=[PostgreSQL(role_gateway)];
 //!   env=[HUMAUX_BILLING_WEBHOOK_PROVIDERS, HUMAUX_CONTINUITY_LIST_MERGE_ATTEMPTS, HUMAUX_GATEWAY_DEPLOYMENT, HUMAUX_GATEWAY_RATE_PREAUTH_IP_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_CREDENTIAL_MAX_SUBJECTS,
 //!   HUMAUX_GATEWAY_RATE_USER_MAX_SUBJECTS, HUMAUX_GATEWAY_RATE_TENANT_MAX_SUBJECTS,
@@ -57,7 +57,7 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::confirm_token_repo, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::oauth_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::cimd, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::oauth, application::oauth_exchange, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::route_cache, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, infra-egress::oauth_metadata, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::cache, telemetry::metrics]
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::confirm_token_repo, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::oauth_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::quota_repo, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::cimd, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::oauth, application::oauth_exchange, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::route_cache, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, infra-egress::oauth_metadata, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::auth, gateway::context, gateway::guard, gateway::main, gateway::mcp_application, gateway::oauth_http, gateway::memory, gateway::recall, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
 //! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7; ADR-0125
@@ -69,7 +69,7 @@
 //! process. A tenant-specific network-policy loader needs a separate approved
 //! authorization and acceptance gate before this bootstrap can serve it.
 
-use crate::auth::MIN_BATCH_TOUCH_SECONDS;
+use crate::auth::{self, AuthenticatedBearer, BatchTouch, MIN_BATCH_TOUCH_SECONDS, TouchThrottle};
 use crate::billing_webhook::BillingWebhookConfig;
 use crate::limiter::RatePolicy;
 use crate::route_cache::CredentialRouteCache;
@@ -77,7 +77,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::{IpAddr, SocketAddr},
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use humaux_adapters::{
@@ -88,6 +88,8 @@ use humaux_adapters::{
     retrieve::{TokenKeys, install_token_keys},
 };
 use humaux_application::auth::{AuthConfig, ChallengePolicy, canonicalize_email};
+use humaux_application::independent_audit::{AuditIdentity, IndependentAuditStore};
+use humaux_application::read_quota::{QuotaPolicyFacts, ReadQuotaStore, ReservationLease};
 use humaux_application::retrieval_embedding_port::RetrievalEmbeddingPort;
 use humaux_cache::CacheConfig;
 use humaux_cache::bounded::CacheObserver;
@@ -98,7 +100,11 @@ use humaux_contracts::retrieval_config::{
     RERANK_TIMEOUT_MS, resolve_registered_retrieval_profile, retrieval_profile_registry,
 };
 use humaux_domain::{
-    context::ContextBudget, dataclass::DataClass, error::ErrorCode, identity::VisibilityClass,
+    audit::{AuditEvent, AuditEventId},
+    context::ContextBudget,
+    dataclass::DataClass,
+    error::ErrorCode,
+    identity::{AuthorizationScope, PrincipalId, VisibilityClass},
 };
 use humaux_infra_cell::{
     CallerId, CellAccessMode, CellCidr, CellId, DEFAULT_MAX_RESPONSE_BYTES, HttpIntraCellTransport,
@@ -120,7 +126,10 @@ use crate::{
     auth_pages::AuthPagesConfig,
     cached_embedding::{CachedEmbeddingPort, GenerationStamp},
     context::ContextBootstrap,
-    guard::{ConfirmationMint, GatewayGuard, GuardRatePolicies, GuardSettings},
+    guard::{
+        ConfirmationMint, GatewayGuard, GuardCredentials, GuardPorts, GuardRatePolicies,
+        GuardSettings,
+    },
     mcp_application::GatewayMcpApplication,
     oauth_http::{OAuthHttpConfig, PublicClientMetadata, RegistrationPolicy},
     recall::{SemanticRecallRuntime, SemanticRecallVersions},
@@ -335,7 +344,7 @@ pub struct GatewayBootstrap {
     context_bootstrap: ContextBootstrap,
     config_fingerprint: String,
     semantic_recall: Option<SemanticRecallConfig>,
-    /// Copied out of `guard` before it moves into [`GatewayGuard::new`] (`build`) — the one
+    /// Copied out of `guard` before it moves into [`build_gateway_guard`] (`build`) — the one
     /// piece of guard config the semantic-recall wiring also needs, for the Qdrant transport's
     /// own request timeout (never a literal, §78.1).
     handler_timeout: Duration,
@@ -400,6 +409,7 @@ pub struct GatewayRuntime {
     session_lock_timeout: Duration,
     bind_addr: SocketAddr,
     adapter: McpAdapter,
+    pool: Arc<RuntimeDbPool>,
     config_fingerprint: String,
     guard: Arc<GatewayGuard>,
     admission: Arc<Admission>,
@@ -459,7 +469,12 @@ impl GatewayRuntime {
         &self,
         config: &AuthPagesConfig,
     ) -> Arc<dyn humaux_application::login::PasswordlessLoginPort> {
-        passwordless_login_port(&self.guard(), config)
+        passwordless_login_port(Arc::clone(&self.pool), config)
+    }
+
+    /// Share the gateway's request pool with the HTTP route state.
+    pub fn runtime_pool(&self) -> Arc<RuntimeDbPool> {
+        Arc::clone(&self.pool)
     }
 
     /// M02-10 routes share the auth-surface switch and admission (ADR-0125).
@@ -583,9 +598,12 @@ impl GatewayBootstrap {
         let session_lock = acquire_gateway_lock(&pool, &self.deployment)
             .await
             .map_err(|code| BootstrapError::new(DEPLOYMENT_KEY, code.as_str()))?;
-        let guard =
-            self.credential_settings
-                .build_guard(pool, self.guard, self.oauth_http.as_ref())?;
+        let pool = Arc::new(pool);
+        let guard = self.credential_settings.build_guard(
+            Arc::clone(&pool),
+            self.guard,
+            self.oauth_http.as_ref(),
+        )?;
         let invalid_catalog =
             |_| BootstrapError::new("canonical MCP catalog", "invalid embedded contract");
         let catalog = CanonicalCatalog::load().map_err(invalid_catalog)?;
@@ -593,6 +611,7 @@ impl GatewayBootstrap {
         let mut application = GatewayMcpApplication::new(
             catalog,
             guard.clone(),
+            Arc::clone(&pool),
             self.remember_policy,
             self.remember_event_kind,
             self.context_bootstrap,
@@ -626,11 +645,8 @@ impl GatewayBootstrap {
         let mut semantic = None;
         match self.semantic_recall {
             Some(config) => {
-                let (runtime, deps) = build_semantic_recall_runtime(
-                    guard.runtime_pool(),
-                    config,
-                    self.handler_timeout,
-                )?;
+                let (runtime, deps) =
+                    build_semantic_recall_runtime(Arc::clone(&pool), config, self.handler_timeout)?;
                 application = application.with_semantic_recall(runtime);
                 semantic = Some(deps);
             }
@@ -642,9 +658,7 @@ impl GatewayBootstrap {
                 );
             }
         }
-        if let Err(code) =
-            provision_oauth_clients(&guard.runtime_pool(), &self.oauth_static_clients).await
-        {
+        if let Err(code) = provision_oauth_clients(&pool, &self.oauth_static_clients).await {
             return Err(BootstrapError::static_oauth_client(code));
         }
         let application = Arc::new(application);
@@ -658,10 +672,11 @@ impl GatewayBootstrap {
             adapter: McpAdapter::new(application, advertised, self.http),
             config_fingerprint: self.config_fingerprint,
             readiness: Some(ReadinessProbe {
-                pool: guard.runtime_pool(),
+                pool: Arc::clone(&pool),
                 semantic,
             }),
             guard,
+            pool,
             admission: Arc::new(admission),
             metrics_addr: self.metrics_addr,
             readiness_refresh: self.readiness_refresh,
@@ -2269,7 +2284,7 @@ impl CredentialGatewaySettings {
 
     fn build_guard(
         self,
-        pool: RuntimeDbPool,
+        pool: Arc<RuntimeDbPool>,
         settings: GuardSettings,
         oauth: Option<&OAuthHttpConfig>,
     ) -> Result<Arc<GatewayGuard>, BootstrapError> {
@@ -2280,7 +2295,7 @@ impl CredentialGatewaySettings {
                 ttl,
             ))
         });
-        let mut guard = GatewayGuard::new(pool, settings)
+        let mut guard = build_gateway_guard(pool, settings)
             .map_err(|_| BootstrapError::new("gateway guard", "unsafe configuration"))?
             .with_credential_touch_interval(self.touch_interval);
         if let Some(cache) = route_cache {
@@ -2587,7 +2602,7 @@ pub fn candidate_decision_store(
 
 /// Wire the production passwordless port for HTTP hosts and integration tests (ADR-0130 D5).
 pub fn passwordless_login_port(
-    guard: &GatewayGuard,
+    pool: Arc<RuntimeDbPool>,
     config: &AuthPagesConfig,
 ) -> Arc<dyn humaux_application::login::PasswordlessLoginPort> {
     // The registry cannot distinguish unset from blank. Both allow every recipient at enqueue;
@@ -2597,7 +2612,7 @@ pub fn passwordless_login_port(
         list => RecipientAllowlist::parse(Some(list)),
     };
     Arc::new(humaux_adapters::login_repo::PostgresPasswordlessLogin::new(
-        guard.runtime_pool(),
+        pool,
         config.code_pepper.clone(),
         config.auth.login_challenge,
         config.mail_from.clone(),
@@ -2770,16 +2785,20 @@ pub(crate) async fn begin_oauth_consent(
     Ok(Box::new(txn))
 }
 
-impl GatewayGuard {
-    /// §83: assemble the guard with the knowledge lifecycle confirmation adapter.
-    pub fn new(pool: RuntimeDbPool, settings: GuardSettings) -> Result<Self, ErrorCode> {
-        let pool = Arc::new(pool);
-        let mint_pool = Arc::clone(&pool);
-        Self::with_confirmation_minter(
-            pool,
-            settings,
-            Box::new(move |mint: ConfirmationMint<'_>| {
-                let pool = Arc::clone(&mint_pool);
+/// §83: wire the gateway guard to the request-persistence implementations.
+pub fn build_gateway_guard(
+    pool: Arc<RuntimeDbPool>,
+    settings: GuardSettings,
+) -> Result<GatewayGuard, ErrorCode> {
+    let persistence = Arc::new(GuardPersistence(Arc::clone(&pool)));
+    GatewayGuard::new(
+        settings,
+        GuardPorts {
+            credentials: persistence.clone(),
+            quota: persistence.clone(),
+            audit: persistence,
+            confirmation_minter: Box::new(move |mint: ConfirmationMint<'_>| {
+                let pool = Arc::clone(&pool);
                 Box::pin(async move {
                     confirm_token_repo::mint_with_audit(
                         &pool,
@@ -2796,15 +2815,113 @@ impl GatewayGuard {
                     .map(|minted| minted.expires_at)
                 })
             }),
-        )
+        },
+    )
+}
+
+struct GuardPersistence(Arc<RuntimeDbPool>);
+
+#[async_trait::async_trait]
+impl GuardCredentials for GuardPersistence {
+    async fn authenticate_live(
+        &self,
+        header: &str,
+        pepper: &[u8],
+        previous_pepper: Option<&[u8]>,
+        ip: IpAddr,
+        now: SystemTime,
+        cache: Option<&CredentialRouteCache>,
+    ) -> Result<AuthenticatedBearer, ErrorCode> {
+        auth::authenticate_live(&self.0, header, pepper, previous_pepper, ip, now, cache).await
+    }
+
+    async fn authenticate_access_token(
+        &self,
+        keys: &TokenKeys,
+        token: &str,
+        resource: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<AuthenticatedBearer, ErrorCode> {
+        auth::authenticate_access_token(&self.0, keys, token, resource, now).await
+    }
+
+    async fn stamp(
+        &self,
+        throttle: &TouchThrottle,
+        principal: PrincipalId,
+        now: SystemTime,
+    ) -> Result<(), ErrorCode> {
+        throttle.stamp(&self.0, principal, now).await
+    }
+
+    fn batch_touch(&self, interval: Duration, seconds: i32) -> BatchTouch {
+        BatchTouch::new(Arc::clone(&self.0), interval, seconds)
     }
 }
 
-/// Wire standalone §77 audit to the gateway runtime pool.
-pub(crate) fn independent_audit_store(
-    pool: &RuntimeDbPool,
-) -> impl humaux_application::independent_audit::IndependentAuditStore + '_ {
-    humaux_adapters::independent_audit::PostgresIndependentAudit::new(pool)
+/// Opaque lease wrapping the PG reservation so the guard can use the quota port.
+pub(crate) struct GuardReservation(humaux_adapters::quota_repo::QuotaReservation);
+
+impl ReservationLease for GuardReservation {
+    fn valid_for(&self) -> Duration {
+        self.0.valid_for()
+    }
+}
+
+#[async_trait::async_trait]
+impl ReadQuotaStore for GuardPersistence {
+    type Audit = AuditEvent;
+    type Reservation = GuardReservation;
+
+    async fn policy_facts(&self, auth: &AuthorizationScope) -> Result<QuotaPolicyFacts, ErrorCode> {
+        humaux_adapters::audited_read_quota::PostgresReadQuota::new(&self.0)
+            .policy_facts(auth)
+            .await
+    }
+
+    async fn reserve(
+        &self,
+        auth: &AuthorizationScope,
+        operation: &str,
+        fingerprint: &str,
+        ttl: Duration,
+        audit: &AuditEvent,
+    ) -> Result<GuardReservation, ErrorCode> {
+        humaux_adapters::audited_read_quota::PostgresReadQuota::new(&self.0)
+            .reserve(auth, operation, fingerprint, ttl, audit)
+            .await
+            .map(GuardReservation)
+    }
+
+    async fn settle(
+        &self,
+        auth: &AuthorizationScope,
+        reservation: Option<&GuardReservation>,
+        consume: bool,
+        audit: &AuditEvent,
+    ) -> Result<bool, ErrorCode> {
+        humaux_adapters::audited_read_quota::PostgresReadQuota::new(&self.0)
+            .settle(
+                auth,
+                reservation.map(|reservation| &reservation.0),
+                consume,
+                audit,
+            )
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl IndependentAuditStore for GuardPersistence {
+    async fn record(
+        &self,
+        identity: AuditIdentity,
+        event: &AuditEvent,
+    ) -> Result<AuditEventId, ErrorCode> {
+        humaux_adapters::independent_audit::PostgresIndependentAudit::new(&self.0)
+            .record(identity, event)
+            .await
+    }
 }
 
 /// Assemble the atomic note-create port with the process attribution ladder (ADR-0067).

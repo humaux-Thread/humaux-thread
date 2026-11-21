@@ -2,7 +2,7 @@
 //! Depends-on: crates=[axum, humaux-adapters, humaux-domain, humaux-protocol, humaux-testkit, postgres,
 //!   serde_json, sha2, tokio, uuid]; services=[HTTP(loopback), PostgreSQL(any) w=[control.billing_inbox],
 //!   PostgreSQL(role_gateway)]; env=[CI, HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, domain::billing,
-//!   gateway::admission, gateway::billing_webhook, gateway::guard, gateway::limiter, humaux-testkit, protocol::edge]
+//!   gateway::admission, gateway::billing_webhook, gateway::bootstrap, gateway::guard, gateway::limiter, humaux-testkit, protocol::edge]
 //! Called-by: [cargo-test]
 //! Invariants: [unique fixture payloads are cleaned; missing CI input fails; exact row counts include changed keys]
 //! Spec: §71.3; §79.2; M04 D7; G-M04-10
@@ -12,7 +12,8 @@ use humaux_domain::billing::BillingProviderId;
 use humaux_gateway::{
     admission::{Admission, AdmissionSettings},
     billing_webhook::{self, BillingWebhookConfig},
-    guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
+    bootstrap::build_gateway_guard,
+    guard::{GuardRatePolicies, GuardSettings},
     limiter::RatePolicy,
 };
 use humaux_protocol::edge::TrustedProxyConfig;
@@ -116,7 +117,8 @@ impl DbIntegrationFixture for Fixture {
                 "{dsn}{sep}options=-c%20role%3Drole_gateway"
             )))
             .expect("runtime pool");
-        let guard = Arc::new(GatewayGuard::new(pool, settings()).expect("guard"));
+        let pool = Arc::new(pool);
+        let guard = Arc::new(build_gateway_guard(Arc::clone(&pool), settings()).expect("guard"));
         let admission = Arc::new(Admission::new(AdmissionSettings {
             concurrency: 1,
             queue_depth: 0,
@@ -131,6 +133,7 @@ impl DbIntegrationFixture for Fixture {
                 axum::Router::new(),
                 Arc::clone(&admission),
                 Arc::clone(&guard),
+                Arc::clone(&pool),
                 Some(providers),
             )
         };
