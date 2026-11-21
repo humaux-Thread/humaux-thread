@@ -1,6 +1,6 @@
 //! `gateway::tests::route_cache` — G-M03-4 and G-M03-5 through the MCP HTTP guard.
 //! Depends-on: crates=[async-trait, axum, humaux-adapters, humaux-application, humaux-domain, humaux-protocol, humaux-testkit, tokio, uuid];
-//!   services=[HTTP(gateway)]; env=[]; modules=[adapters::postgres, adapters::tests::support::operation_receipt_fixture, application::api_key, domain::error, domain::ids, gateway::guard, gateway::limiter, gateway::route_cache, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog]
+//!   services=[HTTP(gateway)]; env=[]; modules=[adapters::postgres, adapters::tests::support::operation_receipt_fixture, application::api_key, domain::error, domain::ids, gateway::bootstrap, gateway::guard, gateway::limiter, gateway::route_cache, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]
 //! Invariants: [one real gateway-login pool and isolated fixture tenant per gate; use the transport and guard for every request]
 //! Spec: Baseline §73.5.1; §79.2; ADR-0133; G-M03-4; G-M03-5
@@ -15,6 +15,7 @@ use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_application::api_key::compute_api_key_hash;
 use humaux_domain::{error::ErrorCode, ids::TenantId};
 use humaux_gateway::{
+    bootstrap::build_gateway_guard,
     guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
     limiter::RatePolicy,
     route_cache::CredentialRouteCache,
@@ -72,8 +73,8 @@ async fn start(
     cache: Arc<CredentialRouteCache>,
 ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let rate = || RatePolicy::new(1_000, 1_000).unwrap();
-    let guard = GatewayGuard::new(
-        pool,
+    let guard = build_gateway_guard(
+        Arc::new(pool),
         GuardSettings {
             credential_pepper: SYNTHETIC_CREDENTIAL_PEPPER.to_vec(),
             credential_pepper_previous: None,

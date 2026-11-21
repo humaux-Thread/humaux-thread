@@ -17729,7 +17729,6 @@ modules naming it:
 - `gateway::bootstrap`
 - `gateway::context`
 - `gateway::continuity`
-- `gateway::guard`
 - `gateway::mcp_application`
 - `gateway::memory`
 - `gateway::oauth_http`
@@ -17958,6 +17957,7 @@ why: object-safe async traits for ports and transports
 modules naming it:
 - `gateway::bootstrap`
 - `gateway::cached_embedding`
+- `gateway::guard`
 - `gateway::mcp_application`
 - `gateway::recall`
 - `gateway::rerank_client`
@@ -18080,6 +18080,7 @@ why: timestamps (OffsetDateTime, RFC3339)
 
 modules naming it:
 - `gateway::auth`
+- `gateway::bootstrap`
 - `gateway::guard`
 - `gateway::mcp_application`
 - `gateway::memory`
@@ -21539,9 +21540,9 @@ default run:
 - `bins/admin/src/probe.rs:11` [table-undeclared] (file) — the table names here are probe names, refusal text and scan-scope labels; the
 - `bins/admin/tests/probes.rs:20` [table-undeclared] (file) — public.* names are the refusal objects the probes must name; no SQL reads them
 - `bins/consolidation-worker/Cargo.toml:82` [cargo-usedby] (line) — no code in this crate imports axum; referenced only in a
-- `bins/gateway/src/bootstrap.rs:4432` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:4437` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
-- `bins/gateway/src/bootstrap.rs:4442` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4549` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4554` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
+- `bins/gateway/src/bootstrap.rs:4559` [env-undeclared] (line) — a values-file key compared as data; the gateway never reads it
 - `bins/maintenance/src/deploy_check.rs:18` [env-undeclared] (file) — the HUMAUX_* names here are checked in values files, compose documents and container
 - `crates/adapters/src/email/test_double.rs:7` [table-undeclared] (file) — panic message text names ops.email_outbox for diagnostics only, no DB access here
 - `crates/adapters/tests/contribution_execution_repo.rs:38` [table-write] (line) — static source-text guard; no DB connection

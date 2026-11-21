@@ -1,6 +1,6 @@
 //! `gateway::billing_webhook` — verified inbox ingress only (§71.3); M04-11 owns processing.
 //! Depends-on: crates=[axum, humaux-adapters, humaux-application, humaux-domain, serde_json]; services=[]; env=[];
-//!   modules=[adapters::billing_repo, application::signed_token, domain::billing, domain::error, gateway::admission, gateway::auth_pages, gateway::guard]
+//!   modules=[adapters::billing_repo, adapters::postgres, application::signed_token, domain::billing, domain::error, gateway::admission, gateway::auth_pages, gateway::guard]
 //! Called-by: [gateway::bootstrap, gateway::main, tests]
 //! Invariants: [admission buffers first; provider, cap and MAC precede parsing; no secret Debug; duplicates acknowledge]
 //! Spec: §71.3; §52; §78.1; M04 D7
@@ -44,15 +44,21 @@ pub struct BillingWebhookConfig {
 
 struct WebhookState {
     guard: Arc<GatewayGuard>,
+    pool: Arc<humaux_adapters::postgres::RuntimeDbPool>,
     providers: HashMap<String, BillingWebhookConfig>,
 }
 
 /// §71.3: merged inside admission, independently of the auth-pages switch.
 pub fn router(
     guard: Arc<GatewayGuard>,
+    pool: Arc<humaux_adapters::postgres::RuntimeDbPool>,
     providers: HashMap<String, BillingWebhookConfig>,
 ) -> Router {
-    let state = Arc::new(WebhookState { guard, providers });
+    let state = Arc::new(WebhookState {
+        guard,
+        pool,
+        providers,
+    });
     Router::new()
         .route("/v1/billing/webhooks/{provider}", post(ingress))
         .layer(middleware::from_fn_with_state(Arc::clone(&state), gate))
@@ -65,9 +71,12 @@ pub fn compose(
     supervision: Router,
     admission: Arc<Admission>,
     guard: Arc<GatewayGuard>,
+    pool: Arc<humaux_adapters::postgres::RuntimeDbPool>,
     providers: Option<HashMap<String, BillingWebhookConfig>>,
 ) -> Router {
-    let webhook = providers.map(|p| router(guard, p)).unwrap_or_default();
+    let webhook = providers
+        .map(|p| router(guard, pool, p))
+        .unwrap_or_default();
     admission::wrap(routes.merge(webhook), supervision, admission)
 }
 
@@ -130,16 +139,8 @@ async fn ingress(
     ) else {
         return StatusCode::BAD_REQUEST;
     };
-    match billing_repo::inbox_insert(
-        &state.guard.runtime_pool(),
-        config.provider,
-        id,
-        kind,
-        None,
-        None,
-        &payload,
-    )
-    .await
+    match billing_repo::inbox_insert(&state.pool, config.provider, id, kind, None, None, &payload)
+        .await
     {
         Ok(_) => StatusCode::OK,
         Err(ErrorCode::DependencyUnavailable) => StatusCode::SERVICE_UNAVAILABLE,

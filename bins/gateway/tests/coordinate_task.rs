@@ -5,7 +5,7 @@
 //!   r=[control.quota_windows, coord.task_runs, coord.tasks] w=[control.api_keys, coord.task_runs],
 //!   PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN]; modules=[adapters::postgres, gateway::limiter,
 //!   adapters::tests::support::operation_receipt_fixture, contracts::retrieval_config, domain::context,
-//!   domain::dataclass, domain::identity, gateway::context, gateway::guard, gateway::mcp_application,
+//!   domain::dataclass, domain::identity, gateway::context, gateway::bootstrap, gateway::guard, gateway::mcp_application,
 //!   gateway::remember, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]
 //! Invariants: [every call travels the in-process gateway over loopback MCP as a real service credential holding only
@@ -23,6 +23,7 @@ use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_domain::{context::ContextBudget, dataclass::DataClass, identity::VisibilityClass};
 use humaux_gateway::{
+    bootstrap::build_gateway_guard,
     context::ContextBootstrap,
     guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
     mcp_application::GatewayMcpApplication,
@@ -60,9 +61,9 @@ fn rate() -> RatePolicy {
     RatePolicy::new(100, 100).expect("explicit fixture rate")
 }
 
-fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
+fn guard(runtime: Arc<RuntimeDbPool>) -> Arc<GatewayGuard> {
     Arc::new(
-        GatewayGuard::new(
+        build_gateway_guard(
             runtime,
             GuardSettings {
                 credential_pepper: SYNTHETIC_CREDENTIAL_PEPPER.to_vec(),
@@ -117,9 +118,11 @@ fn application(handle: &Handle) -> GatewayMcpApplication {
         .rt
         .block_on(handle.fresh_runtime())
         .expect("fresh Gateway runtime");
+    let runtime = Arc::new(runtime);
     GatewayMcpApplication::new(
         CanonicalCatalog::load().expect("closed canonical MCP catalog"),
-        guard(runtime),
+        guard(Arc::clone(&runtime)),
+        runtime,
         policy,
         RememberEventKind::UserMessage,
         bootstrap,

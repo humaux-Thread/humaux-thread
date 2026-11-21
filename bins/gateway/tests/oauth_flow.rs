@@ -33,7 +33,7 @@ use humaux_domain::{
 use humaux_gateway::{
     auth::AuthenticatedBearer,
     auth_pages::{self, AuthPagesConfig},
-    bootstrap::{passwordless_login_port, provision_oauth_clients},
+    bootstrap::{build_gateway_guard, passwordless_login_port, provision_oauth_clients},
     context::ContextBootstrap,
     guard::{GatewayGuard, GuardRatePolicies, GuardSettings, OAuthRequestContext},
     limiter::RatePolicy,
@@ -261,7 +261,8 @@ fn serve_surface(h: &Handle, config: Option<OAuthHttpConfig>) -> SocketAddr {
             .expect("gateway pool");
     let mut settings = guard_settings();
     settings.trusted_proxies.trusted_proxy_cidrs = vec!["127.0.0.1/32".parse().unwrap()];
-    let guard = Arc::new(GatewayGuard::new(pool, settings).expect("guard"));
+    let pool = Arc::new(pool);
+    let guard = Arc::new(build_gateway_guard(Arc::clone(&pool), settings).expect("guard"));
     let pages = AuthPagesConfig {
         keys: keys(),
         public_origin: ORIGIN.to_owned(),
@@ -270,9 +271,9 @@ fn serve_surface(h: &Handle, config: Option<OAuthHttpConfig>) -> SocketAddr {
         code_pepper: b"oauth-flow-fixture-login-pepper".to_vec(),
         recipient_allowlist: String::new(),
     };
-    let login = passwordless_login_port(&guard, &pages);
+    let login = passwordless_login_port(Arc::clone(&pool), &pages);
     let enabled = config.is_some();
-    let router = oauth_http::router(Arc::clone(&guard), config, Arc::clone(&login));
+    let router = oauth_http::router(Arc::clone(&guard), pool, config, Arc::clone(&login));
     let router = if enabled {
         router.merge(auth_pages::router(guard, pages, login))
     } else {
@@ -983,15 +984,19 @@ fn bearer_fixture(h: &mut Handle) -> (GatewayGuard, Value) {
     add_active_membership(h, tenant);
     let address = serve(h, 7200);
     let tokens = issued(h, address);
-    (bearer_guard(h), tokens)
+    (bearer_guard(bearer_pool(h)), tokens)
 }
 
-fn bearer_guard(h: &Handle) -> GatewayGuard {
+fn bearer_pool(h: &Handle) -> Arc<RuntimeDbPool> {
     // dep: PostgreSQL(role_gateway) — the same role and guard entry as the gateway
-    let pool =
+    Arc::new(
         h.rt.block_on(RuntimeDbPool::connect(&dsn_as_role(&h.dsn)))
-            .expect("gateway pool");
-    GatewayGuard::new(pool, guard_settings())
+            .expect("gateway pool"),
+    )
+}
+
+fn bearer_guard(pool: Arc<RuntimeDbPool>) -> GatewayGuard {
+    build_gateway_guard(pool, guard_settings())
         .expect("guard")
         .with_oauth_issuer(ORIGIN.to_owned(), Arc::new(keys()))
 }
@@ -1248,7 +1253,7 @@ fn g_m02_10_bearer_cross_tenant_scope_is_not_widened() {
     });
 }
 
-fn mcp_router(guard: GatewayGuard, legacy_enabled: bool) -> axum::Router {
+fn mcp_router(guard: GatewayGuard, pool: Arc<RuntimeDbPool>, legacy_enabled: bool) -> axum::Router {
     let catalog = CanonicalCatalog::load().expect("canonical catalog");
     let advertised = catalog.trusted_catalog().expect("trusted catalog");
     let remember = RememberPolicy::new(
@@ -1272,6 +1277,7 @@ fn mcp_router(guard: GatewayGuard, legacy_enabled: bool) -> axum::Router {
     let app = GatewayMcpApplication::new(
         catalog,
         Arc::new(guard),
+        pool,
         remember,
         RememberEventKind::UserMessage,
         context,
@@ -1362,10 +1368,11 @@ fn g_m02_10_bearer_native_http() {
         let pool =
             h.rt.block_on(RuntimeDbPool::connect(&dsn_as_role(&h.dsn)))
                 .unwrap();
-        let guard = GatewayGuard::new(pool, guard_settings())
+        let pool = Arc::new(pool);
+        let guard = build_gateway_guard(Arc::clone(&pool), guard_settings())
             .unwrap()
             .with_oauth_issuer(ORIGIN.to_owned(), Arc::new(keys()));
-        let address = serve_router(&h, mcp_router(guard, false));
+        let address = serve_router(&h, mcp_router(guard, pool, false));
         let good = native_mcp_request(&h, address, "/mcp", Some(&native), None);
         assert_eq!(good.status, 200, "native audience");
         let catalog: Value = serde_json::from_str(&good.body).unwrap();
@@ -1433,7 +1440,8 @@ fn legacy_mount_oauth_audience_and_authorization_parity() {
         };
         let native = mint(NATIVE_RESOURCE);
         let legacy = mint(LEGACY_RESOURCE);
-        let address = serve_router(&h, mcp_router(bearer_guard(&h), true));
+        let pool = bearer_pool(&h);
+        let address = serve_router(&h, mcp_router(bearer_guard(Arc::clone(&pool)), pool, true));
         let legacy_request = |token: Option<&str>, body: Value| {
             let mut headers = vec![
                 ("Content-Type", "application/json"),
