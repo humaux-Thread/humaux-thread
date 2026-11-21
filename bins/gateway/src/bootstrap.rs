@@ -57,7 +57,7 @@
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_PERMIT_TTL_SECONDS, HUMAUX_GATEWAY_RETRIEVAL_RPC_SERVER_UID,
 //!   HUMAUX_GATEWAY_RETRIEVAL_RPC_SOCKET_PATH, HUMAUX_GATEWAY_TASK_LEASE_TTL_SECONDS,
 //!   HUMAUX_GATEWAY_TOKEN_HMAC_KEY, HUMAUX_GATEWAY_TOKEN_HMAC_KEY_PREVIOUS, HUMAUX_GATEWAY_TRUSTED_PROXY_CIDRS,
-//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::confirm_token_repo, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::oauth_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::quota_repo, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::cimd, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::oauth, application::oauth_exchange, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::route_cache, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, infra-egress::oauth_metadata, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::cache, telemetry::metrics]
+//!   HUMAUX_GATEWAY_UNDO_WINDOW_SECONDS, HUMAUX_GATEWAY_UNKNOWN]; modules=[adapters::affect_repo, adapters::attribution_repo, adapters::audited_read_quota, adapters::confirm_token_repo, adapters::context_repo, adapters::continuity_read, adapters::credential_repo, adapters::distill_repo, adapters::email, adapters::entitlement_repo, adapters::forget_repo, adapters::grep_repo, adapters::independent_audit, adapters::login_repo, adapters::memory_governance_repo, adapters::memory_repo, adapters::oauth_repo, adapters::operation_receipt, adapters::postgres, adapters::projection_worker, adapters::quota_repo, adapters::remember, adapters::retrieve, adapters::subject_repo, application::affect, application::api_key, application::auth, application::cimd, application::continuity, application::distill, application::forget, application::independent_audit, application::lifecycle_execution, application::login, application::oauth, application::oauth_exchange, application::read_quota, application::recall_read, application::remember, application::retrieval_embedding_port, application::session, cache::bounded, contracts::config_registry, contracts::retrieval_config, domain::audit, domain::billing, domain::context, domain::dataclass, domain::error, domain::identity, domain::ids, gateway::admission, gateway::auth, gateway::auth_pages, gateway::billing_webhook, gateway::cached_embedding, gateway::context, gateway::guard, gateway::limiter, gateway::mcp_application, gateway::oauth_http, gateway::recall, gateway::remember, gateway::rerank_client, gateway::retrieval_embedding_client, gateway::route_cache, gateway::status, infra-cell::permit, infra-cell::resource, infra-cell::transport, infra-egress::oauth_metadata, protocol::edge, protocol::mcp, protocol::mcp_catalog, retrieval::rerank, telemetry::cache, telemetry::metrics]
 //! Called-by: [gateway::auth, gateway::context, gateway::guard, gateway::main, gateway::mcp_application, gateway::oauth_http, gateway::memory, gateway::recall, tests]
 //! Invariants: [one process serves every (tenant, workspace) pair with no per-process stream cache or registry table; GuardSettings::tenant_network stays empty until a separate authorization approves a tenant-specific network policy]
 //! Spec: Baseline §34.0.1; §78.1; ADR-0031; ADR-0032; ADR-0054; ADR-0084 D-E; ADR-0084 U7; ADR-0125
@@ -2735,6 +2735,79 @@ pub(crate) async fn register_dynamic_oauth_client(
     } else {
         Err(ErrorCode::RateLimited)
     }
+}
+
+/// Derive allowed targets for a verified session and a validated authorize request.
+pub async fn oauth_chooser_candidates(
+    pool: &RuntimeDbPool,
+    session: humaux_application::session::VerifiedSession,
+    session_policy: &humaux_application::session::SessionPolicy,
+    validated: &humaux_application::oauth::ValidatedAuthorize,
+) -> Result<humaux_application::oauth::AllowedSubset, ErrorCode> {
+    use humaux_adapters::{entitlement_repo, oauth_repo};
+    use humaux_application::read_quota::McpEntitlement;
+    use humaux_domain::identity::{AuthorizationScope, BoundedSet, PrincipalId};
+
+    let mut txn = oauth_repo::begin(pool).await?;
+    let identity = txn
+        .chooser_identity_candidates(session, session_policy, validated.validated_client_id())
+        .await?;
+    txn.commit().await?;
+
+    let tenants = BoundedSet::new(identity.iter().map(|(tenant, _)| *tenant))?;
+    let scopes = tenants
+        .iter()
+        .map(|tenant| {
+            Ok(AuthorizationScope::new(
+                *tenant,
+                PrincipalId(session.user_id.0),
+                Some(session.user_id),
+                BoundedSet::new([])?,
+            ))
+        })
+        .collect::<Result<Vec<_>, ErrorCode>>()?;
+    let decisions = entitlement_repo::mcp_entitlement_for_tenants(pool, &scopes).await?;
+    let mut allowed = Vec::new();
+    for &(tenant, workspace) in identity.iter() {
+        match decisions.get(&tenant).ok_or(ErrorCode::Internal)? {
+            McpEntitlement::Enabled => allowed.push((tenant, workspace)),
+            McpEntitlement::EntitlementRequired => {}
+        }
+    }
+    if allowed.is_empty() {
+        return Err(ErrorCode::Forbidden);
+    }
+    BoundedSet::new(allowed)
+}
+
+/// Issue for the exact target verified by the caller, under the current commercial admission predicate.
+pub async fn issue_oauth_chooser_code(
+    pool: &RuntimeDbPool,
+    session: humaux_application::session::VerifiedSession,
+    session_policy: &humaux_application::session::SessionPolicy,
+    target: humaux_application::oauth::ConsentTarget,
+    validated: &humaux_application::oauth::ValidatedAuthorize,
+    policy: &humaux_application::oauth::OAuthPolicy<'_>,
+) -> Result<String, ErrorCode> {
+    use humaux_application::read_quota::{QuotaPolicyFacts, projected_bmo_policy};
+
+    humaux_adapters::oauth_repo::persist_chooser_consent_code(
+        pool,
+        session,
+        session_policy,
+        target,
+        validated,
+        policy,
+        |facts| {
+            projected_bmo_policy(&QuotaPolicyFacts {
+                effective: facts.effective,
+                computed_at: facts.computed_at,
+                observed_at: facts.observed_at,
+            })
+            .map(drop)
+        },
+    )
+    .await
 }
 
 /// Open the consent write transaction and keep the admitted entitlement locked through issuance.

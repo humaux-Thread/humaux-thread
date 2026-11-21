@@ -5,7 +5,7 @@
 //!   services=[PostgreSQL(role_maintenance) r=[control.entitlement_snapshots]
 //!   x=[control.entitlement_grants_for_projection, control.write_entitlement_snapshot], PostgreSQL(role_gateway)]; env=[];
 //!   modules=[adapters::postgres, adapters::request_guard_repo, application::entitlement, application::read_quota, domain::error, domain::identity, domain::ids, domain::plan]
-//! Called-by: [adapters::billing_processor_repo, adapters::provisioning, tests]
+//! Called-by: [adapters::billing_processor_repo, adapters::provisioning, gateway::bootstrap, tests]
 //! Invariants: [the only writer of control.entitlement_snapshots besides control.renew_quota_period (§76): no table
 //!   INSERT or UPDATE here, the write is the owner door; the raw grants are read only through
 //!   control.entitlement_grants_for_projection, never from the table; a recompute takes the quota issuer's per-tenant

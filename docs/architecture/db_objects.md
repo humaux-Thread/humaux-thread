@@ -1785,6 +1785,7 @@ executed by:
 - (no process): `adapters::tests::entitlement_projector`
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::entitlement_repo`
 - process(humaux-maintenance): `adapters::entitlement_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -1840,6 +1841,7 @@ read by:
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `adapters::request_guard_repo`
 - process(cargo-xtask): `xtask::e2e_onboard`
+- process(humaux-gateway): `adapters::entitlement_repo`
 - process(humaux-gateway): `adapters::request_guard_repo`
 - process(humaux-maintenance): `adapters::entitlement_repo`
 - process(humaux-maintenance): `adapters::request_guard_repo`
@@ -1852,6 +1854,7 @@ written by:
 - (no process): `adapters::tests::request_guard`
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `maintenance::tests::serve`
 
@@ -2295,6 +2298,7 @@ written by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `private-worker::tests::derived_dispatch_e2e`
@@ -2447,6 +2451,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::tests::credential_grants`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -2456,6 +2461,60 @@ written by:
 - (no process): `gateway::tests::oauth_flow`
 
 executed by:
+
+### `control.oauth_chooser_identity_targets`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0314_mcp_chooser_consent
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- process(humaux-gateway): `adapters::oauth_repo`
+
+### `control.oauth_chooser_lock_memberships`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0314_mcp_chooser_consent
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- process(humaux-gateway): `adapters::oauth_repo`
+
+### `control.oauth_chooser_session_facts`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0314_mcp_chooser_consent
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- process(humaux-gateway): `adapters::session_repo`
 
 ### `control.oauth_client_lookup`
 - kind: function (SECURITY DEFINER)
@@ -5154,6 +5213,7 @@ read by:
 written by:
 - (no process): `adapters::tests::console_session`
 - (no process): `gateway::tests::auth_pages`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 
 executed by:
@@ -5526,6 +5586,7 @@ written by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::billing_legacy_migration`
@@ -5861,6 +5922,7 @@ written by:
 - (no process): `consolidation-worker::tests::derived_dispatch_e2e`
 - (no process): `gateway::tests::auth_pages`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `maintenance::tests::partitions`
@@ -5959,6 +6021,7 @@ written by:
 - (no process): `adapters::tests::support::operation_receipt_fixture`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::service_credentials`
 - (no process): `private-worker::tests::distill_hop_e2e`
@@ -6036,6 +6099,7 @@ written by:
 - (no process): `gateway::tests::continuity_get`
 - (no process): `gateway::tests::mcp_gateway`
 - (no process): `gateway::tests::memory_get_frontier`
+- (no process): `gateway::tests::oauth_chooser`
 - (no process): `gateway::tests::oauth_flow`
 - (no process): `gateway::tests::read_decoupling`
 - (no process): `gateway::tests::service_credentials`
@@ -6068,6 +6132,7 @@ executed by:
 - (no process): `adapters::tests::entitlement_projector`
 - process(cargo-xtask): `adapters::entitlement_repo`
 - process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-gateway): `adapters::entitlement_repo`
 - process(humaux-maintenance): `adapters::entitlement_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
@@ -6089,6 +6154,7 @@ written by:
 executed by:
 - (no process): `adapters::tests::mcp_chooser_read`
 - (no process): `adapters::tests::mcp_chooser_storage`
+- (no process): `gateway::tests::oauth_chooser`
 - process(humaux-gateway): `adapters::oauth_repo`
 
 ### `coord.canvas_elements`

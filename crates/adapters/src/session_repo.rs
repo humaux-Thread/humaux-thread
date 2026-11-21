@@ -1,7 +1,7 @@
 //! `adapters::session_repo` — the console session over the four `control.session_*` doors (migration 0270). Writes only
 //!   through definers; role_gateway has SELECT only on `control.sessions`.
-//! Depends-on: crates=[humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(any) x=[control.session_issue, control.session_lookup, control.session_revoke, control.session_touch]]; env=[]; modules=[adapters::postgres, application::auth, application::login, application::session, domain::error, domain::ids]
-//! Called-by: [adapters::login_repo, tests]
+//! Depends-on: crates=[humaux-application, humaux-domain, sqlx]; services=[PostgreSQL(any) x=[control.oauth_chooser_session_facts, control.session_issue, control.session_lookup, control.session_revoke, control.session_touch]]; env=[]; modules=[adapters::postgres, application::auth, application::login, application::session, domain::error, domain::ids]
+//! Called-by: [adapters::login_repo, adapters::oauth_repo, tests]
 //! Invariants: [a session is minted only from LoginVerifyOutcome::Accepted; only the SHA-256 of the cookie secret reaches
 //!   the database; a lookup is judged by application::session::verify on the database clock, so a session whose epoch
 //!   snapshot differs from the user's current epoch, or that is revoked, expired or idle, authenticates as None; the
@@ -21,6 +21,7 @@ use humaux_application::session::{
 use humaux_domain::error::ErrorCode;
 use humaux_domain::ids::UserId;
 use sqlx::Row;
+use sqlx::postgres::PgRow;
 use sqlx::types::Uuid;
 
 use crate::postgres::RuntimeDbPool;
@@ -112,6 +113,21 @@ pub async fn authenticate(
     if !digest.matches_stored(&stored) {
         return Ok(None);
     }
+    let (record, db_now) = decode_session(&row)?;
+    let Some(verified) = verify(&record, policy, db_now) else {
+        return Ok(None);
+    };
+    let touched = sqlx::query_scalar::<_, bool>("SELECT control.session_touch($1, $2)")
+        .bind(verified.session_id.0)
+        .bind(whole_seconds(policy.idle_ttl)?)
+        // dep: PostgreSQL(any) — calls the session_touch door
+        .fetch_one(pool.pool())
+        .await
+        .map_err(db_failure)?;
+    Ok(touched.then_some(verified))
+}
+
+fn decode_session(row: &PgRow) -> Result<(SessionRecord, SystemTime), ErrorCode> {
     let revoked_at: Option<f64> = row.try_get("out_revoked_at_unix").map_err(db_failure)?;
     let record = SessionRecord {
         session_id: SessionId(row.try_get("out_session_id").map_err(db_failure)?),
@@ -126,17 +142,29 @@ pub async fn authenticate(
     };
     let db_now = unix_time(row.try_get("out_db_now_unix").map_err(db_failure)?)?;
 
-    let Some(verified) = verify(&record, policy, db_now) else {
-        return Ok(None);
-    };
-    let touched = sqlx::query_scalar::<_, bool>("SELECT control.session_touch($1, $2)")
-        .bind(verified.session_id.0)
-        .bind(whole_seconds(policy.idle_ttl)?)
-        // dep: PostgreSQL(any) — calls the session_touch door
-        .fetch_one(pool.pool())
+    Ok((record, db_now))
+}
+
+/// Recheck a verified console session using the same app verdict and the current database clock.
+pub(crate) async fn chooser_session_live(
+    txn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    session: VerifiedSession,
+    policy: &SessionPolicy,
+    lock: bool,
+) -> Result<bool, ErrorCode> {
+    // dep: PostgreSQL(any) — optionally retain the subject and session locks through code issuance.
+    let row = sqlx::query("SELECT * FROM control.oauth_chooser_session_facts($1, $2, $3)")
+        .bind(session.session_id.0)
+        .bind(session.user_id.0)
+        .bind(lock)
+        .fetch_optional(&mut **txn)
         .await
         .map_err(db_failure)?;
-    Ok(touched.then_some(verified))
+    let Some(row) = row else {
+        return Ok(false);
+    };
+    let (record, now) = decode_session(&row)?;
+    Ok(verify(&record, policy, now) == Some(session))
 }
 
 /// Revokes one session; `true` when a live row was revoked, `false` when it was unknown or already revoked.
