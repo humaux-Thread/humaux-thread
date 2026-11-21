@@ -4,7 +4,7 @@ import asyncio
 import base64
 from contextlib import contextmanager
 import hashlib
-from http.client import HTTPConnection
+from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -17,7 +17,7 @@ import threading
 import time
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlencode, urlsplit
-from urllib.request import ProxyHandler, Request, build_opener, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 from uuid import UUID, uuid4
 from xml.etree import ElementTree as xml
 
@@ -30,6 +30,8 @@ GATEWAY = 18170
 ROWS = []
 TOOLS = ("tools/list", "tools/call")
 HOSTED = [
+    # Anthropic's published identity document declares its client_id and callback below.
+    # https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp
     ("claude.ai", "https://claude.ai/oauth/mcp-oauth-client-metadata", "https://claude.ai/api/mcp/auth_callback"),
     ("ChatGPT", "https://chatgpt.com/oauth/client.json", "https://chatgpt.com/connector_platform_oauth_redirect"),
     ("Antigravity", "https://antigravity.google/oauth/client-metadata.json", "https://antigravity.google/oauth-callback"),
@@ -315,16 +317,47 @@ def check_pkce(command, env):
         record("MCP TypeScript SDK PKCE negative", "1.32.2", "FAIL", "Verifier refusal was not witnessed")
 
 
+def metadata_http(response):
+    media = response.headers.get_content_type() if "Content-Type" in response.headers else "absent"
+    if not re.fullmatch(r"[a-z0-9.+-]+(?:/[a-z0-9.+-]+)?", media) or len(media) > 96:
+        media = "other"
+    redirect = "refused" if 300 <= response.status < 400 and response.headers.get("Location") else "none"
+    return f"HTTP {response.status}, content-type={media}, redirect={redirect}"
+
+
 def hosted(name, document, redirect, env):
     if document is None:
         record(name, "hosted", "not_applicable", f"No public CIMD URL established; official reference {redirect}")
         return
+    # Match the gateway's CIMD fetch rule. Record redirect presence without logging Location values.
+    fetch = build_opener(NoRedirect())
+    facts = "HTTP unavailable, content-type=absent, redirect=unknown"
     try:
-        with urlopen(Request(document, headers={"Accept": "application/json"}), timeout=12) as response:
-            data = json.loads(response.read(8193))
-        assert data["client_id"] == document and redirect in data["redirect_uris"]
-    except (OSError, ValueError, KeyError, AssertionError):
-        record(name, "hosted", "FAIL", f"Could not confirm public CIMD identity and redirect at {document}")
+        with fetch.open(Request(document, headers={"Accept": "application/json"}), timeout=12) as response:
+            facts = metadata_http(response)
+            raw = response.read(8193)
+    except HTTPError as response:
+        with response:
+            record(name, "hosted", "FAIL", f"environment: CIMD GET; {metadata_http(response)}, JSON=not read; {document}")
+        return
+    except (OSError, HTTPException) as error:
+        record(name, "hosted", "FAIL", f"environment: CIMD GET {type(error).__name__}; {facts}, JSON=not read; {document}")
+        return
+    if len(raw) > 8192:
+        record(name, "hosted", "FAIL", f"CIMD JSON exceeds size limit; {facts}, JSON=oversize; {document}")
+        return
+    try:
+        data = json.loads(raw)
+    except (ValueError, RecursionError):
+        record(name, "hosted", "FAIL", f"CIMD JSON parsing failed; {facts}, JSON=invalid; {document}")
+        return
+    shape = {dict: "object", list: "array", str: "string", bool: "boolean", type(None): "null"}.get(type(data), "number")
+    facts = f"{facts}, JSON={shape}"
+    client_match = isinstance(data, dict) and data.get("client_id") == document
+    redirects = data.get("redirect_uris") if isinstance(data, dict) else None
+    callback_match = isinstance(redirects, list) and redirect in redirects
+    if not client_match or not callback_match:
+        record(name, "hosted", "FAIL", f"CIMD fields: client_id match={client_match}, callback match={callback_match}; {facts}; {document}")
         return
     origin = env["OAUTH_TEST_ORIGIN"]
     challenge = base64.urlsafe_b64encode(hashlib.sha256(secrets.token_bytes(32)).digest()).decode().rstrip("=")
@@ -349,13 +382,13 @@ def hosted(name, document, redirect, env):
     if valid == (303, "/auth/login") and invalid == (400, None):
         surrogate_passed = any(row[0] == "MCP TypeScript SDK" and row[2] == "PASS" for row in ROWS)
         if surrogate_passed:
-            record(name, "hosted", "PASS", f"CIMD and exact HTTPS redirect; consent covered by loopback SDK; {document}")
+            record(name, "hosted", "PASS", f"CIMD and exact HTTPS redirect; consent covered by loopback SDK; {facts}; {document}")
         else:
-            record(name, "hosted", "FAIL", f"CIMD and exact HTTPS redirect passed; SDK consent surrogate failed; {document}")
+            record(name, "hosted", "FAIL", f"CIMD and exact HTTPS redirect passed; SDK consent surrogate failed; {facts}; {document}")
     else:
         method = data.get("token_endpoint_auth_method")
         method = method if method in ("none", "private_key_jwt", "client_secret_basic") else "other"
-        record(name, "hosted", "FAIL", f"CIMD redirect checks returned {valid[0]}/{invalid[0]}; auth method {method}; {document}")
+        record(name, "hosted", "FAIL", f"CIMD redirect checks returned {valid[0]}/{invalid[0]}; auth method {method}; {facts}; {document}")
 
 
 def cli(name, version, package, binary, unavailable, env):
@@ -416,6 +449,8 @@ async def codex_tools(executable, config, env):
     process = await asyncio.create_subprocess_exec(
         executable, *config, "app-server", env=env, stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        # mcpServerStatus/list can return 105 KB on one NDJSON line, above asyncio's 64 KiB default.
+        limit=4 * 1024 * 1024,
     )
     request_id = 0
 
