@@ -302,11 +302,9 @@ impl GatewayMcpApplication {
             return Err(ErrorCode::InvalidInput);
         }
         let raw = arguments.raw_json().ok_or(ErrorCode::InvalidInput)?;
-        let raw_value: Value = serde_json::from_str(raw).map_err(|_| ErrorCode::InvalidInput)?;
-        if raw_value != decoded {
-            return Err(ErrorCode::InvalidInput);
-        }
-        Ok((descriptor, raw.to_owned(), raw_value))
+        // Protocol has checked the original JSON against the decoded request and restored the
+        // canonical arguments. Keep the original spelling for fingerprints and evidence content.
+        Ok((descriptor, raw.to_owned(), decoded))
     }
 
     async fn reject_unsupported(
@@ -3736,7 +3734,7 @@ mod tests {
             "method":"tools/call",
             "params":{
                 "name":"continuity",
-                "arguments":{"project_id":project},
+                "arguments":{"action":"get","project_id":project},
                 "_meta":{
                     "io.modelcontextprotocol/protocolVersion":"2026-07-28",
                     "io.modelcontextprotocol/clientInfo":{"name":"continuity-w2","version":"1"},

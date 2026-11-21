@@ -408,11 +408,11 @@ fn enumerate_args(pair: &Pair) -> Value {
 }
 
 fn recall_args(pair: &Pair) -> Value {
-    json!({"query":QUERY,"workspace_id":pair.workspace_id,"mode":"semantic"})
+    json!({"action":"search","query":QUERY,"workspace_id":pair.workspace_id,"mode":"semantic"})
 }
 
 fn context_args(pair: &Pair) -> Value {
-    json!({"workspace_id":pair.workspace_id})
+    json!({"action":"assemble","workspace_id":pair.workspace_id})
 }
 
 /// ADR-0053 D-E's B shape, every field that differs from a normal empty result.
@@ -846,7 +846,7 @@ fn remember_put_on_provisioning_workspace_is_tool_error_conflict() {
                     address,
                     "remember",
                     &pair.bearer,
-                    json!({"operation":"put","content":"written while provisioning",
+                    json!({"action":"put","content":"written while provisioning",
                        "idempotency_key": format!("c28-{}", Uuid::now_v7()),
                        "workspace_id": pair.workspace_id}),
                 )
@@ -871,7 +871,7 @@ fn remember_put_on_provisioning_workspace_is_tool_error_conflict() {
                     address,
                     "remember",
                     &pair.bearer,
-                    json!({"operation":"put","content":"written when ready",
+                    json!({"action":"put","content":"written when ready",
                        "idempotency_key": format!("c28-{}", Uuid::now_v7()),
                        "workspace_id": pair.workspace_id}),
                 )

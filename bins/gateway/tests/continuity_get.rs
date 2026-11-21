@@ -785,7 +785,7 @@ fn native_gateway_preserves_raw_workspace_non_disclosure_and_validates_output() 
                         let unbound_failure = request(
                             address,
                             &unbound_bearer,
-                            json!({"project_id":unauthorized}),
+                            json!({"action":"get","project_id":unauthorized}),
                             forwarded,
                         )
                         .await;
@@ -793,7 +793,7 @@ fn native_gateway_preserves_raw_workspace_non_disclosure_and_validates_output() 
                         let success = request(
                             address,
                             &credential_bearer,
-                            json!({"project_id":project}),
+                            json!({"action":"get","project_id":project}),
                             forwarded,
                         )
                         .await;
@@ -812,12 +812,12 @@ fn native_gateway_preserves_raw_workspace_non_disclosure_and_validates_output() 
                         tokio::time::sleep(Duration::from_millis(1_100)).await;
                         let mut failures = Vec::new();
                         for arguments in [
-                            json!({"project_id":absent}),
-                            json!({"project_id":archived}),
-                            json!({"project_id":wrong_tenant_project}),
-                            json!({"project_id":unauthorized}),
-                            json!({"project_id":project,"workspace_id":other_workspace}),
-                            json!({"project_id":project,"workspace_id":NIL}),
+                            json!({"action":"get","project_id":absent}),
+                            json!({"action":"get","project_id":archived}),
+                            json!({"action":"get","project_id":wrong_tenant_project}),
+                            json!({"action":"get","project_id":unauthorized}),
+                            json!({"action":"get","project_id":project,"workspace_id":other_workspace}),
+                            json!({"action":"get","project_id":project,"workspace_id":NIL}),
                         ] {
                             let failure =
                                 request(address, &credential_bearer, arguments, forwarded).await;

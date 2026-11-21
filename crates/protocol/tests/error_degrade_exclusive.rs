@@ -37,7 +37,7 @@ impl McpApplication for FixtureApplication {
         _: ToolName,
         arguments: McpToolArguments<'_>,
     ) -> Result<ToolOutput, ErrorCode> {
-        match arguments.decoded()["case"].as_str() {
+        match arguments.decoded()["query"].as_str() {
             Some("tool_error") => Err(ErrorCode::ProjectionLag),
             Some("protocol_error") => Err(ErrorCode::InvalidInput),
             Some("degraded") => {
@@ -63,7 +63,7 @@ async fn call(address: SocketAddr, case: &str) -> Value {
         "method": "tools/call",
         "params": {
             "name": "recall",
-            "arguments": {"case": case},
+            "arguments": {"action": "search", "query": case},
             "_meta": {
                 "io.modelcontextprotocol/protocolVersion": "2026-07-28",
                 "io.modelcontextprotocol/clientInfo": {"name": "g52-4", "version": "1"},

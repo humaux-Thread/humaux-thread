@@ -31,7 +31,7 @@ async function main() {
             serverName: name,
             toolName: "remember",
             arguments: {
-                operation: "put",
+                action: "put",
                 content: "Synthetic ZCode OAuth acceptance",
                 workspace_id: process.env.OAUTH_TEST_WORKSPACE,
                 idempotency_key: randomUUID(),

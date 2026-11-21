@@ -111,7 +111,7 @@ impl McpApplication for MockApplication {
 }
 
 fn catalog() -> TrustedMcpCatalog {
-    TrustedMcpCatalog::new(catalog_items()).expect("closed trusted catalog")
+    CanonicalCatalog::load().unwrap().trusted_catalog().unwrap()
 }
 
 fn catalog_items() -> Vec<McpToolSchema> {
@@ -316,7 +316,9 @@ async fn native_list_and_call_keep_dual_output_raw_arguments_and_stateless_trans
 
     let call = format!(
         r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{}}}"#,
-        modern_params(r#""name":"remember","arguments":{ "content" : "a\r\n" }"#)
+        modern_params(
+            r#""name":"remember","arguments":{ "action":"put", "content" : "a\r\n", "idempotency_key":"a" }"#
+        )
     );
     let (status, body, _) = request(address, "POST", &tool_call_headers(), &call).await;
     assert_eq!(status, 200, "{body}");
@@ -328,7 +330,10 @@ async fn native_list_and_call_keep_dual_output_raw_arguments_and_stateless_trans
     assert_eq!(called["result"]["structuredContent"]["kind"], "mock");
     let invocations = app.invocations.lock().expect("invocations");
     assert_eq!(invocations.len(), 1);
-    assert_eq!(invocations[0].1, r#"{ "content" : "a\r\n" }"#);
+    assert_eq!(
+        invocations[0].1,
+        r#"{ "action":"put", "content" : "a\r\n", "idempotency_key":"a" }"#
+    );
     drop(invocations);
     let request_ids = app.request_ids.lock().expect("request ids");
     let distinct = request_ids
@@ -344,7 +349,9 @@ async fn malformed_or_legacy_transport_is_rejected_before_invoke() {
     let (address, server) = start(app.clone()).await;
     let valid_call = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}}"#,
-        modern_params(r#""name":"remember","arguments":{}"#)
+        modern_params(
+            r#""name":"remember","arguments":{"action":"put","content":"test","idempotency_key":"a"}"#
+        )
     );
 
     let old_headers = [
@@ -413,7 +420,9 @@ async fn authorization_errors_change_the_http_status_before_dispatch() {
     let (address, server) = start(app.clone()).await;
     let body = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}}"#,
-        modern_params(r#""name":"remember","arguments":{}"#)
+        modern_params(
+            r#""name":"remember","arguments":{"action":"put","content":"test","idempotency_key":"a"}"#
+        )
     );
     *app.invoke_denied.lock().expect("invoke denied") = Some(ErrorCode::Unauthorized);
     let (status, _body, _) = request(address, "POST", &tool_call_headers(), &body).await;
@@ -553,7 +562,7 @@ async fn discovery_challenges_only_the_403_for_an_exact_catalog_scope() {
     let body = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}}"#,
         modern_params(
-            r#""name":"remember","arguments":{"operation":"put","source":{"kind":"AgentNote","object_key":"entry"},"content":"test","idempotency_key":"entry"}"#
+            r#""name":"remember","arguments":{"action":"put","source":{"kind":"AgentNote","object_key":"entry"},"content":"test","idempotency_key":"entry"}"#
         )
     );
     let (status, _, response) = request(address, "POST", &tool_call_headers(), &body).await;
@@ -579,7 +588,9 @@ async fn non_capacity_503_has_no_retry_after() {
     let (address, server) = start(app.clone()).await;
     let call = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}}"#,
-        modern_params(r#""name":"remember","arguments":{}"#)
+        modern_params(
+            r#""name":"remember","arguments":{"action":"put","content":"test","idempotency_key":"a"}"#
+        )
     );
     let list = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}}"#,
@@ -691,6 +702,23 @@ async fn legacy_qwen_get_probe_is_405() {
     server.abort();
 }
 
+fn assert_flat_tool_list(response: &Value) {
+    let tools = response["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 8);
+    for tool in tools {
+        let schema = &tool["inputSchema"];
+        assert_eq!(schema["type"], "object", "{tool}");
+        for keyword in ["oneOf", "anyOf", "allOf"] {
+            assert!(
+                schema.get(keyword).is_none(),
+                "{} has top-level {keyword}",
+                tool["name"]
+            );
+        }
+        assert_eq!(schema["required"], json!(["action"]), "{tool}");
+    }
+}
+
 #[tokio::test]
 async fn legacy_mount_replays_qwen_with_native_catalog_and_one_dispatch() {
     let app = Arc::new(MockApplication::default());
@@ -750,10 +778,12 @@ async fn legacy_mount_replays_qwen_with_native_catalog_and_one_dispatch() {
         native_list["result"]["tools"]
     );
     assert_eq!(legacy_list["result"].as_object().unwrap().len(), 1);
+    assert_flat_tool_list(&legacy_list);
+    assert_flat_tool_list(&native_list);
 
     let call = sample["call"].to_string().replace(
         r#""name":"echo""#,
-        r#""name":"recall","arguments":{ "query" : "test" }"#,
+        r#""name":"recall","arguments":{ "action":"search", "query" : "test" }"#,
     );
     let (status, body, headers) =
         request_at(address, LEGACY_PATH, "POST", &[LEGACY_HEADER], &call).await;
@@ -771,7 +801,7 @@ async fn legacy_mount_replays_qwen_with_native_catalog_and_one_dispatch() {
         *app.invocations.lock().unwrap(),
         [(
             ToolName::Recall,
-            r#"{ "query" : "test" }"#.to_owned(),
+            r#"{ "action":"search", "query" : "test" }"#.to_owned(),
             r#"{"query":"test"}"#.to_owned()
         )]
     );
@@ -788,6 +818,115 @@ async fn legacy_mount_replays_qwen_with_native_catalog_and_one_dispatch() {
             McpOperation::Preflight
         ]
     );
+    server.abort();
+}
+
+async fn profile_call(
+    address: SocketAddr,
+    path: &str,
+    name: &str,
+    arguments: &Value,
+) -> (u16, String, BTreeMap<String, String>) {
+    let native = [
+        ("MCP-Protocol-Version", "2026-07-28"),
+        ("Mcp-Method", "tools/call"),
+        ("Mcp-Name", name),
+        ("Authorization", "Bearer accepted"),
+    ];
+    let params = format!(r#""name":"{name}","arguments":{arguments}"#);
+    let (headers, params) = if path == LEGACY_PATH {
+        (&[LEGACY_HEADER][..], format!("{{{params}}}"))
+    } else {
+        (&native[..], modern_params(&params))
+    };
+    let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{params}}}"#);
+    request_at(address, path, "POST", headers, &body).await
+}
+
+#[tokio::test]
+async fn both_routes_validate_the_selected_action_before_dispatch() {
+    let app = Arc::new(MockApplication::default());
+    let (address, server) = start_with_oauth(app.clone(), McpAdapter::router, None, true).await;
+    let catalog = CanonicalCatalog::load().unwrap();
+    for (name, valid, required) in [
+        (
+            "remember",
+            json!({"action":"put","content":"x","idempotency_key":"k"}),
+            "content",
+        ),
+        ("recall", json!({"action":"search","query":"x"}), "query"),
+        (
+            "memory",
+            json!({"action":"note_put","content":"x","note_kind":"note","idempotency_key":"k"}),
+            "content",
+        ),
+        ("context", json!({"action":"assemble"}), "action"),
+        (
+            "continuity",
+            json!({"action":"get","project_id":"01900000-0000-7000-8000-000000000001"}),
+            "project_id",
+        ),
+        (
+            "artifact",
+            json!({"action":"create_upload","filename":"x.txt","content_type":"text/plain","size_bytes":1}),
+            "filename",
+        ),
+        (
+            "code",
+            json!({"action":"register_repository","repository_url":"https://example.com/x"}),
+            "repository_url",
+        ),
+        (
+            "coordinate",
+            json!({"action":"task_submit","title":"x","description":"y"}),
+            "description",
+        ),
+    ] {
+        let mut missing_action = valid.clone();
+        missing_action.as_object_mut().unwrap().remove("action");
+        let mut unknown_action = valid.clone();
+        unknown_action["action"] = json!("unknown");
+        let mut missing_required = valid.clone();
+        missing_required.as_object_mut().unwrap().remove(required);
+        let mut extra = valid.clone();
+        extra["unexpected"] = json!(true);
+        let mut extra_null = valid.clone();
+        extra_null["unexpected"] = Value::Null;
+        let mut wrong_branch = valid.clone();
+        if name == "remember" {
+            wrong_branch["batch_id"] = json!("01900000-0000-7000-8000-000000000001");
+        }
+
+        for path in ["/mcp", LEGACY_PATH] {
+            if name == "remember" {
+                let (status, body, _) = profile_call(address, path, name, &wrong_branch).await;
+                assert_eq!(
+                    status, 400,
+                    "{path} {name} field from another action: {body}"
+                );
+            }
+            for (case, invalid) in [
+                ("missing action", &missing_action),
+                ("unknown action", &unknown_action),
+                ("missing required field", &missing_required),
+                ("extra field", &extra),
+                ("unknown null field", &extra_null),
+            ] {
+                let (status, body, _) = profile_call(address, path, name, invalid).await;
+                assert_eq!(status, 400, "{path} {name} {case}: {body}");
+                let reply: Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(reply["error"]["code"], -32602, "{reply}");
+            }
+            assert!(app.invocations.lock().unwrap().is_empty(), "{path} {name}");
+            let (status, body, _) = profile_call(address, path, name, &valid).await;
+            assert_eq!(status, 200, "{path} {name} valid: {body}");
+            let (tool, _, decoded) = app.invocations.lock().unwrap().pop().expect("dispatch");
+            assert_eq!(tool.as_str(), name);
+            catalog
+                .validate(tool, &serde_json::from_str(&decoded).unwrap())
+                .expect("dispatch gets canonical parameters");
+        }
+    }
     server.abort();
 }
 

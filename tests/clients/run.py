@@ -712,7 +712,7 @@ async def codex_tools(executable, config, env):
             reply = await send("mcpServer/tool/call", {
                 "threadId": thread["thread"]["id"], "server": "humaux_ci", "tool": "remember",
                 "arguments": {
-                    "operation": "put", "content": "Synthetic Codex OAuth acceptance",
+                    "action": "put", "content": "Synthetic Codex OAuth acceptance",
                     "workspace_id": env["OAUTH_TEST_WORKSPACE"], "idempotency_key": str(uuid4()),
                 },
             })

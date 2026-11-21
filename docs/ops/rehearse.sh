@@ -147,7 +147,7 @@ print('' if v is None else (json.dumps(v) if isinstance(v,(dict,list)) else v))"
 typeset -gA A2
 a2_check() { # $1=label [$2=recall json]
   local f=${2:-$EV/a2_$1.json}
-  [ -n "${2:-}" ] || mcp recall "{\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" > $f 2>&1
+  [ -n "${2:-}" ] || mcp recall "{\"action\":\"search\",\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" > $f 2>&1
   local line=$(head -1 $f | python3 -c "
 import sys,json
 try:
@@ -901,14 +901,14 @@ fi
 
 # ---------- 3. remember ×2 ----------
 step remember
-mcp remember "{\"operation\":\"put\",\"content\":\"New backend services must expose a health endpoint before any traffic is routed to them.\",\"idempotency_key\":\"$(uuidgen | tr A-Z a-z)\",\"workspace_id\":\"$WS\"}" | tee $EV/remember_1.json | tail -1
-mcp remember "{\"operation\":\"put\",\"content\":\"Rust is the preferred language for backend services because of memory safety and predictable performance.\",\"idempotency_key\":\"$(uuidgen | tr A-Z a-z)\",\"workspace_id\":\"$WS\"}" | tee $EV/remember_2.json | tail -1
+mcp remember "{\"action\":\"put\",\"content\":\"New backend services must expose a health endpoint before any traffic is routed to them.\",\"idempotency_key\":\"$(uuidgen | tr A-Z a-z)\",\"workspace_id\":\"$WS\"}" | tee $EV/remember_1.json | tail -1
+mcp remember "{\"action\":\"put\",\"content\":\"Rust is the preferred language for backend services because of memory safety and predictable performance.\",\"idempotency_key\":\"$(uuidgen | tr A-Z a-z)\",\"workspace_id\":\"$WS\"}" | tee $EV/remember_2.json | tail -1
 PGQ "select 'evidence='||count(*) from private.evidence_objects where tenant_id='$TENANT'" | tee -a $EV/rehearsal.log
 PGQ "select 'memory_records='||count(*) from private.memory_records where tenant_id='$TENANT'" | tee -a $EV/rehearsal.log
 # Tenant B, same gateway process, same request path, a corpus that does NOT overlap A's — an
 # isolation assertion over two empty or two identical corpora witnesses nothing.
-mcp_as "$BEARER_B" remember "{\"operation\":\"put\",\"content\":\"Tenant B ships its inventory service on a weekly train every Thursday.\",\"idempotency_key\":\"$(uuidgen | tr A-Z a-z)\",\"workspace_id\":\"$WS_B\"}" | tee $EV/remember_b_1.json | tail -1
-mcp_as "$BEARER_B" remember "{\"operation\":\"put\",\"content\":\"Tenant B keeps warehouse stock counts reconciled nightly against the ledger.\",\"idempotency_key\":\"$(uuidgen | tr A-Z a-z)\",\"workspace_id\":\"$WS_B\"}" | tee $EV/remember_b_2.json | tail -1
+mcp_as "$BEARER_B" remember "{\"action\":\"put\",\"content\":\"Tenant B ships its inventory service on a weekly train every Thursday.\",\"idempotency_key\":\"$(uuidgen | tr A-Z a-z)\",\"workspace_id\":\"$WS_B\"}" | tee $EV/remember_b_1.json | tail -1
+mcp_as "$BEARER_B" remember "{\"action\":\"put\",\"content\":\"Tenant B keeps warehouse stock counts reconciled nightly against the ledger.\",\"idempotency_key\":\"$(uuidgen | tr A-Z a-z)\",\"workspace_id\":\"$WS_B\"}" | tee $EV/remember_b_2.json | tail -1
 PGQ "select 'evidence_b='||count(*) from private.evidence_objects where tenant_id='$TENANT_B'" | tee -a $EV/rehearsal.log
 
 # ---------- 3b. distill (evidence → memories, real MiniMax; private worker owns it) ----------
@@ -963,7 +963,7 @@ step sigterm_mid_load
   set -a; source /Volumes/data/viral-skill-eval/.env; set +a
   exec "$BIN_DIR"/humaux-private-worker --distill-serve > $EV/distill-serve.log 2>&1 ) &
 DS_PID=$!
-mcp remember "{\"operation\":\"put\",\"content\":\"Deploys are frozen on the last working day of each quarter.\",\"idempotency_key\":\"$(uuidgen | tr A-Z a-z)\",\"workspace_id\":\"$WS\"}" >/dev/null 2>&1
+mcp remember "{\"action\":\"put\",\"content\":\"Deploys are frozen on the last working day of each quarter.\",\"idempotency_key\":\"$(uuidgen | tr A-Z a-z)\",\"workspace_id\":\"$WS\"}" >/dev/null 2>&1
 sleep 5
 kill -TERM $DS_PID 2>/dev/null
 for i in $(seq 1 180); do kill -0 $DS_PID 2>/dev/null || break; sleep 1; done
@@ -1054,8 +1054,8 @@ fi
 
 # ---------- 6. recall (fourth hop) ----------
 step recall
-mcp recall "{\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" | tee $EV/recall.json | tail -1
-mcp recall "{\"query\":\"what must a new service expose before it gets traffic?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" | tee $EV/recall_2.json | tail -1
+mcp recall "{\"action\":\"search\",\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" | tee $EV/recall.json | tail -1
+mcp recall "{\"action\":\"search\",\"query\":\"what must a new service expose before it gets traffic?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" | tee $EV/recall_2.json | tail -1
 echo "recall hits: rust=$(grep -c 'Rust' $EV/recall.json) health=$(grep -c 'health endpoint' $EV/recall_2.json) code1=$(grep -oE 'DEPENDENCY_UNAVAILABLE|"isError":true' $EV/recall.json | head -1)" | tee -a $EV/rehearsal.log
 head -c 500 $EV/recall.json | tee -a $EV/rehearsal.log; echo | tee -a $EV/rehearsal.log
 
@@ -1075,14 +1075,14 @@ XT_POINTS_A=$(PGQ "select count(*) from projection.private_memory_points where t
 XT_POINTS_B=$(PGQ "select count(*) from projection.private_memory_points where tenant_id='$TENANT_B'")
 echo "cross-tenant corpus: A points=$XT_POINTS_A  B points=$XT_POINTS_B" | tee -a $EV/rehearsal.log
 # B asks A's question on the same gateway process. A hit on A's sentence would be a cross-tenant read.
-mcp_as "$BEARER_B" recall "{\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS_B\",\"mode\":\"semantic\"}" > $EV/recall_b_cross.json 2>&1
+mcp_as "$BEARER_B" recall "{\"action\":\"search\",\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS_B\",\"mode\":\"semantic\"}" > $EV/recall_b_cross.json 2>&1
 XT_B_SEES_A=$(head -1 $EV/recall_b_cross.json | python3 -c "
 import sys,json
 try: items=json.load(sys.stdin)['result'].get('structuredContent',{}).get('items',[])
 except Exception: items=[]
 print(sum(1 for i in items if 'Rust is the preferred language' in json.dumps(i, ensure_ascii=False)))")
 # …and the mirror leg: A must not see B's sentence either.
-mcp recall "{\"query\":\"when does the inventory service ship?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" > $EV/recall_a_cross.json 2>&1
+mcp recall "{\"action\":\"search\",\"query\":\"when does the inventory service ship?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" > $EV/recall_a_cross.json 2>&1
 XT_A_SEES_B=$(head -1 $EV/recall_a_cross.json | python3 -c "
 import sys,json
 try: items=json.load(sys.stdin)['result'].get('structuredContent',{}).get('items',[])
@@ -1116,10 +1116,10 @@ step subject_scope
 SUBJ=$(mcp memory "{\"action\":\"subject_register\",\"kind\":\"PERSON\",\"display_name\":\"Ada Rehearsal\",\"workspace_id\":\"$WS\"}" | head -1 | sc subject_id)
 echo "subject registered in tenant A: ${SUBJ:-<none>}" | tee -a $EV/rehearsal.log
 if [ -n "$SUBJ" ]; then
-  mcp remember "{\"operation\":\"put\",\"content\":\"Ada owns the billing on-call rotation for the payments platform team.\",\"idempotency_key\":\"$(uuidgen | tr A-Z a-z)\",\"workspace_id\":\"$WS\",\"subject_ids\":[\"$SUBJ\"]}" | tee $EV/remember_subject.json | tail -1
+  mcp remember "{\"action\":\"put\",\"content\":\"Ada owns the billing on-call rotation for the payments platform team.\",\"idempotency_key\":\"$(uuidgen | tr A-Z a-z)\",\"workspace_id\":\"$WS\",\"subject_ids\":[\"$SUBJ\"]}" | tee $EV/remember_subject.json | tail -1
   drain_all
   # authorized: tenant A's own principal, narrowing to that subject
-  mcp recall "{\"query\":\"who owns the billing on-call rotation?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\",\"subject_ids\":[\"$SUBJ\"]}" > $EV/recall_subject_a.json 2>&1
+  mcp recall "{\"action\":\"search\",\"query\":\"who owns the billing on-call rotation?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\",\"subject_ids\":[\"$SUBJ\"]}" > $EV/recall_subject_a.json 2>&1
   SUBJ_A_N=0; SUBJ_A_UNLINKED=0
   for mid in $(head -1 $EV/recall_subject_a.json | python3 -c "
 import sys,json
@@ -1143,7 +1143,7 @@ print('\n'.join(sorted(set(out))))"); do
   # unauthorized principal this deployment can actually produce is a caller outside the subject's
   # tenant. A per-subject ACL below tenant does not exist yet; this leg is the boundary that
   # does, and it is named as such rather than dressed up as a per-user ACL witness.
-  mcp_as "$BEARER_B" recall "{\"query\":\"who owns the billing on-call rotation?\",\"workspace_id\":\"$WS_B\",\"mode\":\"semantic\",\"subject_ids\":[\"$SUBJ\"]}" > $EV/recall_subject_b.json 2>&1
+  mcp_as "$BEARER_B" recall "{\"action\":\"search\",\"query\":\"who owns the billing on-call rotation?\",\"workspace_id\":\"$WS_B\",\"mode\":\"semantic\",\"subject_ids\":[\"$SUBJ\"]}" > $EV/recall_subject_b.json 2>&1
   SUBJ_B_N=$(head -1 $EV/recall_subject_b.json | python3 -c "
 import sys,json
 try: items=json.load(sys.stdin)['result'].get('structuredContent',{}).get('items',[])
@@ -1172,7 +1172,7 @@ if [ -n "$LC_TARGET" ] && [ -n "$LC_REPL" ]; then
   drain_all
   # …and the restore is visible in RECALL, not only in the log: the row is servable again.
   LC_BODY=$(PGQ "select left(content::text,60) from private.memory_records where memory_id='$LC_TARGET'")
-  mcp recall "{\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" > $EV/recall_after_restore.json 2>&1
+  mcp recall "{\"action\":\"search\",\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" > $EV/recall_after_restore.json 2>&1
   LC_RECALL_AFTER_RESTORE=$(head -1 $EV/recall_after_restore.json | python3 -c "
 import sys,json
 try: d=json.load(sys.stdin)['result'].get('structuredContent',{})
@@ -1195,7 +1195,7 @@ AR_TARGET=${LC_TARGET:-}
 AR_RECALL_WHILE_ARCHIVED=""; AR_GET_ARCHIVED=""; AR_RECALL_AFTER_UNARCHIVE=""
 if [ -n "$AR_TARGET" ]; then
   gated_as "$BEARER" memory "{\"action\":\"archive\",\"memory_id\":\"$AR_TARGET\"}" > $EV/archive.json 2>&1
-  mcp recall "{\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" > $EV/recall_while_archived.json 2>&1
+  mcp recall "{\"action\":\"search\",\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" > $EV/recall_while_archived.json 2>&1
   AR_RECALL_WHILE_ARCHIVED=$(head -1 $EV/recall_while_archived.json | python3 -c "
 import sys,json
 try: d=json.load(sys.stdin)['result'].get('structuredContent',{})
@@ -1217,7 +1217,7 @@ print('true' if ('\"archived\": true' in s or d.get('archived_at')) else 'false'
   # at 60 s) and report the lag instead of asserting on the first recall after the write.
   AR_T0=$(date +%s); AR_RECALL_AFTER_UNARCHIVE=0
   while [ "$AR_RECALL_AFTER_UNARCHIVE" = 0 ] && [ $(( $(date +%s) - AR_T0 )) -lt 60 ]; do
-    mcp recall "{\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" > $EV/recall_after_unarchive.json 2>&1
+    mcp recall "{\"action\":\"search\",\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" > $EV/recall_after_unarchive.json 2>&1
     AR_RECALL_AFTER_UNARCHIVE=$(head -1 $EV/recall_after_unarchive.json | python3 -c "
 import sys,json
 try: d=json.load(sys.stdin)['result'].get('structuredContent',{})
@@ -1347,7 +1347,7 @@ PN_AT=$(PGQ "with e as (insert into private.evidence_objects (tenant_id,evidence
 PN_BELOW=${GOV[A_target]:-none}
 PN_BELOW_AUTH=$(PGQ "select authority_class from private.memory_records where memory_id='${PN_BELOW/none/00000000-0000-0000-0000-000000000000}'")
 gated_as "$BEARER" memory "{\"action\":\"pin\",\"memory_id\":\"$PN_AT\"}" > $EV/pin_at_floor.json 2>&1
-mcp context "{\"workspace_id\":\"$WS\"}" > $EV/context_pinned.json 2>&1
+mcp context "{\"action\":\"assemble\",\"workspace_id\":\"$WS\"}" > $EV/context_pinned.json 2>&1
 PN=$(head -1 $EV/context_pinned.json | python3 -c "
 import sys,json
 try:
@@ -1379,7 +1379,7 @@ wait_ready private-worker-after-kill9 cw_readyz
 K9_RECOVERY_BAD=$((READY_BAD - READY_BAD_BEFORE_CHAOS))
 # End-to-end proof the restarted processes are the ones serving: a recall crosses the gateway
 # AND the retrieval worker's UDS. A probe that only touches PG cannot say this.
-mcp recall "{\"query\":\"what must a new service expose before it gets traffic?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" > $EV/recall_after_kill9.json 2>&1
+mcp recall "{\"action\":\"search\",\"query\":\"what must a new service expose before it gets traffic?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" > $EV/recall_after_kill9.json 2>&1
 K9_RECALL_ERROR=$(head -1 $EV/recall_after_kill9.json | python3 -c "
 import sys,json
 try: print('1' if json.load(sys.stdin)['result'].get('isError') else '0')
@@ -1407,11 +1407,11 @@ step stall_lag
 trap "own_signal $S/rp.pid humaux-retrieval-worker CONT 0; obs_stop" EXIT
 own_signal $S/rp.pid humaux-retrieval-worker STOP 0
 ST_T0=$(date +%s)
-mcp remember "{\"operation\":\"put\",\"content\":\"card 31 stall probe: the projection runner is paused while this write waits.\",\"idempotency_key\":\"stall-probe-$RANDOM\",\"workspace_id\":\"$WS\"}" > $EV/stall_put.json 2>&1
+mcp remember "{\"action\":\"put\",\"content\":\"card 31 stall probe: the projection runner is paused while this write waits.\",\"idempotency_key\":\"stall-probe-$RANDOM\",\"workspace_id\":\"$WS\"}" > $EV/stall_put.json 2>&1
 ST_EV=$(head -1 $EV/stall_put.json | sc evidence_id)
 distill_once > /dev/null 2>&1 &
 ST_DPID=$!
-lag_probe() { mcp recall "{\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" | head -1 | python3 -c "
+lag_probe() { mcp recall "{\"action\":\"search\",\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" | head -1 | python3 -c "
 import sys,json
 try:
     sc=json.load(sys.stdin)['result']['structuredContent']; c=sc['completeness']
@@ -1444,17 +1444,17 @@ drain_all
 # response codes and the two new operator lines side by side.
 step ryw_probe
 GWLOG_BEFORE=$(wc -l < $EV/gateway.log)
-PUT=$(mcp remember "{\"operation\":\"put\",\"content\":\"card 17 ryw probe: a backend service must publish a readiness probe before traffic reaches it.\",\"idempotency_key\":\"ryw-probe-$RANDOM\",\"workspace_id\":\"$WS\"}")
+PUT=$(mcp remember "{\"action\":\"put\",\"content\":\"card 17 ryw probe: a backend service must publish a readiness probe before traffic reaches it.\",\"idempotency_key\":\"ryw-probe-$RANDOM\",\"workspace_id\":\"$WS\"}")
 RYW_TOKEN=$(print -r -- "$PUT" | head -1 | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['result']['structuredContent']['consistency_token'])")
 RYW_EV=$(print -r -- "$PUT" | head -1 | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['result']['structuredContent']['evidence_id'])")
 RYW_SEQ=$(PGQ "select stream_seq from ops.outbox where evidence_id='$RYW_EV' and stream_seq is not null limit 1")
 RYW_HW=$(PGQ "select coalesce(max(projection_highwater),0) from projection.stream_checkpoints where tenant_id='$TENANT' and serving")
 echo "ryw probe: token seq=$RYW_SEQ serving_highwater=$RYW_HW (expected overlay range $((RYW_HW+1))..$RYW_SEQ)" | tee -a $EV/rehearsal.log
 # leg A — the shape card 16 sent: token + a caller-chosen `limit`
-mcp recall "{\"query\":\"readiness probe before traffic\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\",\"consistency_token\":\"$RYW_TOKEN\",\"limit\":17}" > $EV/ryw_with_limit.json 2>&1
+mcp recall "{\"action\":\"search\",\"query\":\"readiness probe before traffic\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\",\"consistency_token\":\"$RYW_TOKEN\",\"limit\":17}" > $EV/ryw_with_limit.json 2>&1
 echo "leg A (token + limit=17): http=$(tail -1 $EV/ryw_with_limit.json) code=$(head -1 $EV/ryw_with_limit.json | grep -oE '\"code\":\"[A-Z_]+\"' | head -1)" | tee -a $EV/rehearsal.log
 # leg B — the shape card 17 sends: token, no `limit`
-mcp recall "{\"query\":\"readiness probe before traffic\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\",\"consistency_token\":\"$RYW_TOKEN\"}" > $EV/ryw_no_limit.json 2>&1
+mcp recall "{\"action\":\"search\",\"query\":\"readiness probe before traffic\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\",\"consistency_token\":\"$RYW_TOKEN\"}" > $EV/ryw_no_limit.json 2>&1
 echo "leg B (token, no limit): http=$(tail -1 $EV/ryw_no_limit.json)" | tee -a $EV/rehearsal.log
 head -1 $EV/ryw_no_limit.json | python3 -c "
 import sys,json
@@ -1479,7 +1479,7 @@ LS_OK=0; LS_N=0
 # (the seal runs no phone-like rule); step pst item 7 recalls with a random UUID on purpose.
 LS_UUID=a1b2c3d4-e5f6-4a7b-8c9d-e0f1a2b3c4d5
 for q in "目前项目进度" "客户张三最近的情绪怎么样" "和支付相关的决定" 'the "frozen contract" decision' "$LS_UUID"; do
-  LS_ARGS=$(python3 -c "import sys,json; print(json.dumps({'query':sys.argv[1],'workspace_id':sys.argv[2]}, ensure_ascii=False))" "$q" "$WS")
+  LS_ARGS=$(python3 -c "import sys,json; print(json.dumps({'action':'search','query':sys.argv[1],'workspace_id':sys.argv[2]}, ensure_ascii=False))" "$q" "$WS")
   LS_OUT=$(mcp recall "$LS_ARGS")
   LS_N=$((LS_N+1))
   LS_V=$(print -r -- "$LS_OUT" | head -1 | python3 -c "
@@ -1493,7 +1493,7 @@ except Exception: print('0 unparsed')")
   echo "lane substitution: planner_class=${LS_V#* } answered=${LS_V%% *} $(print -r -- "$LS_OUT" | tail -1)" | tee -a $EV/rehearsal.log
   [ "${LS_V%% *}" = 1 ] && LS_OK=$((LS_OK+1))
 done
-mcp recall "{\"query\":\"readiness probe before traffic\",\"workspace_id\":\"$WS\",\"mode\":\"literal\"}" > $EV/recall_mode_literal.json 2>&1
+mcp recall "{\"action\":\"search\",\"query\":\"readiness probe before traffic\",\"workspace_id\":\"$WS\",\"mode\":\"literal\"}" > $EV/recall_mode_literal.json 2>&1
 LIT_CODE=$(head -1 $EV/recall_mode_literal.json | grep -oE '"code":"[A-Z_]+"' | head -1 | sed -E 's/.*:"([A-Z_]+)"/\1/')
 echo "explicit mode literal: code=$LIT_CODE $(tail -1 $EV/recall_mode_literal.json)" | tee -a $EV/rehearsal.log
 
@@ -1650,7 +1650,7 @@ own_pid ds $!
 own_pid cw $!
 pst_put() { # $1=bearer var $2=workspace $3=content $4=tsv — one remember.put, recorded with its put time
   local t0=$EPOCHREALTIME ev=
-  ev=$(mcp_as "${(P)1}" remember "{\"operation\":\"put\",\"content\":\"$3\",\"idempotency_key\":\"$(uuidgen | tr A-Z a-z)\",\"workspace_id\":\"$2\"}" | head -1 | python3 -c "import sys,json
+  ev=$(mcp_as "${(P)1}" remember "{\"action\":\"put\",\"content\":\"$3\",\"idempotency_key\":\"$(uuidgen | tr A-Z a-z)\",\"workspace_id\":\"$2\"}" | head -1 | python3 -c "import sys,json
 try: print(json.load(sys.stdin)['result']['structuredContent']['evidence_id'])
 except Exception: print('')")
   if [ -n "$ev" ]; then print -r -- "$ev	$1	$2	$t0	$3" >> $4; else echo "pst: put refused ($1 $2)" | tee -a $EV/rehearsal.log; fi
@@ -1714,7 +1714,7 @@ def pg(sql):
     return subprocess.run(["docker","exec","humaux-thread-pg","psql","-U","postgres","-d",db,"-Atc",sql],
                           capture_output=True, text=True).stdout.split()
 def recall(bearer, ws, query):
-    body = {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recall","arguments":{"query":query,"workspace_id":ws,"mode":"semantic"},
+    body = {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recall","arguments":{"action":"search","query":query,"workspace_id":ws,"mode":"semantic"},
             "_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"rehearsal","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}
     gw = os.environ.get("GW_URL", "http://127.0.0.1:8080")  # ADR-0061 D-K: a scratch gateway sets GW_URL
     req = urllib.request.Request(gw + "/mcp", data=json.dumps(body).encode(), method="POST", headers={
@@ -1860,7 +1860,7 @@ AFF_ROWS=$(PGQ "select count(*)||' '||count(*) filter (where a.confidence_bp > 5
 AFF_HIT=0
 if [ -n "$AFF_MEM" ]; then
   AFF_Q=$(PGQ "select coalesce(content->>'key_claim', content->>'title', content::text) from private.memory_records where memory_id='$AFF_MEM'" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))")
-  mcp_as "$BEARER_B" recall "{\"query\":$AFF_Q,\"workspace_id\":\"$WS_B\",\"mode\":\"semantic\",\"affect\":{\"kinds\":[\"EMOTION\"]}}" > $PST/affect_recall.json 2>&1
+  mcp_as "$BEARER_B" recall "{\"action\":\"search\",\"query\":$AFF_Q,\"workspace_id\":\"$WS_B\",\"mode\":\"semantic\",\"affect\":{\"kinds\":[\"EMOTION\"]}}" > $PST/affect_recall.json 2>&1
   AFF_HIT=$(head -1 $PST/affect_recall.json | python3 -c "
 import sys,json
 try: print(int('$AFF_MEM' in {i.get('memory_id') for i in json.load(sys.stdin)['result']['structuredContent'].get('items',[])}))
@@ -2165,7 +2165,7 @@ def pg(sql):
     return subprocess.run(["docker","exec","humaux-thread-pg","psql","-U","postgres","-d",db,"-AtF","\t","-c",sql],
                           capture_output=True, text=True).stdout.splitlines()
 def recall(bearer, ws, query):
-    body = {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recall","arguments":{"query":query,"workspace_id":ws},
+    body = {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recall","arguments":{"action":"search","query":query,"workspace_id":ws},
             "_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"rehearsal","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}
     gw = os.environ.get("GW_URL", "http://127.0.0.1:8080")  # ADR-0061 D-K: a scratch gateway sets GW_URL
     req = urllib.request.Request(gw + "/mcp", data=json.dumps(body).encode(), method="POST", headers={
@@ -2204,7 +2204,7 @@ PYEOF
 ID_RECALL=$(python3 $S/c30b_ident.py $PST/ident.tsv $DB 300 2>>$EV/rehearsal.log)
 CRED_IN_CARD=$(PGQ "select count(*) from private.memory_evidence me join private.memory_records m on m.memory_id=me.memory_id where me.evidence_id='${CRED_EV:-00000000-0000-0000-0000-000000000000}' and position('$CRED_FAKE' in m.content::text) > 0")
 CRED_LEAKED=$(PGQ "select count(*) from projection.private_memory_points p join private.memory_records m on m.memory_id=p.memory_id and m.tenant_id=p.tenant_id where p.tenant_id='$TENANT_C' and p.retired_at is null and position('$CRED_FAKE' in m.content::text) > 0")
-CRED_Q=$(python3 -c "import sys,json; print(json.dumps({'query':'what does the release bot use '+sys.argv[1]+' for?','workspace_id':sys.argv[2]}))" "$CRED_FAKE" "$WS_C2")
+CRED_Q=$(python3 -c "import sys,json; print(json.dumps({'action':'search','query':'what does the release bot use '+sys.argv[1]+' for?','workspace_id':sys.argv[2]}))" "$CRED_FAKE" "$WS_C2")
 CRED_CODE=$(mcp_as "$BEARER_C2" recall "$CRED_Q" | head -1 | python3 -c "import sys,json
 try:
     d=json.load(sys.stdin); print((d.get('error',{}).get('data') or {}).get('code') or d.get('result',{}).get('structuredContent',{}).get('code','none'))
@@ -2799,7 +2799,7 @@ if wait_ready drill-gateway gwd_readyz; then
   echo "alert_drill: pre-sample degrade_total{code=LaneSubstituted}=0 in P' after ${W}s ok=$AD_PRE_OK; denominator absent in P' ok=$AD_DROP_OK" | tee -a $EV/rehearsal.log
   # 4. an abstaining recall: the lane_substitution step's queries, in order, until one degrades.
   for q in "目前项目进度" "客户张三最近的情绪怎么样" "和支付相关的决定" 'the "frozen contract" decision' "$LS_UUID"; do
-    AD_ARGS=$(python3 -c "import sys,json; print(json.dumps({'query':sys.argv[1],'workspace_id':sys.argv[2]}, ensure_ascii=False))" "$q" "$WS")
+    AD_ARGS=$(python3 -c "import sys,json; print(json.dumps({'action':'search','query':sys.argv[1],'workspace_id':sys.argv[2]}, ensure_ascii=False))" "$q" "$WS")
     AD_OUT=$(GW_URL=http://127.0.0.1:$GWD_PORT mcp recall "$AD_ARGS")
     print -r -- "$AD_OUT" | head -1 | grep -q 'LANE_SUBSTITUTED' && { AD_LS=1; break; }
   done
@@ -2814,7 +2814,7 @@ if wait_ready drill-gateway gwd_readyz; then
   #    moves it, INV-1 goes inactive within 2 evals and a resolved notification arrives.
   render_drill 0; own_signal $S/promd.pid prometheus HUP 0 >/dev/null
   W4=$(poll 20 req_seen); REQ0=$(pq 'sum(humaux_retrieval_requests_total{job="humaux-gateway-drill"})' | cut -d. -f1)
-  GW_URL=http://127.0.0.1:$GWD_PORT mcp recall "{\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" > $EV/alert_drill_clear_recall.json 2>&1
+  GW_URL=http://127.0.0.1:$GWD_PORT mcp recall "{\"action\":\"search\",\"query\":\"which language do we prefer for backend services?\",\"workspace_id\":\"$WS\",\"mode\":\"semantic\"}" > $EV/alert_drill_clear_recall.json 2>&1
   W5=$(poll 10 req_above ${REQ0:-0}); W6=$(poll 12 inv1_is inactive) && AD_CLEAR_OK=1
   echo "alert_drill: denominator back in P' after ${W4}s (sum=${REQ0:-none}), moved after ${W5}s; INV-1 $(inv1_state) ${W6}s later" | tee -a $EV/rehearsal.log
   W7=$(poll 75 receipt INV-1 resolved) && AD_RES_OK=1

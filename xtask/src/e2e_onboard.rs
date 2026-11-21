@@ -1093,9 +1093,13 @@ pub fn run(_args: &[String]) -> i32 {
         (
             "recall.search",
             "recall",
-            json!({"query":"what is known about glaciers","workspace_id":ws,"mode":"semantic"}),
+            json!({"action":"search","query":"what is known about glaciers","workspace_id":ws,"mode":"semantic"}),
         ),
-        ("context.assemble", "context", json!({"workspace_id":ws})),
+        (
+            "context.assemble",
+            "context",
+            json!({"action":"assemble","workspace_id":ws}),
+        ),
     ];
     let mut dependency_unavailable = 0;
     for (label, tool, args) in calls {
@@ -1158,7 +1162,7 @@ pub fn run(_args: &[String]) -> i32 {
             gw_port,
             &bearer,
             "remember",
-            &json!({"operation":"put","content":sentinel,"idempotency_key":Uuid::now_v7(),"workspace_id":ws}),
+            &json!({"action":"put","content":sentinel,"idempotency_key":Uuid::now_v7(),"workspace_id":ws}),
         );
         if response
             .as_ref()
@@ -1184,7 +1188,7 @@ pub fn run(_args: &[String]) -> i32 {
                 gw_port,
                 &bearer,
                 "recall",
-                &json!({"query":sentinel,"workspace_id":ws,"mode":"semantic"}),
+                &json!({"action":"search","query":sentinel,"workspace_id":ws,"mode":"semantic"}),
             ) {
                 found[i] = content(&v)["items"].as_array().is_some_and(|items| {
                     items.iter().any(|item| {
@@ -1297,7 +1301,7 @@ pub fn run(_args: &[String]) -> i32 {
     let fault_c = provisioning_tenant(&mut owner, "fc").and_then(|(t, w, u)| {
         let out = run.run_maintenance(&env, &["apikey", "issue", "--tenant", &t.to_string(), "--user", &u.to_string(), "--workspace", &w.to_string(), "--scopes", "memory:write,context:read", "--key-name", "fc"]);
         let key = wire(&out).ok_or(format!("apikey issue exit {:?}", out.status.code()))?;
-        let response = mcp(gw_port, &key, "remember", &json!({"operation":"put","content":"written while provisioning","idempotency_key":Uuid::now_v7(),"workspace_id":w}))?;
+        let response = mcp(gw_port, &key, "remember", &json!({"action":"put","content":"written while provisioning","idempotency_key":Uuid::now_v7(),"workspace_id":w}))?;
         let evidence = count(&mut owner, "SELECT count(*) FROM private.evidence_objects WHERE tenant_id = $1", t);
         Ok((tool_error(&response).map(str::to_owned), evidence))
     });

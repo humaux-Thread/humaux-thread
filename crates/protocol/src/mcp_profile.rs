@@ -1,7 +1,7 @@
 //! `protocol::mcp_profile` — Flat MCP tool profile generated from the registry's per-action input schemas, and the per-action argument gate that serves it (§33.1; M26 D3).
 //! Depends-on: crates=[humaux-domain, jsonschema, serde_json]; services=[];
 //!   env=[]; modules=[domain::error, protocol::mcp, protocol::mcp_catalog]
-//! Called-by: [tests]
+//! Called-by: [protocol::mcp, protocol::mcp_catalog, tests]
 //! Invariants: [the flat profile is a pure function of the registry (actions in registry order, fields sorted, never a
 //!   root oneOf/anyOf) and fails closed on a field two actions define incompatibly; validate checks only the chosen
 //!   action's own schema, null never fills a required field, and every rejection is ErrorCode::InvalidInput naming
@@ -10,8 +10,7 @@
 //!
 //! Hosts that reject a root `oneOf` (B22 matrix) get one object: a root `action` enum plus the union of every
 //! action's fields. The union is only what the model sees. The server decodes a flat call back to the exact wire
-//! shape of the chosen action, so dispatch never sees a union (M26 D3). Listing the profile in `tools/list` and the
-//! gateway wiring belong to later cards (M26-3).
+//! shape of the chosen action, so dispatch never sees a union (M26 D3). Both HTTP routes share this profile and validator.
 //!
 //! Field merge across actions (M26 ruling 1'): schemas are compared with annotation keywords removed; equal ones merge
 //! and keep the first action's annotations; a schema that is another plus extra constraint keywords makes the profile
@@ -137,7 +136,7 @@ pub fn flat_profile(tool: ToolName) -> Result<Value, ProfileError> {
 
 /// Decodes a flat call into the chosen action's wire arguments (M26 D3, B22). Rejects a missing or unknown `action`,
 /// a discriminator that contradicts it, a non-null field the action does not define, null for a required field and
-/// anything the action's own schema refuses. Nulls elsewhere carry no data and are dropped.
+/// anything the action's own schema refuses. Null placeholders for known fields carry no data and are dropped.
 pub fn validate(tool: ToolName, args: &Value) -> Result<ValidatedCall, ProfileError> {
     let profile = tool_profile(tool)?;
     let reject = |why: &str| ProfileError::new(format!("{}: {why}", tool.as_str()));
@@ -153,6 +152,16 @@ pub fn validate(tool: ToolName, args: &Value) -> Result<ValidatedCall, ProfileEr
         .iter()
         .find(|candidate| candidate.action == name)
         .ok_or_else(|| reject("`action` is not a registry action of this tool"))?;
+    // Hosts may fill unused fields from the flat profile with null. A field outside the
+    // tool's union has no such meaning and must still satisfy additionalProperties: false.
+    if object.iter().any(|(name, value)| {
+        value.is_null()
+            && !profile.actions.iter().any(|action| {
+                action.fields.contains_key(name) || action.discriminators.contains_key(name)
+            })
+    }) {
+        return Err(reject("unknown field in arguments"));
+    }
     Ok(ValidatedCall {
         action: chosen.action.clone(),
         args: chosen.admit(tool, object)?,

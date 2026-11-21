@@ -1795,7 +1795,7 @@ fn session(cfg: &Config, lane_idx: usize, deadline: Instant, shared: &Mutex<Shar
             lane.sentinel
         );
         let put = format!(
-            "{{\"operation\":\"put\",\"content\":\"{content}\",\"idempotency_key\":\"soak-{nonce}\",\
+            "{{\"action\":\"put\",\"content\":\"{content}\",\"idempotency_key\":\"soak-{nonce}\",\
              \"workspace_id\":\"{}\"}}",
             lane.workspace_id
         );
@@ -1804,13 +1804,13 @@ fn session(cfg: &Config, lane_idx: usize, deadline: Instant, shared: &Mutex<Shar
         let recall_args = token.as_ref().map_or_else(
             || {
                 format!(
-                    "{{\"query\":\"readiness probe before traffic\",\"workspace_id\":\"{}\",\"mode\":\"semantic\"}}",
+                    "{{\"action\":\"search\",\"query\":\"readiness probe before traffic\",\"workspace_id\":\"{}\",\"mode\":\"semantic\"}}",
                     lane.workspace_id
                 )
             },
             |t| {
                 format!(
-                    "{{\"query\":\"readiness probe before traffic\",\"workspace_id\":\"{}\",\
+                    "{{\"action\":\"search\",\"query\":\"readiness probe before traffic\",\"workspace_id\":\"{}\",\
                      \"mode\":\"semantic\",\"consistency_token\":\"{t}\"}}",
                     lane.workspace_id
                 )
@@ -2029,7 +2029,7 @@ fn replay_ryw(cfg: &Config, db: &mut Client, series: &mut Series) -> Result<(), 
         series.ryw_replays += 1;
         let nonce = Uuid::new_v4().simple().to_string();
         let put = format!(
-            "{{\"operation\":\"put\",\"content\":\"{} {}: the post-drain replay records that \
+            "{{\"action\":\"put\",\"content\":\"{} {}: the post-drain replay records that \
              a backend service must publish a readiness probe before traffic reaches it.\",\
              \"idempotency_key\":\"soak-replay-{nonce}\",\"workspace_id\":\"{}\"}}",
             lane.sentinel,
@@ -2067,7 +2067,7 @@ fn replay_ryw(cfg: &Config, db: &mut Client, series: &mut Series) -> Result<(), 
         // No `limit`: §55.1 reserves candidate depth to the registered profile, and any value
         // other than that profile's own `top_k` is `INVALID_INPUT`.
         let args = format!(
-            "{{\"query\":\"readiness probe before traffic\",\"workspace_id\":\"{}\",\
+            "{{\"action\":\"search\",\"query\":\"readiness probe before traffic\",\"workspace_id\":\"{}\",\
              \"mode\":\"semantic\",\"consistency_token\":\"{token}\"}}",
             lane.workspace_id,
         );

@@ -660,7 +660,7 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
                     address,
                     "context",
                     bearer,
-                    json!({"workspace_id":own.workspace}),
+                    json!({"action":"assemble","workspace_id":own.workspace}),
                 )
                 .await;
                 assert_eq!(context.0, 200, "control context.assemble: {}", context.1);
@@ -673,7 +673,7 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
                     address,
                     "continuity",
                     bearer,
-                    json!({"project_id":own.project}),
+                    json!({"action":"get","project_id":own.project}),
                 )
                 .await;
                 assert_eq!(
@@ -738,8 +738,8 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
                     bearer,
                     "recall",
                     "recall foreign workspace",
-                    json!({"query":FOREIGN_LITERAL,"workspace_id":foreign.workspace,"mode":"semantic"}),
-                    json!({"query":FOREIGN_LITERAL,"workspace_id":absent_workspace,"mode":"semantic"}),
+                    json!({"action":"search","query":FOREIGN_LITERAL,"workspace_id":foreign.workspace,"mode":"semantic"}),
+                    json!({"action":"search","query":FOREIGN_LITERAL,"workspace_id":absent_workspace,"mode":"semantic"}),
                     &probed,
                     403,
                     None,
@@ -750,8 +750,8 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
                     bearer,
                     "context",
                     "context.assemble foreign workspace",
-                    json!({"workspace_id":foreign.workspace}),
-                    json!({"workspace_id":absent_workspace}),
+                    json!({"action":"assemble","workspace_id":foreign.workspace}),
+                    json!({"action":"assemble","workspace_id":absent_workspace}),
                     &probed,
                     403,
                     None,
@@ -762,8 +762,8 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
                     bearer,
                     "context",
                     "context.assemble foreign task id",
-                    json!({"workspace_id":own.workspace,"task_id":foreign.task}),
-                    json!({"workspace_id":own.workspace,"task_id":absent_task}),
+                    json!({"action":"assemble","workspace_id":own.workspace,"task_id":foreign.task}),
+                    json!({"action":"assemble","workspace_id":own.workspace,"task_id":absent_task}),
                     &probed,
                     200,
                     Some("NOT_FOUND"),
@@ -774,8 +774,8 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
                     bearer,
                     "continuity",
                     "continuity.get foreign project id",
-                    json!({"project_id":foreign.project}),
-                    json!({"project_id":absent_project}),
+                    json!({"action":"get","project_id":foreign.project}),
+                    json!({"action":"get","project_id":absent_project}),
                     &probed,
                     200,
                     Some("NOT_FOUND"),
@@ -786,8 +786,8 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
                     bearer,
                     "continuity",
                     "continuity.get foreign project in its own workspace",
-                    json!({"project_id":foreign.project,"workspace_id":foreign.workspace}),
-                    json!({"project_id":absent_project,"workspace_id":absent_workspace}),
+                    json!({"action":"get","project_id":foreign.project,"workspace_id":foreign.workspace}),
+                    json!({"action":"get","project_id":absent_project,"workspace_id":absent_workspace}),
                     &probed,
                     200,
                     Some("NOT_FOUND"),
@@ -825,7 +825,7 @@ fn foreign_tenant_ids_answer_like_absent_ones_on_every_read_op_and_totals_are_ze
                     address,
                     "recall",
                     bearer,
-                    json!({"query":FOREIGN_LITERAL,"workspace_id":own.workspace,"mode":"semantic"}),
+                    json!({"action":"search","query":FOREIGN_LITERAL,"workspace_id":own.workspace,"mode":"semantic"}),
                 )
                 .await;
                 assert_eq!(recalled.0, 200, "{}", recalled.1);
