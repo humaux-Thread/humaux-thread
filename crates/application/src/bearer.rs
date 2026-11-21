@@ -1,6 +1,6 @@
 //! `application::bearer` — access-token authentication and live grant binding (M02 D3).
 //! Depends-on: crates=[humaux-domain, time, uuid]; services=[]; env=[]; modules=[application::oauth, application::oauth_exchange, application::signed_token, domain::error]
-//! Called-by: [application::api_key, gateway::auth]
+//! Called-by: [application::api_key, gateway::auth, tests]
 //! Invariants: [verify MAC and audience before lookup; a live grant and live workspace membership cap every request]
 //! Spec: §6.1.1; §73.5; §83; M02 D3.
 
