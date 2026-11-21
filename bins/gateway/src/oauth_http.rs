@@ -262,7 +262,8 @@ pub(crate) struct PublicClientMetadata {
     /// The original callback strings persisted to the client registry.
     #[serde(default)]
     pub(crate) redirect_uris: Vec<String>,
-    token_endpoint_auth_method: String,
+    #[serde(default, deserialize_with = "deserialize_auth_method")]
+    token_endpoint_auth_method: Option<String>,
     #[serde(default = "default_grants")]
     grant_types: Vec<String>,
     #[serde(default = "default_response_types")]
@@ -271,6 +272,12 @@ pub(crate) struct PublicClientMetadata {
     client_name: Option<String>,
     #[serde(flatten, skip_serializing)]
     extensions: serde_json::Map<String, serde_json::Value>,
+}
+
+fn deserialize_auth_method<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 
 fn default_grants() -> Vec<String> {
@@ -286,7 +293,7 @@ impl PublicClientMetadata {
     pub(crate) fn validate(&self) -> Result<(), OAuthReason> {
         use OAuthReason as Reason;
         let grants: HashSet<_> = self.grant_types.iter().map(String::as_str).collect();
-        if self.token_endpoint_auth_method != "none"
+        if self.token_endpoint_auth_method.as_deref() != Some("none")
             || self.response_types != ["code"]
             || self
                 .client_name
@@ -331,9 +338,13 @@ async fn register(
     Extension(source): Extension<RegistrationSource>,
     body: Result<Json<PublicClientMetadata>, JsonRejection>,
 ) -> Response {
-    let Ok(Json(metadata)) = body else {
+    let Ok(Json(mut metadata)) = body else {
         return refusal(OAuthReason::REGISTRATION_METADATA_INVALID);
     };
+    // RFC 7591 §§2, 3.2.1: choose the public auth method for DCR and return the registered value.
+    metadata
+        .token_endpoint_auth_method
+        .get_or_insert_with(|| "none".to_owned());
     if let Err(reason) = metadata.validate() {
         return refusal(reason);
     }
