@@ -136,7 +136,7 @@ pub fn flat_profile(tool: ToolName) -> Result<Value, ProfileError> {
 
 /// Decodes a flat call into the chosen action's wire arguments (M26 D3, B22). Rejects a missing or unknown `action`,
 /// a discriminator that contradicts it, a non-null field the action does not define, null for a required field and
-/// anything the action's own schema refuses. Nulls elsewhere carry no data and are dropped.
+/// anything the action's own schema refuses. Null placeholders for known fields carry no data and are dropped.
 pub fn validate(tool: ToolName, args: &Value) -> Result<ValidatedCall, ProfileError> {
     let profile = tool_profile(tool)?;
     let reject = |why: &str| ProfileError::new(format!("{}: {why}", tool.as_str()));
@@ -152,6 +152,16 @@ pub fn validate(tool: ToolName, args: &Value) -> Result<ValidatedCall, ProfileEr
         .iter()
         .find(|candidate| candidate.action == name)
         .ok_or_else(|| reject("`action` is not a registry action of this tool"))?;
+    // Hosts may fill unused fields from the flat profile with null. A field outside the
+    // tool's union has no such meaning and must still satisfy additionalProperties: false.
+    if object.iter().any(|(name, value)| {
+        value.is_null()
+            && !profile.actions.iter().any(|action| {
+                action.fields.contains_key(name) || action.discriminators.contains_key(name)
+            })
+    }) {
+        return Err(reject("unknown field in arguments"));
+    }
     Ok(ValidatedCall {
         action: chosen.action.clone(),
         args: chosen.admit(tool, object)?,

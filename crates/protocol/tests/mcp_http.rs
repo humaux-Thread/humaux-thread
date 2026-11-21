@@ -890,6 +890,8 @@ async fn both_routes_validate_the_selected_action_before_dispatch() {
         missing_required.as_object_mut().unwrap().remove(required);
         let mut extra = valid.clone();
         extra["unexpected"] = json!(true);
+        let mut extra_null = valid.clone();
+        extra_null["unexpected"] = Value::Null;
         let mut wrong_branch = valid.clone();
         if name == "remember" {
             wrong_branch["batch_id"] = json!("01900000-0000-7000-8000-000000000001");
@@ -908,6 +910,7 @@ async fn both_routes_validate_the_selected_action_before_dispatch() {
                 ("unknown action", &unknown_action),
                 ("missing required field", &missing_required),
                 ("extra field", &extra),
+                ("unknown null field", &extra_null),
             ] {
                 let (status, body, _) = profile_call(address, path, name, invalid).await;
                 assert_eq!(status, 400, "{path} {name} {case}: {body}");
