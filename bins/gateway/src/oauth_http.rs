@@ -134,6 +134,7 @@ struct HttpState {
 /// The M02 OAuth routes, inside admission and the one pre-auth layer (ADR-0125 D1/D3).
 pub fn router(
     guard: Arc<GatewayGuard>,
+    pool: Arc<RuntimeDbPool>,
     config: Option<OAuthHttpConfig>,
     login: Arc<dyn PasswordlessLoginPort>,
 ) -> Router {
@@ -141,7 +142,7 @@ pub fn router(
         return Router::new();
     };
     let state = Arc::new(HttpState {
-        pool: guard.runtime_pool(),
+        pool,
         guard,
         config,
         login,

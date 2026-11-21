@@ -181,11 +181,11 @@ impl GatewayMcpApplication {
     pub fn new(
         catalog: CanonicalCatalog,
         guard: Arc<GatewayGuard>,
+        runtime_pool: Arc<RuntimeDbPool>,
         remember_policy: RememberPolicy,
         remember_event_kind: RememberEventKind,
         context_bootstrap: ContextBootstrap,
     ) -> Self {
-        let runtime_pool = guard.runtime_pool();
         Self {
             catalog: Arc::new(catalog),
             guard,
@@ -3406,9 +3406,9 @@ mod tests {
         RatePolicy::new(10_000, 10_000).expect("nonbinding continuity fixture rate")
     }
 
-    fn test_guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
+    fn test_guard(runtime: Arc<RuntimeDbPool>) -> Arc<GatewayGuard> {
         Arc::new(
-            GatewayGuard::new(
+            crate::bootstrap::build_gateway_guard(
                 runtime,
                 GuardSettings {
                     credential_pepper: SYNTHETIC_CREDENTIAL_PEPPER.to_vec(),
@@ -3463,9 +3463,11 @@ mod tests {
             std::time::Duration::from_secs(60),
         )
         .unwrap();
+        let runtime = Arc::new(runtime);
         GatewayMcpApplication::new(
             CanonicalCatalog::load().unwrap(),
-            test_guard(runtime),
+            test_guard(Arc::clone(&runtime)),
+            runtime,
             policy,
             RememberEventKind::UserMessage,
             bootstrap,

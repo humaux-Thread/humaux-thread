@@ -6,7 +6,7 @@
 //!   w=[control.workspaces, projection.stream_checkpoints, projection.stream_log, projection.tenant_placements],
 //!   Qdrant(*)]; env=[HUMAUX_TEST_QDRANT_PORT]; modules=[adapters::postgres, adapters::qdrant, gateway::limiter,
 //!   adapters::tests::support::operation_receipt_fixture, application::retrieval_embedding_port,
-//!   contracts::retrieval_config, domain::context, domain::dataclass, domain::error, domain::identity, gateway::context, gateway::guard, gateway::mcp_application, gateway::recall, gateway::remember,
+//!   contracts::retrieval_config, domain::context, domain::dataclass, domain::error, domain::identity, gateway::context, gateway::bootstrap, gateway::guard, gateway::mcp_application, gateway::recall, gateway::remember,
 //!   humaux-testkit, infra-cell::permit, infra-cell::resource, infra-cell::transport,
 //!   protocol::edge, protocol::mcp, protocol::mcp_catalog]
 //! Called-by: [cargo-test]
@@ -45,6 +45,7 @@ use humaux_domain::{
     context::ContextBudget, dataclass::DataClass, error::ErrorCode, identity::VisibilityClass,
 };
 use humaux_gateway::{
+    bootstrap::build_gateway_guard,
     context::ContextBootstrap,
     guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
     mcp_application::GatewayMcpApplication,
@@ -90,9 +91,9 @@ fn rate() -> RatePolicy {
     RatePolicy::new(100, 100).expect("explicit fixture rate")
 }
 
-fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
+fn guard(runtime: Arc<RuntimeDbPool>) -> Arc<GatewayGuard> {
     Arc::new(
-        GatewayGuard::new(
+        build_gateway_guard(
             runtime,
             GuardSettings {
                 credential_pepper: SYNTHETIC_CREDENTIAL_PEPPER.to_vec(),
@@ -224,9 +225,11 @@ fn gateway(handle: &Handle) -> Gateway {
         None,
     )
     .expect("semantic runtime");
+    let runtime = Arc::new(runtime);
     let app = GatewayMcpApplication::new(
         CanonicalCatalog::load().expect("closed canonical MCP catalog"),
-        guard(runtime),
+        guard(Arc::clone(&runtime)),
+        runtime,
         policy,
         RememberEventKind::UserMessage,
         bootstrap,

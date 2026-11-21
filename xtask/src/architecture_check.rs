@@ -396,20 +396,8 @@ impl GuardModuleGraph {
         active: &mut BTreeSet<GuardPath>,
         found: &mut BTreeSet<String>,
     ) {
-        if let [krate, rest @ ..] = path
-            && krate == "humaux_adapters"
-        {
-            let rest: Vec<_> = rest.iter().map(String::as_str).collect();
-            if !matches!(
-                rest.as_slice(),
-                // M02 credentials, M04 admission/metering, M05 denials audit.
-                ["credential_repo" | "request_guard_repo" | "quota_repo"
-                    | "audited_read_quota" | "independent_audit", ..]
-                // The typed pool is a handle, not an adapter door.
-                | ["postgres", "RuntimeDbPool"]
-            ) {
-                found.insert(path.join("::"));
-            }
+        if path.first().is_some_and(|krate| krate == "humaux_adapters") {
+            found.insert(path.join("::"));
             return;
         }
         if let Some((last, module)) = path.split_last()
@@ -480,7 +468,7 @@ fn guard_module_file(
     (file, child_dir)
 }
 
-/// M03 design §4 / §8 G-M03-12: Guard can reach request-policy adapters, never operation adapters.
+/// M03 design §4 / §8 G-M03-12: Guard has no adapter imports or qualified references.
 fn m03_12_guard_adapter_boundary(root: &Path) -> Verdict {
     let result = (|| {
         let root = root.canonicalize().map_err(|e| e.to_string())?;
@@ -14140,7 +14128,7 @@ pub fn run(_args: &[String]) -> i32 {
             m03_2_no_pg_rate_path(&root),
         ),
         (
-            "G-M03-12 (request guard imports no operation adapter)",
+            "G-M03-12 (request guard has no adapter references)",
             m03_12_guard_adapter_boundary(&root),
         ),
         (
@@ -14465,6 +14453,18 @@ mod tests {
         );
         for (fault, forbidden) in [
             (
+                "use humaux_adapters::postgres::RuntimeDbPool;",
+                "humaux_adapters::postgres::RuntimeDbPool",
+            ),
+            (
+                "fn fault() { let _: Option<::humaux_adapters::postgres::RuntimeDbPool> = None; }",
+                "humaux_adapters::postgres::RuntimeDbPool",
+            ),
+            (
+                "use humaux_adapters::credential_repo;",
+                "humaux_adapters::credential_repo",
+            ),
+            (
                 "use humaux_adapters::remember;",
                 "humaux_adapters::remember",
             ),
@@ -14583,10 +14583,7 @@ mod tests {
                 case,
                 &[
                     ("lib.rs", "pub mod guard; pub mod bridge;"),
-                    (
-                        "guard.rs",
-                        "use crate::bridge::links::store::credential_repo;",
-                    ),
+                    ("guard.rs", ""),
                     (
                         "bridge.rs",
                         "pub use humaux_adapters::confirm_token_repo as token; \

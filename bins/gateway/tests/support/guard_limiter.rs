@@ -26,11 +26,12 @@ fn configured(
 ) -> (GatewayMcpApplication, Arc<GatewayGuard>) {
     let rt = handle.rt.handle().clone();
     rt.block_on(async {
-        let pool = handle.fresh_runtime().await.expect("checked runtime");
-        let guard = Arc::new(GatewayGuard::new(pool, settings).unwrap());
+        let pool = Arc::new(handle.fresh_runtime().await.expect("checked runtime"));
+        let guard = Arc::new(build_gateway_guard(Arc::clone(&pool), settings).unwrap());
         let app = application_with_guard(
             handle,
             guard.clone(),
+            pool,
             ContextBudget::new(2048, 1024).unwrap(),
         );
         (app, guard)

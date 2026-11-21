@@ -193,6 +193,7 @@ async fn serve(bootstrap: GatewayBootstrap) -> Result<(), Box<dyn Error>> {
         ));
         mcp = mcp.merge(oauth_http::router(
             runtime.guard(),
+            runtime.runtime_pool(),
             runtime.take_oauth_http(),
             login,
         ));
@@ -203,6 +204,7 @@ async fn serve(bootstrap: GatewayBootstrap) -> Result<(), Box<dyn Error>> {
         supervision_routes(readiness.clone()),
         runtime.admission(),
         runtime.guard(),
+        runtime.runtime_pool(),
         runtime.take_billing_webhook(),
     );
 

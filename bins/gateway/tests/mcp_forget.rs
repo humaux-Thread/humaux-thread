@@ -4,7 +4,7 @@
 //!   r=[control.confirm_tokens, control.deletion_requests, ops.memory_lifecycle_events, private.memory_evidence, private.memory_records, projection.stream_log]
 //!   w=[control.api_keys, control.confirm_tokens, control.deletion_requests, control.deletion_targets, ops.deletion_plan_steps, ops.memory_lifecycle_events, private.memory_evidence, projection.stream_checkpoints], PostgreSQL(role_gateway)]; env=[HUMAUX_TEST_PG_DSN];
 //!   modules=[adapters::postgres, adapters::tests::support::operation_receipt_fixture, application::forget, contracts::retrieval_config,
-//!   domain::context, domain::dataclass, domain::identity, gateway::context, gateway::guard, gateway::limiter,
+//!   domain::context, domain::dataclass, domain::identity, gateway::context, gateway::bootstrap, gateway::guard, gateway::limiter,
 //!   gateway::mcp_application, gateway::remember, humaux-testkit, protocol::edge, protocol::mcp, protocol::mcp_catalog, testkit::disposable]
 //! Called-by: [cargo-test]
 //! Invariants: [only disposable CI databases; each refusal asserts its wire code and unchanged deletion footprint;
@@ -17,6 +17,7 @@ use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use humaux_adapters::postgres::RuntimeDbPool;
 use humaux_domain::{context::ContextBudget, dataclass::DataClass, identity::VisibilityClass};
 use humaux_gateway::{
+    bootstrap::build_gateway_guard,
     context::ContextBootstrap,
     guard::{GatewayGuard, GuardRatePolicies, GuardSettings},
     mcp_application::GatewayMcpApplication,
@@ -52,9 +53,9 @@ fn rate() -> RatePolicy {
     RatePolicy::new(100, 100).expect("explicit fixture rate")
 }
 
-fn guard(runtime: RuntimeDbPool) -> Arc<GatewayGuard> {
+fn guard(runtime: Arc<RuntimeDbPool>) -> Arc<GatewayGuard> {
     Arc::new(
-        GatewayGuard::new(
+        build_gateway_guard(
             runtime,
             GuardSettings {
                 credential_pepper: SYNTHETIC_CREDENTIAL_PEPPER.to_vec(),
@@ -109,9 +110,11 @@ fn application(handle: &Handle) -> GatewayMcpApplication {
         .rt
         .block_on(handle.fresh_runtime())
         .expect("fresh Gateway runtime");
+    let runtime = Arc::new(runtime);
     GatewayMcpApplication::new(
         CanonicalCatalog::load().expect("closed canonical MCP catalog"),
-        guard(runtime),
+        guard(Arc::clone(&runtime)),
+        runtime,
         policy,
         RememberEventKind::UserMessage,
         bootstrap,
