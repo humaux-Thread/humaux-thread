@@ -441,6 +441,51 @@ const DISCOVERY_RESOURCE: &str = "https://mcp-edge.example.test:8443/mcp";
 const DISCOVERY_CHALLENGE: &str = r#"Bearer resource_metadata="https://mcp-edge.example.test:8443/.well-known/oauth-protected-resource/mcp""#;
 
 #[tokio::test]
+async fn head_discovers_oauth_for_each_mcp_route() {
+    let app = Arc::new(MockApplication {
+        operation_denied: Mutex::new(Some(ErrorCode::Unauthorized)),
+        ..Default::default()
+    });
+    let (address, server) = start_with_oauth(
+        app.clone(),
+        McpAdapter::router,
+        Some(DISCOVERY_ISSUER),
+        true,
+    )
+    .await;
+    for route in ["/mcp", "/mcp/legacy"] {
+        for authorization in [&[][..], &[("Authorization", "Bearer rejected")][..]] {
+            let (status, _, headers) = request_at(address, route, "HEAD", authorization, "").await;
+            assert_eq!(status, 401, "{route}");
+            assert_eq!(
+                headers["www-authenticate"],
+                format!(
+                    "Bearer resource_metadata=\"{DISCOVERY_ISSUER}/.well-known/oauth-protected-resource{route}\""
+                )
+            );
+        }
+        for method in ["GET", "DELETE"] {
+            assert_eq!(request_at(address, route, method, &[], "").await.0, 405);
+        }
+    }
+    *app.operation_denied.lock().expect("operation denied") = None;
+    for route in ["/mcp", "/mcp/legacy"] {
+        let (status, _, headers) = request_at(
+            address,
+            route,
+            "HEAD",
+            &[("Authorization", "Bearer accepted")],
+            "",
+        )
+        .await;
+        assert_eq!(status, 405);
+        assert_eq!(headers["allow"], "POST");
+        assert!(!headers.contains_key("www-authenticate"));
+    }
+    server.abort();
+}
+
+#[tokio::test]
 async fn discovery_publishes_only_the_native_resource_and_its_exact_metadata() {
     let app = Arc::new(MockApplication::default());
     let (address, server) = start_with_oauth(

@@ -527,13 +527,15 @@ async fn request_boundary(
     request: Request,
     next: Next,
 ) -> Response {
-    if request.method() != axum::http::Method::POST {
+    let is_head = request.method() == axum::http::Method::HEAD;
+    if !is_head && request.method() != axum::http::Method::POST {
         return (StatusCode::METHOD_NOT_ALLOWED, [("allow", "POST")]).into_response();
     }
     if has_ambiguous_header(request.headers()) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    if !config.legacy
+    if !is_head
+        && !config.legacy
         && request
             .headers()
             .get("mcp-protocol-version")
@@ -547,9 +549,13 @@ async fn request_boundary(
     }
 
     let (mut parts, body) = request.into_parts();
-    let bytes = match to_bytes(body, config.max_request_body_bytes).await {
-        Ok(bytes) => bytes,
-        Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+    let bytes = if is_head {
+        Default::default()
+    } else {
+        match to_bytes(body, config.max_request_body_bytes).await {
+            Ok(bytes) => bytes,
+            Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+        }
     };
     let status = Arc::new(AtomicU16::new(StatusCode::OK.as_u16()));
     let capacity_denied = Arc::new(AtomicBool::new(false));
@@ -571,11 +577,22 @@ async fn request_boundary(
             .split_once(' ')
             .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
     });
-    if let Err(code) = config
+    let mut access = config
         .application
         .check_access(&context, McpOperation::Preflight)
-        .await
-    {
+        .await;
+    if is_head && access.is_ok() {
+        // OAuth clients probe with HEAD before sending any MCP protocol headers.
+        access = if has_bearer {
+            config
+                .application
+                .check_access(&context, McpOperation::Initialize)
+                .await
+        } else {
+            Err(ErrorCode::Unauthorized)
+        };
+    }
+    if let Err(code) = access {
         let mapping = error_map::lookup(code);
         let response = (
             StatusCode::from_u16(mapping.http_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
@@ -585,9 +602,12 @@ async fn request_boundary(
         return with_bearer_challenge(
             with_capacity_retry(response, &capacity_denied),
             config.metadata_url.as_deref(),
-            has_bearer,
+            has_bearer && !is_head,
             None,
         );
+    }
+    if is_head {
+        return (StatusCode::METHOD_NOT_ALLOWED, [("allow", "POST")]).into_response();
     }
     if config.legacy {
         let message = match mcp_legacy::decode(&parts.headers, &bytes) {
