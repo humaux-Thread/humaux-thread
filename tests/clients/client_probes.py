@@ -63,7 +63,7 @@ async def qwen_probe(executable, workspace, url, env):
         await process.wait()
 
 
-def kimi_probe(executable, workspace, url, env):
+def kimi_probe(executable, workspace, url, env, events):
     """Run the documented /mcp-config login command against an isolated user configuration."""
     home = workspace / "kimi"
     home.mkdir()
@@ -81,8 +81,12 @@ def kimi_probe(executable, workspace, url, env):
             selector.register(master, selectors.EVENT_READ)
             deadline = time.monotonic() + 45
             output = b""
+            compact = ""
+            trusted = False
             sent = False
             while time.monotonic() < deadline and process.poll() is None:
+                if ("code", True) in events:
+                    return "not_applicable", "PTY OAuth completed; pinned CLI has no model-free tool-call command in --help"
                 if not selector.select(1):
                     continue
                 try:
@@ -97,16 +101,19 @@ def kimi_probe(executable, workspace, url, env):
                 output = (output + chunk)[-65536:]
                 screen = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", output).decode(errors="replace").lower()
                 compact = re.sub(r"\s+", "", screen)
-                for marker in ("pleaselogin", "notloggedin", "run/login", "loginwithkimi",
-                               "nomodelconfigured", "noproviderconfigured"):
-                    if marker in compact:
-                        return "not_applicable", f"Fresh PTY displayed account/model prerequisite ({marker})"
-                if not sent and ("❯" in screen or "type a message" in screen or "type /" in screen):
+                if not trusted and "trustthisfolder?" in compact:
+                    # The trust dialog refers to the empty, disposable test directory.
+                    os.write(master, b"\r")
+                    trusted = True
+                    output = b""
+                    continue
+                if not sent and ("run/loginor/provider" in compact or "type a message" in screen):
                     os.write(master, b"/mcp-config login humaux_ci\r")
                     sent = True
-                if sent and ("authentication successful" in screen or "oauth login successful" in screen):
-                    return "not_applicable", "PTY OAuth completed; pinned CLI has no model-free tool-call command in --help"
-            return "FAIL", "PTY did not witness an account prerequisite or finish MCP auth within 45 seconds"
+            if (sent and "/mcp-configloginhumaux_ci" in compact and "notset,run/loginor/provider" in compact and
+                    ("authorize", True) not in events):
+                return "not_applicable", "Fresh PTY submitted /mcp-config login; model remained unset (run /login or /provider) and no authorize request arrived"
+            return "FAIL", "PTY could not prove an account prerequisite or complete MCP auth within 45 seconds"
     finally:
         os.close(master)
         if process.poll() is None:

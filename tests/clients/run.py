@@ -346,13 +346,15 @@ def zcode(env):
     name, version = "ZCode CLI", commit[:12]
     source = TEMP / "oauth-zcode-src"
     workspace = source / "apps/zcode-cli"
-    pnpm = ["npm", "exec", "--yes", "--package=pnpm@10.33.2", "--", "pnpm", "-C", str(workspace)]
+    # The release uses its monorepo lockfile, not the stale standalone CLI lockfile.
+    pnpm = ["npm", "exec", "--yes", "--package=pnpm@10.33.2", "--", "pnpm", "-C", str(source)]
     steps = [
         ("git init", ["git", "init", "-q", str(source)], 20),
         ("official source fetch", ["git", "-C", str(source), "fetch", "--depth=1",
                                     "https://github.com/zai-org/ZCode.git", commit], 120),
         ("pinned checkout", ["git", "-C", str(source), "checkout", "-q", "--detach", commit], 60),
-        ("locked adapter dependency install", [*pnpm, "--filter", "@zcode/adapters...", "install", "--frozen-lockfile"], 260),
+        ("root-lockfile adapter dependency install", [*pnpm, "--filter", "zcode-cli", "--filter",
+                                                     "@zcode/adapters...", "install", "--frozen-lockfile"], 260),
         ("workspace adapter build", [*pnpm, "--filter", "@zcode/adapters...", "run", "build"], 240),
     ]
     for stage, command, timeout in steps:
@@ -481,11 +483,11 @@ def cli(name, version, package, binary, unavailable, env):
         workspace = prefix / "probe-workspace"
         workspace.mkdir()
         url = env["OAUTH_TEST_ORIGIN"] + "/mcp/legacy"
-        with witness():
+        with witness() as events:
             if binary == "qwen":
                 status, reason = asyncio.run(qwen_probe(executable, workspace, url, env))
             else:
-                status, reason = kimi_probe(executable, workspace, url, env)
+                status, reason = kimi_probe(executable, workspace, url, env, events)
         record(name, version, status, reason)
         return
     # One model-free app-server session can call a configured MCP tool directly.
