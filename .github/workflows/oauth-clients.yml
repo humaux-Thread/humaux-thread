@@ -6,7 +6,7 @@ on:
       fault:
         description: Negative control for the isolated runner
         type: choice
-        options: [none, pkce, consent, gemini-consent]
+        options: [none, pkce, consent, gemini-consent, qwen-consent]
         default: none
   schedule:
     - cron: '23 8 * * *'

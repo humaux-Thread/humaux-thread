@@ -87,7 +87,7 @@ def open_authorization(url):
     assert status == 200, "authenticated consent page"
     fields = ConsentFields(body).fields
     assert fields.keys() == {"ticket", "csrf"}, "consent hidden fields"
-    decision = "deny" if os.environ["OAUTH_CLIENT_FAULT"] in {"consent", "gemini-consent"} else "allow"
+    decision = "deny" if os.environ["OAUTH_CLIENT_FAULT"] in {"consent", "gemini-consent", "qwen-consent"} else "allow"
     status, location, _ = request("/oauth/authorize", {**fields, "decision": decision})
     assert status == 303 and location, "consent redirect"
     actual = urlsplit(location)

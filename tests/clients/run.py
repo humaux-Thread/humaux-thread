@@ -24,6 +24,7 @@ from xml.etree import ElementTree as xml
 
 from browser import NoRedirect, postgres_command
 from client_probes import kimi_probe, qwen_probe
+from model_stub import model_stub
 
 HERE = Path(__file__).resolve().parent
 TEMP = Path(os.environ["RUNNER_TEMP"])
@@ -492,7 +493,8 @@ def cli(name, version, package, binary, unavailable, env):
     executable = str(prefix / "node_modules" / ".bin" / binary)
     version_check = run([executable, "--version"], env) if Path(executable).is_file() else installed
     if installed.returncode or version_check.returncode or version not in version_check.stdout:
-        record(name, version, "not_applicable", f"Pinned package {package} install/version probe failed on Linux ARM64")
+        status = "FAIL" if FAULT == "qwen-consent" else "not_applicable"
+        record(name, version, status, f"Pinned package {package} install/version probe failed on Linux ARM64")
         return
     if unavailable:
         record(name, version, "not_applicable", f"Binary version verified; {unavailable}")
@@ -501,11 +503,30 @@ def cli(name, version, package, binary, unavailable, env):
         workspace = prefix / "probe-workspace"
         workspace.mkdir()
         url = env["OAUTH_TEST_ORIGIN"] + "/mcp/legacy"
-        with witness() as events:
+        ttl = int(env["HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS"])
+        with witness() as events, model_stub(env["OAUTH_TEST_WORKSPACE"]) as model:
             if binary == "qwen":
-                status, reason = asyncio.run(qwen_probe(executable, workspace, url, env))
+                status, reason = asyncio.run(qwen_probe(executable, workspace, url, env, model, events, ttl))
             else:
-                status, reason = kimi_probe(executable, workspace, url, env, events)
+                status, reason = kimi_probe(executable, workspace, url, env, model, events, ttl)
+        if FAULT == "qwen-consent":
+            denied = ("consent denied", True) in events and not any(key == "exchange status" for key, _ in events)
+            record(name, version, "FAIL", "consent denied by fixture; no exchange" if denied else
+                   f"Consent denial not verified ({reason})")
+            return
+        if status != "not_applicable":
+            missing = [key for key in ("PRM", "ASM", "DCR", "authorize", "consent", "code", "protocol", *TOOLS)
+                       if (key, True) not in events]
+            after_first_call = events[events.index(("tools/call", True)) + 1:] if ("tools/call", True) in events else []
+            if ("refresh", True) not in after_first_call or ("tools/call", True) not in after_first_call:
+                missing.append("post-expiry refresh and tool recovery")
+            if refusal := next((value for key, value in events if key == "DCR refusal"), None):
+                reason += f"; DCR refused: {refusal}"
+            if missing:
+                status = "FAIL"
+                reason += f"; missing: {', '.join(missing)}"
+            elif status == "PASS":
+                reason = f"{discovery_route(events)}; DCR; consent callback; S256; equal resources; 2025-06-18; local model tools and refresh"
         record(name, version, status, reason)
         return
     # One model-free app-server session can call a configured MCP tool directly.
@@ -629,6 +650,8 @@ def main():
                 sdk("MCP TypeScript SDK", "1.32.2", ts, env)
             elif FAULT == "gemini-consent":
                 gemini(env)
+            elif FAULT == "qwen-consent":
+                cli(*next(row for row in CLI if row[3] == "qwen"), env)
             else:
                 sdk("MCP TypeScript SDK", "1.32.2", [*ts, "--refresh"], env)
                 check_pkce(ts, env)
