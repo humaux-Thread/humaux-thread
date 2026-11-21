@@ -1,6 +1,7 @@
 """Credential-free probes for native clients whose public interfaces need an interactive host."""
 
 import asyncio
+from contextlib import suppress
 import errno
 import fcntl
 import json
@@ -21,16 +22,18 @@ async def qwen_probe(executable, workspace, url, env):
     process = await asyncio.create_subprocess_exec(
         executable, "--acp", cwd=workspace, env=env, stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=4 * 1024 * 1024,
+        start_new_session=True,
     )
 
     async def request(number, method, params):
         message = {"jsonrpc": "2.0", "id": number, "method": method, "params": params}
         process.stdin.write((json.dumps(message) + "\n").encode())
         await process.stdin.drain()
-        while line := await asyncio.wait_for(process.stdout.readline(), timeout=35):
-            response = json.loads(line)
-            if response.get("id") == number:
-                return response
+        async with asyncio.timeout(35):
+            while line := await process.stdout.readline():
+                response = json.loads(line)
+                if response.get("id") == number:
+                    return response
         return {}
 
     try:
@@ -54,8 +57,9 @@ async def qwen_probe(executable, workspace, url, env):
     except (OSError, ValueError, TimeoutError):
         return "FAIL", "Public ACP session probe did not complete"
     finally:
-        if process.returncode is None:
-            process.kill()
+        # The npm launcher spawns the ACP process, which inherits the pipe.
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
         await process.wait()
 
 
