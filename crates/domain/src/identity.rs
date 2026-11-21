@@ -238,6 +238,28 @@ pub fn can_read(scope: &AuthorizationScope, object: &VisibilityDescriptor) -> bo
     }
 }
 
+/// Effect of a matching MCP connection rule (ADR-0137 U1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpPolicyEffect {
+    /// Allow the matching target, subject to the other chooser checks.
+    Allow,
+    /// Deny the matching target.
+    Deny,
+}
+
+impl McpPolicyEffect {
+    /// Closed vocabulary of the PostgreSQL enum (§78.2).
+    pub const ALL: [Self; 2] = [Self::Allow, Self::Deny];
+
+    /// Canonical PostgreSQL label.
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            Self::Allow => "ALLOW",
+            Self::Deny => "DENY",
+        }
+    }
+}
+
 // ============================================================================
 // §6.3 MembershipState machine (ADR-0033, card 12)
 // ============================================================================

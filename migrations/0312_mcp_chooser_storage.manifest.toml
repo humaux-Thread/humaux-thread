@@ -1,0 +1,28 @@
+migration_id = "0312_mcp_chooser_storage"
+class = "EXPAND_CONTRACT"
+precheck = """
+SELECT to_regclass('control.tenants') IS NOT NULL
+   AND to_regclass('control.memberships') IS NOT NULL
+   AND to_regclass('control.workspaces') IS NOT NULL AS precheck_ok
+"""
+postcheck = """
+WITH objects AS (
+  SELECT * FROM pg_class WHERE oid IN (
+    to_regclass('control.mcp_connection_policies'), to_regclass('control.mcp_connection_rules'),
+    to_regclass('control.mcp_groups'), to_regclass('control.mcp_group_members')
+  )
+)
+SELECT
+  (SELECT count(*) = 4 AND bool_and(relrowsecurity AND relforcerowsecurity
+      AND relowner = 'role_migration_owner'::regrole
+      AND NOT EXISTS (SELECT FROM aclexplode(relacl) WHERE grantee <> relowner))
+    FROM objects)
+  AND (SELECT prosecdef AND proowner = 'role_migration_owner'::regrole
+      AND 'search_path=pg_catalog' = ANY(proconfig)
+      AND has_function_privilege('role_gateway', oid, 'EXECUTE')
+      AND NOT EXISTS (SELECT FROM aclexplode(proacl) WHERE grantee NOT IN (proowner, 'role_gateway'::regrole))
+    FROM pg_proc WHERE oid = to_regprocedure('control.write_mcp_chooser_settings(uuid,uuid,uuid,text,jsonb)'))
+  AND to_regtype('control.mcp_policy_effect') IS NOT NULL AS postcheck_ok
+"""
+rollback_or_forward_fix = "Forward fix. Revoke EXECUTE on the write door if needed while retaining versioned policy and group rows."
+backup_restore_requirement = "Standard migration backup. Adds empty tables and a gateway EXECUTE grant without modifying existing rows or grants."

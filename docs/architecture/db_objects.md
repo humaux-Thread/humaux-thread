@@ -2070,6 +2070,124 @@ executed by:
 - process(humaux-maintenance): `adapters::maintenance_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
 
+### `control.mcp_connection_policies`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0312_mcp_chooser_storage
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+foreign keys (outgoing):
+- fk: tenant_id -> control.tenants (NOT NULL)
+
+read by:
+- (no process): `adapters::tests::mcp_chooser_storage`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `control.mcp_connection_rules`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0312_mcp_chooser_storage
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+foreign keys (outgoing):
+- fk: tenant_id -> control.tenants (NOT NULL)
+- fk: tenant_id, workspace_id -> control.workspaces (NULL)
+
+read by:
+- (no process): `adapters::tests::mcp_chooser_storage`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `control.mcp_group_members`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0312_mcp_chooser_storage
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+foreign keys (outgoing):
+- fk: tenant_id, group_id -> control.mcp_groups (NOT NULL)
+- fk: tenant_id, user_id -> control.memberships (NOT NULL)
+
+read by:
+- (no process): `adapters::tests::mcp_chooser_storage`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
+### `control.mcp_groups`
+- kind: table
+- owner: role_migration_owner
+- RLS: yes
+- FORCE: yes
+- created in: 0312_mcp_chooser_storage
+
+grants (runtime roles):
+- role_migration_owner: DELETE
+- role_migration_owner: INSERT
+- role_migration_owner: MAINTAIN
+- role_migration_owner: REFERENCES
+- role_migration_owner: SELECT
+- role_migration_owner: TRIGGER
+- role_migration_owner: TRUNCATE
+- role_migration_owner: UPDATE
+
+foreign keys (outgoing):
+- fk: tenant_id -> control.tenants (NOT NULL)
+
+read by:
+- (no process): `adapters::tests::mcp_chooser_storage`
+- process(cargo-xtask): `maintenance::rls_check`
+- process(humaux-maintenance): `maintenance::rls_check`
+
+written by:
+
+executed by:
+
 ### `control.memberships`
 - kind: table
 - owner: role_migration_owner
@@ -2147,6 +2265,7 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::mcp_chooser_storage`
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_subjects_link`
@@ -5265,6 +5384,7 @@ foreign keys (outgoing):
 
 read by:
 - (no process): `adapters::billing_processor_repo`
+- (no process): `adapters::tests::mcp_chooser_storage`
 - (no process): `adapters::tests::project_continuity_read_0137_acceptance`
 - (no process): `adapters::tests::support::continuity_0137_cleanup`
 - (no process): `maintenance::tests::onboarding`
@@ -5326,6 +5446,7 @@ written by:
 - (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::mcp_chooser_storage`
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_attribution`
@@ -5685,6 +5806,7 @@ written by:
 - (no process): `adapters::tests::login_challenge`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::mcp_chooser_storage`
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::memory_affects`
 - (no process): `adapters::tests::memory_subjects_link`
@@ -5872,6 +5994,7 @@ written by:
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::mcp_chooser_storage`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_in_project`
 - (no process): `adapters::tests::project_continuity_0136`
@@ -5923,6 +6046,25 @@ executed by:
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `adapters::entitlement_repo`
 - process(humaux-maintenance): `maintenance::rls_check`
+
+### `control.write_mcp_chooser_settings`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0312_mcp_chooser_storage
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::mcp_chooser_storage`
+- process(humaux-gateway): `adapters::oauth_repo`
 
 ### `coord.canvas_elements`
 - kind: table
