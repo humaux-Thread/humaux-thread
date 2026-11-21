@@ -526,14 +526,18 @@ pub enum McpChooserChange<'a> {
     },
 }
 
-/// Apply a change on behalf of a verified human actor and return the row's new version.
+/// Apply a change by a direct human administrator and return the row's new version.
 pub async fn write_settings(
     pool: &RuntimeDbPool,
     actor: &AuthorizationScope,
     tenant_id: TenantId,
     change: McpChooserChange<'_>,
 ) -> Result<i64, ErrorCode> {
-    let user = actor.user_id().ok_or(ErrorCode::Forbidden)?;
+    let principal = actor.principal();
+    // Human sessions use the user's own principal. Delegated credentials carry a separate principal.
+    if actor.user_id() != Some(UserId(principal.0)) {
+        return Err(ErrorCode::Forbidden);
+    }
     let (action, values) = match change {
         McpChooserChange::Configure {
             policy_enabled,
@@ -574,7 +578,7 @@ pub async fn write_settings(
         "SELECT control.write_mcp_chooser_settings($1, $2, $3, $4, $5)",
     )
     .bind(actor.tenant_id().0)
-    .bind(user.0)
+    .bind(principal.0)
     .bind(tenant_id.0)
     .bind(action)
     .bind(values)

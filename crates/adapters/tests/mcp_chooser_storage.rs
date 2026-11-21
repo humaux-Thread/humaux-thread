@@ -89,6 +89,17 @@ fn adr_0137_tenant_admin_write_contract() {
         let write = |actor: &AuthorizationScope, change| {
             rt.block_on(write_settings(&pool, actor, target, change))
         };
+        let delegated_admin = AuthorizationScope::new(
+            target,
+            PrincipalId(Uuid::new_v4()),
+            Some(UserId(admin)),
+            BoundedSet::new([WorkspaceId(workspace)]).unwrap(),
+        );
+        assert_eq!(
+            write(&delegated_admin, configure(true)),
+            Err(ErrorCode::Forbidden),
+            "delegated administrator principal must be refused"
+        );
         assert_eq!(
             write(&scope(tenant, member), configure(true)),
             Err(ErrorCode::Forbidden),
