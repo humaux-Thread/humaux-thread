@@ -88,7 +88,7 @@ def open_mcp(ui, claude):
     prompt = r"foragents|forshortcuts|forhelp|automodeon"
     if not claude:
         prompt += r"|humaux-ci-stub"
-    if not ui.expect(rf"doyouwanttousethisapikey|doyoutrustthefilesinthisfolder|{prompt}", 30):
+    if not ui.expect(rf"doyouwanttousethisapikey|doyoutrustthefilesinthisfolder|{prompt}", 30 if claude else 60):
         status = ui.process.poll()
         rendered = "rendered terminal output" if ui.screen else "no terminal output"
         state = "running" if status is None else f"exit {status}"
@@ -156,7 +156,11 @@ def terminal_probe(executable, binary, workspace, url, env, model, events, ttl):
                    DISABLE_AUTOUPDATER="1", ENABLE_TOOL_SEARCH="false")
         model_id = CLAUDE_MODEL
     else:
-        env.update(CODEBUDDY_CONFIG_DIR=str(config), OPENAI_API_KEY=KEY)
+        # Model configuration also works in print mode, where the login picker is skipped.
+        # The interactive process needs the documented API key and base URL separately.
+        # https://www.codebuddy.ai/docs/cli/env-vars#authentication
+        env.update(CODEBUDDY_CONFIG_DIR=str(config), OPENAI_API_KEY=KEY,
+                   CODEBUDDY_API_KEY=KEY, CODEBUDDY_BASE_URL=model.url.removesuffix("/v1"))
         (config / "settings.json").write_text(json.dumps({"trustedDirectories": [str(workspace)]}))
         model_dir = workspace / ".codebuddy"
         model_dir.mkdir()

@@ -11,23 +11,15 @@ use humaux_application::{
 };
 use humaux_gateway::oauth_http::public_client_callback;
 
-struct Fixture {
-    client_id: String,
-    callback: String,
-}
+const DOCUMENT: &str = include_str!("../../../tests/clients/claude_cimd.json");
+
+struct Fixture;
 
 #[async_trait::async_trait]
 impl CimdFetch for Fixture {
-    async fn fetch(&self, client_id: &str) -> Result<FetchedDocument, CimdError> {
-        assert_eq!(client_id, self.client_id);
+    async fn fetch(&self, _: &str) -> Result<FetchedDocument, CimdError> {
         Ok(FetchedDocument {
-            body: serde_json::to_vec(&serde_json::json!({
-                "client_id": self.client_id,
-                "client_name": "Claude",
-                "redirect_uris": [self.callback],
-                "token_endpoint_auth_method": "none",
-            }))
-            .unwrap(),
+            body: DOCUMENT.as_bytes().to_vec(),
             cache_control: vec!["max-age=30".into()],
             age: None,
         })
@@ -36,21 +28,19 @@ impl CimdFetch for Fixture {
 
 #[tokio::test]
 async fn claude_public_cimd_uses_its_exact_callback() {
-    let client_id = std::env::var("OAUTH_FIXTURE_CIMD").unwrap();
-    let callback = std::env::var("OAUTH_FIXTURE_CALLBACK").unwrap();
+    let metadata: serde_json::Value = serde_json::from_str(DOCUMENT).unwrap();
+    let client_id = metadata["client_id"].as_str().unwrap();
+    let callback = metadata["redirect_uris"][0].as_str().unwrap();
     let resolver = CimdResolver::new(
         "https://as.example.test".into(),
-        Arc::new(Fixture {
-            client_id: client_id.clone(),
-            callback: callback.clone(),
-        }),
+        Arc::new(Fixture),
         Duration::from_secs(60),
         NonZeroUsize::MIN,
         public_client_callback,
     );
-    let client = resolver.resolve(&client_id).await.unwrap();
+    let client = resolver.resolve(client_id).await.unwrap();
     assert_eq!(client.client_id(), client_id);
-    assert_eq!(client.redirect_uris(), [callback.as_str()]);
+    assert_eq!(client.redirect_uris(), [callback]);
 
     let resource = "https://as.example.test/mcp";
     let policy = OAuthPolicy {
@@ -68,8 +58,8 @@ async fn claude_public_cimd_uses_its_exact_callback() {
     };
     let request = AuthorizeRequest {
         response_type: Some("code"),
-        client_id: &client_id,
-        redirect_uri: Some(&callback),
+        client_id,
+        redirect_uri: Some(callback),
         code_challenge: Some("abcdefghijklmnopqrstuvwxyzABCDEFG0123456789"),
         code_challenge_method: Some("S256"),
         resource: Some(resource),

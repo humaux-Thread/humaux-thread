@@ -34,11 +34,12 @@ FOCUS = os.environ.get("OAUTH_CLIENT_FOCUS", "all")
 GATEWAY = 18170
 ROWS = []
 TOOLS = ("tools/list", "tools/call")
-CLAUDE_CALLBACK = "https://claude.ai/api/mcp/auth_callback"
+CLAUDE_CIMD = json.loads((HERE / "claude_cimd.json").read_text())
+CLAUDE_CALLBACK, = CLAUDE_CIMD["redirect_uris"]
 CLAUDE_STATIC_ID = "ci-claude-web-static"
 CLAUDE_CONNECTOR_DOCS = "https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp"
 HOSTED = [
-    ("claude.ai", "https://claude.ai/oauth/mcp-oauth-client-metadata", CLAUDE_CALLBACK),
+    ("claude.ai", CLAUDE_CIMD["client_id"], CLAUDE_CALLBACK),
     ("ChatGPT", "https://chatgpt.com/oauth/client.json", "https://chatgpt.com/connector_platform_oauth_redirect"),
     ("Antigravity", "https://antigravity.google/oauth/client-metadata.json", "https://antigravity.google/oauth-callback"),
     ("Cursor Web", None, "https://www.cursor.com/agents/mcp/oauth/callback"),
@@ -491,8 +492,7 @@ def claude_hosted(document, redirect, env):
                 output.write((HERE / "claude_cimd.rs").read_text())
             try:
                 result = run(["cargo", "test", "--locked", "-q", "-p", "humaux-gateway",
-                              "--test", "ci_claude_cimd"], {**env, "CARGO_PROFILE_TEST_DEBUG": "0",
-                              "OAUTH_FIXTURE_CIMD": document, "OAUTH_FIXTURE_CALLBACK": redirect}, timeout=390)
+                              "--test", "ci_claude_cimd"], {**env, "CARGO_PROFILE_TEST_DEBUG": "0"}, timeout=390)
                 if result.returncode:
                     failure.append(f"CIMD fixture assertion exited {result.returncode}")
             finally:
