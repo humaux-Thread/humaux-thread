@@ -39,7 +39,7 @@ HOSTED = [
     ("claude.ai", "https://claude.ai/oauth/mcp-oauth-client-metadata", "https://claude.ai/api/mcp/auth_callback"),
     ("ChatGPT", "https://chatgpt.com/oauth/client.json", "https://chatgpt.com/connector_platform_oauth_redirect"),
     ("Antigravity", "https://antigravity.google/oauth/client-metadata.json", "https://antigravity.google/oauth-callback"),
-    ("Cursor Web", None, "https://prod.cursor.com/docs/mcp"),
+    ("Cursor Web", None, "https://www.cursor.com/agents/mcp/oauth/callback"),
     ("vscode.dev", "https://vscode.dev/oauth/client-metadata.json", "https://vscode.dev/redirect"),
 ]
 CLI = [
@@ -412,7 +412,16 @@ def deepseek(env):
     if re.search(r"oauth|authorization.?code", declaration, re.IGNORECASE):
         record(name, version, "FAIL", "Pinned plugin exposes an OAuth declaration; its direct adapter needs a real journey")
         return
-    record(name, version, "not_applicable", "Fetched matching CLI/client/manager; MCP client types lack OAuth and tagged manager docs say No OAuth flow; https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.5/packages/mcp/mcp-manager/README.md#known-limitations")
+    with tarfile.open(target / releases["@deepseek-ai/dsh-mcp-manager"]["filename"]) as archive:
+        manager_files = archive.getnames()
+    if any(re.search(r"(?:^|/)oauth(?:[./_-]|$)", path, re.IGNORECASE) for path in manager_files):
+        record(name, version, "FAIL", "Pinned manager ships an OAuth module; its native route needs a real journey")
+        return
+    # The documented OAuth manager and client postdate both the requested and latest release.
+    source = "https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/packages/mcp/mcp-client/README.md#oauth"
+    callback_key = hashlib.sha256(b"mcp-client/humaux_ci").hexdigest()
+    doc_oauth(name, version, f"http://127.0.0.1:18772/mcp/oauth/callback/{callback_key}", source, env,
+              "; requested 0.2.1-rc.5 and latest dsh-v0.2.2-rc.5 predate the OAuth plugin, so the published CLI was not the OAuth subject")
 
 
 def metadata_http(response):
@@ -423,10 +432,30 @@ def metadata_http(response):
     return f"HTTP {response.status}, content-type={media}, redirect={redirect}"
 
 
-def hosted(name, document, redirect, env):
-    if document is None:
-        record(name, "hosted", "not_applicable", f"No public CIMD URL established; official reference {redirect}")
+def doc_oauth(name, version, redirect, source, env, note=""):
+    with witness():
+        result = run(["node", str(HERE / "doc_oauth.mjs"), redirect], env, timeout=45)
+    if result.returncode:
+        stages = ("discovery", "public DCR", "PKCE, redirect and RFC 8707 resource")
+        phase = next((stage for stage in stages if result.stderr == f"Documented OAuth probe failed: {stage}\n"), "unknown stage")
+        record(name, version, "FAIL", f"Documented OAuth SDK probe failed at {phase}; {source}{note}")
         return
+    record(name, version, "doc-verified", f"SDK verified public DCR, exact callback {redirect}, S256 and RFC 8707 resource; {source}{note}")
+
+
+def hosted(name, document, redirect, env):
+    if name == "Cursor Web":
+        doc_oauth(name, "hosted", redirect, "https://prod.cursor.com/docs/mcp", env)
+        return
+    deferred = name == "claude.ai"
+
+    def preflight(reason):
+        if deferred:
+            record(name, "hosted", "not_applicable",
+                   f"deferred to post-launch hosted verification (owner 2026-11-21); {reason}")
+        else:
+            record(name, "hosted", "FAIL", reason)
+
     # Match the gateway's CIMD fetch rule. Record redirect presence without logging Location values.
     fetch = build_opener(NoRedirect())
     facts = "HTTP unavailable, content-type=absent, redirect=unknown"
@@ -436,21 +465,24 @@ def hosted(name, document, redirect, env):
             raw = response.read(8193)
     except HTTPError as response:
         with response:
-            record(name, "hosted", "FAIL", f"environment: CIMD GET; {metadata_http(response)}, JSON=not read; {document}")
+            preflight(f"environment: CIMD GET; {metadata_http(response)}, JSON=not read; {document}")
         return
     except (OSError, HTTPException) as error:
-        record(name, "hosted", "FAIL", f"environment: CIMD GET {type(error).__name__}; {facts}, JSON=not read; {document}")
+        preflight(f"environment: CIMD GET {type(error).__name__}; {facts}, JSON=not read; {document}")
         return
     if len(raw) > 8192:
-        record(name, "hosted", "FAIL", f"CIMD JSON exceeds size limit; {facts}, JSON=oversize; {document}")
+        preflight(f"CIMD JSON exceeds size limit; {facts}, JSON=oversize; {document}")
         return
     try:
         data = json.loads(raw)
     except (ValueError, RecursionError):
-        record(name, "hosted", "FAIL", f"CIMD JSON parsing failed; {facts}, JSON=invalid; {document}")
+        preflight(f"CIMD JSON parsing failed; {facts}, JSON=invalid; {document}")
         return
     shape = {dict: "object", list: "array", str: "string", bool: "boolean", type(None): "null"}.get(type(data), "number")
     facts = f"{facts}, JSON={shape}"
+    if deferred:
+        preflight(f"CIMD GET; {facts}; {document}")
+        return
     client_match = isinstance(data, dict) and data.get("client_id") == document
     redirects = data.get("redirect_uris") if isinstance(data, dict) else None
     callback_match = isinstance(redirects, list) and redirect in redirects
@@ -644,8 +676,10 @@ def reports():
     for name, version, status, reason in ROWS:
         lines.append(f"| {name} | {version} | {status} | {reason} |")
         case = xml.SubElement(suite, "testcase", name=f"{name} {version}")
-        if status != "PASS":
+        if status in {"FAIL", "not_applicable"}:
             xml.SubElement(case, "failure" if status == "FAIL" else "skipped", message=reason)
+        elif status == "doc-verified":
+            xml.SubElement(case, "system-out").text = f"doc-verified: {reason}"
     (output / "clients.md").write_text("\n".join(lines) + "\n")
     xml.ElementTree(suite).write(output / "clients.xml", encoding="utf-8", xml_declaration=True)
 
@@ -662,6 +696,11 @@ def main():
                 gemini(env)
             elif FAULT == "qwen-consent" or FOCUS == "qwen":
                 cli(*next(row for row in CLI if row[3] == "qwen"), env)
+            elif FOCUS == "docs":
+                for row in HOSTED:
+                    if row[0] in {"claude.ai", "Cursor Web"}:
+                        hosted(*row, env)
+                deepseek(env)
             else:
                 sdk("MCP TypeScript SDK", "1.32.2", [*ts, "--refresh"], env)
                 check_pkce(ts, env)

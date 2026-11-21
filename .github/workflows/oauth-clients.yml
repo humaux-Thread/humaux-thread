@@ -9,9 +9,9 @@ on:
         options: [none, pkce, consent, gemini-consent, qwen-consent]
         default: none
       focus:
-        description: Run the full matrix or reproduce the Qwen row alone
+        description: Run the full matrix or an isolated acceptance scope
         type: choice
-        options: [all, qwen]
+        options: [all, qwen, docs]
         default: all
   schedule:
     - cron: '23 8 * * *'
