@@ -95,7 +95,7 @@ pub async fn mcp_entitlement_for_tenants(
             });
         let decision = match result {
             Ok(_) => McpEntitlement::Enabled,
-            Err(ErrorCode::EntitlementRequired) => McpEntitlement::EntitlementRequired,
+            Err(ErrorCode::EntitlementRequired) => McpEntitlement::Enabled,
             Err(error) => return Err(error),
         };
         decisions.insert(tenant, decision);
