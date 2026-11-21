@@ -2149,6 +2149,7 @@ foreign keys (outgoing):
 - fk: tenant_id, user_id -> control.memberships (NOT NULL)
 
 read by:
+- (no process): `adapters::tests::mcp_chooser_read`
 - (no process): `adapters::tests::mcp_chooser_storage`
 - process(cargo-xtask): `maintenance::rls_check`
 - process(humaux-maintenance): `maintenance::rls_check`
@@ -2263,6 +2264,7 @@ written by:
 - (no process): `adapters::tests::exact_completeness_eval`
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::mcp_chooser_read`
 - (no process): `adapters::tests::mcp_chooser_storage`
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::memory_affects`
@@ -3832,6 +3834,25 @@ written by:
 - process(humaux-retrieval-worker): `adapters::quota_repo`
 
 executed by:
+
+### `control.read_mcp_chooser_decisions`
+- kind: function (SECURITY DEFINER)
+- owner: role_migration_owner
+- RLS: —
+- FORCE: —
+- created in: 0313_mcp_chooser_read
+
+grants (runtime roles):
+- role_gateway: EXECUTE
+- role_migration_owner: EXECUTE
+
+read by:
+
+written by:
+
+executed by:
+- (no process): `adapters::tests::mcp_chooser_read`
+- process(humaux-gateway): `adapters::oauth_repo`
 
 ### `control.reap_quota_reservations`
 - kind: function (SECURITY DEFINER)
@@ -5443,6 +5464,7 @@ written by:
 - (no process): `adapters::tests::ledger_frontier`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::mcp_chooser_read`
 - (no process): `adapters::tests::mcp_chooser_storage`
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::memory_affects`
@@ -5802,6 +5824,7 @@ written by:
 - (no process): `adapters::tests::login_challenge`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::mcp_chooser_read`
 - (no process): `adapters::tests::mcp_chooser_storage`
 - (no process): `adapters::tests::membership_lifecycle`
 - (no process): `adapters::tests::memory_affects`
@@ -5990,6 +6013,7 @@ written by:
 - (no process): `adapters::tests::forget_preview`
 - (no process): `adapters::tests::maintenance_doors`
 - (no process): `adapters::tests::mandatory_context_lane`
+- (no process): `adapters::tests::mcp_chooser_read`
 - (no process): `adapters::tests::mcp_chooser_storage`
 - (no process): `adapters::tests::memory_attribution`
 - (no process): `adapters::tests::memory_in_project`
@@ -6059,6 +6083,7 @@ read by:
 written by:
 
 executed by:
+- (no process): `adapters::tests::mcp_chooser_read`
 - (no process): `adapters::tests::mcp_chooser_storage`
 - process(humaux-gateway): `adapters::oauth_repo`
 

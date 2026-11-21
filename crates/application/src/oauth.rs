@@ -1,7 +1,7 @@
 //! `application::oauth` — M02 OAuth 2.1 authorization-server state machine: authorize-request validation, code issuance
 //!   terms, code-exchange validation, refresh-rotation decisions and grant lifetime/epoch checks. Pure: no SQL, no clock,
 //!   no randomness; `now`, row snapshots and every lifetime come in as arguments.
-//! Depends-on: crates=[base64, humaux-domain, sha2, time, uuid]; services=[]; env=[]; modules=[application::signed_token, domain::error, domain::ids]
+//! Depends-on: crates=[base64, humaux-domain, sha2, time, uuid]; services=[]; env=[]; modules=[application::signed_token, domain::error, domain::identity, domain::ids]
 //! Called-by: [adapters::oauth_repo, application::bearer, application::oauth_exchange, gateway::bootstrap, gateway::oauth_http, tests]
 //! Invariants: [PKCE is S256 only; redirects are matched against the registry, with port variation only for registered HTTP loopback; `resource` is mandatory and allowlisted; a reused refresh token yields a decision that
 //!   revokes its family and grant; a grant is live only before its ceiling and while both epoch snapshots equal the live
@@ -19,6 +19,7 @@ use crate::signed_token::{FIELD_SEP, TokenLabel};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use humaux_domain::error::ErrorCode;
+use humaux_domain::identity::BoundedSet;
 use humaux_domain::ids::{TenantId, UserId, WorkspaceId};
 use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
@@ -477,6 +478,30 @@ pub struct ValidatedAuthorize {
     pub scopes: Vec<String>,
     /// `state`, passed through unchanged to the redirect.
     pub state: Option<String>,
+}
+
+/// Exact tenant/workspace target. A missing workspace is an explicit tenant-level connection.
+pub type ConsentTarget = (TenantId, Option<WorkspaceId>);
+
+/// The candidates for which the chooser's policy and groups permit the connection.
+pub type AllowedSubset = BoundedSet<ConsentTarget>;
+
+/// Client identity from the validated OAuth request.
+#[derive(Debug, Clone, Copy)]
+pub struct ValidatedClientId<'a>(&'a str);
+
+impl<'a> ValidatedClientId<'a> {
+    /// Exact identifier used by the policy.
+    pub const fn as_str(self) -> &'a str {
+        self.0
+    }
+}
+
+impl ValidatedAuthorize {
+    /// Narrow the validated request to the client identity used by the chooser.
+    pub fn validated_client_id(&self) -> ValidatedClientId<'_> {
+        ValidatedClientId(&self.client_id)
+    }
 }
 
 /// A refused authorize request plus where the refusal may be delivered.

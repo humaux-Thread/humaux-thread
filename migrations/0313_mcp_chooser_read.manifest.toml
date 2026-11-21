@@ -1,0 +1,20 @@
+migration_id = "0313_mcp_chooser_read"
+class = "EXPAND_CONTRACT"
+precheck = """
+SELECT to_regclass('control.mcp_connection_policies') IS NOT NULL
+   AND to_regclass('control.mcp_connection_rules') IS NOT NULL
+   AND to_regclass('control.mcp_groups') IS NOT NULL
+   AND to_regclass('control.mcp_group_members') IS NOT NULL AS precheck_ok
+"""
+postcheck = """
+SELECT prosecdef AND provolatile = 'v' AND proowner = 'role_migration_owner'::regrole
+   AND 'search_path=pg_catalog' = ANY(proconfig)
+   AND has_function_privilege('role_gateway', oid, 'EXECUTE')
+   AND NOT EXISTS (SELECT FROM aclexplode(proacl)
+                    WHERE privilege_type = 'EXECUTE' AND grantee NOT IN (proowner, 'role_gateway'::regrole))
+   AS postcheck_ok
+  FROM pg_proc
+ WHERE oid = to_regprocedure('control.read_mcp_chooser_decisions(uuid,text,uuid[],uuid[])')
+"""
+rollback_or_forward_fix = "Forward fix. Revoke EXECUTE on the read door if needed. No persisted state is added."
+backup_restore_requirement = "Standard migration backup. Adds a definer without changing existing rows or table grants."
