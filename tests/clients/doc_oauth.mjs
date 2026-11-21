@@ -11,6 +11,7 @@ try {
     const origin = process.env.OAUTH_TEST_ORIGIN;
     const resource = `${origin}/mcp`;
     const redirect = process.argv[2];
+    const suppliedId = process.argv[3];
     const info = await discoverOAuthServerInfo(resource);
     assert.equal(info.resourceMetadata?.resource, resource);
     assert.deepEqual(info.resourceMetadata.authorization_servers, [origin]);
@@ -19,17 +20,20 @@ try {
     assert(metadata.code_challenge_methods_supported.includes("S256"));
     assert(metadata.token_endpoint_auth_methods_supported.includes("none"));
 
-    stage = "public DCR";
-    const clientInformation = await registerClient(origin, { metadata, clientMetadata: {
-        client_name: "Humaux CI documented callback probe",
-        redirect_uris: [redirect],
-        grant_types: ["authorization_code", "refresh_token"],
-        response_types: ["code"],
-        token_endpoint_auth_method: "none",
-    } });
-    assert.deepEqual(clientInformation.redirect_uris, [redirect]);
-    assert.equal(clientInformation.token_endpoint_auth_method, "none");
-    assert(!clientInformation.client_secret);
+    let clientInformation = { client_id: suppliedId };
+    if (!suppliedId) {
+        stage = "public DCR";
+        clientInformation = await registerClient(origin, { metadata, clientMetadata: {
+            client_name: "Humaux CI documented callback probe",
+            redirect_uris: [redirect],
+            grant_types: ["authorization_code", "refresh_token"],
+            response_types: ["code"],
+            token_endpoint_auth_method: "none",
+        } });
+        assert.deepEqual(clientInformation.redirect_uris, [redirect]);
+        assert.equal(clientInformation.token_endpoint_auth_method, "none");
+        assert(!clientInformation.client_secret);
+    }
 
     stage = "PKCE, redirect and RFC 8707 resource";
     const { authorizationUrl } = await startAuthorization(origin, {

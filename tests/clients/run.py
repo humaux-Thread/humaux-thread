@@ -34,10 +34,11 @@ FOCUS = os.environ.get("OAUTH_CLIENT_FOCUS", "all")
 GATEWAY = 18170
 ROWS = []
 TOOLS = ("tools/list", "tools/call")
+CLAUDE_CALLBACK = "https://claude.ai/api/mcp/auth_callback"
+CLAUDE_STATIC_ID = "ci-claude-web-static"
+CLAUDE_CONNECTOR_DOCS = "https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp"
 HOSTED = [
-    # Anthropic's published identity document declares its client_id and callback below.
-    # https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp
-    ("claude.ai", "https://claude.ai/oauth/mcp-oauth-client-metadata", "https://claude.ai/api/mcp/auth_callback"),
+    ("claude.ai", "https://claude.ai/oauth/mcp-oauth-client-metadata", CLAUDE_CALLBACK),
     ("ChatGPT", "https://chatgpt.com/oauth/client.json", "https://chatgpt.com/connector_platform_oauth_redirect"),
     ("Antigravity", "https://antigravity.google/oauth/client-metadata.json", "https://antigravity.google/oauth-callback"),
     ("Cursor Web", None, "https://www.cursor.com/agents/mcp/oauth/callback"),
@@ -256,6 +257,12 @@ def gateway():
         HUMAUX_GATEWAY_AUTH_OAUTH_ACCESS_TTL_SECONDS="300",
         HUMAUX_GATEWAY_AUTH_LOGIN_CODE_RESEND_COOLDOWN_SECONDS="1",
         HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_CAPACITY="16",
+        # All fixture clients share a loopback source and may register within one second.
+        HUMAUX_GATEWAY_AUTH_OAUTH_REGISTER_IP_REFILL_PER_MINUTE="60",
+        HUMAUX_GATEWAY_AUTH_OAUTH_STATIC_CLIENTS=json.dumps([{
+            "client_id": CLAUDE_STATIC_ID, "redirect_uris": [CLAUDE_CALLBACK],
+            "token_endpoint_auth_method": "none",
+        }]),
         HUMAUX_GATEWAY_AUTH_OAUTH_RESOURCE=origin + "/mcp",
         HUMAUX_GATEWAY_MCP_LEGACY_ENABLED="true",
         HUMAUX_GATEWAY_REMEMBER_REASONING_DOMAIN_ID=ids["reasoning_domain_id"],
@@ -433,31 +440,81 @@ def metadata_http(response):
     return f"HTTP {response.status}, content-type={media}, redirect={redirect}"
 
 
-def doc_oauth(name, version, redirect, source, env, note=""):
+def doc_sdk_probe(redirect, env, client_id=None):
+    command = ["node", str(HERE / "doc_oauth.mjs"), redirect]
+    if client_id:
+        command.append(client_id)
     with witness() as events:
-        result = run(["node", str(HERE / "doc_oauth.mjs"), redirect], env, timeout=45)
+        result = run(command, env, timeout=45)
     if result.returncode:
         stages = ("discovery", "public DCR", "PKCE, redirect and RFC 8707 resource")
         phase = next((stage for stage in stages if result.stderr == f"Documented OAuth probe failed: {stage}\n"), "unknown stage")
         refusal = next((value for key, value in events if key == "DCR refusal"), None)
-        evidence = f"; DCR refused: {refusal}" if refusal else ""
-        record(name, version, "FAIL", f"Documented OAuth SDK probe failed at {phase}{evidence}; {source}{note}")
+        return f"{phase} ({refusal})" if refusal else phase
+    return None
+
+
+def doc_oauth(name, version, redirect, source, env, note=""):
+    if failure := doc_sdk_probe(redirect, env):
+        record(name, version, "FAIL", f"Documented OAuth SDK probe failed at {failure}; {source}{note}")
         return
     record(name, version, "doc-verified", f"SDK verified public DCR, exact callback {redirect}, S256 and RFC 8707 resource; {source}{note}")
+
+
+def claude_hosted(document, redirect, env):
+    failure = []
+    for label, client_id in (("DCR", None), ("static", CLAUDE_STATIC_ID)):
+        if problem := doc_sdk_probe(redirect, env, client_id):
+            failure.append(f"{label} failed at {problem}")
+    source = f"{CLAUDE_CONNECTOR_DOCS} (accessed 2026-11-21)"
+    try:
+        with build_opener(NoRedirect()).open(Request(document, headers={"Accept": "application/json"}), timeout=12) as response:
+            facts = metadata_http(response)
+        cimd = f"public CIMD GET {facts}; live AS fetch"
+        if problem := doc_sdk_probe(redirect, env, document):
+            failure.append(f"CIMD failed at {problem}")
+    except HTTPError as response:
+        with response:
+            facts = metadata_http(response)
+        cimd = f"public CIMD GET {facts}, JSON=not read"
+        if response.code == 403:
+            fixture_source = "https://claude.com/docs/connectors/building/lazy-authentication#identify-claude-with-a-client-id-metadata-document"
+            cimd += f"; local CIMD fixture from {fixture_source} (accessed 2026-11-21)"
+            fixture = Path("bins/gateway/tests/ci_claude_cimd.rs")
+            # Cargo discovers integration tests in the package on this disposable checkout.
+            with fixture.open("x") as output:
+                output.write((HERE / "claude_cimd.rs").read_text())
+            try:
+                result = run(["cargo", "test", "--locked", "-q", "-p", "humaux-gateway",
+                              "--test", "ci_claude_cimd"], {**env, "CARGO_PROFILE_TEST_DEBUG": "0",
+                              "OAUTH_FIXTURE_CIMD": document, "OAUTH_FIXTURE_CALLBACK": redirect}, timeout=390)
+                if result.returncode:
+                    failure.append(f"CIMD fixture assertion exited {result.returncode}")
+            finally:
+                fixture.unlink()
+        else:
+            failure.append("CIMD public GET failed")
+    except (OSError, HTTPException) as error:
+        cimd = f"public CIMD GET unavailable ({type(error).__name__})"
+        failure.append("CIMD public GET failed")
+    if failure:
+        record("claude.ai", "hosted", "FAIL", f"{', '.join(failure)}; {cimd}; {document}; {source}")
+    else:
+        record("claude.ai", "hosted", "doc-verified",
+               f"DCR, static public client and CIMD each accepted {redirect} and refused a different callback; "
+               f"{cimd}; {document}; hosted sign-in deferred; {source}")
 
 
 def hosted(name, document, redirect, env):
     if name == "Cursor Web":
         doc_oauth(name, "hosted", redirect, "https://prod.cursor.com/docs/mcp", env)
         return
-    deferred = name == "claude.ai"
+    if name == "claude.ai":
+        claude_hosted(document, redirect, env)
+        return
 
     def preflight(reason):
-        if deferred:
-            record(name, "hosted", "not_applicable",
-                   f"deferred to post-launch hosted verification (owner 2026-11-21); {reason}")
-        else:
-            record(name, "hosted", "FAIL", reason)
+        record(name, "hosted", "FAIL", reason)
 
     # Match the gateway's CIMD fetch rule. Record redirect presence without logging Location values.
     fetch = build_opener(NoRedirect())
@@ -483,9 +540,6 @@ def hosted(name, document, redirect, env):
         return
     shape = {dict: "object", list: "array", str: "string", bool: "boolean", type(None): "null"}.get(type(data), "number")
     facts = f"{facts}, JSON={shape}"
-    if deferred:
-        preflight(f"CIMD GET; {facts}; {document}")
-        return
     client_match = isinstance(data, dict) and data.get("client_id") == document
     redirects = data.get("redirect_uris") if isinstance(data, dict) else None
     callback_match = isinstance(redirects, list) and redirect in redirects
