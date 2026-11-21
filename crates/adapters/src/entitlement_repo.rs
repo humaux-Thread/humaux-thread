@@ -23,9 +23,7 @@ use std::{collections::HashMap, time::SystemTime};
 use humaux_application::entitlement::{
     EntitlementGrant, GrantSource, carry_period_boundaries, project,
 };
-use humaux_application::read_quota::{
-    BMO_ENTITLEMENT, McpEntitlement, QuotaPolicyFacts, quota_policy,
-};
+use humaux_application::read_quota::{McpEntitlement, QuotaPolicyFacts, projected_bmo_policy};
 use humaux_domain::error::ErrorCode;
 use humaux_domain::identity::{AuthorizationScope, BoundedSet};
 use humaux_domain::ids::{TenantId, WorkspaceId};
@@ -81,17 +79,14 @@ pub async fn mcp_entitlement_for_tenants(
             continue;
         }
         set_authorized_ids_local(&mut txn, tenant, Some(user)).await?;
-        let result = read_scoped_entitlement(&mut txn, tenant, Some(observed_at))
+        let result = read_scoped_entitlement(&mut txn, tenant, Some(observed_at), batch_read_error)
             .await
             .and_then(|facts| {
-                quota_policy(
-                    &QuotaPolicyFacts {
-                        effective: facts.effective,
-                        computed_at: facts.computed_at,
-                        observed_at: facts.observed_at,
-                    },
-                    BMO_ENTITLEMENT,
-                )
+                projected_bmo_policy(&QuotaPolicyFacts {
+                    effective: facts.effective,
+                    computed_at: facts.computed_at,
+                    observed_at: facts.observed_at,
+                })
             });
         let decision = match result {
             Ok(_) => McpEntitlement::Enabled,
@@ -102,6 +97,17 @@ pub async fn mcp_entitlement_for_tenants(
     }
     txn.commit().await.map_err(request_guard_repo::db_error)?;
     Ok(decisions)
+}
+
+fn batch_read_error(error: sqlx::Error) -> ErrorCode {
+    match &error {
+        sqlx::Error::Database(db)
+            if matches!(db.code().as_deref(), Some("55P03" | "57014" | "57P01")) =>
+        {
+            ErrorCode::DependencyUnavailable
+        }
+        _ => request_guard_repo::db_error(error),
+    }
 }
 
 /// What one recompute did.

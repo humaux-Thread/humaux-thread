@@ -141,7 +141,7 @@ pub(crate) async fn read_effective_entitlements_in_txn(
             return Err(ErrorCode::EntitlementRequired);
         }
     }
-    read_scoped_entitlement(txn, authorization.tenant_id(), None).await
+    read_scoped_entitlement(txn, authorization.tenant_id(), None, db_error).await
 }
 
 /// Read a projection after the caller binds the authorized tenant on this transaction.
@@ -149,6 +149,7 @@ pub(crate) async fn read_scoped_entitlement(
     txn: &mut Txn<'_>,
     tenant: TenantId,
     observed_at: Option<OffsetDateTime>,
+    map_error: fn(sqlx::Error) -> ErrorCode,
 ) -> Result<EffectiveEntitlementFacts, ErrorCode> {
     // ADR-0072 D-A: a staged successor is the effective object from its own start, read with the one clock value
     // the guard then checks the period against.
@@ -163,14 +164,7 @@ pub(crate) async fn read_scoped_entitlement(
     .bind(observed_at)
     .fetch_optional(&mut **txn)
     .await
-    .map_err(|error| match &error {
-        sqlx::Error::Database(db)
-            if matches!(db.code().as_deref(), Some("55P03" | "57014" | "57P01")) =>
-        {
-            ErrorCode::DependencyUnavailable
-        }
-        _ => db_error(error),
-    })?;
+    .map_err(map_error)?;
 
     let Some(row) = row else {
         return Err(ErrorCode::EntitlementRequired);

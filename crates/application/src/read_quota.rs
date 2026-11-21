@@ -126,11 +126,18 @@ pub fn quota_policy(facts: &QuotaPolicyFacts, feature: &str) -> Result<ChargePol
     if feature != BMO_ENTITLEMENT {
         return Err(ErrorCode::Internal);
     }
-    let policy = facts
-        .effective
-        .get(feature)
-        .and_then(|v| v.as_object())
-        .ok_or(ErrorCode::EntitlementRequired)?;
+    // Existing single-tenant admission treats an unusable policy as missing entitlement.
+    projected_bmo_policy(facts).map_err(|_| ErrorCode::EntitlementRequired)
+}
+
+/// Evaluate projected BMO terms, distinguishing missing or inactive terms from damaged data.
+pub fn projected_bmo_policy(facts: &QuotaPolicyFacts) -> Result<ChargePolicy, ErrorCode> {
+    let effective = facts.effective.as_object().ok_or(ErrorCode::Internal)?;
+    let policy = effective
+        .get(BMO_ENTITLEMENT)
+        .ok_or(ErrorCode::EntitlementRequired)?
+        .as_object()
+        .ok_or(ErrorCode::Internal)?;
     if policy
         .get("limit")
         .and_then(|v| v.as_u64())
@@ -140,29 +147,32 @@ pub fn quota_policy(facts: &QuotaPolicyFacts, feature: &str) -> Result<ChargePol
             Some("calendar_month" | "subscription_period")
         )
     {
-        return Err(ErrorCode::EntitlementRequired);
+        return Err(ErrorCode::Internal);
     }
     let parse = |key| {
         policy
             .get(key)
             .and_then(|v| v.as_str())
             .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
-            .ok_or(ErrorCode::EntitlementRequired)
+            .ok_or(ErrorCode::Internal)
     };
     let start = parse("period_start")?;
     let end = parse("period_end")?;
-    if start >= end
-        || facts.observed_at < start
+    if start >= end {
+        return Err(ErrorCode::Internal);
+    }
+    let charge_policy = match policy.get("charge_policy").and_then(|v| v.as_str()) {
+        Some("success_only") => ChargePolicy::SuccessOnly,
+        Some("completed_business_calls") => ChargePolicy::CompletedBusinessCalls,
+        _ => return Err(ErrorCode::Internal),
+    };
+    if facts.observed_at < start
         || facts.observed_at >= end
         || facts.computed_at > facts.observed_at
     {
         return Err(ErrorCode::EntitlementRequired);
     }
-    match policy.get("charge_policy").and_then(|v| v.as_str()) {
-        Some("success_only") => Ok(ChargePolicy::SuccessOnly),
-        Some("completed_business_calls") => Ok(ChargePolicy::CompletedBusinessCalls),
-        _ => Err(ErrorCode::EntitlementRequired),
-    }
+    Ok(charge_policy)
 }
 
 #[cfg(test)]
