@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use humaux_adapters::{
-    oauth_repo::{self, ClientKind, McpChooserChange},
+    oauth_repo::{self, ClientKind, GrantIssue, McpChooserChange, SecretHash},
     postgres::RuntimeDbPool,
     session_repo,
 };
@@ -227,22 +227,28 @@ impl Harness {
         ))
     }
 
-    fn exchange(&self, code: &str) -> TokenExchange {
-        self.rt
-            .block_on(exchange_code(
-                &self.pool,
-                &policy(&self.resources, &self.scopes),
-                CodeExchangeRequest {
-                    grant_type: Some("authorization_code"),
-                    client_id: CLIENT,
-                    redirect_uri: Some(REDIRECT),
-                    code_verifier: Some(VERIFIER),
-                    resource: Some(RESOURCE),
-                },
-                Some(code),
-            ))
+    fn grant_tokens(&self) -> TokenExchange {
+        let presented = Uuid::new_v4().to_string();
+        let oauth = policy(&self.resources, &self.scopes);
+        self.rt.block_on(async {
+            let mut txn = oauth_repo::begin(&self.pool).await.unwrap();
+            txn.issue_grant(&GrantIssue {
+                user_id: self.session.user_id,
+                tenant_id: self.workspace().0,
+                workspace_id: self.workspace().1,
+                client_id: CLIENT,
+                resource: RESOURCE,
+                scopes: &self.scopes,
+                refresh_hash: &SecretHash::of_secret(&presented),
+                refresh_ttl: oauth.refresh_ttl,
+                grant_max_ttl: oauth.grant_max_ttl,
+            })
+            .await
             .unwrap()
-            .unwrap()
+            .expect("seed a refresh family with an exact workspace binding");
+            txn.commit().await.unwrap();
+        });
+        self.refresh(&self.pool, &presented).unwrap().unwrap()
     }
 
     fn refresh(
@@ -282,7 +288,7 @@ impl Harness {
         );
         assert_eq!(
             self.refresh_rows(original.access.grant_id),
-            ["ACTIVE"],
+            ["ACTIVE", "ROTATED"],
             "refused rotation must roll back both the consume and the successor"
         );
     }
@@ -412,8 +418,22 @@ fn chooser_binds_exact_candidate_to_code_exchange_and_grant() {
                 )
             );
 
-            let exchanged = h.exchange(&code);
             let grant = h.rt.block_on(async {
+                let exchanged = exchange_code(
+                    &h.pool,
+                    &policy(&h.resources, &h.scopes),
+                    CodeExchangeRequest {
+                        grant_type: Some("authorization_code"),
+                        client_id: CLIENT,
+                        redirect_uri: Some(REDIRECT),
+                        code_verifier: Some(VERIFIER),
+                        resource: Some(RESOURCE),
+                    },
+                    Some(&code),
+                )
+                .await
+                .unwrap()
+                .unwrap();
                 let mut txn = oauth_repo::begin(&h.pool).await.unwrap();
                 let grant = txn
                     .lookup_grant(exchanged.access.grant_id)
@@ -637,7 +657,7 @@ fn refresh_uses_current_policy_version_and_rolls_back() {
         };
         let (allow, withdraw) = (rule(true), rule(false));
         h.write(allow);
-        let original = h.exchange(&h.issue(h.workspace()).unwrap());
+        let original = h.grant_tokens();
         h.write(withdraw);
         h.assert_refresh_refused(&original);
 
@@ -674,7 +694,7 @@ fn refresh_uses_current_policy_version_and_rolls_back() {
         assert_eq!(next.access.grant_id, original.access.grant_id);
         assert_eq!(
             h.refresh_rows(original.access.grant_id),
-            ["ACTIVE", "ROTATED"]
+            ["ACTIVE", "ROTATED", "ROTATED"]
         );
     });
 }
@@ -698,7 +718,7 @@ fn refresh_rechecks_groups_without_suppressing_reuse_revocation() {
                 allowed: true,
             });
             h.write(member(true));
-            let original = h.exchange(&h.issue(h.workspace()).unwrap());
+            let original = h.grant_tokens();
             h.write(member(false));
             h.assert_refresh_refused(&original);
 
@@ -711,7 +731,7 @@ fn refresh_rechecks_groups_without_suppressing_reuse_revocation() {
             );
             assert_eq!(
                 h.refresh_rows(original.access.grant_id),
-                ["REVOKED", "ROTATED"]
+                ["REVOKED", "ROTATED", "ROTATED"]
             );
             // dep: PostgreSQL(owner) — reuse revokes the persisted grant and the successor together.
             let grant = h
@@ -742,7 +762,7 @@ fn refresh_refuses_workspace_without_tenant_fallback() {
             effect: McpPolicyEffect::Allow,
             active: true,
         });
-        let original = h.exchange(&h.issue(h.workspace()).unwrap());
+        let original = h.grant_tokens();
         h.rule(McpPolicyEffect::Deny);
         let candidates = h.candidates().unwrap();
         assert!(candidates.contains(&(h.tenants[0], None)));
@@ -755,7 +775,7 @@ fn refresh_refuses_workspace_without_tenant_fallback() {
 fn refresh_serializes_first_deny_with_rotation() {
     run_db_fixture::<Fixture, _>("refresh_serializes_first_deny_with_rotation", |db| {
         let mut h = Harness::new(db);
-        let original = h.exchange(&h.issue(h.workspace()).unwrap());
+        let original = h.grant_tokens();
         // dep: PostgreSQL(role_gateway) — retain the first policy write until refresh attempts its lock.
         let mut admin = Client::connect(&h.gateway_dsn, NoTls).unwrap();
         let mut writer = admin.transaction().unwrap();
@@ -765,7 +785,10 @@ fn refresh_serializes_first_deny_with_rotation() {
             Some(ErrorCode::DependencyUnavailable),
             "uncommitted first deny must block refresh"
         );
-        assert_eq!(h.refresh_rows(original.access.grant_id), ["ACTIVE"]);
+        assert_eq!(
+            h.refresh_rows(original.access.grant_id),
+            ["ACTIVE", "ROTATED"]
+        );
         writer.commit().unwrap();
         h.assert_refresh_refused(&original);
     });
