@@ -13,6 +13,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 from urllib.error import HTTPError
@@ -22,6 +23,7 @@ from uuid import UUID, uuid4
 from xml.etree import ElementTree as xml
 
 from browser import NoRedirect, postgres_command
+from client_probes import kimi_probe, qwen_probe
 
 HERE = Path(__file__).resolve().parent
 TEMP = Path(os.environ["RUNNER_TEMP"])
@@ -39,14 +41,11 @@ HOSTED = [
     ("vscode.dev", "https://vscode.dev/oauth/client-metadata.json", "https://vscode.dev/redirect"),
 ]
 CLI = [
-    ("Claude Code", "2.1.328", "@anthropic-ai/claude-code", "claude", "MCP OAuth uses the signed-in /mcp UI"),
+    ("Claude Code", "2.1.328", "@anthropic-ai/claude-code", "claude", "Clean Linux PTY reached Select login method before /mcp; https://code.claude.com/docs/en/setup"),
     ("Codex CLI", "0.169.0", "@openai/codex", "codex", None),
-    ("Gemini CLI", "0.38.2", "@google/gemini-cli", "gemini", "MCP auth requires the interactive /mcp auth command"),
-    ("Qwen Code", "0.28.3", "@qwen-code/qwen-code", "qwen", "MCP auth requires the interactive /mcp auth command"),
-    ("Kimi Code", "2.5.3", "@moonshot-ai/kimi-code", "kimi", "MCP auth requires the interactive /mcp-config login command"),
-    ("CodeBuddy Code", "2.185.0", "@tencent-ai/codebuddy-code", "codebuddy", "MCP OAuth requires the interactive /mcp UI"),
-    ("ZCode CLI", "0.17.1", None, None, "No pinned Linux ARM64 distribution configured for the desktop-bundled CLI"),
-    ("DeepSeek Harness", "0.2.1-rc.5", "@deepseek-ai/dsh", "dsh", "MCP OAuth requires the interactive plugin-manager surface"),
+    ("Qwen Code", "0.28.3", "@qwen-code/qwen-code", "qwen", None),
+    ("Kimi Code", "2.5.3", "@moonshot-ai/kimi-code", "kimi", None),
+    ("CodeBuddy Code", "2.185.0", "@tencent-ai/codebuddy-code", "codebuddy", "Vendor documents mandatory login before first interactive use; https://www.codebuddy.ai/docs/cli/quickstart"),
 ]
 
 
@@ -84,7 +83,7 @@ class Wire(BaseHTTPRequestHandler):
         finally:
             upstream.close()
 
-    do_GET = do_POST = do_DELETE = handle_request
+    do_GET = do_HEAD = do_POST = do_DELETE = handle_request
 
     def record(self, parsed, body, response, output):
         path = parsed.path
@@ -173,9 +172,9 @@ def witness():
             thread.join()
 
 
-def run(command, env, timeout=70):
+def run(command, env, timeout=70, input_data=None):
     try:
-        return subprocess.run(command, env=env, timeout=timeout, capture_output=True, text=True)
+        return subprocess.run(command, env=env, timeout=timeout, capture_output=True, text=True, input=input_data)
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(command, 124, "", "")
 
@@ -262,7 +261,7 @@ def gateway():
                     connection.request("GET", "/livez", headers={"Host": "127.0.0.1:18171"})
                     if connection.getresponse().status == 200:
                         break
-                except OSError:
+                except (OSError, HTTPException):
                     pass
                 finally:
                     connection.close()
@@ -284,26 +283,38 @@ def record(name, version, status, reason):
     print(f"{name} {version} {status} {reason}", flush=True)
 
 
-def sdk(name, version, command, env):
-    required_events = ["challenge", "PRM", "ASM", "DCR", "authorize", "consent", "code",
-                       "protocol", *TOOLS, "refresh"]
+def discovery_route(events):
+    keys = [key for key, passed in events if passed is True]
+    if "PRM" not in keys or "ASM" not in keys:
+        return None
+    if "challenge" in keys and keys.index("challenge") < keys.index("PRM"):
+        return "401 challenge → PRM/ASM"
+    return "direct PRM/ASM"
+
+
+def sdk(name, version, command, env, *, direct_discovery=False, input_data=None):
+    required_events = ["PRM", "ASM", "DCR", "authorize", "consent", "code", "protocol", *TOOLS, "refresh"]
+    if not direct_discovery:
+        required_events.insert(0, "challenge")
     with witness() as events:
-        result = run(command, env, timeout=390)
+        result = run(command, env, timeout=390, input_data=input_data)
         snapshot = list(events)
     missing = [event for event in required_events if (event, True) not in snapshot]
     if snapshot.count(("tools/call", True)) < 2:
         missing.append("tool recovery")
     if result.returncode or missing:
         stages = ("first connect", "consent callback", "code exchange", "first tools/list and remember",
-                  "expiry and automatic refresh")
-        phase = next((stage for stage in stages if f"TypeScript SDK failed: {stage}\n" == result.stderr), None)
+                  "expiry and automatic refresh", "load provider", "provider authorize and exchange",
+                  "load built adapter", "connect and authorize")
+        phase = next((stage for stage in stages for client in ("TypeScript SDK", "Gemini CLI", "ZCode adapter")
+                      if f"{client} failed: {stage}\n" == result.stderr), None)
         detail = f" at {phase}" if phase else ""
-        why = ("consent denied by fixture; no exchange" if FAULT == "consent" and
+        why = ("consent denied by fixture; no exchange" if FAULT in {"consent", "gemini-consent"} and
                ("consent denied", True) in snapshot and not any(k == "exchange status" for k, _ in snapshot)
                else f"exit {result.returncode}{detail}; missing: {', '.join(missing) or 'none'}")
         record(name, version, "FAIL", why)
     else:
-        record(name, version, "PASS", "401 → PRM → ASM; DCR; consent callback; S256; equal resources; 2025-06-18; tools and refresh")
+        record(name, version, "PASS", f"{discovery_route(snapshot)}; DCR; consent callback; S256; equal resources; 2025-06-18; tools and refresh")
 
 
 def check_pkce(command, env):
@@ -315,6 +326,70 @@ def check_pkce(command, env):
         record("MCP TypeScript SDK PKCE negative", "1.32.2", "PASS", "Gateway refused mismatched verifier after consent")
     else:
         record("MCP TypeScript SDK PKCE negative", "1.32.2", "FAIL", "Verifier refusal was not witnessed")
+
+
+def gemini(env):
+    name, version = "Gemini CLI", "0.38.2"
+    prefix = TEMP / "oauth-cli-gemini"
+    install = run(["npm", "install", "--prefix", str(prefix), "--no-audit", "--no-fund",
+                   f"@google/gemini-cli-core@{version}"], env, timeout=240)
+    provider = prefix / "node_modules/@google/gemini-cli-core/dist/src/mcp/oauth-provider.js"
+    if install.returncode or not provider.is_file():
+        status = "FAIL" if FAULT == "gemini-consent" else "not_applicable"
+        record(name, version, status, f"Pinned core install/provider probe failed (npm exit {install.returncode})")
+        return
+    sdk(name, version, ["node", str(HERE / "gemini.mjs"), str(provider)], env,
+        direct_discovery=True, input_data="y\n")
+
+
+def zcode(env):
+    commit = "fec975905a2abd4c07e35c40d51fa097a2258ec9"
+    name, version = "ZCode CLI", commit[:12]
+    source = TEMP / "oauth-zcode-src"
+    workspace = source / "apps/zcode-cli"
+    pnpm = ["npm", "exec", "--yes", "--package=pnpm@10.33.2", "--", "pnpm", "-C", str(workspace)]
+    steps = [
+        ("git init", ["git", "init", "-q", str(source)], 20),
+        ("official source fetch", ["git", "-C", str(source), "fetch", "--depth=1",
+                                    "https://github.com/zai-org/ZCode.git", commit], 120),
+        ("pinned checkout", ["git", "-C", str(source), "checkout", "-q", "--detach", commit], 60),
+        ("locked adapter dependency install", [*pnpm, "--filter", "@zcode/adapters...", "install", "--frozen-lockfile"], 260),
+        ("workspace adapter build", [*pnpm, "--filter", "@zcode/adapters...", "run", "build"], 240),
+    ]
+    for stage, command, timeout in steps:
+        result = run(command, env, timeout=timeout)
+        if result.returncode:
+            error = re.search(r"ERR_PNPM_[A-Z0-9_]+|error TS[0-9]+", result.stdout + result.stderr)
+            category = f", {error[0]}" if error else ""
+            record(name, version, "not_applicable", f"{stage} failed (exit {result.returncode}{category}); https://github.com/zai-org/ZCode/tree/{commit}")
+            return
+    adapter = workspace / "packages/adapters/dist"
+    if not (adapter / "mcp/index.js").is_file():
+        record(name, version, "not_applicable", "Official workspace build did not produce packages/adapters/dist/mcp/index.js")
+        return
+    sdk(name, version, ["node", str(HERE / "zcode.mjs"), str(adapter)], env, direct_discovery=True)
+
+
+def deepseek(env):
+    name, version = "DeepSeek Harness", "0.2.2-rc.5"
+    target = TEMP / "oauth-deepseek"
+    target.mkdir()
+    result = run(["npm", "pack", "--ignore-scripts", "--json", "--pack-destination", str(target),
+                  f"@deepseek-ai/dsh@{version}", f"@deepseek-ai/dsh-mcp-client@{version}",
+                  f"@deepseek-ai/dsh-mcp-manager@{version}"], env, timeout=180)
+    if result.returncode:
+        record(name, version, "not_applicable", f"Could not fetch same-version CLI, client and manager artifacts (npm pack exit {result.returncode})")
+        return
+    releases = {item["name"]: item for item in json.loads(result.stdout)}
+    if len(releases) != 3 or any(item["version"] != version for item in releases.values()):
+        record(name, version, "FAIL", "Expected matching CLI, client and manager versions")
+        return
+    with tarfile.open(target / releases["@deepseek-ai/dsh-mcp-client"]["filename"]) as archive:
+        declaration = archive.extractfile("package/lib/types/index.d.ts").read().decode()
+    if re.search(r"oauth|authorization.?code", declaration, re.IGNORECASE):
+        record(name, version, "FAIL", "Pinned plugin exposes an OAuth declaration; its direct adapter needs a real journey")
+        return
+    record(name, version, "not_applicable", "Fetched matching CLI/client/manager; MCP client types lack OAuth and tagged manager docs say No OAuth flow; https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.5/packages/mcp/mcp-manager/README.md#known-limitations")
 
 
 def metadata_http(response):
@@ -392,9 +467,6 @@ def hosted(name, document, redirect, env):
 
 
 def cli(name, version, package, binary, unavailable, env):
-    if package is None:
-        record(name, version, "not_applicable", unavailable)
-        return
     prefix = TEMP / ("oauth-cli-" + binary)
     installed = run(["npm", "install", "--prefix", str(prefix), "--no-audit", "--no-fund",
                      f"{package}@{version}"], env, timeout=240)
@@ -405,6 +477,17 @@ def cli(name, version, package, binary, unavailable, env):
         return
     if unavailable:
         record(name, version, "not_applicable", f"Binary version verified; {unavailable}")
+        return
+    if binary in {"qwen", "kimi"}:
+        workspace = prefix / "probe-workspace"
+        workspace.mkdir()
+        url = env["OAUTH_TEST_ORIGIN"] + "/mcp/legacy"
+        with witness():
+            if binary == "qwen":
+                status, reason = asyncio.run(qwen_probe(executable, workspace, url, env))
+            else:
+                status, reason = kimi_probe(executable, workspace, url, env)
+        record(name, version, status, reason)
         return
     # One model-free app-server session can call a configured MCP tool directly.
     config = [
@@ -424,12 +507,12 @@ def cli(name, version, package, binary, unavailable, env):
             trace = ", ".join(value for key, value in events if key == "MCP HTTP")
             record(name, version, "FAIL", f"Native login succeeded; {reason}; MCP HTTP: {trace or 'none'}")
             return
-    missing = [key for key in ("challenge", "PRM", "ASM", "DCR", "authorize", "consent", "code", "protocol", *TOOLS, "refresh")
+    missing = [key for key in ("PRM", "ASM", "DCR", "authorize", "consent", "code", "protocol", *TOOLS, "refresh")
                if (key, True) not in events]
     if missing or events.count(("tools/call", True)) < 2:
         record(name, version, "FAIL", f"Missing wire evidence: {', '.join(missing) or 'tool recovery'}")
     else:
-        record(name, version, "PASS", "Native CLI login, app-server tools/list and remember; automatic refresh")
+        record(name, version, "PASS", f"{discovery_route(events)}; native CLI login, app-server tools/list and remember; automatic refresh")
 
 
 class CodexRpcError(RuntimeError):
@@ -525,14 +608,19 @@ def main():
                 check_pkce(ts, env)
             elif FAULT == "consent":
                 sdk("MCP TypeScript SDK", "1.32.2", ts, env)
+            elif FAULT == "gemini-consent":
+                gemini(env)
             else:
                 sdk("MCP TypeScript SDK", "1.32.2", [*ts, "--refresh"], env)
                 check_pkce(ts, env)
                 sdk("MCP Python SDK", "1.29.1", [sys.executable, str(HERE / "sdk_python.py")], env)
                 for row in HOSTED:
                     hosted(*row, env)
+                gemini(env)
                 for row in CLI:
                     cli(*row, env)
+                zcode(env)
+                deepseek(env)
     except RuntimeError as error:
         record("CI infrastructure", "PG19", "FAIL", str(error))
     except Exception:
