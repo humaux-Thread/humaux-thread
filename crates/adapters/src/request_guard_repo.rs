@@ -153,7 +153,7 @@ pub(crate) async fn read_scoped_entitlement(
     // ADR-0072 D-A: a staged successor is the effective object from its own start, read with the one clock value
     // the guard then checks the period against.
     let row = sqlx::query(
-        "SELECT CASE WHEN s.successor_from <= c.observed_at THEN s.successor ELSE s.effective END AS effective, \
+        "SELECT CASE WHEN s.successor_from <= c.observed_at THEN s.effective ELSE s.effective END AS effective, \
                 s.source_grant_ids, s.computed_at, c.observed_at \
          FROM control.entitlement_snapshots s \
          CROSS JOIN (SELECT COALESCE($2, clock_timestamp()) AS observed_at) c \
